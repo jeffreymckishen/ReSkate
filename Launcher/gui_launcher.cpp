@@ -2,11 +2,12 @@
 #include "Engine/Core/Platform/user_data_paths.h"
 
 #include "depot_output.h"
-#include "official_mods.h"
+#include "start_maps.h"
 
 #include "Engine/Core/Json/json.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Debug/trace.h"
+#include "Engine/Core/Platform/game_instance.h"
 #include "Engine/Vfs/mod_catalog.h"
 
 #include <algorithm>
@@ -51,6 +52,7 @@ Settings load_settings(const fs::path& path) {
         settings.gpu_diagnostics = json.value("gpu_diagnostics", settings.gpu_diagnostics);
         settings.discord_status = json.value("discord_status", settings.discord_status);
         settings.offline = json.value("offline", settings.offline);
+        settings.start_map = json.value("start_map", std::string());
         settings.menu_key = json.value("menu_key", settings.menu_key);
         settings.console_key = json.value("console_key", settings.console_key);
         if (!launcher::bindable_key(static_cast<unsigned>(settings.menu_key)) ||
@@ -90,6 +92,7 @@ void save_settings(const fs::path& path, const Settings& settings) {
     json["gpu_diagnostics"] = settings.gpu_diagnostics;
     json["discord_status"] = settings.discord_status;
     json["offline"] = settings.offline;
+    json["start_map"] = settings.start_map;
     json["menu_key"] = settings.menu_key;
     json["console_key"] = settings.console_key;
     json["log_level"] = log_levels[static_cast<std::size_t>(settings.log_level)];
@@ -133,6 +136,29 @@ launcher::LaunchOptions launch_options(const Settings& settings) {
         }
     }
     return launcher::parse_launch_options(arguments);
+}
+
+// The start map chosen in Settings, as the -map the game is given (empty: San Vansterdam). Read at
+// each launch, after the merge: a map whose mod is gone, switched off or left out is not asked for,
+// because the game would wait for it for ever; the game then starts in San Vansterdam.
+std::wstring start_map_option(const Settings& settings, const fs::path& game_directory) {
+    if (settings.start_map.empty()) return {};
+    const auto maps = launcher_start_maps::start_maps(game_directory);
+    if (const auto* map = launcher_start_maps::find_start_map(maps, settings.start_map)) {
+        logging::log(logging::Level::info, logging::Channel::launcher, "Start map: {}{}.", map->name,
+            map->mod.empty() ? "" : " (mod " + map->mod + ")");
+        return launcher_start_maps::load_arguments(*map);
+    }
+    logging::log(logging::Level::warning, logging::Channel::launcher,
+        "Start map {} is not installed, or its mod is switched off or could not be merged; starting in San Vansterdam.",
+        settings.start_map);
+    return {};
+}
+
+launcher::LaunchOptions launch_options(const Settings& settings, const fs::path& game_directory) {
+    auto options = launch_options(settings);
+    options.map = start_map_option(settings, game_directory);
+    return options;
 }
 
 } // namespace
@@ -366,7 +392,8 @@ void Launcher::run_check() {
         // checked, which download() sees to.)
         if (installed && launcher_app::game_data_mismatched(session_.paths))
             set(Phase::game_outdated, "Game files need verifying",
-                "Some of the game's files are from another version of skate. (Steam updated it, or a download did not finish). "
+                "Some of the game's files are missing, damaged or from another version of skate. (Steam updated it, a download "
+                "did not finish, or a cloud folder such as OneDrive keeps them online only). "
                 "Press DOWNLOAD: every file is checked and only the wrong ones are downloaded.");
         else if (installed) set(Phase::game_outdated, "Steam updated Skate",
             "ReSkate needs the build below. Only the files that differ are downloaded.");
@@ -379,9 +406,14 @@ void Launcher::run_check() {
         fail("ReSkate.dll is missing from the game folder.");
         return;
     }
-    set(Phase::ready, "Ready to skate", !config ? "Offline: update check skipped."
+    std::string detail = !config ? "Offline: update check skipped."
         : !settings_.updates ? (newer ? "ReSkate updates are off; keeping your ReSkate files." : "ReSkate updates are off.")
-        : "Up to date.");
+        : "Up to date.";
+    if (const auto advice = launcher_app::memory_advice(); !advice.empty()) {
+        logging::write(logging::Level::info, logging::Channel::launcher, advice);
+        detail += " " + advice;
+    }
+    set(Phase::ready, "Ready to skate", std::move(detail));
 }
 
 void Launcher::run_updates() {
@@ -522,17 +554,16 @@ bool Launcher::run_mod_merge() {
 }
 
 void Launcher::run_play() {
-    // The official mods first (official_mods.h): the merge takes them in.
-    if (!official_mods::wait(std::chrono::milliseconds(0))) {
-        set(Phase::merging, "Official mods", "Finishing the official mods being installed", -1.0f);
-        if (!official_mods::wait(std::chrono::minutes(3)))
-            logging::write(logging::Level::warning, logging::Channel::launcher, "Official mods were still being installed; Skate starts without them");
+    // (Before the merge, which would write into the patch the running game reads: game_instance.h.)
+    if (game_instance::running(session_.paths.directory)) {
+        fail("Skate is already running from this folder. Close it before starting it again.");
+        return;
     }
     if (!ignore_mod_problems_ && !run_mod_merge()) return;
     ignore_mod_problems_ = false;
     set(Phase::launching, "Starting Skate");
     save();
-    auto options = launch_options(settings_);
+    auto options = launch_options(settings_, session_.paths.directory);
     // The launcher's own command line can request offline mode too.
     if (std::find(arguments_.begin(), arguments_.end(), L"-offline") != arguments_.end() ||
         std::find(arguments_.begin(), arguments_.end(), L"--offline") != arguments_.end())
@@ -559,7 +590,7 @@ bool prereleases_enabled(const launcher_app::Session& session) {
     return detail::load_settings(detail::settings_path(session)).prereleases;
 }
 launcher::LaunchOptions saved_launch_options(const launcher_app::Session& session) {
-    return detail::launch_options(detail::load_settings(detail::settings_path(session)));
+    return detail::launch_options(detail::load_settings(detail::settings_path(session)), session.paths.directory);
 }
 void apply_crash_report_setting() noexcept {
     try {

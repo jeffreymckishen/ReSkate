@@ -5,6 +5,7 @@
 #include "Engine/Core/Profiling/profiler.h"
 #include "Extension/Skater/client_source_spawn.h"
 #include "Extension/Skater/client_source_spawn_internal.h"
+#include "Extension/Skater/free_flight.h"
 #include "Extension/Skater/offboard_flight.h"
 #include "Extension/Skater/no_bail.h"
 #include "Engine/Game/Build/20260929/offboard_flight.h"

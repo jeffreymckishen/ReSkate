@@ -35,11 +35,14 @@ inline BmxNativeCapture bmx_native_capture(bool bypass, bool menu, bool freecam,
     if(menu||freecam||prompt)return BmxNativeCapture::all;
     return bmx?BmxNativeCapture::controls:interaction?BmxNativeCapture::interaction:BmxNativeCapture::none;
 }
-inline std::uint32_t bmx_native_packet_tag(BmxNativeCapture capture) noexcept {
+inline std::uint32_t bmx_native_packet_tag(BmxNativeCapture capture, std::uint16_t hidden_buttons=0) noexcept {
     // A stationary physical packet must still publish the transition from
     // BMX D-pad pass-through to a fully neutral menu/freecam/prompt state.
-    return capture==BmxNativeCapture::all?0x80000000u:capture==BmxNativeCapture::controls?0x40000000u:
+    // Hidden buttons use an independent bit so mount/dismount still publishes
+    // a packet change while a plugin keeps the same buttons hidden.
+    const auto tag=capture==BmxNativeCapture::all?0x80000000u:capture==BmxNativeCapture::controls?0x40000000u:
         capture==BmxNativeCapture::interaction?0x20000000u:0;
+    return tag | (hidden_buttons?0x10000000u:0u);
 }
 // Keep the game's existing D-pad actions; never translate them into BMX input.
 template<class Pad> inline void bmx_filter_native_pad(Pad& pad,BmxNativeCapture capture) noexcept {

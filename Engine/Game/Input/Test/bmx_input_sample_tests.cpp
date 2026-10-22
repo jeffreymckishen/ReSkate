@@ -147,6 +147,18 @@ void native_dpad_capture_priority() {
         (stationary_packet^bmx_native_packet_tag(Capture::controls))!=stationary_packet&&
         (stationary_packet^bmx_native_packet_tag(Capture::all))!=stationary_packet,
         "each ownership transition publishes a fresh packet even if a physical D-pad is held still");
+    const std::array captures{Capture::none,Capture::all,Capture::controls,Capture::interaction};
+    for(const auto left:captures) for(const auto right:captures)
+        for(const auto left_hidden:std::array<std::uint16_t,2>{0,0x0010})
+            for(const auto right_hidden:std::array<std::uint16_t,2>{0,0x0010}) {
+                if(left==right && left_hidden==right_hidden)continue;
+                check((stationary_packet^bmx_native_packet_tag(left,left_hidden))!=
+                      (stationary_packet^bmx_native_packet_tag(right,right_hidden)),
+                    "every capture or hidden-button transition publishes a new stationary-source packet");
+            }
+    for(const auto capture:captures)
+        check(bmx_native_packet_tag(capture,0x0010)==bmx_native_packet_tag(capture,0xffff),
+            "a hidden-button reservation uses one independent ownership tag regardless of its mask");
     for(unsigned gates=0;gates<32;++gates) {
         const bool bypass=(gates&1)!=0,menu=(gates&2)!=0,freecam=(gates&4)!=0,prompt=(gates&8)!=0,bmx=(gates&16)!=0;
         const auto mode=bmx_native_capture(bypass,menu,freecam,prompt,bmx);

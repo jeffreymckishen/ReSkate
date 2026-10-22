@@ -50,6 +50,8 @@ namespace dingosdk {
 HookBatch::HookBatch() noexcept {}
 HookBatch::~HookBatch() {}
 bool teleport_local_skater(const std::array<float, 3>&) { return true; }
+bool prepare_on_board_teleport(std::uintptr_t, std::uintptr_t) noexcept { return true; }
+PlayerCardModel local_profile_player_card() { return {}; }
 ControllerBindingsModel local_profile_controller_bindings() { return {}; }
 void update_board_lock(std::uintptr_t, std::uintptr_t, bool) noexcept {}
 void update_developer_hoodie(std::uintptr_t, std::uintptr_t, std::uint64_t, std::uint64_t, DeveloperHoodieState &,
@@ -64,6 +66,18 @@ bool identity_listed(std::uint64_t id, IdentityList list) noexcept { return simu
 bool local_allows_player_collision(std::uintptr_t, std::uintptr_t) noexcept { return false; }
 void update_remote_collision(std::uintptr_t, std::uintptr_t, const Pose &, bool, std::uint64_t) noexcept {}
 void expire_remote_collision(std::uintptr_t, std::uint64_t) noexcept {}
+}
+// These game/plugin services are not active in the in-memory admission fixture.
+namespace dingosdk::throwdowns::kit {
+Match match() noexcept { return {}; }
+bool hidden(std::uint64_t) noexcept { return false; }
+}
+namespace dingosdk::skater_push {
+bool holding() noexcept { return false; }
+}
+namespace dingosdk::plugins {
+void receive_message(std::uint64_t, const std::vector<std::uint8_t>&) noexcept {}
+std::vector<std::vector<std::uint8_t>> take_outgoing() noexcept { return {}; }
 }
 namespace dingosdk::mods {
 // Every simulated player runs the same process, so they share one scoring state.

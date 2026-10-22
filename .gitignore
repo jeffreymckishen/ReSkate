@@ -37,3 +37,10 @@ analysis/raw/**/*.res
 
 # build tests for the bmx reverse engineering project
 standalone/bmx-movement/*.zip
+# The plugins are kept on this machine, out of the repository (dingosdk_plugin_tests runs them
+# from here when they are present).
+/contrib/plugins/
+
+# vtf's linux development configuration
+.vscode/
+.clangd

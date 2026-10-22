@@ -1,15 +1,17 @@
 #include "native_skater_internal.h"
-#include "native_prop.h"
 #include "native_pose_layout.h"
 #include "Engine/Game/BMX/pose_listener_set.h"
 #include "puppet_cost.h"
+#include "Extension/World/world_entities.h"
+#include "native_prop.h"
 #include "Extension/Multiplayer/Session/monotonic_clock.h"
 #include "Extension/Multiplayer/Session/peer_slots.h"
-#include "Extension/BoardBreak/board_break.h"
+#include "Extension/Skater/board_pose.h"
 #include "Engine/Core/Hooks/hooks.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Profiling/profiler.h"
 #include "Extension/BMX/bmx_rider.h"
+#include "Extension/BMX/bmx_runtime.h"
 #include "Extension/BMX/bmx_skeleton_phase_probe.h"
 #include "Engine/Game/Build/20260929/engine.h"
 #include <algorithm>
@@ -375,6 +377,10 @@ bool render_pose_hook(std::uintptr_t animation_interface, std::uintptr_t render_
         SetLastError(error);
         result=shared().original_render_pose(animation_interface, render_data);
     } else result=shared().original_render_pose(animation_interface, render_data);
+    // The local BMX rider owns its pose until dismount.
+    if (!bmx::mounted())
+        if (const auto listener = shared().override_board_listener.load(std::memory_order_acquire); result && listener)
+            listener(animation_interface, render_data);
     if (result) {
         if(capture_callsite) {
             const RenderCallsiteScope scope({caller,animation_interface,render_data});
@@ -390,8 +396,12 @@ bool render_pose_hook(std::uintptr_t animation_interface, std::uintptr_t render_
         const PeerScope scope(slot);
         apply_render_pose(animation_interface, render_data);
     }
-    // Last, so that what it does to a board's pose (another player's included) is what is drawn.
-    if (result) board_break::on_render_pose(animation_interface);
+    // A pose override of the local skater, after everything that ran since its animation update.
+    if (const auto listener = shared().override_render_listener.load(std::memory_order_acquire); result && listener && !bmx::mounted())
+        listener(animation_interface);
+    // Last, so that what it does to a board's pose (another player's included) is what is drawn:
+    // the breakable deck's parts, and plugins' board (reskate.board).
+    if (result) board_pose::on_render_pose(animation_interface);
     return result;
 }
 void animation_hook(std::uintptr_t component, std::uintptr_t update) {
@@ -442,11 +452,13 @@ void animation_hook(std::uintptr_t component, std::uintptr_t update) {
         native_animation();
     } else native_animation();
     animation_listeners().dispatch(shared().evaluated_listener.load(std::memory_order_acquire), component);
+    if (!bmx::mounted())
+        if (const auto listener = shared().override_listener.load(std::memory_order_acquire))
+            listener(component);
 }
 void destroy_hook(std::uintptr_t entity, std::uintptr_t owner) {
-    // Other SDK-created actors share this hook; they must forget the entity
-    // before the engine frees it.
     prop_entity_destroyed(entity);
+    world_entities::entity_destroyed(entity);
     if (const auto listener = shared().destroyed_listener.load(std::memory_order_acquire))
         listener(entity);
     // The first slot watching it as either skater or board.
@@ -586,6 +598,8 @@ NativeFrame capture_local(std::uintptr_t base, std::uintptr_t client, bool captu
                 std::lock_guard hidden_lock(hidden.mutex);
                 if (hidden.component == component && hidden.joint < frame.pose.skater.size())
                     frame.pose.skater[hidden.joint].scale = hidden.scale;
+                if (const auto filter = shared().pose_filter.load(std::memory_order_acquire))
+                    filter(component, frame.pose.skater);
                 frame.detail =
                     frame.pose.skater.empty() ? "Waiting for skater animation buffers." : "Local pose ready.";
             } catch (const std::exception &e) {
@@ -673,4 +687,16 @@ bool add_render_pose_data_listener(RenderPosePublishedData listener) noexcept { 
 void remove_render_pose_data_listener(RenderPosePublishedData listener) noexcept { render_data_listeners().remove(listener); }
 void enable_render_pose_callsite_probe() noexcept { render_callsite_enabled.store(true,std::memory_order_release); }
 RenderPoseCallsite render_pose_callsite() noexcept { return current_render_callsite; }
+void set_local_pose_filter(LocalPoseFilter filter) noexcept {
+    shared().pose_filter.store(filter, std::memory_order_release);
+}
+void set_pose_override_listener(AnimationEvaluated listener) noexcept {
+    shared().override_listener.store(listener, std::memory_order_release);
+}
+void set_pose_override_render_listener(RenderPosePublished listener) noexcept {
+    shared().override_render_listener.store(listener, std::memory_order_release);
+}
+void set_pose_override_board_listener(BoardPosePublished listener) noexcept {
+    shared().override_board_listener.store(listener, std::memory_order_release);
+}
 } // namespace dingosdk::multiplayer

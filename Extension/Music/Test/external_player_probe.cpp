@@ -9,6 +9,7 @@
 using namespace dingosdk;
 
 int main(int argc, char** argv) {
+    std::cout << "Windows media-session probe; in-game Spotify, YouTube and Plex account services are unavailable here.\n";
     external_player::start();
     std::this_thread::sleep_for(std::chrono::milliseconds(1500));
     if (argc > 1) {

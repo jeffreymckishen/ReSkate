@@ -4,6 +4,10 @@ if(WIN32)
     if(NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
         message(FATAL_ERROR "DingoSDK on Windows requires MSVC and the x64 platform.")
     endif()
+    # ReSkate uses no vcpkg packages. A user-wide "vcpkg integrate install" still hooks every
+    # project and runs its DLL copy after each link, with PowerShell 7 ("'pwsh.exe' is not
+    # recognized" where it is not installed); the preset's VCLibPackagePath only covers configure.
+    set(CMAKE_VS_GLOBALS "VCPkgLocalAppDataDisabled=true")
 else()
     if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
         message(FATAL_ERROR "DingoSDK on Linux requires a 64-bit platform.")
@@ -116,15 +120,16 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS)
         Extension/Multiplayer/word_lists.cpp Extension/Multiplayer/Net/protocol.cpp Extension/Multiplayer/Net/delta_codec.cpp
         Extension/Multiplayer/Net/wire_codec.cpp Extension/Multiplayer/Remote/playback_buffers.cpp
         Extension/Multiplayer/Session/password.cpp Server/server_activity.cpp Server/server_votes.cpp Server/server_commands.cpp
-        Server/server_parks.cpp Extension/Throwdowns/throwdown_wire.cpp)
+        Server/server_parks.cpp Extension/Throwdowns/throwdown_wire.cpp Server/server_plugins.cpp)
     target_include_directories(dingosdk_server_park_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     target_include_directories(dingosdk_server_park_tests SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/External/steam_networking")
     if(WIN32)
         target_link_libraries(dingosdk_server_park_tests PRIVATE dingosdk_launcher_support dingosdk_world_layer_scan dingosdk_json
-            dingosdk_lz4 dingosdk_zstd dingosdk_logging dingosdk_miniz dingosdk_word_filter dingosdk_https winhttp bcrypt winmm)
+            dingosdk_lz4 dingosdk_zstd dingosdk_logging dingosdk_miniz dingosdk_word_filter dingosdk_https winhttp bcrypt winmm
+            dingosdk_plugins)
     else()
         target_link_libraries(dingosdk_server_park_tests PRIVATE dingosdk_launcher_support dingosdk_world_layer_scan dingosdk_json
-            dingosdk_lz4 dingosdk_zstd dingosdk_miniz dingosdk_word_filter OpenSSL::Crypto dl pthread)
+            dingosdk_lz4 dingosdk_zstd dingosdk_miniz dingosdk_word_filter OpenSSL::Crypto dingosdk_plugins dl pthread)
     endif()
     add_test(NAME server_park_mods COMMAND dingosdk_server_park_tests "${PROJECT_SOURCE_DIR}/Server/Test/fixtures/park_mods")
     # Tools locked for single players (lock, throwdown_locks), as each player's game reads its roster.
@@ -134,15 +139,16 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS)
         Extension/Multiplayer/word_lists.cpp Extension/Multiplayer/Net/protocol.cpp Extension/Multiplayer/Net/delta_codec.cpp
         Extension/Multiplayer/Net/wire_codec.cpp Extension/Multiplayer/Remote/playback_buffers.cpp
         Extension/Multiplayer/Session/password.cpp Server/server_activity.cpp Server/server_votes.cpp Server/server_commands.cpp
-        Server/server_parks.cpp Extension/Throwdowns/throwdown_wire.cpp)
+        Server/server_parks.cpp Extension/Throwdowns/throwdown_wire.cpp Server/server_plugins.cpp)
     target_include_directories(dingosdk_server_lock_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     target_include_directories(dingosdk_server_lock_tests SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/External/steam_networking")
     if(WIN32)
         target_link_libraries(dingosdk_server_lock_tests PRIVATE dingosdk_launcher_support dingosdk_world_layer_scan dingosdk_json
-            dingosdk_lz4 dingosdk_zstd dingosdk_logging dingosdk_miniz dingosdk_word_filter dingosdk_https winhttp bcrypt winmm)
+            dingosdk_lz4 dingosdk_zstd dingosdk_logging dingosdk_miniz dingosdk_word_filter dingosdk_https winhttp bcrypt winmm
+            dingosdk_plugins)
     else()
         target_link_libraries(dingosdk_server_lock_tests PRIVATE dingosdk_launcher_support dingosdk_world_layer_scan dingosdk_json
-            dingosdk_lz4 dingosdk_zstd dingosdk_miniz dingosdk_word_filter OpenSSL::Crypto dl pthread)
+            dingosdk_lz4 dingosdk_zstd dingosdk_miniz dingosdk_word_filter OpenSSL::Crypto dingosdk_plugins dl pthread)
     endif()
     add_test(NAME server_locks COMMAND dingosdk_server_lock_tests)
     add_executable(dingosdk_server_release_tests Server/Test/server_release_tests.cpp Server/server_release.cpp)
@@ -168,9 +174,10 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS)
     add_test(NAME server_map_update COMMAND dingosdk_server_map_update_tests)
     if(WIN32)
         # By hand: what the music player outside the game is playing (Extension/Music/external_player.h).
-        add_executable(dingosdk_external_player_probe Extension/Music/Test/external_player_probe.cpp Extension/Music/external_player.cpp)
+        add_executable(dingosdk_external_player_probe Extension/Music/Test/external_player_probe.cpp
+            Extension/Music/Test/external_player_probe_adapters.cpp Extension/Music/external_player.cpp)
         target_include_directories(dingosdk_external_player_probe PRIVATE "${PROJECT_SOURCE_DIR}")
-        add_executable(dingosdk_app_audio_probe Extension/Music/Test/app_audio_probe.cpp Extension/Music/app_audio_capture.cpp)
+        add_executable(dingosdk_app_audio_probe Extension/Music/Test/app_audio_probe.cpp Extension/Music/app_audio_capture.cpp Extension/Music/audio_dsp.cpp)
         target_include_directories(dingosdk_app_audio_probe PRIVATE "${PROJECT_SOURCE_DIR}")
     endif()
     add_executable(dingosdk_word_filter_tests Engine/Core/Text/Test/word_filter_tests.cpp)
@@ -197,12 +204,6 @@ endif()
 if(DINGOSDK_BUILD_MULTIPLAYER_TESTS AND WIN32)
     add_executable(dingosdk_velocity_boost_tests Engine/Game/Skater/Test/velocity_boost_tests.cpp)
     add_test(NAME velocity_boost COMMAND dingosdk_velocity_boost_tests)
-    add_executable(dingosdk_drone_radio_tests Extension/Skater/Test/drone_radio_tests.cpp)
-    target_include_directories(dingosdk_drone_radio_tests PRIVATE "${PROJECT_SOURCE_DIR}")
-    add_test(NAME drone_radio COMMAND dingosdk_drone_radio_tests)
-    add_executable(dingosdk_drone_flight_tests Extension/Skater/Test/drone_flight_tests.cpp)
-    target_include_directories(dingosdk_drone_flight_tests PRIVATE "${PROJECT_SOURCE_DIR}")
-    add_test(NAME drone_flight COMMAND dingosdk_drone_flight_tests)
     if(EXISTS "${PROJECT_SOURCE_DIR}/tests/first_person_spring_tests.cpp")
         add_executable(dingosdk_first_person_spring_tests tests/first_person_spring_tests.cpp)
         target_include_directories(dingosdk_first_person_spring_tests PRIVATE "${PROJECT_SOURCE_DIR}")
@@ -260,10 +261,14 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS AND WIN32)
     target_link_libraries(dingosdk_multiplayer_tests PRIVATE dingosdk_lz4 dingosdk_zstd dingosdk_logging dingosdk_word_filter dingosdk_json)
     add_test(NAME multiplayer_protocol COMMAND dingosdk_multiplayer_tests)
     add_executable(dingosdk_throwdown_relay_tests Extension/Throwdowns/Test/throwdown_relay_tests.cpp
-        Extension/Throwdowns/throwdown_relay.cpp Extension/Throwdowns/throwdown_wire.cpp)
+        Extension/Throwdowns/throwdown_relay.cpp Extension/Throwdowns/throwdown_wire.cpp Extension/Throwdowns/custom_modes.cpp)
     target_include_directories(dingosdk_throwdown_relay_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     target_link_libraries(dingosdk_throwdown_relay_tests PRIVATE dingosdk_logging)
     add_test(NAME throwdown_relay COMMAND dingosdk_throwdown_relay_tests)
+    add_executable(dingosdk_custom_throwdown_tests Extension/Throwdowns/Test/custom_throwdown_tests.cpp
+        Extension/Throwdowns/custom_modes.cpp)
+    target_include_directories(dingosdk_custom_throwdown_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME custom_throwdowns COMMAND dingosdk_custom_throwdown_tests)
     add_executable(dingosdk_multiplayer_native_tests
         Extension/Multiplayer/Test/native_layout_tests.cpp Extension/Multiplayer/Net/protocol.cpp)
     add_test(NAME multiplayer_native_layout COMMAND dingosdk_multiplayer_native_tests)
@@ -277,7 +282,7 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS AND WIN32)
         Extension/Multiplayer/Net/wire_codec.cpp Extension/Multiplayer/Net/delta_codec.cpp
         Extension/Multiplayer/Session/password.cpp Extension/Multiplayer/Session/party_book.cpp
         Extension/Multiplayer/Steam/steam_lobbies.cpp Extension/Multiplayer/Steam/steam_server_browser.cpp
-        Extension/Multiplayer/word_lists.cpp)
+        Extension/Multiplayer/word_lists.cpp Extension/AnimationStudio/anim_core.cpp)
     target_link_libraries(dingosdk_multiplayer_mesh_tests PRIVATE dingosdk_logging dingosdk_launcher_support dingosdk_lz4 dingosdk_zstd bcrypt
         dingosdk_word_filter dingosdk_json)
     add_test(NAME multiplayer_mesh COMMAND dingosdk_multiplayer_mesh_tests)
@@ -310,11 +315,11 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS AND WIN32)
         Extension/Multiplayer/Net/protocol.cpp
         Extension/Multiplayer/Net/delta_codec.cpp Extension/Multiplayer/Net/wire_codec.cpp
         Extension/Multiplayer/Remote/playback_buffers.cpp Extension/Multiplayer/Session/password.cpp
-        Server/server_activity.cpp Server/server_votes.cpp Server/server_commands.cpp Server/server_parks.cpp Extension/Throwdowns/throwdown_wire.cpp)
+        Server/server_activity.cpp Server/server_votes.cpp Server/server_commands.cpp Server/server_parks.cpp Extension/Throwdowns/throwdown_wire.cpp Server/server_plugins.cpp)
     target_include_directories(dingosdk_server_load_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     target_include_directories(dingosdk_server_load_tests SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/External/steam_networking")
     target_link_libraries(dingosdk_server_load_tests PRIVATE dingosdk_launcher_support dingosdk_world_layer_scan dingosdk_json
-        dingosdk_lz4 dingosdk_zstd dingosdk_logging dingosdk_miniz dingosdk_word_filter dingosdk_https winhttp bcrypt winmm)
+        dingosdk_lz4 dingosdk_zstd dingosdk_logging dingosdk_miniz dingosdk_word_filter dingosdk_https dingosdk_plugins winhttp bcrypt winmm)
 endif()
 # The route and logging tests live in the local, untracked tests/ folder.
 option(DINGOSDK_BUILD_ROUTE_TESTS "Build native route cycle regression tests" OFF)
@@ -346,6 +351,7 @@ if(DINGOSDK_BUILD_TRAINER_TESTS)
     target_link_libraries(dingosdk_trainer_tuning_dump PRIVATE dingosdk_game_archives)
     # Fails when the game's data stops naming a tuning value (the trainer's table comes from those names).
     add_test(NAME trainer_tuning_names COMMAND dingosdk_trainer_tuning_dump "${DINGOSDK_TEST_GAME_ROOT}")
+    set_tests_properties(trainer_tuning_names PROPERTIES SKIP_RETURN_CODE 77)
     # What a session's host shares beyond its tuning: the encoding, and what a guest refuses.
     add_executable(dingosdk_trainer_session_tests Extension/Trainer/Test/session_extras_tests.cpp Extension/Trainer/trainer_session.cpp)
     target_include_directories(dingosdk_trainer_session_tests PRIVATE "${PROJECT_SOURCE_DIR}")
@@ -362,22 +368,27 @@ if(DINGOSDK_BUILD_TRAINER_TESTS)
     add_executable(dingosdk_trainer_asset_list Extension/Trainer/Test/asset_list.cpp)
     target_include_directories(dingosdk_trainer_asset_list PRIVATE "${PROJECT_SOURCE_DIR}")
     target_link_libraries(dingosdk_trainer_asset_list PRIVATE dingosdk_game_archives)
+    # The game's own clips read out of its data (needs the game: <Skate folder> [<clip file> <asset>]).
+    add_executable(dingosdk_game_clips_tests Extension/AnimationStudio/Test/game_clips_tests.cpp
+        Extension/AnimationStudio/game_clips.cpp Extension/AnimationStudio/anim_core.cpp)
+    target_include_directories(dingosdk_game_clips_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_link_libraries(dingosdk_game_clips_tests PRIVATE dingosdk_game_archives dingosdk_json)
 endif()
-option(DINGOSDK_BUILD_ROAD_RASH_TESTS "Build Road Rash regression tests" OFF)
-if(DINGOSDK_BUILD_ROAD_RASH_TESTS)
+option(DINGOSDK_BUILD_ANIMATION_STUDIO_TESTS "Build Animation Studio regression tests" OFF)
+if(DINGOSDK_BUILD_ANIMATION_STUDIO_TESTS)
     enable_testing()
-    # The side of a fall, the marks a count of bails leaves, the items' names and where a decal goes.
-    add_executable(dingosdk_road_rash_tests Extension/RoadRash/Test/road_rash_tests.cpp)
-    target_include_directories(dingosdk_road_rash_tests PRIVATE "${PROJECT_SOURCE_DIR}")
-    add_test(NAME road_rash COMMAND dingosdk_road_rash_tests)
-endif()
-option(DINGOSDK_BUILD_BOARD_BREAK_TESTS "Build Board Break regression tests" OFF)
-if(DINGOSDK_BUILD_BOARD_BREAK_TESTS)
-    enable_testing()
-    # What a break leaves of a board, how likely a slam breaks it, and where its parts lie.
-    add_executable(dingosdk_board_break_tests Extension/BoardBreak/Test/board_break_tests.cpp)
-    target_include_directories(dingosdk_board_break_tests PRIVATE "${PROJECT_SOURCE_DIR}")
-    add_test(NAME board_break COMMAND dingosdk_board_break_tests)
+    # Keyframes, their blending, the profile and clip files, and joints hanging from their parents.
+    add_executable(dingosdk_animation_studio_tests Extension/AnimationStudio/Test/anim_core_tests.cpp
+        Extension/AnimationStudio/anim_core.cpp)
+    target_include_directories(dingosdk_animation_studio_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_link_libraries(dingosdk_animation_studio_tests PRIVATE dingosdk_json)
+    add_test(NAME animation_studio COMMAND dingosdk_animation_studio_tests)
+    # An arm reaching (reskate.skater.reach) on a made-up pose.
+    add_executable(dingosdk_arm_reach_tests Extension/Skater/Test/arm_reach_tests.cpp Extension/Skater/arm_reach.cpp
+        Extension/AnimationStudio/anim_core.cpp)
+    target_include_directories(dingosdk_arm_reach_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_link_libraries(dingosdk_arm_reach_tests PRIVATE dingosdk_json)
+    add_test(NAME arm_reach COMMAND dingosdk_arm_reach_tests)
 endif()
 option(DINGOSDK_BUILD_REPLAY_KEYFRAMES_TESTS "Build replay keyframe smoothing regression tests" OFF)
 if(DINGOSDK_BUILD_REPLAY_KEYFRAMES_TESTS)
@@ -389,20 +400,39 @@ if(DINGOSDK_BUILD_REPLAY_KEYFRAMES_TESTS)
     target_include_directories(dingosdk_replay_keyframes_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME replay_keyframes COMMAND dingosdk_replay_keyframes_tests)
 endif()
-option(DINGOSDK_BUILD_HALL_OF_MEAT_TESTS "Build Hall of Meat regression tests" OFF)
-if(DINGOSDK_BUILD_HALL_OF_MEAT_TESTS)
+option(DINGOSDK_BUILD_XRAY_TESTS "Build the skater x-ray's skeleton tests" OFF)
+if(DINGOSDK_BUILD_XRAY_TESTS)
     enable_testing()
-    # The bail: its phases, what each hit did, the Meat it scores and the card that shows it.
-    add_executable(dingosdk_hall_of_meat_tests Extension/HallOfMeat/Test/hall_of_meat_tests.cpp
-        Extension/HallOfMeat/hall_of_meat_model.cpp Extension/HallOfMeat/hall_of_meat_card.cpp)
-    target_include_directories(dingosdk_hall_of_meat_tests PRIVATE "${PROJECT_SOURCE_DIR}")
-    add_test(NAME hall_of_meat COMMAND dingosdk_hall_of_meat_tests)
     # skate.'s own skeleton mesh, read from the game's data and posed (with a Skate folder).
-    add_executable(dingosdk_hall_of_meat_skeleton_tests Extension/HallOfMeat/Test/hall_of_meat_skeleton_tests.cpp
-        Extension/HallOfMeat/hall_of_meat_skeleton.cpp)
-    target_include_directories(dingosdk_hall_of_meat_skeleton_tests PRIVATE "${PROJECT_SOURCE_DIR}")
-    target_link_libraries(dingosdk_hall_of_meat_skeleton_tests PRIVATE dingosdk_game_archives dingosdk_logging)
-    add_test(NAME hall_of_meat_skeleton COMMAND dingosdk_hall_of_meat_skeleton_tests "${DINGOSDK_TEST_GAME_ROOT}")
+    add_executable(dingosdk_xray_skeleton_tests Extension/Skater/Test/xray_skeleton_tests.cpp Extension/Skater/xray_skeleton.cpp)
+    target_include_directories(dingosdk_xray_skeleton_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_link_libraries(dingosdk_xray_skeleton_tests PRIVATE dingosdk_game_archives dingosdk_logging)
+    add_test(NAME xray_skeleton COMMAND dingosdk_xray_skeleton_tests "${DINGOSDK_TEST_GAME_ROOT}")
+endif()
+option(DINGOSDK_BUILD_CAPTURE_TESTS "Build screen capture regression tests" OFF)
+if(DINGOSDK_BUILD_CAPTURE_TESTS AND TARGET dingosdk_capture)
+    enable_testing()
+    # Matting, resizing, the card, GIF / APNG / WebM files that decode back to what went in, and a
+    # recording of a turning board found, cut out and saved (reskate.capture).
+    add_executable(dingosdk_capture_tests Extension/Rendering/Capture/Test/capture_tests.cpp)
+    target_link_libraries(dingosdk_capture_tests PRIVATE dingosdk_capture)
+    add_test(NAME capture COMMAND dingosdk_capture_tests "${PROJECT_SOURCE_DIR}/External/fonts")
+endif()
+option(DINGOSDK_BUILD_PLUGIN_TESTS "Build plugin host regression tests" OFF)
+if(DINGOSDK_BUILD_PLUGIN_TESTS AND WIN32)
+    enable_testing()
+    # The plugin host apart from the game: manifests, the reskate API, storage, modules, hot reload,
+    # and the sandbox against plugins written to break it.
+    add_executable(dingosdk_plugin_tests Extension/Plugins/Test/plugin_tests.cpp)
+    target_include_directories(dingosdk_plugin_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_link_libraries(dingosdk_plugin_tests PRIVATE dingosdk_plugins)
+    # It also runs the test plugins in contrib/plugins.
+    target_compile_definitions(dingosdk_plugin_tests PRIVATE "RESKATE_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\"")
+    add_test(NAME plugins COMMAND dingosdk_plugin_tests)
+    # Tricks read from the score HUD's values (Extension/Skater/trick_watch.h), what plugins hear.
+    add_executable(dingosdk_trick_watch_tests Extension/Skater/Test/trick_watch_tests.cpp Extension/Skater/trick_watch.cpp)
+    target_include_directories(dingosdk_trick_watch_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME trick_watch COMMAND dingosdk_trick_watch_tests)
 endif()
 include(cmake/BmxStandalone.cmake)
 if(TARGET dingosdk_runtime)
@@ -422,7 +452,7 @@ foreach(target IN LISTS project_targets)
     if(target_kind STREQUAL "UTILITY")
         continue()
     endif()
-    if(NOT target MATCHES "^(dingosdk_imgui|dingosdk_detours|dingosdk_sqlite|dingosdk_lz4|dingosdk_zstd|dingosdk_miniz|dingosdk_spotify_device)$")
+    if(NOT target MATCHES "^(dingosdk_imgui|dingosdk_detours|dingosdk_sqlite|dingosdk_lz4|dingosdk_zstd|dingosdk_miniz|dingosdk_luau|dingosdk_spotify_device)$")
         dingosdk_configure_target(${target})
     endif()
 endforeach()

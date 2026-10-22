@@ -17,3 +17,5 @@ External/miniz/** -text
 
 # Guarded controller wrappers pin their dependency source bytes with SHA-256.
 contrib/bmx-lab/Bmx-*.py text eol=lf
+External/luau/** -text
+External/luau/** whitespace=-blank-at-eol

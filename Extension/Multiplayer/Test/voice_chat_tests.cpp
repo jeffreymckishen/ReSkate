@@ -130,15 +130,20 @@ int main() try {
         const auto decoded = decode(encoded);
         check(decoded && decoded->voice_policy == packet.voice_policy, "Host voice policy lost in roster");
         check(decoded && decoded->voice_range == packet.voice_range, "Host voice range lost in roster");
-        // The roster ends: voice allowed (1), policy revision (4), voice range (2), guest noclip / No Bail (1),
+        // The roster ends: voice allowed (1), policy revision (4), voice range (2), guest tools / votes (1),
         // then what a dedicated server adds, here none: polls (1), custom votes (1), announcement (4).
         const auto end = encoded.size() - 6;
         for (std::size_t i = end - 8; i < encoded.size(); ++i)
             check(!decode(std::span(encoded).first(i)), "Truncated voice policy accepted");
         auto invalid = encoded; invalid[end - 8] = 2;
         check(!decode(invalid), "Invalid host voice toggle accepted");
-        invalid = encoded; invalid[end - 1] = 128;
-        check(!decode(invalid), "Invalid guest noclip / No Bail byte accepted");
+        // All guest-tools bits are assigned; bit 7 now permits guest ollies.
+        auto only_ollies = encoded; only_ollies[end - 1] = 128;
+        const auto ollies = decode(only_ollies);
+        check(ollies && ollies->guest_ollies && !ollies->guest_noclip && !ollies->guest_no_bail &&
+              !ollies->guest_boosts && !ollies->enforce_tuning && !ollies->server_votes,
+              "Guest ollies bit changed unrelated guest tools or vote policy");
+        check(encode(*ollies) == only_ollies, "Guest ollies policy did not round-trip exactly");
         invalid = encoded;
         for (std::size_t i = end - 7; i < end - 3; ++i) invalid[i] = 0;
         check(!decode(invalid), "Zero host voice revision accepted");

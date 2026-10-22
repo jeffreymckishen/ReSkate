@@ -15,12 +15,18 @@ struct OverlayInputAccess {
 // through GetRawInputData is then not noted a second time.
 extern thread_local HRAWINPUT noted_raw_input;
 bool block_polled_input();
+// Additional plugin/countdown input ownership, excluding the BMX lease itself.
+bool mode_input_capture_active() noexcept;
 bool bmx_input_capture_active() noexcept;
 // Raw BMX lease status; other overlay capture owners remain independent.
 bool bmx_interaction_capture_active() noexcept;
 // Allows only recognized raw PS D-pad reports through the window-message gate;
 // the polled raw/HID hooks still remove every non-D-pad riding control.
 bool bmx_dpad_raw_message(HRAWINPUT handle) noexcept;
+bool challenge_menu_key(int key) noexcept;
+// A key kept from the game now (hide_game_keys); never for ReSkate's own reads.
+bool key_hidden(unsigned key) noexcept;
+bool challenge_panel_owns_input() noexcept;
 // How the game read its controllers while a card held its input (prompt_input_active), for the
 // log when the hold ends: which of the ways the overlay can keep input from it the game used.
 struct PromptReads {

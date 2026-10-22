@@ -1,6 +1,12 @@
 # BMX controls and local reference evidence
 
-Latest test: attempt 30 passes 66 Release checks. Ordinary Ride trials 260/261 use
+Current October 22 status is recorded in [integration direction](integration-direction.md):
+runs 281 and 284 cover repeated virtual-controller equipment round trips and
+console interruption with an explicit retry. Normal controller GetUp and physical
+controller acceptance remain unqualified. Use the [matched reference note](bmx-streets-reference-2026-10-22.md)
+for the installed BMX Streets build; earlier addresses and extracts below are historical.
+
+Historical checkpoint: attempt 30 passes 66 Release checks. Ordinary Ride trials 260/261 use
 the opt-in human adapter and an external virtual XInput controller in a separate
 test profile. LB+Y completes the first bike-to-board switch and visibly reaches
 a normal skateboard stance. The same-process return to BMX still fails. Attempt 30

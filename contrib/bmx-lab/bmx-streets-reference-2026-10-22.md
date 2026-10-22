@@ -42,9 +42,8 @@ Evidence IDs:
 - `ev_97a18a23b2ee23435c96e33f671502d0e11101e450e9b49bad523f120067b5ba`
   (`IKTargetManager.UpdateTarget`, 626 native bytes).
 
-The carrier also seeds landing-related methods for later investigation. Their
-presence in the carrier is not evidence that their bodies have been analyzed.
-The current two-function export is retained locally at
+The carrier also seeds other methods. Their presence in the carrier is not
+evidence that their bodies have been analyzed. The initial two-function export is retained locally at
 `build/bmx-streets-current-20261021/rea-contact-landing-evidence.json`, with
 the provider snapshot and exact source manifest beside it.
 
@@ -63,3 +62,29 @@ The extraction inventory, complete authored literals and comparison are retained
 in `build/bmx-streets-current-20261021/`. Live comparison of ordinary riding,
 contact timing, tricks, landings and recovery is still required for the requested
 9.5 likeness score. No result in this reference note awards that score.
+
+## Landing timer follow-up
+
+Current `VehicleController.OnLanded` at RVA `0x8F9A40` is a 62-byte leaf.
+Its matched fields are `_timeInAir` at `+0x6C8`, `_mannyInput` at `+0x580`,
+`_noseyInput` at `+0x584`, and `_autoPumpTimeRemaining` at `+0x734`. For ordered
+finite values, airtime greater than nominal 0.15 and both manual inputs at most
+0.05 set the timer to nominal 0.3. A failed gate returns without clearing the
+existing timer. Evidence:
+`ev_1094a38bc24b0053ff50257834f4e57ca7b665f8f10a71fbc95394029e92cc9b`.
+
+This confirms the existing adaptation's landing eligibility constants and timer
+initialization. It does not establish force magnitude/direction, automatic
+strength, timer decrement, continuous manual cancellation, support predicates
+or wheel/contact stiffness. Those require their own current caller/consumer
+evidence; this leaf is not a full landing physics implementation.
+
+`LandActivity.Land` was also analyzed, but its tracker/trick-detection bookkeeping
+and unresolved callees do not establish a wheel force recipe. Ghidra reports
+1,667 analyzed bytes over a 1,668-byte noncontiguous span, with terminal-call
+limitations. Its evidence ID is
+`ev_f26faf7461acac880ea2649c3ca58b6516e5cd3c27bb6311c8c9920d04ad9ef4`.
+Both additional dossiers are retained in
+`build/bmx-streets-current-20261021/rea-landing-extension-evidence.json`.
+Remaining seeded methods still need separate analysis. No physics behavior was
+changed from this narrow reference confirmation.

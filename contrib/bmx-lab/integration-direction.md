@@ -3,13 +3,21 @@
 Source review and isolated game tests: October 21, 2026, starting from checkpoint
 `4ede3bc`. This records the integration direction and bounded acceptance evidence.
 The process-bound receipts below define the tested scope.
+Current October 22 checkpoints add [five stopped equipment round trips](judging/checkpoints/2026-10-22-human-switch-300.md)
+and [ordinary fall, controller GetUp, nearby walking, remount and short departure](judging/checkpoints/2026-10-22-ordinary-fall-remount-303.md).
+These are bounded virtual-controller game observations; broader reliability,
+physical-controller feel and BMX Streets likeness remain unqualified.
+The private forearm diagnostic passed the full build and **101/101 CTests**.
+Runtime `D35662D87EFCFE3447C140CF39AFDB878D5A6D083B420D73CDD1DCA9339EF2D6`
+was built at `a00b8c7` with selected uncommitted inputs later recorded in `7c893dd`.
+The older build counts and stopping points below describe their named checkpoints.
 The October 22 [private forearm checkpoint](judging/checkpoints/2026-10-22-forearm-repair.md)
 records the pedaling repair, independent reviews, 93-test MSVC build and its
 performance/native acceptance limits. The [matched Streets reference](bmx-streets-reference-2026-10-22.md)
 supersedes historical method offsets for the currently installed reference.
-The [controller recovery checkpoint](judging/checkpoints/2026-10-22-controller-recovery-gap.md)
-separates the existing equipment/typed-GetUp evidence from the remaining normal
-controller mapping test and its fresh observation window.
+The earlier [controller recovery checkpoint](judging/checkpoints/2026-10-22-controller-recovery-gap.md)
+records the mapping gap that preceded the ordinary controller recovery observed
+in run 303.
 
 ## Decision
 
@@ -129,9 +137,9 @@ own receipt. Do not infer current acceptance from the largest test or run number
 
 ## Completed validation
 
-The latest MSVC Release build passes **87/87 CTest fixtures** (10.75 seconds),
-including 12 fake-only tests for the new single-leg controller wrapper. Current
-runtime SHA-256:
+At checkpoint 281, the MSVC Release build passed **87/87 CTest fixtures** (10.75 seconds),
+including 12 fake-only tests for the new single-leg controller wrapper. That
+checkpoint's runtime SHA-256:
 `8F880DE8E36D452AA3AC4B245E5344186F34D2D9D816693A1F0EA4F5542A739E`.
 See the [CTest log](../../build/bmx/switch-reliability281/ctest-console.log).
 Source comparison after the native tests matches all 22 supplemental workspace

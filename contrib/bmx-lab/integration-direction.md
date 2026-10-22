@@ -7,6 +7,9 @@ The October 22 [private forearm checkpoint](judging/checkpoints/2026-10-22-forea
 records the pedaling repair, independent reviews, 93-test MSVC build and its
 performance/native acceptance limits. The [matched Streets reference](bmx-streets-reference-2026-10-22.md)
 supersedes historical method offsets for the currently installed reference.
+The [controller recovery checkpoint](judging/checkpoints/2026-10-22-controller-recovery-gap.md)
+separates the existing equipment/typed-GetUp evidence from the remaining normal
+controller mapping test and its fresh observation window.
 
 ## Decision
 

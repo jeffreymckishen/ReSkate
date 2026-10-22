@@ -80,3 +80,9 @@ Optimized runtime SHA-256:
 `FDEC92FDBD0799B157E370C23D461AA6DA9DB0189CBFA919A5550192F914C54A`.
 No native rendering, controller recovery or likeness acceptance follows from
 this exact-output optimization. The existing uphill rejections remain.
+
+A separate MSVC Release benchmark against the frozen original measured repair
+median 4.489 to 2.110 ms and p95 4.654 to 2.223 ms. These are 1,000 samples per
+mode after 100 warmups on the same fixture. The source, binaries and CSVs are
+retained in `forearm-optimization-scratch/`; this is still pure CPU timing,
+not native callback or frame timing.

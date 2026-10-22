@@ -14,3 +14,6 @@ External/steam_networking/** -text
 External/steam_networking/** whitespace=-blank-at-eol
 
 External/miniz/** -text
+
+# Guarded controller wrappers pin their dependency source bytes with SHA-256.
+contrib/bmx-lab/Bmx-*.py text eol=lf

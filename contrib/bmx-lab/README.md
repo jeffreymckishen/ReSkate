@@ -6,6 +6,9 @@ review, backend boundaries, build provenance and next acceptance milestones.
 Use [native-prototype.md](native-prototype.md) for the game setup, current evidence and limits,
 and [controls-and-reference.md](controls-and-reference.md) for bindings and BMX Streets references.
 The broader release scope remains in [the feature plan](../bmx-plan.md).
+The October 22 [recovery tools checkpoint](judging/checkpoints/2026-10-22-recovery-tools.md)
+records the guarded controller candidate, owned trial shutdown and current native
+testing limit. Engineering scores in that checkpoint do not rate BMX Streets likeness.
 
 ## In-game prototype
 

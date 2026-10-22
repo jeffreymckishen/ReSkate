@@ -7,7 +7,9 @@ function(dingosdk_add_bmx_tests source_root)
         file(MAKE_DIRECTORY "${source_root}/build/bmx")
         add_test(NAME bmx_switch_leg_python
             COMMAND "${Python3_EXECUTABLE}" -B "${source_root}/contrib/bmx-lab/Test-BmxSwitchLeg.py")
-        set_tests_properties(bmx_switch_leg_python PROPERTIES
+        add_test(NAME bmx_recovery_leg_python
+            COMMAND "${Python3_EXECUTABLE}" -B "${source_root}/contrib/bmx-lab/Test-BmxRecoveryLeg.py")
+        set_tests_properties(bmx_switch_leg_python bmx_recovery_leg_python PROPERTIES
             WORKING_DIRECTORY "${source_root}"
             ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1"
             LABELS "BMX;Python"
@@ -17,7 +19,9 @@ function(dingosdk_add_bmx_tests source_root)
     if(DINGOSDK_BMX_PWSH)
         add_test(NAME bmx_stationary_grip_selection
             COMMAND "${DINGOSDK_BMX_PWSH}" -NoProfile -File "${source_root}/contrib/bmx-lab/Test-StationaryGripSelection.ps1")
-        set_tests_properties(bmx_stationary_grip_selection PROPERTIES
+        add_test(NAME bmx_owned_trial_watchdog
+            COMMAND "${DINGOSDK_BMX_PWSH}" -NoProfile -File "${source_root}/contrib/bmx-lab/Test-Watch-BmxOwnedTrial.ps1")
+        set_tests_properties(bmx_stationary_grip_selection bmx_owned_trial_watchdog PROPERTIES
             WORKING_DIRECTORY "${source_root}" TIMEOUT 30 LABELS "BMX;PowerShell")
     endif()
     if(DINGOSDK_BMX_STANDALONE_MOVEMENT AND DINGOSDK_BMX_NATIVE_COUPLED)

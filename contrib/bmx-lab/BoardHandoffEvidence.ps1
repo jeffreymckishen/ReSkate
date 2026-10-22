@@ -2,28 +2,28 @@
 # injects input, changes a profile, or mutates the caller's environment.
 function Get-BmxBoardHandoffSelection {
     param([string]$Mode='None',[string]$RepoRoot,[string]$ProfileName,[hashtable]$Options=@{})
-    if($Options.DeferNativeBoardArm -and ($Mode -cne 'NativeOnly' -or $Options.NativeBoardControl)){throw 'DeferNativeBoardArm requires passive NativeOnly without NativeBoardControl.'}
-    if($Mode -ceq 'None') { if($Options.NativeBoardControl){throw 'NativeBoardControl requires explicit NativeOnly.'};return [pscustomobject]@{trace='0';mode='';native_control=$false;native_board_control='0'} }
+    if($Options['DeferNativeBoardArm'] -and ($Mode -cne 'NativeOnly' -or $Options['NativeBoardControl'])){throw 'DeferNativeBoardArm requires passive NativeOnly without NativeBoardControl.'}
+    if($Mode -ceq 'None') { if($Options['NativeBoardControl']){throw 'NativeBoardControl requires explicit NativeOnly.'};return [pscustomobject]@{trace='0';mode='';native_control=$false;native_board_control='0';defer_native_board_arm=$false} }
     if($Mode -cne 'QuickSwitch' -and $Mode -cne 'NativeOnly'){throw 'Unknown board-handoff diagnostic mode.'}
     if([IO.Path]::GetFullPath($RepoRoot) -cne 'C:\Users\Jeffr\Desktop\reskate' -or $ProfileName -cne 'bmx-user-data-chassis-probe') {
         throw 'Board handoff requires the exact private workspace and chassis-probe profile.'
     }
-    if(-not $Options.NativeChassis){throw 'Board handoff requires explicit NativeChassis.'}
+    if(-not $Options['NativeChassis']){throw 'Board handoff requires explicit NativeChassis.'}
     foreach($key in @('UnattendedTest','GripProbe','IntentActivation','ImpactRecovery','GetUpPulse','PostFallRemountTest','PhaseProbe','FirstMountProducerProbe','IntentObserver','BindingObserver','CatalogTest','NativeFallTest','ProfilePerformance','TrickTest','RampTest','RampRideTest','ChassisProbe','ChassisPulse','ChassisCalibration','SmokeTest','NativeTestSkater','NativeStartupDelay','NativePlayerStartup','NativeObserveOnly','UseSteam','UseLooseFiles','DisableNativeLocalProfile')) {
         if($Options[$key]){throw ('Board handoff conflicts with '+$key)}
     }
     foreach($key in @('RiderPoseMode','MotionBasisMode')) {
         if($Options.ContainsKey($key) -and $Options[$key] -cne 'Default'){throw ('Board handoff requires Default '+$key)}
     }
-    if($Options.ImpactTest){throw 'Board handoff cannot include an impact test.'}
-    if($Options.Map -and $Options.Map -cne 'MPR'){throw 'Board handoff requires the matched MPR venue.'}
-    if($Options.NativeBoardControl -and $Mode -cne 'NativeOnly'){throw 'NativeBoardControl conflicts with every non-NativeOnly mode.'}
+    if($Options['ImpactTest']){throw 'Board handoff cannot include an impact test.'}
+    if($Options['Map'] -and $Options['Map'] -cne 'MPR'){throw 'Board handoff requires the matched MPR venue.'}
+    if($Options['NativeBoardControl'] -and $Mode -cne 'NativeOnly'){throw 'NativeBoardControl conflicts with every non-NativeOnly mode.'}
     if($Mode -ceq 'QuickSwitch') {
-        if(-not $Options.SwitchTest -or -not $Options.QuickSwitchTest -or $Options.Ride){throw 'QuickSwitch handoff requires only SwitchTest and QuickSwitchTest.'}
-        return [pscustomobject]@{trace='1';mode='quick-switch';native_control=$false;native_board_control='0'}
+        if(-not $Options['SwitchTest'] -or -not $Options['QuickSwitchTest'] -or $Options['Ride']){throw 'QuickSwitch handoff requires only SwitchTest and QuickSwitchTest.'}
+        return [pscustomobject]@{trace='1';mode='quick-switch';native_control=$false;native_board_control='0';defer_native_board_arm=$false}
     }
-    if(-not $Options.Ride -or $Options.SwitchTest -or $Options.QuickSwitchTest){throw 'NativeOnly handoff requires only Ride; the later Y mount is an active manual control.'}
-    return [pscustomobject]@{trace='1';mode='native-only';native_control=$true;native_board_control=$(if($Options.NativeBoardControl){'1'}else{'0'});defer_native_board_arm=[bool]$Options.DeferNativeBoardArm}
+    if(-not $Options['Ride'] -or $Options['SwitchTest'] -or $Options['QuickSwitchTest']){throw 'NativeOnly handoff requires only Ride; the later Y mount is an active manual control.'}
+    return [pscustomobject]@{trace='1';mode='native-only';native_control=$true;native_board_control=$(if($Options['NativeBoardControl']){'1'}else{'0'});defer_native_board_arm=[bool]$Options['DeferNativeBoardArm']}
 }
 function Set-BmxBoardHandoffEnvironment {
     param($Environment,$Selection)

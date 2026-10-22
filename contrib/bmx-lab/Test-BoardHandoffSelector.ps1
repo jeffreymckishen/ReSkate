@@ -7,6 +7,29 @@ $quick=@{NativeChassis=$true;SwitchTest=$true;QuickSwitchTest=$true;RiderPoseMod
 $native=@{NativeChassis=$true;Ride=$true;RiderPoseMode='Default';MotionBasisMode='Default'}
 $positive=0;$negative=0
 $active=$native.Clone();$active.NativeBoardControl=$true
+# Suite callers use StrictMode Latest. Exercise sparse/default option tables
+# and the actual environment writer in that caller scope without launching.
+& {
+    Set-StrictMode -Version Latest
+    foreach($pair in @(@('None',@{}),@('None',@{UnattendedTest=$true}),@('QuickSwitch',$quick),@('NativeOnly',$native))){
+        $selection=Get-BmxBoardHandoffSelection $pair[0] $repo $profile $pair[1]
+        Check ($selection.defer_native_board_arm -is [bool] -and -not $selection.defer_native_board_arm) 'Every default selector must publish a false deferred-arm field under strict mode.'
+        $environment=@{RESKATE_BMX_NATIVE_BOARD_DEFERRED_ARM='1'}
+        Set-BmxBoardHandoffEnvironment $environment $selection
+        Check ($environment.RESKATE_BMX_NATIVE_BOARD_DEFERRED_ARM -ceq '0') 'Strict-mode default selector failed to clear inherited deferred arming.'
+        $script:positive++
+    }
+    $deferred=$native.Clone();$deferred['DeferNativeBoardArm']=$true
+    $selection=Get-BmxBoardHandoffSelection NativeOnly $repo $profile $deferred
+    $environment=@{};Set-BmxBoardHandoffEnvironment $environment $selection
+    Check ($selection.defer_native_board_arm -and $environment.RESKATE_BMX_NATIVE_BOARD_DEFERRED_ARM -ceq '1') 'Explicit passive NativeOnly deferred arming regressed under strict mode.'
+    $script:positive++
+    foreach($pair in @(@('None',@{DeferNativeBoardArm=$true}),@('QuickSwitch',@{NativeChassis=$true;SwitchTest=$true;QuickSwitchTest=$true;DeferNativeBoardArm=$true}),@('NativeOnly',@{NativeChassis=$true;Ride=$true;NativeBoardControl=$true;DeferNativeBoardArm=$true}))){
+        $rejected=$false;try{Get-BmxBoardHandoffSelection $pair[0] $repo $profile $pair[1]|Out-Null}catch{$rejected=$true}
+        Check $rejected 'Strict-mode optional-key handling widened deferred arming beyond passive NativeOnly.'
+        $script:negative++
+    }
+}
 foreach($pair in @(@('QuickSwitch',$quick,'quick-switch'),@('NativeOnly',$native,'native-only'))){
     $s=Get-BmxBoardHandoffSelection $pair[0] $repo $profile $pair[1]
     Check ($s.trace -ceq '1' -and $s.mode -ceq $pair[2]) 'Explicit diagnostic selector mismatch.';++$positive

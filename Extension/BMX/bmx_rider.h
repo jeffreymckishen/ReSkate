@@ -9,6 +9,7 @@ void poll_private_board_handoff(std::uintptr_t base,bool idle,const board_handof
 void finish_private_grip_probe() noexcept; // explicit end_ride diagnostic export request; no native work
 bool arm_private_stationary_grip_probe() noexcept; // queues a single passive capture; no native/input work
 std::string private_stationary_grip_probe_status();
+bool private_grip_world_markers_scope() noexcept; // client thread, exact stationary profile plus explicit marker flag
 void begin_client_tick() noexcept; // revoke admission, preserving logical mount contacts
 visual::Publication pending_placement() noexcept;
 bool complete_placement(std::uint64_t revision,std::uintptr_t entity,bool all_parts_placed) noexcept;

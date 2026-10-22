@@ -38,6 +38,18 @@ void register_bmx_commands(Commands& registry) {
     forearm_dump.execution=Execution::game_thread;
     forearm_dump.run=[](const Model&,const Values&,const Output& out){out(bmx::rider::export_private_forearm_diagnostic());};
     registry.add(std::move(forearm_dump));
+    auto markers_arm=action("bmx grip-markers arm", "Arm two private native grip calibration rectangles once; no input or pose change", Group::movement);
+    markers_arm.execution=Execution::game_thread;
+    markers_arm.run=[](const Model&,const Values&,const Output& out){
+        out(bmx::world::arm_grip_markers(bmx::rider::private_grip_world_markers_scope)?
+            "Grip calibration armed once: up to 30 seconds waiting, then a 5-second display timer serviced on client ticks. Two pedal rectangles mark grip centers at their upper-face anchors and can occlude grips. No hand/bone or renderer-completion evidence.":
+            "Grip markers refused: exact private stationary marker scope/client thread required, or one shot already used.");
+    };
+    registry.add(std::move(markers_arm));
+    auto markers_status=action("bmx grip-markers status", "Report bounded native grip calibration placement/readback/cleanup evidence", Group::movement);
+    markers_status.execution=Execution::game_thread;
+    markers_status.run=[](const Model&,const Values&,const Output& out){out(bmx::world::grip_markers_report());};
+    registry.add(std::move(markers_status));
     auto grip_arm=action("bmx grip-probe arm", "Arm one passive stationary CPU grip capture in its explicitly selected private profile", Group::movement);
     grip_arm.execution=Execution::local;
     grip_arm.run=[](const Model&,const Values&,const Output& out){

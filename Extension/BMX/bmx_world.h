@@ -20,4 +20,8 @@ struct PlacementReceipt {
 // No native operation is performed by a static destructor or overlay callback.
 PlacementReceipt tick(std::uintptr_t base, std::uintptr_t client, const visual::Frame& frame, std::uint64_t revision=0) noexcept;
 Snapshot snapshot(); // last client tick; counters measure native calls, not pixels
+// Both commands are dispatched on the game/client thread. The scope callback
+// is the rider's exact existing private stationary selector plus marker flag.
+bool arm_grip_markers(bool (*selected)() noexcept) noexcept;
+std::string grip_markers_report() noexcept;
 } // namespace dingosdk::bmx::world

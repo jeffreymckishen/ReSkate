@@ -33,3 +33,17 @@ function Set-BmxStationaryGripEnvironment {
     # Every launch clears inherited selection unless explicitly validated above.
     $Environment['RESKATE_BMX_GRIP_STATIONARY_PROBE']=$(if($Selected){'1'}else{'0'})
 }
+function Assert-BmxGripWorldMarkersSelection {
+    param([bool]$Selected,[bool]$StationaryGripProbe,[string]$RepoRoot,[string]$ProfileName,
+          [hashtable]$Options=@{},[hashtable]$InheritedEnvironment=@{})
+    if(-not $Selected){return}
+    if(-not $StationaryGripProbe -or $Options['ForearmRepairCandidate'] -or $Options['LongRideTrace']){
+        throw 'GripWorldMarkers requires StationaryGripProbe without forearm repair or long trace selection.'
+    }
+    Assert-BmxStationaryGripSelection $true $RepoRoot $ProfileName $Options $InheritedEnvironment
+}
+function Set-BmxGripWorldMarkersEnvironment {
+    param($Environment,[bool]$Selected)
+    # Clear inherited marker selection on every launch; explicit arm is separate.
+    $Environment['RESKATE_BMX_GRIP_WORLD_MARKERS']=$(if($Selected){'1'}else{'0'})
+}

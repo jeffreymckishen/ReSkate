@@ -43,3 +43,22 @@ later CIM checks found no isolated process. No collision-recovery, backward
 motion cause, broad handling, physical-controller feel or 9.5 likeness claim is
 made. [Run 299's short measured response](2026-10-22-departure-remount-switch-299.md)
 remains separate evidence.
+
+## Later bounded video follow-up
+
+The preserved recording source/copy SHA256 is
+`79C5F213BDB83B68B87AFD8219D9217C0558451C40CE370CE6721B72AAFD72DF`.
+A [corrected video addendum](../../../../build/bmx/human-controller301/video/human301-direction-visual-addendum-v2.json)
+and [independent view of all eight sheets](../../../../build/bmx/overnight-review20261021/human-controller301-direction-pixel-fresh-judge.json)
+cover 102 selected frames from 1,550 locally decoded frames in source windows
+`295..307s` and `418..431s`. Visible fork/head orientation and fixed landmarks
+are consistent with front-first approach, followed by a contact-like bump with
+the rear wheel higher and small backward settling while the rider stays mounted.
+This narrows the earlier endpoint uncertainty and does not support a global A
+inversion. Exact signed native velocity, forces, collision normal and accepted
+impact cause remain unmeasured.
+
+The archive is qualified separately from the pre-video manifest; STOP remained
+unsent. These bounded stills are not full-video/full-speed acceptance, global PTS
+validation or an exact native/controller clock join. No sampled fall/GetUp appears
+in these windows, and the original no-qualified-recovery outcome is unchanged.

@@ -488,6 +488,17 @@ void prepare(){
 void finish_private_grip_probe() noexcept {grip_probe::request_finish_client();}
 bool arm_private_stationary_grip_probe() noexcept {return grip_probe::request_stationary_arm();}
 std::string private_stationary_grip_probe_status() {return grip_probe::stationary_status();}
+bool private_grip_world_markers_scope() noexcept {
+    LastError error;
+    if(!grip_probe::flag(L"RESKATE_BMX_GRIP_WORLD_MARKERS")||
+       grip_probe::nonzero_setting(L"RESKATE_BMX_FOREARM_REPAIR")||
+       grip_probe::nonzero_setting(L"RESKATE_BMX_LONG_RIDE_TRACE"))return false;
+    const auto& probe=grip_probe::shared();
+    constexpr wchar_t root[]=L"C:\\Users\\Jeffr\\Desktop\\reskate\\build\\bmx-user-data-grip-stationary-test";
+    return probe.store.load(std::memory_order_acquire)&&probe.stationary&&probe.caller_image_verified&&
+        probe.client_thread==GetCurrentThreadId()&&grip_probe::stationary_scope()&&
+        user_data::runtime_development_selected(L"bmx-user-data-grip-stationary-test",root);
+}
 bool available() noexcept {return shared().registered.load()&&static_cast<bool>(shared().layout.load());}
 std::uint64_t updates() noexcept {return shared().updates.load(std::memory_order_relaxed);}
 std::uint64_t render_updates() noexcept {return shared().render_updates.load(std::memory_order_relaxed);}

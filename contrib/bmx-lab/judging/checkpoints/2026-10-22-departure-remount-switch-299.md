@@ -22,8 +22,8 @@ commands with the following native velocity sample: pedal speed changed from
 approximately `0.2587` to `2.2491 m/s`, then brake speed from `2.2536` to
 `0.0274 m/s`; final speed was about `0.00825 m/s`. COM net displacement was
 `1.80003 m`, with `2.56982 m` sampled path length. These measurements qualify
-this short response; acceleration was not constant and individual force
-contributions were not isolated.
+this short response; they do not assume constant acceleration, and individual
+force contributions were not isolated.
 
 The native log records ordinary park, then natural remount token2. Forward
 generation1 observed native103 followed by100 and approximately `2.2667`
@@ -41,7 +41,8 @@ departure wrapper and transport fix; independent source review is a separate sco
 The preserved video source/copy SHA256 is
 `4A6FC6F1002F8253EEF1F925B02970B8BFD690B8FB6177F049EFF2A7279E2EC6`.
 Five bounded windows contain 126 selected frames from 2,015 locally decoded
-frames. Independent contact-sheet review shows the short approach relative to
+frames. The [independent contact-sheet review](../../../../build/bmx/overnight-review20261021/human-controller299-pixel-fresh-judge.json)
+shows the short approach relative to
 nearby posts, stop and upright park, fresh leg-over remount, skateboard and BMX
 endpoints, and final mounted BMX. The [visual packet](../../../../build/bmx/human-controller299/video/human299-targeted-visual-review.json)
 pins exact frame PTS/hashes separately from native measurements. No full-file

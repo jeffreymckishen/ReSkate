@@ -15,6 +15,7 @@ struct HumanNativeHandoff {
     struct Row {std::uint64_t generation{},wall{};unsigned slot{},phase{};DWORD original_packet{},before_packet{},after_packet{};
         bridge_policy::Pad original_raw{},before{},after{};bool offer{},physics_observed{};std::uint32_t physics{};};
     std::array<Row,129> rows{};unsigned count{};std::uint64_t total{},terminal_returns{};Row latest_terminal{};
+    struct FirstPolledTerminal {Row row{};const char* issue{};bool present{};} first_polled_terminal;
 };
 HumanNativeHandoff& human_native_handoff() {static HumanNativeHandoff s;return s;}
 void bind_human_native_handoff() noexcept {
@@ -76,7 +77,7 @@ bool admit_human_native_handoff_impl(std::uint64_t now,unsigned device,const han
     if(!resume&&!accepted&&attempt.policy_called&&pending&&pending->now==now&&pending->owner==owner&&pending->device==device)
         (void)s.admission_wait.begin(*pending,s.intent);
     if(resume&&!accepted)s.admission_wait.cancel("pending_final_admission_refused");
-    if(accepted){s.reverse_ledger=false;s.count=0;s.total=s.terminal_returns=0;s.latest_terminal={};}
+    if(accepted){s.reverse_ledger=false;s.count=0;s.total=s.terminal_returns=0;s.latest_terminal={};s.first_polled_terminal={};}
     ReleaseSRWLockExclusive(&s.lock);SetLastError(error);return accepted;
 }
 bool admit_human_native_handoff(std::uint64_t now,unsigned device,const handoff::Owner& owner) noexcept {
@@ -118,7 +119,7 @@ bool begin_human_native_return(handoff::Sample sample,human::AdmissionContext co
         handoff::Owner{canonical.base,context.owner[1],canonical.entity,canonical.core,canonical.context,canonical.rig}==context.owner;
     context.allowed=context.allowed&&canonical_now&&!s.admission_wait.active();sample.configuration=sample.configuration&&canonical_now;
     const bool accepted=s.reverse.begin(sample,context,s.intent);
-    if(accepted){s.reverse_ledger=true;s.count=0;s.total=s.terminal_returns=0;s.latest_terminal={};}
+    if(accepted){s.reverse_ledger=true;s.count=0;s.total=s.terminal_returns=0;s.latest_terminal={};s.first_polled_terminal={};}
     ReleaseSRWLockExclusive(&s.lock);SetLastError(error);return accepted;
 }
 void update_human_native_return(handoff::Sample sample,human::Guard guard,bool sdk_chord_held) noexcept {
@@ -167,7 +168,7 @@ void apply_human_native_handoff(bool outer,DWORD user,DWORD original_packet,cons
     auto& s=human_native_handoff();if(!s.requested.load()||!outer||!output||user>3)return;
     const auto error=GetLastError();AcquireSRWLockExclusive(&s.lock);
     const auto now=GetTickCount64();const auto before=private_board_pad(output->Gamepad);const auto before_packet=output->dwPacketNumber;
-    bridge_policy::Result result;std::uint32_t observed_physics{};bool physics_observed{};
+    bridge_policy::Result result;std::uint32_t observed_physics{};bool physics_observed{},poll_attempted{};
     const bool reverse=s.reverse_ledger;
     if(s.intent.active()&&((reverse&&s.reverse.active()&&s.reverse.pulse().live())||(!reverse&&s.intent.transferred()&&s.intent.pulse().live()))&&user==s.intent.slot()) {
         if(s.count>=128){s.reverse.cancel(s.intent,"human_input_ledger_capacity");s.intent.cancel("human_input_ledger_capacity");}
@@ -183,15 +184,22 @@ void apply_human_native_handoff(bool outer,DWORD user,DWORD original_packet,cons
         std::uint32_t physics{};identity=identity&&memory::peek(a.context+0x1414,physics)&&
             inspect_no_bail_owner(client,a.entity,b,protected_b)&&current(b)==owner&&!protected_b;
         observed_physics=physics;physics_observed=identity;
-        if(reverse)result=s.reverse.poll(now,user,identity,focused,no_capture&&before==private_board_pad(raw),physics,private_board_pad(raw),s.intent);
-        else result=s.intent.poll(now,user,identity,focused,no_capture&&before==private_board_pad(raw),physics,private_board_pad(raw));
+        if(reverse){poll_attempted=s.reverse.active()&&s.reverse.pulse().live();
+            result=s.reverse.poll(now,user,identity,focused,no_capture&&before==private_board_pad(raw),physics,private_board_pad(raw),s.intent);}
+        else {poll_attempted=s.intent.active()&&s.intent.pulse().live();
+            result=s.intent.poll(now,user,identity,focused,no_capture&&before==private_board_pad(raw),physics,private_board_pad(raw));}
         if(result.rewrite)output->Gamepad.wButtons=static_cast<WORD>((output->Gamepad.wButtons&~0x8000u)|(result.north?0x8000u:0));
     }
     const auto after=private_board_pad(output->Gamepad);output->dwPacketNumber=s.intent.packet(user,before_packet,after,result.rewrite);
+    const auto pulse_phase=reverse?s.reverse.pulse().phase:s.intent.pulse().phase;
+    const HumanNativeHandoff::Row row{s.intent.generation(),now,unsigned(user),unsigned(pulse_phase),original_packet,before_packet,
+        output->dwPacketNumber,private_board_pad(raw),before,after,result.rewrite,physics_observed,observed_physics};
+    // A polled failure can offer no rewrite or packet delta. Later persistent
+    // packet-domain translations must not replace its observed physics/reason.
+    if(poll_attempted&&(reverse?!s.reverse.pulse().live():!s.intent.pulse().live())&&!s.first_polled_terminal.present)
+        s.first_polled_terminal={row,reverse?s.reverse.pulse().issue:s.intent.pulse().issue,true};
     if(output->dwPacketNumber!=before_packet||result.rewrite) {
-        const auto pulse_phase=reverse?s.reverse.pulse().phase:s.intent.pulse().phase;
-        HumanNativeHandoff::Row row{s.intent.generation(),now,unsigned(user),unsigned(pulse_phase),original_packet,before_packet,
-            output->dwPacketNumber,private_board_pad(raw),before,after,result.rewrite,physics_observed,observed_physics};++s.total;
+        ++s.total;
         if(result.rewrite&&s.count<128)s.rows[s.count++]=row;
         if(reverse?!s.reverse.pulse().live():!s.intent.pulse().live()){++s.terminal_returns;s.latest_terminal=row;}
     }
@@ -200,11 +208,14 @@ void apply_human_native_handoff(bool outer,DWORD user,DWORD original_packet,cons
 std::string human_native_handoff_status() {
     auto& s=human_native_handoff();AcquireSRWLockShared(&s.lock);const auto intent=s.intent;const auto rows=s.rows;
     const auto attempt_snapshot=s.admission;const auto pending=s.admission_wait;const auto reverse=s.reverse;
-    const auto count=s.count;const auto terminal=s.latest_terminal;const auto total=s.total,terminals=s.terminal_returns;ReleaseSRWLockShared(&s.lock);
+    const auto count=s.count;const auto terminal=s.latest_terminal;const auto first_terminal=s.first_polled_terminal;
+    const auto total=s.total,terminals=s.terminal_returns;ReleaseSRWLockShared(&s.lock);
     const auto pad=[](const bridge_policy::Pad& p){return Json::array({p.buttons,p.left_trigger,p.right_trigger,p.left_x,p.left_y,p.right_x,p.right_y});};
     const auto row=[&](const HumanNativeHandoff::Row& r){return Json{{"generation",r.generation},{"wall_ms",r.wall},{"slot",r.slot},{"phase",r.phase},
         {"original_packet",r.original_packet},{"before_packet",r.before_packet},{"after_packet",r.after_packet},{"original_raw_pad",pad(r.original_raw)},
         {"before_pad",pad(r.before)},{"after_pad",pad(r.after)},{"offer",r.offer},{"physics",r.physics_observed?Json(r.physics):Json(nullptr)}};};
+    auto first_polled_terminal=first_terminal.present?row(first_terminal.row):Json(nullptr);
+    if(first_terminal.present)first_polled_terminal["issue"]=first_terminal.issue;
     Json offers=Json::array();for(unsigned i=0;i<count;++i)offers.push_back(row(rows[i]));
     Json sources=Json::array();for(unsigned i=0;i<4;++i){const auto& o=intent.originals()[i];sources.push_back(Json{{"slot",i},{"wall_ms",o.wall},{"success",o.success},
         {"packet",o.packet},{"raw_pad",pad(o.raw)},{"packet_domain_active",intent.packets()[i].active},{"translated_packet",intent.packets()[i].packet}});}
@@ -253,7 +264,8 @@ std::string human_native_handoff_status() {
         {"first_native100",intent.first100().serial?sample(intent.first100()):Json(nullptr)},{"latest_native",sample(intent.session().latest())},
         {"pulse_phase",unsigned(intent.pulse().phase)},{"pulse_issue",intent.pulse().issue},{"sources",std::move(sources)},
         {"offers",std::move(offers)},{"translated_returns",total},{"terminal_returns",terminals},
-        {"latest_terminal",terminals?row(terminal):Json(nullptr)},{"report_scope","128 offers and latest terminal; terminal history is counted, not fully retained"},
+        {"first_polled_terminal",std::move(first_polled_terminal)},{"latest_terminal",terminals?row(terminal):Json(nullptr)},
+        {"report_scope","128 offers, first polled terminal, and latest terminal; first_polled_terminal excludes observer-only cancellation and packet-domain-only returns"},
         {"reverse",Json{{"phase",unsigned(reverse.phase())},{"active",reverse.active()},{"complete",reverse.complete()},
             {"issue",reverse.issue()},{"deadline_ms",reverse.deadline()},{"pulse_phase",unsigned(reverse.pulse().phase)},
             {"pulse_issue",reverse.pulse().issue},{"press_reports",reverse.pulse().press_reports},{"release_reports",reverse.pulse().release_reports},

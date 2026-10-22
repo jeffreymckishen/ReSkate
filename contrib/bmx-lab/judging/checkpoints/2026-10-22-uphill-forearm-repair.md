@@ -70,3 +70,10 @@ Native rendered alignment, callback cost and normal controller get-up remain
 unverified on this runtime. The pending Computer Use app-access approval still
 prevents a foreground-owned controller trial. No current likeness score or
 ordinary adoption follows from this private checkpoint.
+
+Later follow-up on 22 October: Computer Use app access was granted, and the
+same runtime's three scripted game-facing controller GetUp observations are
+recorded in the [controller recovery checkpoint](2026-10-22-controller-getup.md).
+Those trials used the Default rider pose with private forearm repair unselected.
+Native rendering and callback cost of this private repair remain unverified;
+the earlier approval/coverage statement above is preserved as checkpoint history.

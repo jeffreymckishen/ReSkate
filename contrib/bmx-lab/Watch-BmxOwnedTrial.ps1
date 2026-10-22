@@ -71,9 +71,10 @@ function Read-BmxWatchdogOwner {
 }
 
 function Assert-BmxWatchdogObservation {
-    param($Owner,$Observation,[switch]$Full)
+    param($Owner,$Observation,[switch]$Full,[switch]$ExitOnly)
+    if($Full -and $ExitOnly){throw 'Full binding and exit-only observation cannot be combined.'}
     if(-not $Observation.available -or $Observation.creation_filetime -ne $Owner.creation_filetime){throw 'Watchdog process identity unavailable or creation changed.'}
-    if($Observation.running -and $Observation.image_path -ine $Owner.game_exe){throw 'Watchdog process image differs; no termination authorized.'}
+    if(-not $ExitOnly -and $Observation.running -and $Observation.image_path -ine $Owner.game_exe){throw 'Watchdog process image differs; no termination authorized.'}
     if($Full -and $Observation.running -and -not $Observation.runtime_loaded){throw 'Watchdog exact runtime is not loaded; no termination authorized.'}
 }
 
@@ -108,8 +109,13 @@ function Invoke-BmxWatchdogCore {
             $current=& $Now
             if(-not [double]::IsFinite($current) -or $current -lt $last){throw 'Watchdog monotonic clock failed.'}
             $last=$current;$result.elapsed_guardian_seconds=$current-$started
-            $observation=& $Observe $handle $false
-            Assert-BmxWatchdogObservation $Owner $observation
+            # A terminating process can lose its queryable image before its
+            # held handle signals. After the final binding/termination attempt,
+            # only wait plus original creation identity are needed. This mode
+            # cannot authorize a termination or reach the ready publication.
+            $exitOnly=$null -ne $exitDeadline
+            $observation=& $Observe $handle $false $exitOnly
+            Assert-BmxWatchdogObservation $Owner $observation -ExitOnly:$exitOnly
             if(-not $observation.running) {
                 ++$result.absence_observations
                 if($result.absence_observations -ge 2) {
@@ -170,10 +176,11 @@ public static class ObservationReader {
         result.running=false;result.image_path="";result.runtime_loaded=false;
         return result;
     }
-    public static Observation Read(Func<uint> wait, Func<long> creation, Func<string> image, Func<bool> loaded, bool full) {
+    public static Observation Read(Func<uint> wait, Func<long> creation, Func<string> image, Func<bool> loaded, bool full, bool exitOnly=false) {
+        if(full && exitOnly)throw new InvalidOperationException("Full binding cannot be exit-only");
         bool running=Running(wait);
         var result=new Observation {available=true,running=running,creation_filetime=creation()};
-        if(!running)return result;
+        if(!running || exitOnly)return result;
         try {
             result.image_path=image();
             result.runtime_loaded=!full || loaded();
@@ -234,7 +241,7 @@ public sealed class NativeProcess : IDisposable {
             return false;
         } finally {CloseHandle(snapshot);}
     }
-    public Observation Observe(string runtimePath, bool full) {
+    public Observation Observe(string runtimePath, bool full, bool exitOnly=false) {
         if(handle==IntPtr.Zero)throw new ObjectDisposedException("NativeProcess");
         return ObservationReader.Read(
             () => {uint state=WaitForSingleObject(handle,0);if(state!=0 && state!=258)throw Error("Watchdog process wait failed");return state;},
@@ -243,7 +250,7 @@ public sealed class NativeProcess : IDisposable {
                 return ((long)created.high<<32)|created.low;},
             () => {uint length=32768;var path=new StringBuilder((int)length);
                 if(!QueryFullProcessImageName(handle,0,path,ref length))throw Error("Watchdog process image read failed");return path.ToString();},
-            () => Loaded(runtimePath),full);
+            () => Loaded(runtimePath),full,exitOnly);
     }
     public bool TerminateOwned(long created, string image, string runtimePath) {
         var current=Observe(runtimePath,true);
@@ -284,7 +291,7 @@ function Invoke-BmxOwnedTrialWatchdog {
         Initialize-BmxWatchdogNative
         $result=Invoke-BmxWatchdogCore $owner $LimitSeconds `
             -Open {param($o) [BmxOwnedTrial.NativeProcess]::new($o.process_id)} `
-            -Observe {param($h,$full) $h.Observe($owner.runtime_path,$full)} `
+            -Observe {param($h,$full,$exitOnly) $h.Observe($owner.runtime_path,$full,[bool]$exitOnly)} `
             -VerifyFiles {param($o) Test-BmxWatchdogFiles $o} `
             -Terminate {param($h,$o) $h.TerminateOwned($o.creation_filetime,$o.game_exe,$o.runtime_path)} `
             -Close {param($h) $h.Dispose()} `

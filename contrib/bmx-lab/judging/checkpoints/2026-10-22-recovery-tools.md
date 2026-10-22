@@ -37,3 +37,22 @@ Detailed source pins, independent judge records and the failed native receipt
 are retained under `build/bmx/overnight-review20261021/` and
 `build/bmx/controller-recovery286/`. Computer Use app approval remains required
 for the next foreground-controlled visual trial; it previously timed out.
+
+## Native shutdown follow-up
+
+Run 287 exposed a longer pending-exit interval: after accepted termination,
+image metadata could already be unavailable while the held process handle was
+still unsignaled. An immediate recheck was insufficient. The watcher now uses
+an explicit exit-observation phase after its final binding and termination
+attempt. That phase reads only the original held handle's wait state and exact
+creation identity. It retains the ten-second exit grace and two separated
+signaled observations; live binding failures before the attempt still refuse.
+
+The new source passes an independent review and all 3,515 fake assertions.
+Native run 288 passes its complete 60-second game shutdown test on source
+`CE95AA80EDA9C5A273FD00AC1EFA7B51C65F11C5A6AFCE279CF21A56277A0399`:
+the deadline requests termination of the bound game, both exit observations
+complete within the grace, and the guardian reports success with no issue.
+Two additional CIM observations verify the PID absent. The frozen receipt and
+log are in `build/bmx/watchdog-native288/`. No controller input was sent and
+gameplay/likeness remain unqualified. Failed 286 and 287 receipts remain intact.

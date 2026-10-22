@@ -21,8 +21,11 @@ function Invoke-FakeWatchdog {
     $fakeHandle=[pscustomobject]@{id='held-original-process-object'}
     $result=Invoke-BmxWatchdogCore $fakeOwner 60 `
         -Open {param($o) Check ($o -eq $fakeOwner) 'Open received wrong owner';++$state.opened;return $fakeHandle} `
-        -Observe {param($h,$full)
+        -Observe {param($h,$full,$exitOnly)
             Check ([object]::ReferenceEquals($h,$fakeHandle)) 'A fresh PID lookup replaced the held handle'
+            if($exitOnly){Check ($state.terminations -eq 1 -and -not $full) 'Exit-only observation preceded final binding/termination attempt'}
+            if($Fault -eq 'image-read' -and -not $exitOnly){throw 'fake live process image read failed'}
+            if($Fault -eq 'pending-image' -and $state.terminations -gt 0 -and -not $exitOnly){throw 'fake terminating process image unavailable'}
             ++$state.observations;if($full){++$state.full}
             $value=[pscustomobject]@{available=$true;running=($state.now -lt $state.exit_at);creation_filetime=$fakeOwner.creation_filetime;
                 image_path=$fakeOwner.game_exe;runtime_loaded=$true}
@@ -34,6 +37,7 @@ function Invoke-FakeWatchdog {
                     'unavailable' {$value.available=$false}
                 }
             }
+            if($exitOnly){$value.image_path='';$value.runtime_loaded=$false}
             return $value
         } `
         -VerifyFiles {param($o) ++$state.files;if($Fault -eq 'files' -and $state.now -ge $FaultAt){throw 'fake runtime hash changed'}} `
@@ -75,6 +79,14 @@ Check ($future.result.outcome -ceq 'refused' -and $future.state.opened -eq 0 -an
 $delayed=Invoke-FakeWatchdog -ExitDelay 2
 Check ($delayed.result.absence_verified -and $delayed.state.now -ge 62.1 -and $delayed.state.now -lt 62.4) 'Asynchronous termination exit delay was not awaited'
 Check ($delayed.state.terminations -eq 1) 'Exit delay triggered a second termination'
+$pendingImage=Invoke-FakeWatchdog -Fault pending-image -ExitDelay 2
+Check ($pendingImage.result.guardian_succeeded -and $pendingImage.result.absence_observations -eq 2 -and $pendingImage.state.now -ge 62.1) 'Pending exit image loss prevented held-handle completion'
+$liveImageFailure=Invoke-FakeWatchdog -Fault image-read
+Check (-not $liveImageFailure.result.ready_published -and -not $liveImageFailure.result.guardian_succeeded -and $liveImageFailure.state.terminations -eq 0) 'Live image failure before deadline was treated as exit-only'
+foreach($fault in @('creation','unavailable')) {
+    $exitMismatch=Invoke-FakeWatchdog -Fault $fault -FaultAt 61 -ExitDelay 2
+    Check (-not $exitMismatch.result.guardian_succeeded -and -not $exitMismatch.result.absence_verified -and $exitMismatch.state.terminations -eq 1) ('Exit-only identity failure was accepted: '+$fault)
+}
 $stuck=Invoke-FakeWatchdog -ExitDelay 30
 Check ($stuck.result.outcome -ceq 'deadline_exit_unverified' -and -not $stuck.result.absence_verified) 'Never-exiting process received a false absence claim'
 Check ($stuck.state.now -ge 70 -and $stuck.state.now -lt 70.3 -and $stuck.state.terminations -eq 1) 'Exit grace is unbounded or repeated termination occurred'
@@ -143,13 +155,13 @@ try {
 Initialize-BmxWatchdogNative
 Check ($null -ne ('BmxOwnedTrial.NativeProcess' -as [type])) 'Native interop declarations failed compilation'
 function Invoke-FakeObservation {
-    param([uint32[]]$WaitStates,[string]$Fault='',[bool]$Full=$true)
+    param([uint32[]]$WaitStates,[string]$Fault='',[bool]$Full=$true,[bool]$ExitOnly=$false)
     $calls=[pscustomobject]@{wait=0;creation=0;image=0;loaded=0}
     $observation=[BmxOwnedTrial.ObservationReader]::Read(
         [Func[uint32]]{if($calls.wait -ge $WaitStates.Count){throw 'Unexpected extra wait'};return $WaitStates[$calls.wait++]},
         [Func[long]]{++$calls.creation;if($Fault -eq 'creation'){throw 'fake creation failed'};return 134371424265471298L},
         [Func[string]]{++$calls.image;if($Fault -eq 'image'){throw 'fake image failed'};return 'bound-image'},
-        [Func[bool]]{++$calls.loaded;if($Fault -eq 'loaded'){throw 'fake loaded failed'};return $true},$Full)
+        [Func[bool]]{++$calls.loaded;if($Fault -eq 'loaded'){throw 'fake loaded failed'};return $true},$Full,$ExitOnly)
     return [pscustomobject]@{value=$observation;calls=$calls}
 }
 $alreadyExited=Invoke-FakeObservation -WaitStates @(0) -Fault image
@@ -160,6 +172,11 @@ Check ($live.value.running -and $live.value.image_path -ceq 'bound-image' -and $
 Check ($live.calls.wait -eq 2 -and $live.calls.loaded -eq 1) 'Live full observation omitted final wait or module query'
 $partial=Invoke-FakeObservation -WaitStates @(258,258) -Full $false -Fault loaded
 Check ($partial.value.running -and $partial.calls.loaded -eq 0 -and $partial.calls.wait -eq 2) 'Partial observation queried modules or skipped final same-handle wait'
+$pending=Invoke-FakeObservation -WaitStates @(258) -Full $false -ExitOnly $true -Fault image
+Check ($pending.value.running -and $pending.value.creation_filetime -eq 134371424265471298L -and $pending.calls.image -eq 0 -and $pending.calls.loaded -eq 0) 'Pending exit performed a live binding query or lost creation identity'
+Reject {Invoke-FakeObservation -WaitStates @(258) -Full $true -ExitOnly $true} 'Full binding'
+Reject {Invoke-FakeObservation -WaitStates @(258) -Full $false -ExitOnly $true -Fault creation} 'creation failed'
+Reject {Invoke-FakeObservation -WaitStates @([uint32]::MaxValue) -Full $false -ExitOnly $true} 'wait failed'
 foreach($fault in @('','image','loaded')) {
     $raced=Invoke-FakeObservation -WaitStates @(258,0) -Fault $fault
     Check (-not $raced.value.running -and $raced.value.available -and $raced.value.creation_filetime -eq 134371424265471298L) ('Exit race did not retain original creation: '+$fault)

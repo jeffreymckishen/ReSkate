@@ -1,9 +1,9 @@
 """One fixed ordinary BMX approach; default is a driver-free dry-run.
 
-Choose the left or straight scenario only after separately viewing the mounted
-rider, heading and intended route. Both schedule neutral at 0ms, pedal at
-240..2240ms, then neutral through 6000ms. Left steering is LS X=-.8 during
-pedaling only; straight steering and every other axis remain zero. There is no
+Choose the left, straight or right scenario only after viewing the mounted
+rider, heading and intended route. All schedule neutral at 0ms, pedal at
+240..2240ms, then neutral through 6000ms. Turning uses LS X=-.8 (left) or
++.8 (right) during pedaling only; straight and every other axis remain zero. No
 brake, Y, LB, hop, D-pad, menu input, conditional action or automatic retry.
 
 These are approach requests, not proof of a collision, fall, recovery or ride.
@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SWITCH_PATH = ROOT / "contrib/bmx-lab/Bmx-SwitchLeg.py"
 APPROVED_SWITCH_SHA256 = "F87B84720AAB804869732940489EF6D4DD54C2D1F23ED92621417FDADBD3B6E2"
 DEFAULT_SCENARIO = "ordinary-approach-left"
-SCENARIOS = (DEFAULT_SCENARIO, "ordinary-approach-straight")
+SCENARIOS = (DEFAULT_SCENARIO, "ordinary-approach-straight", "ordinary-approach-right")
 
 
 class Refused(RuntimeError):
@@ -50,7 +50,7 @@ def load_switch():
 
 def timelines(h):
     result = {}
-    for name, left_x in zip(SCENARIOS, (-.8, 0)):
+    for name, left_x in zip(SCENARIOS, (-.8, 0, .8)):
         events = (h.Event(0, h.NEUTRAL),
                   h.Event(240, h.State(h.A, left_x=left_x)),
                   h.Event(2240, h.NEUTRAL), h.Event(6000, h.NEUTRAL))

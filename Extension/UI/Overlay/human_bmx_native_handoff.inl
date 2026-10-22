@@ -152,17 +152,17 @@ std::uint64_t human_native_handoff_deadline() noexcept {
     auto& s=human_native_handoff();AcquireSRWLockShared(&s.lock);
     const auto deadline=s.intent.active()?s.intent.accepted_ms()+15000:0;ReleaseSRWLockShared(&s.lock);return deadline;
 }
-void guard_human_native_handoff(human::Guard guard) noexcept {
+void guard_human_native_handoff(human::Guard guard,const human::ReadWitness& reads) noexcept {
     auto& s=human_native_handoff();const auto error=GetLastError();AcquireSRWLockExclusive(&s.lock);
-    guard.allowed=guard.allowed&&human_native_handoff_configuration();(void)s.intent.guard(guard);
+    guard.allowed=guard.allowed&&human_native_handoff_configuration();(void)s.intent.guard(guard,human::GuardOrigin::pre_ticket,nullptr,&reads);
     ReleaseSRWLockExclusive(&s.lock);SetLastError(error);
 }
-void update_human_native_handoff(handoff::Sample sample,human::Guard guard) noexcept {
+void update_human_native_handoff(handoff::Sample sample,human::Guard guard,const human::ReadWitness& reads) noexcept {
     auto& s=human_native_handoff();const auto error=GetLastError();AcquireSRWLockExclusive(&s.lock);
     guard.allowed=guard.allowed&&human_native_handoff_configuration();sample.configuration=sample.configuration&&human_native_handoff_configuration();
     sample.capture_released=sample.capture_released&&polled_capture()==input::BmxNativeCapture::none&&
         !input::bmx_capture_live(bmx_quick_switch_until.load(),sample.now,true);
-    s.intent.observe(sample,guard);ReleaseSRWLockExclusive(&s.lock);SetLastError(error);
+    s.intent.observe(sample,guard,reads);ReleaseSRWLockExclusive(&s.lock);SetLastError(error);
 }
 void apply_human_native_handoff(bool outer,DWORD user,DWORD original_packet,const XINPUT_GAMEPAD& raw,XINPUT_STATE* output) noexcept {
     auto& s=human_native_handoff();if(!s.requested.load()||!outer||!output||user>3)return;
@@ -223,11 +223,47 @@ std::string human_native_handoff_status() {
         {"success",o.success},{"original_packet",o.packet},{"original_raw_pad",pad(o.raw)}});}
     const auto sample=[](const handoff::Sample& v){return Json{{"wall_ms",v.now},{"sampled_ms",v.sampled_ms},{"serial",v.serial},{"native_time",v.native_time},
         {"owner",v.owner},{"body",Json::array({std::uint64_t(v.body.world),std::uint64_t(v.body.state),std::uint64_t(v.body.index),std::uint64_t(v.body.generation),v.body.token})},
+        {"sdk_device",v.sdk_device},{"offboard",v.offboard},{"standable",v.standable},{"motion_supported",v.motion_supported},
         {"cleanup_counters",v.counters},{"physics",v.physics},{"configuration",v.configuration},{"gates",v.gates},
         {"canonical",v.canonical},{"protected_owner",v.protected_owner},{"clock_coherent",v.clock_coherent},{"pool_released",v.pool_released},
         {"sdk_idle",v.sdk_idle},{"motion_released",v.motion_released},{"publication_inactive",v.publication_inactive},{"parts_zero",v.parts_zero},
         {"capture_released",v.capture_released},{"selected_original_fresh",v.original_slot0_fresh},{"selected_original_quiet",v.original_quiet},
         {"only_selected_original",v.only_slot0},{"sdk_quiet",v.sdk_quiet},{"gesture_released",v.gesture_released}};};
+    const auto read_witness=[](const human::ReadWitness& v)->Json {
+        if(!v.present)return nullptr;
+        return Json{{"sdk_sampled_ms",v.sdk_sampled_ms},{"sdk_device",v.sdk_device},{"sdk_buttons",v.sdk_buttons},
+            {"sdk_keyboard",v.sdk_keyboard},{"sdk_available",v.sdk_available},{"sdk_focused",v.sdk_focused},{"sdk_overlay_ready",v.sdk_overlay_ready},
+            {"sdk_menu_blocked",v.sdk_menu_blocked},{"sdk_menu_requested",v.sdk_menu_requested},{"sdk_capture_blocked",v.sdk_capture_blocked},{"sdk_capturing",v.sdk_capturing},
+            {"gameplay_ready",v.gameplay_ready},{"multiplayer_active",v.multiplayer_active},{"lobby_joining",v.lobby_joining},
+            {"frame_available",v.frame_available},{"frame_timing_available",v.frame_timing_available},{"frame_issue",v.frame_issue.data()},
+            {"frame_issue_truncated",v.frame_issue_truncated},{"frame_serial",v.frame_serial},{"frame_time",v.frame_time},
+            {"canonical_read_attempted",v.canonical_read_attempted},{"canonical_read_succeeded",v.canonical_read_succeeded},
+            {"canonical_owner_evaluated",v.canonical_owner_evaluated},{"canonical_owner_equal",v.canonical_owner_equal},
+            {"clock_read_attempted",v.clock_read_attempted},{"clock_read_succeeded",v.clock_read_succeeded},
+            {"clock_equality_evaluated",v.clock_equality_evaluated},{"clock_equal",v.clock_equal},{"clock_serial",v.clock_serial},{"clock_time",v.clock_time},
+            {"physics_read_attempted",v.physics_read_attempted},{"physics_read_succeeded",v.physics_read_succeeded}};
+    };
+    const auto offered=[&](const human::OfferedObservation& v)->Json {
+        return v.present?Json{{"sample",sample(v.sample)},{"read_witness",read_witness(v.reads)}}:Json(nullptr);
+    };
+    const auto& rejected=intent.first_guard_rejection();Json first_rejected_guard=nullptr;
+    if(rejected.present) {
+        const auto& g=rejected.guard;
+        static constexpr std::array<const char*,13> check_names{"wall_reversed","deadline_reached","context_disallowed","owner_changed","device_changed",
+            "sample_missing","sample_future","sample_stale","selected_original_not_fresh","extra_original_fresh","sdk_activity","original_activity","sdk_release_lost"};
+        Json failed=Json::object();for(unsigned i=0;i<check_names.size();++i)failed[check_names[i]]=(rejected.bits&(1u<<i))!=0;
+        Json originals=Json::array();for(unsigned i=0;i<4;++i){const auto& o=rejected.originals[i];originals.push_back(Json{{"slot",i},{"wall_ms",o.wall},
+            {"success",o.success},{"packet",o.packet},{"raw_pad",pad(o.raw)}});}
+        const auto origin=rejected.origin==human::GuardOrigin::pre_ticket?"pre_ticket_guard":
+            rejected.origin==human::GuardOrigin::forward_observer?"forward_observer":"unspecified_guard_caller";
+        first_rejected_guard=Json{{"origin",origin},{"rejection_bits",rejected.bits},{"failed_checks_in_rejected_branch",std::move(failed)},
+            {"guard",Json{{"wall_ms",g.now},{"sampled_ms",g.sampled_ms},{"owner",g.owner},{"device",g.device},{"allowed",g.allowed},
+                {"sdk_gesture_only",g.sdk_gesture_only},{"sdk_released",g.sdk_released}}},
+            {"expected_owner",rejected.expected_owner},{"selected_slot",rejected.selected_slot},{"expected_device",rejected.expected_device},
+            {"fresh_original_mask",rejected.fresh_original_mask},{"previous_guard_wall_ms",rejected.previous_wall},{"deadline_ms",rejected.deadline},
+            {"released_before_guard",rejected.released},{"originals",std::move(originals)},
+            {"offered_sample",rejected.offered.present?sample(rejected.offered.sample):Json(nullptr)},{"read_witness",read_witness(rejected.reads)}};
+    }
     const auto& ticket=intent.session().ticket();
     static constexpr std::array<const char*,15> config_names{"latched_requested","human_flag","native_chassis","human_ride","private_handoff_off","private_bridge_off",
         "quick_test_off","automated_switch_off","automated_ride_off","native_board_control_off","deferred_arm_off","passive_trace_off","passive_mode_empty","ramp_test_off","ramp_ride_off"};
@@ -262,6 +298,8 @@ std::string human_native_handoff_status() {
         {"cleanup_ticket_counters",ticket.counters},{"cleanup_ticket_serial",ticket.serial},{"cleanup_ticket_native_time",ticket.native_time},
         {"first_native103",intent.first103().serial?sample(intent.first103()):Json(nullptr)},
         {"first_native100",intent.first100().serial?sample(intent.first100()):Json(nullptr)},{"latest_native",sample(intent.session().latest())},
+        {"first_rejected_guard",std::move(first_rejected_guard)},{"latest_offered_forward_observation",offered(intent.latest_offered_observation())},
+        {"guard_diagnostic_scope","first rejected active guard; forward offered samples precede logical source normalization; pre-ticket and unspecified callers may have no offered sample or read witness; latest_native retains existing Session::latest update semantics"},
         {"pulse_phase",unsigned(intent.pulse().phase)},{"pulse_issue",intent.pulse().issue},{"sources",std::move(sources)},
         {"offers",std::move(offers)},{"translated_returns",total},{"terminal_returns",terminals},
         {"first_polled_terminal",std::move(first_polled_terminal)},{"latest_terminal",terminals?row(terminal):Json(nullptr)},

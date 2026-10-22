@@ -60,8 +60,8 @@ bool human_native_admission_waiting() noexcept;
 void cancel_human_native_admission(const char*) noexcept;
 bool transfer_human_native_handoff(const bmx::native_input_handoff::Ticket&,std::uint64_t) noexcept;
 void cancel_human_native_handoff(const char*) noexcept;
-void guard_human_native_handoff(bmx::human_native_handoff::Guard) noexcept;
-void update_human_native_handoff(bmx::native_input_handoff::Sample,bmx::human_native_handoff::Guard) noexcept;
+void guard_human_native_handoff(bmx::human_native_handoff::Guard,const bmx::human_native_handoff::ReadWitness& = {}) noexcept;
+void update_human_native_handoff(bmx::native_input_handoff::Sample,bmx::human_native_handoff::Guard,const bmx::human_native_handoff::ReadWitness& = {}) noexcept;
 std::string human_native_handoff_status();
 // Reverse transport is available only through the same explicit human opt-in.
 bool begin_human_native_return(bmx::native_input_handoff::Sample,bmx::human_native_handoff::AdmissionContext) noexcept;

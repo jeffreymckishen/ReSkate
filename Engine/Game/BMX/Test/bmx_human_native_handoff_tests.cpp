@@ -158,4 +158,55 @@ void pending_admission(){
         check(!w.begin(c,i),"already-ready/held Y/foreign/stale/future/SDK-only/invalid context cannot arm wait");}
 }
 
-int main(){pending_admission();admission();release_and_context();input_and_native();packet_domains();std::cout<<checks<<" human native handoff checks passed\n";}
+void rejected_guard_diagnostics(){
+    {auto i=queued(2);const auto accepted=i.session().latest();auto offered=sample(1048,13,1.048);
+        auto g=guard(2,1048);g.allowed=false;g.device=0;g.sampled_ms=1049;++g.owner[3];offered.owner=g.owner;offered.sampled_ms=g.sampled_ms;
+        h::ReadWitness reads;reads.present=true;reads.sdk_keyboard=true;reads.sdk_device=0x424d5803;reads.sdk_sampled_ms=g.sampled_ms;
+        reads.frame_available=reads.frame_timing_available=reads.clock_read_attempted=true;reads.frame_serial=13;reads.frame_time=1.048;
+        note(i,2,1048);i.observe(offered,g,reads);
+        const auto frozen=i.first_guard_rejection();
+        check(!i.active()&&std::string(i.issue())=="human_context_owner_device_or_source_changed","diagnostic observer retains unchanged cancellation decision");
+        check(frozen.present&&frozen.origin==h::GuardOrigin::forward_observer,"first rejected guard identifies observer origin");
+        check(frozen.bits==(h::context_disallowed|h::owner_changed|h::device_changed|h::sample_future),"all failing context predicates retained without unsigned future-age underflow");
+        check(frozen.expected_owner==ticket().owner&&frozen.selected_slot==2&&frozen.expected_device==4&&frozen.fresh_original_mask==4,"expected actual source and fresh mask frozen");
+        check(frozen.guard.now==1048&&frozen.guard.sampled_ms==1049&&frozen.guard.owner==g.owner&&frozen.guard.device==0&&!frozen.guard.allowed,"exact rejected Guard frozen");
+        check(frozen.originals[2].wall==1048&&frozen.originals[2].success&&frozen.originals[2].packet==3&&h::quiet(frozen.originals[2].raw),"original source snapshot comes from rejection time");
+        check(frozen.offered.present&&frozen.offered.sample.serial==13&&frozen.offered.sample.owner==g.owner&&frozen.offered.sample.sampled_ms==1049,"offered rejected sample is not the prior Session sample");
+        check(frozen.reads.present&&frozen.reads.sdk_keyboard&&frozen.reads.sdk_device==0x424d5803&&frozen.reads.clock_read_attempted&&!frozen.reads.clock_read_succeeded,"existing failed producer read witness frozen");
+        check(i.session().latest().serial==accepted.serial&&i.session().latest().now==accepted.now,"guard rejection preserves last Session sample");
+        check(i.latest_offered_observation().present&&i.latest_offered_observation().sample.serial==13,"latest offered observer diagnostic includes rejected sample");
+        note(i,2,1064);auto later=sample(1064,14,1.064);reads.sdk_device=8;reads.sdk_keyboard=false;reads.clock_read_succeeded=true;
+        i.observe(later,guard(2,1064),reads);check(!i.guard(guard(2,1064)),"later inactive observer/guard cannot retry");
+        check(i.first_guard_rejection().guard.now==1048&&i.first_guard_rejection().originals[2].wall==1048&&i.first_guard_rejection().reads.sdk_keyboard,
+            "later source, guard and read changes cannot overwrite first failure");
+        check(i.latest_offered_observation().sample.serial==13,"inactive offers cannot overwrite the terminal offered sample");
+        check(!i.admit(1064,4,ticket().owner)&&i.first_guard_rejection().present,"admission without a new gesture does not clear diagnostics");
+        check(!i.admit(1064,3,ticket().owner)&&i.first_guard_rejection().present,"rejected device admission does not clear diagnostics");
+        note(i,2,1080);note(i,2,1096,chord());check(i.admit(1096,4,ticket().owner)&&i.generation()==2,"new genuine gesture admits next generation");
+        check(!i.first_guard_rejection().present&&!i.latest_offered_observation().present,"only accepted next generation resets rejection and offered diagnostics");
+    }
+    {auto i=admitted(1);auto g=guard(1,1016);g.allowed=false;h::ReadWitness reads;reads.present=true;reads.sdk_device=2;
+        check(!i.guard(g,h::GuardOrigin::pre_ticket,nullptr,&reads),"pre-ticket guard still rejects disallowed context");
+        const auto& frozen=i.first_guard_rejection();check(frozen.present&&frozen.origin==h::GuardOrigin::pre_ticket&&!frozen.offered.present&&frozen.reads.present,
+            "pre-ticket rejection explicitly has no offered observer sample");
+        check(!i.latest_offered_observation().present,"pre-ticket guard does not invent observer sample");
+    }
+    {auto i=admitted();auto g=guard(0,1251);check(!i.guard(g),"stale original still rejects with fresh SDK sample");
+        check(i.first_guard_rejection().bits==h::selected_original_not_fresh&&i.first_guard_rejection().fresh_original_mask==0,
+            "selected-original freshness failure separated from SDK freshness");}
+    {auto i=admitted();auto g=guard(0,1016);g.sampled_ms=0;check(!i.guard(g),"missing SDK timestamp still rejects");
+        check(i.first_guard_rejection().bits==h::sample_missing,"missing timestamp is not double-labelled stale");}
+    {auto i=admitted();auto g=guard(0,1016);g.now=999;check(!i.guard(g),"wall rollback still rejects before context branch");
+        check(i.first_guard_rejection().bits==h::wall_reversed&&i.first_guard_rejection().previous_wall==1000,"clock branch retains original prior guard time");}
+    {auto i=admitted();auto g=guard(0,1016);g.sdk_gesture_only=false;check(!i.guard(g),"SDK activity still rejects");
+        check(i.first_guard_rejection().bits==h::sdk_activity&&std::string(i.issue())=="new_physical_activity","activity branch kept separate from context failure");}
+    // A witness cannot change authorization. Deliberately contradictory passive
+    // read flags must neither reject a valid Sample nor rescue an invalid Guard.
+    for(bool reject:{false,true}){auto without=queued(),with=queued();auto v=sample(1048,13,1.048);auto g=guard(0,1048);g.allowed=!reject;
+        h::ReadWitness reads;reads.present=true;reads.sdk_keyboard=true;reads.clock_read_attempted=true;
+        note(without,0,1048);note(with,0,1048);without.observe(v,g);with.observe(v,g,reads);
+        check(with.active()==without.active()&&with.session().phase()==without.session().phase()&&with.pulse().phase==without.pulse().phase&&
+            std::string(with.issue())==without.issue(),"passive read witness leaves successful and rejected control decisions unchanged");}
+}
+
+int main(){pending_admission();admission();release_and_context();input_and_native();packet_domains();rejected_guard_diagnostics();std::cout<<checks<<" human native handoff checks passed\n";}

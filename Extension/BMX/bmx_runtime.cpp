@@ -3071,6 +3071,14 @@ void poll_human_native_input_handoff(std::uintptr_t base,std::uintptr_t client) 
     s.serial=frame.serial;s.native_time=frame.simulation_time;s.offboard=frame.offboard;s.standable=frame.standable;s.motion_supported=frame.motion_supported;
     s.configuration=overlay::detail::human_native_handoff_requested();
     const auto& input=r.observed_input;
+    human_native_handoff::ReadWitness reads;reads.present=true;reads.sdk_sampled_ms=input.sampled_ms;
+    reads.sdk_device=input.device;reads.sdk_buttons=input.buttons;reads.sdk_keyboard=input.keyboard;reads.sdk_available=input.available;
+    reads.sdk_focused=input.focused;reads.sdk_overlay_ready=input.overlay_ready;reads.sdk_menu_blocked=input.menu_blocked;
+    reads.sdk_menu_requested=input.menu_requested;reads.sdk_capture_blocked=input.capture_blocked;reads.sdk_capturing=input.capturing;
+    reads.gameplay_ready=r.owner_gameplay_ready;reads.multiplayer_active=mp.active;reads.lobby_joining=mp.lobby_joining;
+    reads.frame_available=frame.available;reads.frame_timing_available=frame.timing_available;reads.frame_serial=frame.serial;reads.frame_time=frame.simulation_time;
+    const auto issue_bytes=std::min(frame.issue.size(),reads.frame_issue.size()-1);
+    std::copy_n(frame.issue.data(),issue_bytes,reads.frame_issue.data());reads.frame_issue_truncated=issue_bytes<frame.issue.size();
     s.gates=r.owner_gameplay_ready&&!mp.active&&!mp.lobby_joining&&input.available&&input.focused&&input.overlay_ready&&
         !input.menu_blocked&&!input.menu_requested&&!input.capture_blocked;
     s.sdk_device=input.keyboard?0:input.device;
@@ -3088,21 +3096,26 @@ void poll_human_native_input_handoff(std::uintptr_t base,std::uintptr_t client) 
         !physical.deferred_park&&!physical.owner_quarantined&&
         native_chassis::parked_owner_matches(base,frame,r.human_native_input_ticket.body.world,r.human_native_input_ticket.body.token,false);
     NoBailSkater canonical;bool protected_now{};
-    s.canonical=frame.available&&inspect_no_bail_owner(client,frame.entity,canonical,protected_now)&&
-        canonical.base==base&&canonical.entity==frame.entity&&canonical.core==frame.core&&canonical.context==frame.context&&canonical.rig==frame.rig;
+    s.canonical=frame.available&&(reads.canonical_read_attempted=true,
+        reads.canonical_read_succeeded=inspect_no_bail_owner(client,frame.entity,canonical,protected_now))&&
+        (reads.canonical_owner_evaluated=true,reads.canonical_owner_equal=
+            canonical.base==base&&canonical.entity==frame.entity&&canonical.core==frame.core&&canonical.context==frame.context&&canonical.rig==frame.rig);
     s.protected_owner=protected_now;
     std::uint64_t serial{};double time{};
-    s.clock_coherent=frame.available&&frame.timing_available&&read_native_clock_try(frame.entity,frame.core,serial,time)&&
-        serial==frame.serial&&time==frame.simulation_time&&memory::peek(frame.context+0x1414,s.physics);
+    s.clock_coherent=frame.available&&frame.timing_available&&
+        (reads.clock_read_attempted=true,reads.clock_read_succeeded=read_native_clock_try(frame.entity,frame.core,serial,time))&&
+        (reads.clock_equality_evaluated=true,reads.clock_equal=serial==frame.serial&&time==frame.simulation_time)&&
+        (reads.physics_read_attempted=true,reads.physics_read_succeeded=memory::peek(frame.context+0x1414,s.physics));
+    reads.clock_serial=serial;reads.clock_time=time;
     human_native_handoff::Guard guard{s.now,s.sampled_ms,s.owner,s.sdk_device,s.gates&&s.configuration&&s.canonical&&!s.protected_owner&&s.clock_coherent,
         (input.buttons&~0x8100u)==0&&std::abs(input.left_x)<=.05f&&std::abs(input.left_y)<=.05f&&
         std::abs(input.right_x)<=.05f&&std::abs(input.right_y)<=.05f&&input.pedal<=.05f&&input.brake<=.05f&&
         input.left_trigger<=.05f&&input.right_trigger<=.05f,s.gesture_released};
     if(!r.human_native_input_ticket.serial) {
         if(!r.step_off_board.active()||!r.bike_parked)overlay::detail::cancel_human_native_handoff("prepared_step_off_no_longer_active");
-        else overlay::detail::guard_human_native_handoff(guard);
+        else overlay::detail::guard_human_native_handoff(guard,reads);
     }
-    else overlay::detail::update_human_native_handoff(s,guard);
+    else overlay::detail::update_human_native_handoff(s,guard,reads);
 }
 
 native_input_handoff::Sample human_native_return_sample(std::uintptr_t base,std::uintptr_t client,const NativeFrame& frame) noexcept {

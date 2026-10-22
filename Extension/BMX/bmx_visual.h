@@ -48,6 +48,11 @@ struct Frame {
     // Actual same-epoch Spring and bike observations. Default unrequested keeps
     // the existing one-body presentation byte-for-byte on its existing path.
     avatar_binding::Frame spring_avatar;
+    // Private coupled presentation only. Logical cues retain the epoch at
+    // which their command was evaluated and subsequently acknowledged; the
+    // pose solver joins it to the current actual Spring/bike successor.
+    bool coupled_posture_selected{}, coupled_motion_committed{};
+    native_coupled::policy::Epoch coupled_motion_epoch;
 };
 struct Publication {Frame frame;std::uint64_t revision{};bool available{};};
 // Client tick stages a frame, places its exact copy, then admits only the

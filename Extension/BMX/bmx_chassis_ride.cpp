@@ -7,6 +7,7 @@
 #include "Extension/Skater/no_bail.h"
 #include "Engine/Core/Platform/user_data_paths.h"
 #include "Engine/Game/BMX/bmx_chassis_control.h"
+#include "Engine/Game/BMX/bmx_chassis_receipt.h"
 #include "Engine/Game/BMX/bmx_landing_presentation.h"
 #include "Engine/Game/BMX/bmx_rider_posture_presentation.h"
 #include "Engine/Game/BMX/bmx_crank_presentation.h"
@@ -22,6 +23,7 @@
 #include <filesystem>
 #include <limits>
 #include <numbers>
+#include <optional>
 
 namespace dingosdk::bmx::chassis_ride {
 namespace {
@@ -90,6 +92,7 @@ struct State {
     rider_posture::State rider_posture;
     crank_presentation::State crank_presentation;
     control::Controller controller=new_controller();
+    std::optional<chassis_receipt::Queued> pending_command;
     std::array<tire::Wheel,2> wheels=control::proposed_wheels();
     Step last;
 };
@@ -108,6 +111,7 @@ void reset_controls(State& s) noexcept {
     s.shadow.reset();
 #endif
     s.mapper.reset();s.tricks.cancel();s.controller.reset();s.landing_approach.reset();s.settle_hold.reset();
+    s.pending_command.reset();
     s.last.frame.landing_compression=0;
     s.last.pump={};s.last.pump_force={};
     s.last.query_geometry_fresh=s.last.approach_selected=s.last.pre_contact_prediction_available=false;s.last.approach={};s.last.approach_microseconds=0;
@@ -310,6 +314,15 @@ Step update(std::uintptr_t base,const NativeFrame& rider,const RawInput& raw,dou
             return reject(s,base,rider,"invalid_measured_chassis_pose");
         const auto rider_target=add(bike_root,chassis::rotate_unit(rotation,{0,s.root_height,0}));
         if(s.token&&body.token!=s.token)return reject(s,base,rider,"native_chassis_token_changed");
+        if(s.pending_command) {
+            const auto producer=native_chassis::status();
+            const chassis_receipt::Observed actual{body.token,body.serial,producer.applications,
+                producer.last_serial,producer.hop_events,body.simulation_time,body.step_seconds,producer.failed};
+            const auto receipt=chassis_receipt::confirm(*s.pending_command,actual);
+            if(receipt==chassis_receipt::Result::confirmed)s.pending_command.reset();
+            else if(receipt!=chassis_receipt::Result::waiting)
+                return reject(s,base,rider,chassis_receipt::describe(receipt));
+        }
         if(s.observed) {
             if(body.serial==s.serial) {
                 auto duplicate=s.last;duplicate.command_submitted=duplicate.hop_applied=false;
@@ -509,10 +522,15 @@ Step update(std::uintptr_t base,const NativeFrame& rider,const RawInput& raw,dou
             approach_normal_adopted=solved.speculative_normal_mask!=0;
             approach_normal_issue="compliance_revoked_original_contact_model_retained";
         }
-        s.controller=committed_controller;
         const auto force=narrow(solved.force),torque=narrow(solved.torque),hop=narrow(solved.hop_impulse);
+        const auto producer_before=native_chassis::status();
+        const chassis_receipt::Queued queued{body.token,body.serial,producer_before.applications,
+            producer_before.hop_events,body.simulation_time,body.step_seconds,solved.hop_applied};
+        if(producer_before.failed||!chassis_receipt::valid(queued))
+            return reject(s,base,rider,"native_chassis_receipt_queue_unavailable");
         if(!native_chassis::submit(body,force,torque,hop,solved.hop_event_id))
             return reject(s,base,rider,"native_chassis_force_submission_rejected");
+        s.pending_command=queued;s.controller=committed_controller;
         
 #if defined(DINGOSDK_BMX_STANDALONE_MOVEMENT)
         s.shadow.compare_current(solved.force,solved.torque,solved.hop_impulse,actions.active,

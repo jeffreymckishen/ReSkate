@@ -5,6 +5,10 @@
 #include "bmx_rider_motion.h"
 #include "bmx_observed_posture.h"
 #include "Engine/Game/BMX/bmx_mount_transition.h"
+#if defined(DINGOSDK_BMX_STANDALONE_MOVEMENT) && defined(DINGOSDK_BMX_NATIVE_COUPLED)
+#include "bmx_coupled_posture_delta.h"
+#include <bmx/suspension.hpp>
+#endif
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -50,6 +54,7 @@ struct Result {
     bool posture_requested{},posture_fallback{};
     bool observed_requested{},observed_applied{};float observed_strength{};
     bool spring_requested{},spring_calibrated{},spring_applied{};float spring_fit_adjustment{};
+    bool coupled_posture_requested{},coupled_posture_applied{};
 };
 struct EntryContacts {
     std::uintptr_t entity{};std::uint64_t token{};
@@ -64,6 +69,7 @@ struct SpringBinding {
     Quat local_hip_basis{0,0,0,1};
     bool proximal_ready{},completed_pose_write{},last_pose_applied{};
     float fit_adjustment{},hand_error{},foot_error{};
+    bool coupled_posture_requested{},coupled_posture_applied{};
 };
 struct SpringTargets {Vec hip{},chest{};Quat hip_rotation{0,0,0,1},model_rotation{0,0,0,1};};
 inline Vec add(Vec a,Vec b) { for(unsigned i=0;i<3;++i)a[i]+=b[i];return a; }
@@ -117,6 +123,38 @@ inline std::vector<Transform> compose(std::span<const Bone> bones,const Rig& rig
     }
     return out;
 }
+#if defined(DINGOSDK_BMX_STANDALONE_MOVEMENT) && defined(DINGOSDK_BMX_NATIVE_COUPLED)
+inline coupled_posture::Delta sample_coupled_posture(std::span<const Bone> bones,const Rig& rig,
+        const visual::Frame& frame) {
+    coupled_posture::Motion logical;
+    logical.selected=frame.coupled_posture_selected;
+    logical.committed=frame.coupled_motion_committed;
+    logical.accepted_epoch=frame.coupled_motion_epoch;
+    logical.logical.valid=logical.committed;
+    logical.logical.actions.preload=frame.preload;
+    auto& trick=logical.logical.tricks;
+    trick.movement_id=static_cast<::bmx::detail::source::catalog::TrickId>(frame.movement_id);
+    trick.movement_phase=frame.movement_phase;trick.movement_progress=frame.movement_progress;
+    trick.movement_holding=frame.movement_holding;trick.movement_recovering=frame.movement_recovering;
+    // The source profile supplies procedural amplitudes, not this skater's
+    // anatomy. Measure all four segment lengths from the validated live rig.
+    // Its projected hand/foot targets are deliberately never adopted.
+    const auto profile=::bmx::streets_observed_v2();auto settings=profile.movement.rider;
+    const auto g=compose(bones,rig);
+    const auto average=[&](const auto& a,const auto& b,unsigned from,unsigned to) {
+        return .5*(length(sub(g[static_cast<std::size_t>(a[from])].position,g[static_cast<std::size_t>(a[to])].position))+
+                   length(sub(g[static_cast<std::size_t>(b[from])].position,g[static_cast<std::size_t>(b[to])].position)));
+    };
+    settings.upper_arm=average(rig.left_arm,rig.right_arm,0,1);
+    settings.forearm=average(rig.left_arm,rig.right_arm,1,2);
+    settings.thigh=average(rig.left_leg,rig.right_leg,0,1);
+    settings.shin=average(rig.left_leg,rig.right_leg,1,2);
+    coupled_posture::NeutralFrame neutral;
+    neutral.center_from_bike_root=profile.coupled.rider_neutral_com_from_root;
+    neutral.orientation_from_bike=profile.coupled.rider_orientation_from_chassis;
+    return coupled_posture::sample(logical,frame.spring_avatar.actual,settings,neutral);
+}
+#endif
 inline Quat bike_rotation(const visual::Frame& f) {
     if(f.chassis_quaternion_available) {
         Quat rotation{}; // solve() rejects invalid availability before any pose mutation.
@@ -702,6 +740,14 @@ inline Result solve(std::span<Bone> bones,const Rig& rig,const visual::Frame& fr
     }
     const float transition=std::clamp(frame.rider_blend,0.f,1.f);
     if(transition==0){result.ready=true;result.hand_contact=result.foot_contact=0;return result;}
+#if defined(DINGOSDK_BMX_STANDALONE_MOVEMENT) && defined(DINGOSDK_BMX_NATIVE_COUPLED)
+    coupled_posture::Delta procedural_delta;
+    // Entry and the genuine quiet calibration remain exact. Optional motion
+    // begins only after a completed native bound render; an invalid cue keeps
+    // the valid calibrated baseline, never an unbound avatar pose.
+    if(spring&&spring_binding->completed_pose_write&&frame.coupled_posture_selected)
+        procedural_delta=sample_coupled_posture(bones,rig,frame);
+#endif
     std::vector<Bone> original;
     if(transition<1) {original.reserve(joints.size());for(int i:joints)original.push_back(bones[static_cast<std::size_t>(i)]);}
     // Use the shipped bind orientation for the primary chain, preserving the live
@@ -727,7 +773,23 @@ inline Result solve(std::span<Bone> bones,const Rig& rig,const visual::Frame& fr
             std::copy(bones.begin(),bones.end(),candidate.begin());
             for(int i:joints)candidate[static_cast<std::size_t>(i)].rotation=rig.bind[static_cast<std::size_t>(i)];
             auto scaled=measured;scaled.strength=amount;
-            auto tried=solve_riding_candidate(candidate,rig,frame,amount,measured.available&&amount>0?&scaled:nullptr,spring);
+            const SpringTargets* candidate_spring=spring;
+#if defined(DINGOSDK_BMX_STANDALONE_MOVEMENT) && defined(DINGOSDK_BMX_NATIVE_COUPLED)
+            SpringTargets adjusted_spring;bool procedural_applied=false;
+            if(spring&&procedural_delta.ready) {
+                const auto targets=coupled_posture::apply(procedural_delta,frame.spring_avatar.actual.epoch,spring->hip,spring->chest,amount);
+                if(targets.ready) {
+                    adjusted_spring=*spring;adjusted_spring.hip=targets.hip;adjusted_spring.chest=targets.chest;
+                    candidate_spring=&adjusted_spring;
+                    procedural_applied=amount>0&&(procedural_delta.hip_world!=Vec{}||procedural_delta.chest_world!=Vec{});
+                }
+            }
+#endif
+            auto tried=solve_riding_candidate(candidate,rig,frame,amount,measured.available&&amount>0?&scaled:nullptr,candidate_spring);
+#if defined(DINGOSDK_BMX_STANDALONE_MOVEMENT) && defined(DINGOSDK_BMX_NATIVE_COUPLED)
+            tried.coupled_posture_requested=spring&&frame.coupled_posture_selected;
+            tried.coupled_posture_applied=procedural_applied;
+#endif
             tried.observed_requested=measured.available;tried.observed_applied=measured.available&&amount>0;
             tried.observed_strength=tried.observed_applied?amount:0;
             const unsigned attempts=result.posture_attempts+1;
@@ -766,6 +828,8 @@ inline Result solve(std::span<Bone> bones,const Rig& rig,const visual::Frame& fr
         spring_binding->last_pose_applied=result.spring_applied;
         spring_binding->fit_adjustment=result.spring_fit_adjustment;
         spring_binding->hand_error=result.hand_error;spring_binding->foot_error=result.foot_error;
+        spring_binding->coupled_posture_requested=result.coupled_posture_requested;
+        spring_binding->coupled_posture_applied=result.coupled_posture_applied;
     }
     if(result.ready&&transition<1) {
         for(std::size_t i=0;i<joints.size();++i) {

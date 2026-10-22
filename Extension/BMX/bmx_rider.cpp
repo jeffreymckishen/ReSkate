@@ -452,7 +452,8 @@ PoseMetrics metrics() noexcept {
 bool profiling_active() noexcept { return shared().profiling.load(std::memory_order_relaxed); }
 CoupledAvatarBindingStatus coupled_avatar_binding_status() noexcept {
     std::lock_guard lock(shared().mutex);const auto& b=shared().spring_binding;
-    return {b.root,b.pose_epoch,b.proximal_ready,b.completed_pose_write,b.last_pose_applied,b.fit_adjustment,b.hand_error,b.foot_error,shared().spring_presentation};
+    return {b.root,b.pose_epoch,b.proximal_ready,b.completed_pose_write,b.last_pose_applied,b.fit_adjustment,b.hand_error,b.foot_error,shared().spring_presentation,
+        b.coupled_posture_requested,b.coupled_posture_applied};
 }
 Json coupled_pose_diagnostic() noexcept {
     try {auto& d=shared().diagnostic;auto exits=Json::object();for(unsigned i=0;i<coupled_debug::names.size();++i)exits[coupled_debug::names[i]]=d.exits[i].load();

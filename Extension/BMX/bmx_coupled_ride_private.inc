@@ -116,6 +116,7 @@ Json report() {
             {"sampled_epoch",epoch_json(b.presentation.sampled_epoch)},{"source_lease_revision",b.presentation.source_lease_revision},
             {"render_clock_available",b.presentation.render_clock.available},{"render_serial",b.presentation.render_clock.serial},{"render_time",b.presentation.render_clock.time}}},
         {"actual_spring_applied",b.actual_spring_applied},{"proximal_ready",b.proximal_ready},{"proximal_fit_adjustment",b.proximal_fit_adjustment},
+        {"coupled_posture_requested",b.coupled_posture_requested},{"coupled_posture_applied",b.coupled_posture_applied},
         {"hand_error",b.hand_error},{"foot_error",b.foot_error},{"fall_momentum_transfer_verified",false},
         {"boundary","avatar flags represent completed SDK pose writes and all-part placement receipts; native GPU appearance, force adoption and fall momentum need separate actual qualification"}};
 }

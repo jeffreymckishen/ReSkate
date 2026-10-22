@@ -13,6 +13,7 @@ struct LastError {DWORD value=GetLastError();~LastError(){SetLastError(value);}}
 struct State {
     bool prepared{},active{},confirmed{},have_previous{};std::uintptr_t base{};NativeFrame owner;float root_height{};
     sc::Controller controller;std::optional<sc::Evaluation> pending;::bmx::CoupledOutput accepted;
+    nc::policy::Epoch accepted_epoch;
     nc::Frame previous;std::array<bail_policy::Policy,2> bail;Result last;
 };
 State& state(){static auto* value=new State;return *value;}
@@ -109,8 +110,16 @@ void measured_pose(const nc::Frame& pair,const cf::Converted& actual,Result& res
     // binding is unfinished. Never disguise the old rigid chassis avatar as Spring.
     frame.rider_mode=visual::RiderMode::none;
 }
+void accepted_posture(const State& s,visual::Frame& frame) noexcept {
+    wchar_t value[2]{};
+    frame.coupled_posture_selected=nc::controller_trial::selected()&&
+        GetEnvironmentVariableW(L"RESKATE_BMX_COUPLED_POSTURE",value,2)==1&&value[0]==L'1';
+    frame.coupled_motion_committed=s.confirmed;
+    frame.coupled_motion_epoch=s.accepted_epoch;
+}
 void present(State& s,const nc::Frame& pair,const cf::Converted& actual,const Contacts& contacts,Result& result) noexcept {
     measured_pose(pair,actual,result);auto& step=result.step;auto& frame=step.frame;
+    accepted_posture(s,frame);
     step.ready=true;step.control_active=true;step.issue="actual_coupled_physics_avatar_binding_unverified";
     for(unsigned i=0;i<2;++i){const auto& c=contacts[i];step.contact_hit[i]=c.contact.status==tire::ContactStatus::hit;
         step.actual_wheel_support[i]=step.contact_hit[i]&&c.separation<=.03;step.actual_support|=step.actual_wheel_support[i];
@@ -143,7 +152,7 @@ bool prepare(std::uintptr_t base,const NativeFrame& owner,const mount_pose::Seed
         if(!selected()||!owner.available||!owner.offboard||!std::isfinite(root_height)||root_height<0||root_height>2)return false;
         if(s.prepared){s.last.issue="already_prepared_restart_or_explicit_resume_required";return false;}
         if(!nc::acquire(base,owner,seed)){s.last.issue="paired_acquire_not_ready";return false;}
-        s.prepared=true;s.base=base;s.owner=owner;s.root_height=root_height;s.controller.reset();
+        s.prepared=true;s.base=base;s.owner=owner;s.root_height=root_height;s.controller.reset();s.confirmed=false;s.accepted_epoch={};
         for(auto& policy:s.bail)policy=bail_policy::Policy{};s.last.prepared=true;
         s.last.issue="genuine_pair_prepared_keyframed_avatar_entry_pending";return true;
     }catch(...){(void)reject(base,owner,"coupled_prepare_exception");return false;}
@@ -175,14 +184,14 @@ Result update(std::uintptr_t base,const NativeFrame& owner,const RawInput& input
             const auto advance=cf::pending_status(queued.epoch,queued.command.hop_part,pair.epoch,receipt);
             if(advance==cf::Pending::reject)return reject(base,owner,"coupled_pending_receipt_or_next_epoch_rejected");
             if(advance==cf::Pending::wait){
-                result.step=s.last.step;measured_pose(pair,actual,result);result.step.command_submitted=false;result.step.force={};result.step.torque={};result.step.hop_impulse={};
+                result.step=s.last.step;measured_pose(pair,actual,result);accepted_posture(s,result.step.frame);result.step.command_submitted=false;result.step.force={};result.step.torque={};result.step.hop_impulse={};
                 result.step.wheel_contacts_sampled=result.step.query_geometry_fresh=false;result.step.actual_support=false;result.step.actual_wheel_support={};
                 result.step.contact_hit={};result.step.has_ground=result.step.grounded=false;result.step.trick_events={};
                 result.issue="waiting_for_next_actual_native_body";result.step.issue=result.issue;s.last=result;return result;}
             sc::Observation actual_post{};actual_post.epoch=pair.epoch;actual_post.bodies=actual.bodies;
             actual_post.maximum_angular_speed=pair.maximum_angular_speed;actual_post.integrates_angular_accumulator=pair.integrates_angular_accumulator;
             if(!s.controller.acknowledge(receipt,actual_post))return reject(base,owner,"coupled_producer_or_actual_inertia_receipt_not_confirmed");
-            s.accepted=queued.output;s.confirmed=true;s.pending.reset();result.controller_committed=true;
+            s.accepted=queued.output;s.accepted_epoch=queued.epoch;s.confirmed=true;s.pending.reset();result.controller_committed=true;
         }
         Contacts contacts{};const float steer=s.confirmed?static_cast<float>(s.accepted.bike.steering_angle):0;
         for(unsigned i=0;i<2;++i)if(!wheel_query(pair,actual,owner,i,steer,contacts[i],result.step))return reject(base,owner,"coupled_wheel_query_unavailable");

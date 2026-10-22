@@ -100,5 +100,6 @@ inline Json fixture_json(const Fixture& f){auto bones=Json::array(),left=Json::a
         {"result",Json{{"ready",q.ready},{"hand_error",q.hand_error},{"foot_error",q.foot_error},{"hand_contact",q.hand_contact},{"foot_contact",q.foot_contact},
             {"posture_attempts",q.posture_attempts},{"posture_scale",q.posture_scale},{"posture_fit_adjustment",q.posture_fit_adjustment},{"posture_gaze",q.posture_gaze},
             {"posture_requested",q.posture_requested},{"posture_fallback",q.posture_fallback},{"observed_requested",q.observed_requested},{"observed_applied",q.observed_applied},
-            {"observed_strength",q.observed_strength},{"spring_requested",q.spring_requested},{"spring_calibrated",q.spring_calibrated},{"spring_applied",q.spring_applied},{"spring_fit_adjustment",q.spring_fit_adjustment}}}};}
+            {"observed_strength",q.observed_strength},{"spring_requested",q.spring_requested},{"spring_calibrated",q.spring_calibrated},{"spring_applied",q.spring_applied},{"spring_fit_adjustment",q.spring_fit_adjustment},
+            {"coupled_posture_requested",q.coupled_posture_requested},{"coupled_posture_applied",q.coupled_posture_applied}}}};}
 }

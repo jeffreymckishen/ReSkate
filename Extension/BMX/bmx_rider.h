@@ -41,6 +41,7 @@ struct CoupledAvatarBindingStatus {
     bool proximal_ready{},completed_pose_write{},actual_spring_applied{};
     float proximal_fit_adjustment{},hand_error{},foot_error{};
     native_render_phase::Receipt presentation; // sampled pair epoch and actual render clock stay distinct
+    bool coupled_posture_requested{},coupled_posture_applied{};
 };
 // Bounded SDK receipt, never fresh native proof. Caller samples current actual
 // pair and uses avatar_binding::sample; this cannot enable physical adoption.

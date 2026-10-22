@@ -13,7 +13,9 @@ function(dingosdk_add_bmx_tests source_root)
             COMMAND "${Python3_EXECUTABLE}" -B "${source_root}/contrib/bmx-lab/Test-BmxApproachLeg.py")
         add_test(NAME bmx_walk_leg_python
             COMMAND "${Python3_EXECUTABLE}" -B "${source_root}/contrib/bmx-lab/Test-BmxWalkLeg.py")
-        set_tests_properties(bmx_switch_leg_python bmx_recovery_leg_python bmx_approach_leg_python bmx_walk_leg_python PROPERTIES
+        add_test(NAME bmx_posture_leg_python
+            COMMAND "${Python3_EXECUTABLE}" -B "${source_root}/contrib/bmx-lab/Test-BmxPostureLeg.py")
+        set_tests_properties(bmx_switch_leg_python bmx_recovery_leg_python bmx_approach_leg_python bmx_walk_leg_python bmx_posture_leg_python PROPERTIES
             WORKING_DIRECTORY "${source_root}"
             ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1"
             LABELS "BMX;Python"

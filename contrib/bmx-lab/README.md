@@ -1,6 +1,8 @@
 # BMX development
 
 The `BMX` branch includes an in-game offline prototype and a separate synthetic controls lab.
+Start with [integration-direction.md](integration-direction.md) for the source-based architecture
+review, backend boundaries, build provenance and next acceptance milestones.
 Use [native-prototype.md](native-prototype.md) for the game setup, current evidence and limits,
 and [controls-and-reference.md](controls-and-reference.md) for bindings and BMX Streets references.
 The broader release scope remains in [the feature plan](../bmx-plan.md).
@@ -264,6 +266,41 @@ Y/Triangle dismounts to walking. Left stick owns handlebars; right stick owns re
 F6 or `bmx toggle` requests a switch between BMX and the native skateboard; Y returns to walking.
 Switch guards pass source fixtures and the internal round trip was verified in run 167.
 Physical-controller transition quality remains to be verified.
+
+## Actual LB+Y switch test
+
+Use the isolated human-switch route for each separately observed direction:
+
+```powershell
+.\contrib\bmx-lab\Start-BmxGame.ps1 -Ride -NativeChassis -HumanNativeSwitch `
+  -ProfileName bmx-user-data-human-native-test
+```
+
+After verifying the current process/runtime owner and stopped equipment state, create fresh
+owner, ledger, gate and nonce values as described in [virtual-gamepad.md](virtual-gamepad.md):
+
+```powershell
+build\bmx-gamepad-runtime\Scripts\python.exe -B contrib\bmx-lab\Bmx-SwitchLeg.py `
+  --execute --owner $ownerReceipt --ledger $newLedger --start-gate $newGate --start-nonce $nonce
+```
+
+The wrapper pins the unchanged base driver and sends one LB+Y chord in six seconds.
+It keeps the bootstrapped controller connected and neutral for two seconds before publishing
+`ready.json`, allowing SDK device discovery and fresh-edge arming. Close the console before
+publishing the matching atomic GO. The total gate budget remains 60 seconds; the report
+lateness limit remains 120 ms. The neutral wait does not establish native input consumption.
+
+A forward switch can take about four seconds, including board dwell. Wait for the actual
+`native_handoff_complete=true` receipt with 103→100 and at least 2.25 seconds of board dwell
+before requesting the reverse through a fresh single-leg invocation. On return, require
+`reverse_native504_observed=true` and the subsequent natural BMX mount completion. Archive
+the controller ledgers, native receipts and continuous recording together. These inputs use
+a virtual controller; visible grip/pedal/deck alignment and physical-controller acceptance
+require separate review.
+
+The wrapper defaults to a dry-run without `--execute`. Its 12 fake-only tests are registered
+as `bmx_switch_leg_python` when CMake finds Python 3.11 or newer. An explicit
+`-DPython3_EXECUTABLE=<interpreter>` selects the test interpreter; no driver is loaded by them.
 
 ## Standalone controls lab
 

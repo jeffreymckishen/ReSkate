@@ -1,6 +1,18 @@
 # Shared by the native runtime build and the standalone BMX development harness.
 function(dingosdk_add_bmx_tests source_root)
     include("${source_root}/cmake/BmxStandalone.cmake")
+    # Optional pure Python coverage; no controller package or driver is needed.
+    find_package(Python3 3.11 QUIET COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        file(MAKE_DIRECTORY "${source_root}/build/bmx")
+        add_test(NAME bmx_switch_leg_python
+            COMMAND "${Python3_EXECUTABLE}" -B "${source_root}/contrib/bmx-lab/Test-BmxSwitchLeg.py")
+        set_tests_properties(bmx_switch_leg_python PROPERTIES
+            WORKING_DIRECTORY "${source_root}"
+            ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1"
+            LABELS "BMX;Python"
+            TIMEOUT 30)
+    endif()
     if(DINGOSDK_BMX_STANDALONE_MOVEMENT AND DINGOSDK_BMX_NATIVE_COUPLED)
         dingosdk_require_bmx_movement("${source_root}")
         add_executable(dingosdk_bmx_coupled_ride_frame_tests "${source_root}/Extension/BMX/Test/bmx_coupled_ride_frame_tests.cpp")

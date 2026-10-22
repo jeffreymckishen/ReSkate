@@ -49,6 +49,10 @@ development tools. It is an **experimental offline prototype**. Handling, ramp r
 collisions, rider animation and equipment transitions are still being developed. The normal
 ReSkate release download does not contain this branch's complete BMX setup.
 
+The [current integration direction](contrib/bmx-lab/integration-direction.md) compares the
+existing backends, explains the pinned movement-source build, and sets the next acceptance
+milestones. It distinguishes ordinary native-chassis riding from private paired-body trials.
+
 ### What has been added
 
 | Area | Work included on this branch |

@@ -3058,7 +3058,7 @@ void poll_human_native_input_handoff(std::uintptr_t base,std::uintptr_t client) 
             }else ++r.human_native_report_drops;
         }catch(...){++r.human_native_report_drops;}
         message(overlay::detail::human_native_handoff_complete()?"Native skateboard equipped. LB/L1 + Y/Triangle: bike.":
-            "Native skateboard switch canceled. On foot; no automatic retry. See BMX status.",true);return;
+            "Native skateboard switch canceled. No automatic retry. See BMX status.",true);return;
     }
     const auto frame=read_native_frame(base,client);const auto body=native_chassis::released_ownership_status();
     const auto physical=native_chassis::status();const auto publication=rider::private_handoff_publication();

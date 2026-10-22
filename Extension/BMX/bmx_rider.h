@@ -50,5 +50,8 @@ struct CoupledAvatarBindingStatus {
 CoupledAvatarBindingStatus coupled_avatar_binding_status() noexcept;
 // Deferred client-thread JSON; one bounded endpoint snapshot, no callback I/O.
 Json coupled_pose_diagnostic() noexcept;
+// Explicit private client-thread command only. No callback serialization/I/O.
+Json forearm_pose_diagnostic() noexcept;
+std::string export_private_forearm_diagnostic() noexcept;
 std::string status();
 }

@@ -1,5 +1,6 @@
 #include "bmx_rider.h"
 #include "bmx_coupled_pose_debug.h"
+#include "bmx_forearm_diagnostic.h"
 #include "bmx_board_visibility.h"
 #include "bmx_rider_pose.h"
 #include "bmx_pose_write.h"
@@ -62,6 +63,9 @@ struct Shared {
     pose_write::PlacementGate placement; // mutex protected, separate from logical mount contacts
     pose::Result forearm_receipt;std::uint64_t forearm_receipt_revision{}; // completed render only, mutex protected
     std::atomic<std::uint64_t> forearm_attempts{},forearm_unrepaired{};
+    forearm_debug::Store forearm_diagnostic;
+    std::atomic<DWORD> forearm_client_thread{};
+    std::atomic<bool> forearm_export_attempted{};
 };
 Shared& shared() { static auto* value=new Shared;return *value; }
 struct LastError { DWORD value=GetLastError(); ~LastError(){SetLastError(value);} };
@@ -180,7 +184,8 @@ void apply_rider_pose(std::uintptr_t component, bool rendering, std::uintptr_t r
         trace.at(coupled_debug::Stage::bones);
         std::vector<Bone> bones(pose.count);if(!read(pose.buffer,bones.data(),bones.size()*sizeof(Bone)))return;
         const auto original=bones;
-        trace.capture(original,layout->rig,frame,entry,spring_binding,observed_posture_selected());
+        const bool observed_selected=observed_posture_selected();
+        trace.capture(original,layout->rig,frame,entry,spring_binding,observed_selected);
         grip_probe::Token evidence;
         if(rendering)grip_probe::begin(evidence,frame,layout->rig,original,evidence_owner,component,holder,pose.buffer,render_data,frame_revision,contact_revision,evidence_before);
         const bool had_spring_binding=spring_binding.root.ready;
@@ -208,13 +213,18 @@ void apply_rider_pose(std::uintptr_t component, bool rendering, std::uintptr_t r
         // Native parent-local quaternions compose through AITrajectory into world
         // space (the same contract used by client_first_person.cpp).
         pose::Result solved;
+        std::optional<std::pair<pose::EntryContacts,pose::SpringBinding>> forearm_input;
+        if(rendering&&frame.forearm_repair_selected)forearm_input.emplace(entry,spring_binding);
         {
             DINGO_PROFILE_ZONE("hooks/BMX/rider pose/solve");
             trace.at(coupled_debug::Stage::solve);
-            solved=pose::solve(bones,layout->rig,frame,&entry,observed_posture_selected(),frame.spring_avatar.requested?&spring_binding:nullptr);
+            solved=pose::solve(bones,layout->rig,frame,&entry,observed_selected,frame.spring_avatar.requested?&spring_binding:nullptr);
             trace.solved(solved);
         }
         evidence.solution(solved,bones);
+        auto forearm=shared().forearm_diagnostic.observe(rendering,frame,observed_selected,layout->rig,original,
+            forearm_input?forearm_input->first:entry,forearm_input?forearm_input->second:spring_binding,solved,
+            {frame_revision,contact_revision,component,holder,pose.buffer,render_data},trace.stage);
         if(rendering&&solved.forearm_repair_attempted)shared().forearm_attempts.fetch_add(1,std::memory_order_relaxed);
         if(rendering&&solved.forearm_repair_requested&&!solved.ready)shared().forearm_unrepaired.fetch_add(1,std::memory_order_relaxed);
         if(solved.posture_requested&&!solved.ready)shared().posture_rejections.fetch_add(1,std::memory_order_relaxed);
@@ -320,6 +330,7 @@ void apply_rider_pose(std::uintptr_t component, bool rendering, std::uintptr_t r
         trace.at(coupled_debug::Stage::completed);
         shared().updates.fetch_add(1,std::memory_order_relaxed);
         if(rendering){
+            forearm.completed();
             shared().forearm_receipt=solved;shared().forearm_receipt_revision=frame_revision;
             const auto count=shared().render_updates.fetch_add(1,std::memory_order_relaxed)+1;
             shared().render_metrics={solved.hand_error,solved.foot_error,owner,GetTickCount64(),count,true,solved.hand_contact,solved.foot_contact,
@@ -501,6 +512,43 @@ Json coupled_pose_diagnostic() noexcept {
             {"fixture_claimed",d.claimed.load()},{"capture_failed",d.capture_failed.load()},{"first_endpoint_fixture",saved?coupled_debug::fixture_json(*saved):Json(nullptr)}};
     }catch(...){return Json{{"issue","bounded_coupled_pose_diagnostic_export_failed"}};}
 }
+Json forearm_pose_diagnostic() noexcept {
+    try {
+        if(!forearm_repair_selected_client()||!shared().forearm_client_thread.load()||
+           shared().forearm_client_thread.load()!=GetCurrentThreadId())return Json{{"issue","private_forearm_client_scope_required"}};
+        auto result=shared().forearm_diagnostic.report();result["process_id"]=GetCurrentProcessId();
+        result["prepared_client_thread"]=shared().forearm_client_thread.load();
+        result["export_thread"]=GetCurrentThreadId();return result;
+    }catch(...){return Json{{"issue","private_forearm_diagnostic_serialization_failed"}};}
+}
+std::string export_private_forearm_diagnostic() noexcept {
+    LastError error;
+    try {
+        if(!forearm_repair_selected_client()||!shared().forearm_client_thread.load()||
+           shared().forearm_client_thread.load()!=GetCurrentThreadId())return "Forearm dump refused: selected private profile and its client thread required.";
+        if(shared().forearm_export_attempted.exchange(true))return "Forearm dump refused: this process already attempted its one export.";
+        const auto root=user_data::override_root();
+        constexpr wchar_t exact[]=L"C:\\Users\\Jeffr\\Desktop\\reskate\\build\\bmx-user-data-forearm-repair-test";
+        if(!root||_wcsicmp(root->c_str(),exact)!=0)return "Forearm dump refused: exact validated private root unavailable.";
+        const auto directory=*root/L"bmx-traces";std::filesystem::create_directories(directory);
+        const auto attributes=GetFileAttributesW(directory.c_str());
+        if(attributes==INVALID_FILE_ATTRIBUTES||!(attributes&FILE_ATTRIBUTE_DIRECTORY)||(attributes&FILE_ATTRIBUTE_REPARSE_POINT))
+            return "Forearm dump refused: diagnostic directory unavailable or redirected.";
+        const auto text=forearm_pose_diagnostic().dump(2);
+        if(text.empty()||text.size()>2*1024*1024||!forearm_repair_selected_client())return "Forearm dump refused: report size or private scope changed.";
+        const auto destination=directory/(L"forearm-"+std::to_wstring(GetCurrentProcessId())+L".json");
+        const auto temporary=std::filesystem::path(destination.native()+L".tmp");
+        const auto file=CreateFileW(temporary.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr);
+        if(file==INVALID_HANDLE_VALUE)return "Forearm dump refused: preserve existing export or failed temporary file.";
+        DWORD written{};const bool complete=WriteFile(file,text.data(),static_cast<DWORD>(text.size()),&written,nullptr)&&
+            written==text.size()&&FlushFileBuffers(file);
+        const bool closed=CloseHandle(file)!=FALSE;
+        if(!complete||!closed)return "Forearm dump failed: temporary write, flush or close failed; no retry.";
+        if(!MoveFileExW(temporary.c_str(),destination.c_str(),MOVEFILE_WRITE_THROUGH))
+            return "Forearm dump failed: atomic non-overwriting publish failed; temporary evidence retained.";
+        return "Saved private forearm diagnostic: "+destination.string();
+    }catch(...){return "Forearm dump failed; no native action or automatic retry.";}
+}
 std::string status() {
     LastError error;const auto& selected=comparison();
     const auto contact=metrics();std::uint64_t revision{},repair_revision{};bool admitted{},repair_selected{};pose::Result repair;
@@ -569,6 +617,7 @@ void publish(const visual::Frame& frame) noexcept {
     grip_probe::client_publish(frame);
     shared().diagnostic.active.store(coupled_debug_selected()&&frame.active&&frame.spring_avatar.requested);
     shared().profiling.store(frame.active&&frame.entity!=0,std::memory_order_relaxed);
+    bool repair_selected{};
     {std::lock_guard lock(shared().mutex);
         if(!frame.active||!frame.spring_avatar.requested||frame.rider_mode!=visual::RiderMode::riding||
            frame.entity!=shared().frame.entity||frame.mount_progress<1||
@@ -581,8 +630,14 @@ void publish(const visual::Frame& frame) noexcept {
             shared().mount_contacts={};++shared().contact_revision;
         }
         shared().frame_revision=shared().placement.publish(frame.active,frame.entity);
-        shared().frame=frame;shared().frame.forearm_repair_selected=frame.active&&forearm_repair_selected_client();
+        shared().frame=frame;shared().frame.forearm_repair_selected=repair_selected=frame.active&&forearm_repair_selected_client();
         shared().at=std::chrono::steady_clock::now();}
+    if(repair_selected){
+        const auto thread=GetCurrentThreadId();DWORD unset{};
+        shared().forearm_client_thread.compare_exchange_strong(unset,thread);
+        if(shared().forearm_client_thread.load()==thread)if(const auto layout=shared().layout.load())
+            shared().forearm_diagnostic.prepare(layout->rig);
+    }
     if(!frame.active||!frame.entity)return;
     try {
         std::call_once(shared().preparation,prepare);

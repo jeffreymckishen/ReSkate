@@ -34,6 +34,10 @@ void register_bmx_commands(Commands& registry) {
         out("The bike uses native world rendering. BMX trick tallies are separate from Skate scoring; grinds and multiplayer are unfinished.");
     };
     registry.add(std::move(status));
+    auto forearm_dump=action("bmx forearm-dump", "Save one selected private forearm diagnostic; no input or pose change", Group::movement);
+    forearm_dump.execution=Execution::game_thread;
+    forearm_dump.run=[](const Model&,const Values&,const Output& out){out(bmx::rider::export_private_forearm_diagnostic());};
+    registry.add(std::move(forearm_dump));
     auto grip_arm=action("bmx grip-probe arm", "Arm one passive stationary CPU grip capture in its explicitly selected private profile", Group::movement);
     grip_arm.execution=Execution::local;
     grip_arm.run=[](const Model&,const Values&,const Output& out){

@@ -15,7 +15,9 @@ function(dingosdk_add_bmx_tests source_root)
             COMMAND "${Python3_EXECUTABLE}" -B "${source_root}/contrib/bmx-lab/Test-BmxWalkLeg.py")
         add_test(NAME bmx_posture_leg_python
             COMMAND "${Python3_EXECUTABLE}" -B "${source_root}/contrib/bmx-lab/Test-BmxPostureLeg.py")
-        set_tests_properties(bmx_switch_leg_python bmx_recovery_leg_python bmx_approach_leg_python bmx_walk_leg_python bmx_posture_leg_python PROPERTIES
+        add_test(NAME bmx_posture_capture_leg_python
+            COMMAND "${Python3_EXECUTABLE}" -B "${source_root}/contrib/bmx-lab/Test-BmxPostureCaptureLeg.py")
+        set_tests_properties(bmx_switch_leg_python bmx_recovery_leg_python bmx_approach_leg_python bmx_walk_leg_python bmx_posture_leg_python bmx_posture_capture_leg_python PROPERTIES
             WORKING_DIRECTORY "${source_root}"
             ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1"
             LABELS "BMX;Python"
@@ -212,6 +214,16 @@ function(dingosdk_add_bmx_tests source_root)
     add_test(NAME bmx_uphill_forearm_repair COMMAND dingosdk_bmx_uphill_forearm_repair_tests)
     set_tests_properties(bmx_uphill_forearm_repair PROPERTIES TIMEOUT 120 LABELS "BMX")
     find_package(Threads REQUIRED)
+    add_executable(dingosdk_bmx_forearm_diagnostic_tests "${source_root}/Extension/BMX/Test/bmx_forearm_diagnostic_tests.cpp")
+    target_compile_features(dingosdk_bmx_forearm_diagnostic_tests PRIVATE cxx_std_20)
+    target_include_directories(dingosdk_bmx_forearm_diagnostic_tests PRIVATE "${source_root}")
+    if(TARGET dingosdk_json)
+        target_link_libraries(dingosdk_bmx_forearm_diagnostic_tests PRIVATE dingosdk_json Threads::Threads)
+    else()
+        target_link_libraries(dingosdk_bmx_forearm_diagnostic_tests PRIVATE dingosdk_bmx_pose_debug_json Threads::Threads)
+    endif()
+    add_test(NAME bmx_forearm_diagnostic COMMAND dingosdk_bmx_forearm_diagnostic_tests)
+    set_tests_properties(bmx_forearm_diagnostic PROPERTIES TIMEOUT 30 LABELS "BMX")
     add_executable(dingosdk_bmx_pose_compose_cache_tests "${source_root}/Extension/BMX/Test/bmx_pose_compose_cache_tests.cpp")
     target_compile_features(dingosdk_bmx_pose_compose_cache_tests PRIVATE cxx_std_20)
     target_include_directories(dingosdk_bmx_pose_compose_cache_tests PRIVATE "${source_root}")

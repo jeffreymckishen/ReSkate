@@ -442,6 +442,8 @@ void prepare(){
 }
 }
 void finish_private_grip_probe() noexcept {grip_probe::request_finish_client();}
+bool arm_private_stationary_grip_probe() noexcept {return grip_probe::request_stationary_arm();}
+std::string private_stationary_grip_probe_status() {return grip_probe::stationary_status();}
 bool available() noexcept {return shared().registered.load()&&static_cast<bool>(shared().layout.load());}
 std::uint64_t updates() noexcept {return shared().updates.load(std::memory_order_relaxed);}
 std::uint64_t render_updates() noexcept {return shared().render_updates.load(std::memory_order_relaxed);}

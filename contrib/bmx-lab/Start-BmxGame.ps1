@@ -1,11 +1,11 @@
-param([switch]$GripRequestHud, [switch]$GripProbe, [switch]$ApproachWitness, [switch]$ApproachNormal, [switch]$ContactCompliance, [switch]$LandingContactCompliance, [switch]$IntentActivation, [switch]$ImpactRecovery, [switch]$GetUpPulse, [switch]$PostFallRemountTest, [switch]$PhaseProbe, [switch]$FirstMountProducerProbe, [ValidateSet('Default','RenderOnly','None')][string]$RiderPoseMode = 'Default', [ValidateSet('Default','PreserveSuppliedBasis')][string]$MotionBasisMode = 'Default', [switch]$IntentObserver, [switch]$BindingObserver, [switch]$CatalogTest, [switch]$NativeFallTest, [ValidateSet('','inverted','side')][string]$ImpactTest = '', [switch]$ProfilePerformance, [switch]$Ride, [switch]$UnattendedTest, [switch]$SwitchTest, [switch]$QuickSwitchTest, [switch]$NativeInputHandoff, [switch]$HumanNativeSwitch, [ValidateSet('None','QuickSwitch','NativeOnly')][string]$BoardHandoffMode = 'None', [switch]$NativeBoardControl, [switch]$DeferNativeBoardArm, [switch]$NativeChassis, [switch]$TrickTest, [switch]$RampTest, [switch]$RampRideTest, [switch]$ChassisProbe, [switch]$ChassisPulse, [switch]$ChassisCalibration, [switch]$SmokeTest, [switch]$NativeTestSkater, [switch]$NativeStartupDelay, [switch]$NativePlayerStartup, [switch]$NativeObserveOnly, [switch]$NativeLocalProfile, [switch]$DisableNativeLocalProfile, [switch]$UseSteam, [switch]$UseLooseFiles, [ValidatePattern('^[A-Za-z0-9_-]+$')][string]$ProfileName = 'bmx-user-data', [ValidatePattern('^[A-Za-z0-9_.-]*$')][string]$Map = '', [string]$ArtifactDirectory = 'build\vs2022-x64\Release', [string]$CaptureGateDirectory = '', [ValidatePattern('^$|^[0-9a-f]{32}$')][string]$CaptureGateNonce = '', [ValidateRange(30,600)][int]$CaptureGateTimeoutSeconds = 180)
+param([switch]$StationaryGripProbe, [switch]$GripRequestHud, [switch]$GripProbe, [switch]$ApproachWitness, [switch]$ApproachNormal, [switch]$ContactCompliance, [switch]$LandingContactCompliance, [switch]$IntentActivation, [switch]$ImpactRecovery, [switch]$GetUpPulse, [switch]$PostFallRemountTest, [switch]$PhaseProbe, [switch]$FirstMountProducerProbe, [ValidateSet('Default','RenderOnly','None')][string]$RiderPoseMode = 'Default', [ValidateSet('Default','PreserveSuppliedBasis')][string]$MotionBasisMode = 'Default', [switch]$IntentObserver, [switch]$BindingObserver, [switch]$CatalogTest, [switch]$NativeFallTest, [ValidateSet('','inverted','side')][string]$ImpactTest = '', [switch]$ProfilePerformance, [switch]$Ride, [switch]$UnattendedTest, [switch]$SwitchTest, [switch]$QuickSwitchTest, [switch]$NativeInputHandoff, [switch]$HumanNativeSwitch, [ValidateSet('None','QuickSwitch','NativeOnly')][string]$BoardHandoffMode = 'None', [switch]$NativeBoardControl, [switch]$DeferNativeBoardArm, [switch]$NativeChassis, [switch]$TrickTest, [switch]$RampTest, [switch]$RampRideTest, [switch]$ChassisProbe, [switch]$ChassisPulse, [switch]$ChassisCalibration, [switch]$SmokeTest, [switch]$NativeTestSkater, [switch]$NativeStartupDelay, [switch]$NativePlayerStartup, [switch]$NativeObserveOnly, [switch]$NativeLocalProfile, [switch]$DisableNativeLocalProfile, [switch]$UseSteam, [switch]$UseLooseFiles, [ValidatePattern('^[A-Za-z0-9_-]+$')][string]$ProfileName = 'bmx-user-data', [ValidatePattern('^[A-Za-z0-9_.-]*$')][string]$Map = '', [string]$ArtifactDirectory = 'build\vs2022-x64\Release', [string]$CaptureGateDirectory = '', [ValidatePattern('^$|^[0-9a-f]{32}$')][string]$CaptureGateNonce = '', [ValidateRange(30,600)][int]$CaptureGateTimeoutSeconds = 180)
 $ErrorActionPreference = 'Stop'
 if ($HumanNativeSwitch -and (-not $Ride -or -not $NativeChassis -or $ProfileName -cnotin @('bmx-user-data-working-profile','bmx-user-data-human-native-test') -or
     $BoardHandoffMode -cne 'None' -or $NativeInputHandoff -or $NativeBoardControl -or $DeferNativeBoardArm -or
     $QuickSwitchTest -or $SwitchTest -or $UnattendedTest -or $RampTest -or $RampRideTest -or $ChassisProbe -or
     $ChassisPulse -or $ChassisCalibration -or $SmokeTest -or $TrickTest -or $NativeObserveOnly -or $NativeFallTest -or
     $IntentActivation -or $ImpactRecovery -or $GetUpPulse -or $PostFallRemountTest -or $PhaseProbe -or $FirstMountProducerProbe -or
-    $GripProbe -or $GripRequestHud -or $ApproachWitness -or $ApproachNormal -or $ContactCompliance -or $LandingContactCompliance -or
+    $StationaryGripProbe -or $GripProbe -or $GripRequestHud -or $ApproachWitness -or $ApproachNormal -or $ContactCompliance -or $LandingContactCompliance -or
     $IntentObserver -or $BindingObserver -or $CatalogTest -or $ImpactTest -or $NativeTestSkater -or $NativeStartupDelay -or
     $NativePlayerStartup -or $UseSteam -or $UseLooseFiles -or $DisableNativeLocalProfile -or $Map -or
     $RiderPoseMode -cne 'Default' -or $MotionBasisMode -cne 'Default')) {
@@ -57,6 +57,20 @@ $bmxBoardOptions=@{
     RiderPoseMode=$RiderPoseMode;MotionBasisMode=$MotionBasisMode;ImpactTest=$ImpactTest;Map=$Map
 }
 $bmxBoardSelection=Get-BmxBoardHandoffSelection $BoardHandoffMode ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))) $ProfileName $bmxBoardOptions
+. (Join-Path $PSScriptRoot 'StationaryGripEvidence.ps1')
+$stationaryOptions=$bmxBoardOptions.Clone()
+foreach($name in @('HumanNativeSwitch','NativeInputHandoff','GripRequestHud','ApproachWitness','ApproachNormal','ContactCompliance','LandingContactCompliance')) {
+    $stationaryOptions[$name]=[bool](Get-Variable -Name $name -ValueOnly)
+}
+$stationaryOptions.BoardHandoffMode=$BoardHandoffMode
+$stationaryOptions.CaptureGateDirectory=$CaptureGateDirectory;$stationaryOptions.CaptureGateNonce=$CaptureGateNonce
+$stationaryEnvironment=@{}
+foreach($key in @('RESKATE_BMX_NATIVE_COUPLED','RESKATE_BMX_COUPLED_RIDE','RESKATE_BMX_COUPLED_CONTROLLER_TRIAL',
+    'RESKATE_BMX_COUPLED_FORCE_PROBE','RESKATE_BMX_COUPLED_CALIBRATION','RESKATE_BMX_COUPLED_POSTURE',
+    'RESKATE_BMX_PROP_TRANSFORM_TRACE','RESKATE_BMX_OBSERVED_POSTURE')) {
+    $stationaryEnvironment[$key]=[string][Environment]::GetEnvironmentVariable($key)
+}
+Assert-BmxStationaryGripSelection ([bool]$StationaryGripProbe) ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))) $ProfileName $stationaryOptions $stationaryEnvironment
 
 
 # This is an explicit private synthetic source, never a controller emulator.
@@ -270,6 +284,7 @@ $start.Environment['RESKATE_BMX_FLOW_DIAGNOSTICS'] = if ($UnattendedTest -or $Sw
 $start.Environment['RESKATE_BMX_RAMP_TEST'] = if ($RampTest) { '1' } else { '0' }
 $start.Environment['RESKATE_BMX_RAMP_RIDE'] = if ($RampRideTest) { '1' } else { '0' }
 $start.Environment['RESKATE_BMX_GRIP_PROBE'] = if ($GripProbe) { '1' } else { '0' }
+Set-BmxStationaryGripEnvironment $start.Environment ([bool]$StationaryGripProbe)
 # Clear inherited diagnostic state even on ordinary/default launches.
 $start.Environment['RESKATE_BMX_GRIP_REQUEST_HUD'] = if ($GripRequestHud) { '1' } else { '0' }
 $start.Environment['RESKATE_BMX_CHASSIS_PROBE'] = if ($ChassisProbe) { '1' } else { '0' }

@@ -109,10 +109,12 @@ struct Store {
     std::atomic_flag busy=ATOMIC_FLAG_INIT;
     std::atomic<bool> capture_done{};
     policy::Window window;
+    policy::StationaryWindow stationary_window;
     std::array<Record,policy::capacity> records{};
     std::array<MetadataSnapshot,2> metadata{};
     std::array<int,rig_count> parents{};std::array<pose::Quat,rig_count> bind{};
     std::array<int,3> left_arm{},right_arm{},left_leg{},right_leg{};
+    std::array<std::array<int,4>,5> left_fingers{},right_fingers{};
     int hips{},head{};std::array<int,4> spine{};std::array<int,2> neck{},shoulders{},toe_base{};
 };
 struct Shared {
@@ -120,10 +122,63 @@ struct Shared {
     std::uintptr_t caller_image_base{};bool caller_image_verified{};
     DWORD client_thread{};std::uint64_t process_creation{};bool ever_active{},last_active{},finish_requested{},export_attempted{};
     std::atomic<std::uint64_t> contention{};
+    bool stationary{}; // immutable before release-publishing store
+    std::atomic<bool> scope_valid{},arm_used{},arm_requested{};
 };
 inline Shared& shared(){static auto* s=new Shared;return *s;}
 struct ErrorGuard {DWORD value=GetLastError();~ErrorGuard(){SetLastError(value);}};
 inline bool flag(const wchar_t* name) noexcept {wchar_t v[2]{};return GetEnvironmentVariableW(name,v,2)==1&&v[0]==L'1';}
+inline bool value_is(const wchar_t* name,const wchar_t* expected) noexcept {
+    wchar_t v[64]{};const auto n=GetEnvironmentVariableW(name,v,64);return n&&n<64&&wcscmp(v,expected)==0;
+}
+inline bool nonzero_setting(const wchar_t* name) noexcept {
+    wchar_t v[4]{};const auto n=GetEnvironmentVariableW(name,v,4);return n&&!(n==1&&v[0]==L'0');
+}
+inline bool stationary_root(const std::filesystem::path& root) noexcept {
+    return _wcsicmp(root.c_str(),L"C:\\Users\\Jeffr\\Desktop\\reskate\\build\\bmx-user-data-grip-stationary-test")==0;
+}
+inline bool stationary_scope() noexcept {
+    try {
+        const auto root=user_data::override_root();
+        bool conflict=false;
+        for(const auto* key:{L"RESKATE_BMX_GRIP_PROBE",L"RESKATE_BMX_RAMP_RIDE",L"RESKATE_BMX_AUTOMATED_RIDE",
+            L"RESKATE_BMX_HUMAN_NATIVE_SWITCH",L"RESKATE_BMX_NATIVE_INPUT_HANDOFF",L"RESKATE_BMX_NATIVE_COUPLED",
+            L"RESKATE_BMX_COUPLED_RIDE",L"RESKATE_BMX_COUPLED_CONTROLLER_TRIAL",L"RESKATE_BMX_COUPLED_FORCE_PROBE",
+            L"RESKATE_BMX_COUPLED_CALIBRATION",L"RESKATE_BMX_COUPLED_POSTURE",L"RESKATE_BMX_HANDOFF_PHASE_PROBE",
+            L"RESKATE_BMX_FIRST_MOUNT_PRODUCER_PROBE",L"RESKATE_BMX_PROP_TRANSFORM_TRACE",L"RESKATE_BMX_OBSERVED_POSTURE",
+            L"RESKATE_BMX_BOARD_HANDOFF_TRACE",L"RESKATE_BMX_NATIVE_BOARD_CONTROL",L"RESKATE_BMX_NATIVE_BOARD_DEFERRED_ARM",
+            L"RESKATE_BMX_RAMP_TEST",L"RESKATE_BMX_AUTOMATED_SWITCH",L"RESKATE_BMX_CHASSIS_PROBE",L"RESKATE_BMX_CHASSIS_PROBE_PULSE",
+            L"RESKATE_BMX_PROFILE_PERFORMANCE",L"RESKATE_BMX_GETUP_PULSE",L"RESKATE_BMX_IMPACT_RECOVERY",L"RESKATE_BMX_POSTFALL_REMOUNT_TEST",
+            L"RESKATE_BMX_INTENT_OBSERVER",L"RESKATE_BMX_INTENT_ACTIVATION",L"RESKATE_BMX_BINDING_OBSERVER",L"RESKATE_BMX_NATIVE_FALL_OBSERVER",
+            L"RESKATE_BMX_TRICK_REHEARSAL",L"RESKATE_BMX_GRIP_REQUEST_HUD",L"RESKATE_BMX_APPROACH_WITNESS",L"RESKATE_BMX_APPROACH_NORMAL",
+            L"RESKATE_BMX_CONTACT_COMPLIANCE",L"RESKATE_BMX_LANDING_CONTACT_COMPLIANCE"})conflict=conflict||nonzero_setting(key);
+        for(const auto* key:{L"RESKATE_BMX_IMPACT_TEST",L"RESKATE_BMX_CATALOG_TEST",L"RESKATE_BMX_BOARD_HANDOFF_MODE"}){
+            wchar_t v[1]{};conflict=conflict||GetEnvironmentVariableW(key,v,1)!=0;}
+        conflict=conflict||!value_is(L"RESKATE_BMX_POSE_COMPARISON",L"Default")||!value_is(L"RESKATE_BMX_MOTION_BASIS_COMPARISON",L"Default");
+        return policy::stationary_selected({flag(L"RESKATE_BMX_GRIP_STATIONARY_PROBE"),flag(L"RESKATE_BMX_NATIVE_CHASSIS"),
+            value_is(L"RESKATE_BMX_LAUNCH_MODE",L"human-ride"),user_data::development_requested()&&root&&stationary_root(*root),conflict});
+    }catch(...){return false;}
+}
+inline unsigned record_count(const Store& s) noexcept {return shared().stationary?s.stationary_window.count:s.window.count;}
+// Console threads may queue exactly one request, but cannot initialize, sample,
+// export or otherwise touch the recorder's client/render-owned mutable state.
+inline bool request_stationary_arm() noexcept {
+    ErrorGuard error;auto& state=shared();
+    if(!state.store.load(std::memory_order_acquire)||!state.stationary||!state.scope_valid.load(std::memory_order_acquire)||!stationary_scope())return false;
+    bool unused=false;if(!state.arm_used.compare_exchange_strong(unused,true,std::memory_order_acq_rel))return false;
+    state.arm_requested.store(true,std::memory_order_release);return true;
+}
+inline std::string stationary_status() {
+    auto& state=shared();auto* s=state.store.load(std::memory_order_acquire);
+    if(!s||!state.stationary)return "Stationary grip probe disabled; explicit isolated StationaryGripProbe launch required.";
+    if(s->busy.test_and_set(std::memory_order_acquire))return "Stationary grip probe busy; status unavailable.";
+    struct Unlock {Store* p;~Unlock(){p->busy.clear(std::memory_order_release);}} unlock{s};
+    const auto& w=s->stationary_window;
+    const auto text=std::string("Stationary grip probe: ")+policy::name(w.stop)+", stable samples="+std::to_string(w.stable_samples)+
+        ", records="+std::to_string(w.count)+", one-shot used="+(state.arm_used.load()?"yes":"no")+
+        ", export attempted="+(state.export_attempted?"yes":"no")+"; CPU pose/request evidence only.";
+    return text;
+}
 // Bootstrap only. Reuse the exact supported-image section policy; callbacks
 // classify scalar addresses without parsing PE headers or reading native code.
 inline bool caller_sections_match(std::uintptr_t base) noexcept {
@@ -154,15 +209,17 @@ inline std::uint32_t qualified_caller_rva(bool verified,std::uintptr_t image_bas
 }
 inline void initialize_client() noexcept {
     try {std::call_once(shared().init,[]{
-        if(!flag(L"RESKATE_BMX_GRIP_PROBE")||!flag(L"RESKATE_BMX_RAMP_RIDE")||
-           !flag(L"RESKATE_BMX_NATIVE_CHASSIS")||!user_data::development_requested())return;
+        const bool stationary=stationary_scope();
+        if(!stationary&&(!flag(L"RESKATE_BMX_GRIP_PROBE")||!flag(L"RESKATE_BMX_RAMP_RIDE")||
+           !flag(L"RESKATE_BMX_NATIVE_CHASSIS")||!user_data::development_requested()))return;
         const auto root=user_data::override_root();
-        if(!root||_wcsicmp(root->filename().c_str(),L"bmx-user-data-ramp-test")!=0)return;
+        if(!root||(!stationary&&_wcsicmp(root->filename().c_str(),L"bmx-user-data-ramp-test")!=0))return;
         FILETIME created{},exited{},kernel{},user{};
         if(!GetProcessTimes(GetCurrentProcess(),&created,&exited,&kernel,&user))return;
         const auto creation=(std::uint64_t{created.dwHighDateTime}<<32)|created.dwLowDateTime;
         if(!creation)return;
         shared().root=*root;shared().client_thread=GetCurrentThreadId();
+        shared().stationary=stationary;shared().scope_valid.store(stationary,std::memory_order_release);
         shared().process_creation=creation;
         const auto base=reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
         shared().caller_image_verified=supported_build::running_image_matches(base)&&caller_sections_match(base);
@@ -253,16 +310,40 @@ inline void begin(Token& token,const visual::Frame& frame,const pose::Rig& rig,s
                   const NoBailSkater* source_owner,std::uintptr_t component,std::uintptr_t holder,std::uintptr_t buffer,
                   std::uintptr_t render_data,std::uint64_t revision,std::uint64_t contact_revision,const Edge& source_before) noexcept {
     auto* s=shared().store.load(std::memory_order_acquire);
-    if(!s||s->capture_done.load(std::memory_order_acquire)||!render_data||!source_owner||!source_owner->core||frame.rider_mode!=visual::RiderMode::riding||frame.mount_progress<1||
+    if(!s||s->capture_done.load(std::memory_order_acquire)||!render_data||!source_owner||!source_owner->core||
+       (!shared().stationary&&(frame.rider_mode!=visual::RiderMode::riding||frame.mount_progress<1))||
        original.size()!=bone_count||rig.parents.size()!=rig_count||rig.bind.size()!=rig_count)return;
     if(s->busy.test_and_set(std::memory_order_acquire)){shared().contention.fetch_add(1,std::memory_order_relaxed);return;}
     token.store=s;const auto e=source_edge(source_owner);
-    const bool selected=s->window.observe(frame.entity,frame.mount_token,e.admission.clock,e.admission.serial,e.admission.time,frame.airborne);
-    if(s->window.sealed)s->capture_done.store(true,std::memory_order_release);
+    bool selected{};
+    if(shared().stationary) {
+        auto& w=s->stationary_window;
+        if(!shared().scope_valid.load(std::memory_order_acquire))w.finish(policy::StationaryStop::scope_changed);
+        const auto& f=frame;const auto& m=e.motion;
+        bool quiet=true;for(float x:{f.preload,f.front_weight,f.rear_weight,f.steer,f.barspin,f.tailwhip,
+            f.barspin_release,f.tailwhip_release,f.movement_phase,f.movement_progress,f.release_left_hand,f.release_right_hand,
+            f.release_left_foot,f.release_right_foot,f.landing_compression,f.pedal_effort,f.air_extension_blend,
+            f.movement_bike_pitch,f.movement_bike_roll,f.movement_recovery_progress})quiet=quiet&&std::isfinite(x)&&x==0;
+        policy::StationarySample sample;
+        sample.owner=e.admission.actual_owner;sample.token=f.native_body_token;sample.wall=e.tick;
+        sample.serial=e.admission.serial;sample.time=e.admission.time;sample.lease_serial=m.serial;
+        sample.lease_time=m.simulation_time;sample.seconds=m.seconds;sample.position=f.position;
+        sample.rotation=f.chassis_quaternion;sample.requested_velocity=m.velocity;
+        sample.associated=revision&&f.entity==sample.owner.entity&&source_before.source_pose_owner_matches&&e.source_pose_owner_matches&&
+            m.timing_available&&policy::same_admission(source_before.admission,e.admission,e.admission);
+        sample.fully_mounted=f.active&&f.rider_mode==visual::RiderMode::riding&&f.mount_progress==1&&f.rider_blend==1&&
+            f.chassis_quaternion_available&&!f.spring_avatar.requested;
+        sample.grounded_presentation=!f.airborne;
+        sample.quiet_presentation=quiet&&f.movement_id==catalog::TrickId::none&&!f.movement_holding&&!f.movement_recovering;
+        selected=w.observe(sample);if(w.sealed)s->capture_done.store(true,std::memory_order_release);
+    } else {
+        selected=s->window.observe(frame.entity,frame.mount_token,e.admission.clock,e.admission.serial,e.admission.time,frame.airborne);
+        if(s->window.sealed)s->capture_done.store(true,std::memory_order_release);
+    }
     if(!selected)return;
-    auto& r=s->records[s->window.count-1];token.record=&r;
-    if(s->window.count==1)token.metadata_slot=0;else if(s->window.count==33)token.metadata_slot=1;
-    if(token.metadata_slot>=0)s->metadata[static_cast<unsigned>(token.metadata_slot)].record_index=s->window.count-1;
+    const auto count=record_count(*s);auto& r=s->records[count-1];token.record=&r;
+    if(count==1)token.metadata_slot=0;else if(count==33)token.metadata_slot=1;
+    if(token.metadata_slot>=0)s->metadata[static_cast<unsigned>(token.metadata_slot)].record_index=count-1;
     r.frame=frame;r.source_pose_owner=*source_owner;r.source_before=source_before;r.source=e;r.component=component;r.holder=holder;r.buffer=buffer;r.render_data=render_data;
     r.source_association_consistent=source_before.source_pose_owner_matches&&e.source_pose_owner_matches&&
         policy::same_admission(source_before.admission,e.admission,e.admission);
@@ -272,9 +353,12 @@ inline void begin(Token& token,const visual::Frame& frame,const pose::Rig& rig,s
     std::memcpy(r.original.data(),original.data(),sizeof(Bones));
     r.targets={pose::palm_target(frame,true),pose::palm_target(frame,false),pose::foot_target(frame,true),pose::foot_target(frame,false)};
     r.requested_parts_available=world::transforms(frame,r.requested_parts);
-    if(s->window.count==1){
+    if(count==1){
         std::copy(rig.parents.begin(),rig.parents.end(),s->parents.begin());std::copy(rig.bind.begin(),rig.bind.end(),s->bind.begin());
         s->left_arm=rig.left_arm;s->right_arm=rig.right_arm;s->left_leg=rig.left_leg;s->right_leg=rig.right_leg;
+        for(unsigned i=0;i<5;++i){const auto& left=rig.left_fingers[i];const auto& right=rig.right_fingers[i];
+            s->left_fingers[i]={left.metacarpal,left.joints[0],left.joints[1],left.joints[2]};
+            s->right_fingers[i]={right.metacarpal,right.joints[0],right.joints[1],right.joints[2]};}
         s->hips=rig.hips;s->head=rig.head;s->spine=rig.spine;s->neck=rig.neck;s->shoulders=rig.shoulders;s->toe_base=rig.toe_base;
     }
 }
@@ -322,22 +406,37 @@ struct NewFile {
     }
     bool close() noexcept {if(handle==INVALID_HANDLE_VALUE)return false;const auto h=handle;handle=INVALID_HANDLE_VALUE;return CloseHandle(h)!=0;}
 };
-// Called by the existing client begin-tick only after end_ride requested export
-// and withdrew its frame. A busy callback defers to another client tick.
+// Legacy ramp export still requires end_ride and withdrawal. The explicitly
+// armed stationary recorder can export its sealed buffer while still mounted.
+// All sampling is try-only; console requests never perform filesystem work.
 inline void poll_client() noexcept {
     ErrorGuard error;
     auto& state=shared();auto* s=state.store.load(std::memory_order_acquire);
-    if(!s||GetCurrentThreadId()!=state.client_thread||!state.finish_requested||state.last_active||
-       !state.ever_active||state.export_attempted)return;
+    if(!s||GetCurrentThreadId()!=state.client_thread||state.export_attempted)return;
+    if(!state.stationary&&(!state.finish_requested||state.last_active||!state.ever_active))return;
+    if(state.stationary)state.scope_valid.store(stationary_scope(),std::memory_order_release);
     if(s->busy.test_and_set(std::memory_order_acquire))return;
-    state.export_attempted=true;s->window.sealed=true;s->capture_done.store(true,std::memory_order_release);
     struct Unlock {Store* p;~Unlock(){p->busy.clear(std::memory_order_release);}} unlock{s};
+    if(state.stationary){
+        auto& w=s->stationary_window;const auto now=GetTickCount64();
+        if(state.arm_requested.exchange(false,std::memory_order_acq_rel))(void)w.request(now);
+        if(!state.scope_valid.load(std::memory_order_acquire))w.finish(policy::StationaryStop::scope_changed);
+        w.expire(now);
+        if(w.armed&&!state.last_active)w.finish(policy::StationaryStop::withdrawn);
+        if(!w.sealed)return;
+    }else s->window.sealed=true;
+    state.export_attempted=true;s->capture_done.store(true,std::memory_order_release);
     try {
+        // Never export to a cached stationary root after the private override
+        // was changed. A failed scope remains sealed and consumes its one shot.
+        if(state.stationary){const auto fresh=user_data::override_root();
+            if(!fresh||!stationary_root(*fresh)||*fresh!=state.root)return;}
+        const auto count=record_count(*s);
         Json rows=Json::array();const auto prefix=std::string("bmx-grip-probe-")+std::to_string(GetCurrentProcessId());
         const auto binary=state.root/(prefix+".bones");const auto index=state.root/(prefix+".json");
         if(!state.process_creation||std::filesystem::exists(binary)||std::filesystem::exists(index))return;
         NewFile data(binary),index_file(index);if(!data||!index_file)return;bool data_ok=true;
-        for(unsigned i=0;i<s->window.count;++i){const auto& r=s->records[i];
+        for(unsigned i=0;i<count;++i){const auto& r=s->records[i];
             const auto start=static_cast<std::uint64_t>(i)*sizeof(Bones)*3;
             for(const auto* b:{&r.original,&r.solved,&r.readback})if(data_ok)data_ok=data.write(b->data(),sizeof(Bones));
             const auto& f=r.frame;
@@ -360,7 +459,7 @@ inline void poll_client() noexcept {
                 {"solver_hand_contact",r.solution.hand_contact},{"solver_foot_contact",r.solution.foot_contact},
                 {"intended_palms_ankles",r.targets},{"requested_part_matrices_available",r.requested_parts_available},
                 {"requested_part_matrices",r.requested_parts},
-                {"frame",Json{{"entity",f.entity},{"mount_token",f.mount_token},{"position",f.position},{"yaw",f.yaw},{"pitch",f.pitch},{"roll",f.roll},
+                {"frame",Json{{"entity",f.entity},{"mount_token",f.mount_token},{"native_body_token",f.native_body_token},{"position",f.position},{"yaw",f.yaw},{"pitch",f.pitch},{"roll",f.roll},
                     {"chassis_quaternion",f.chassis_quaternion},{"chassis_quaternion_available",f.chassis_quaternion_available},{"steer",f.steer},
                     {"front_wheel_phase",f.front_wheel_phase},{"rear_wheel_phase",f.rear_wheel_phase},{"crank_phase",f.crank_phase},
                     {"barspin",f.barspin},{"tailwhip",f.tailwhip},{"preload",f.preload},{"front_weight",f.front_weight},{"rear_weight",f.rear_weight},
@@ -374,11 +473,11 @@ inline void poll_client() noexcept {
         }
         const bool closed=data.close();
         Json report{{"schema",2},{"process_id",GetCurrentProcessId()},{"process_creation_filetime",std::to_string(state.process_creation)},
-            {"private_opt_in",true},{"capacity",policy::capacity},{"count",s->window.count},
+            {"private_opt_in",true},{"capacity",policy::capacity},{"count",count},
             {"caller_image_base",state.caller_image_base},{"caller_image_verified",state.caller_image_verified},
             {"armed",s->window.armed},{"sealed",s->window.sealed},{"owner_changed",s->window.owner_changed},{"clock_rewound",s->window.clock_rewound},
             {"missing_clock",s->window.missing_clock},{"duplicates",s->window.duplicates},{"serial_gaps",s->window.serial_gaps},{"contention",state.contention.load()},
-            {"binary",binary.filename().string()},{"binary_written",data_ok&&closed},{"binary_bytes",s->window.count*sizeof(Bones)*3},
+            {"binary",binary.filename().string()},{"binary_written",data_ok&&closed},{"binary_bytes",count*sizeof(Bones)*3},
             {"bone_count",bone_count},{"rig_count",rig_count},{"bone_stride",sizeof(pose::Bone)},{"bone_lanes","little_endian_float32_scale4_rotation4_position4"},
             {"window_cue","four_consecutive_observed_listener_serials_with_SDK_Frame_airborne"},
             {"actual_owner_fields",std::array<const char*,5>{"client","entity","core","context","rig"}},
@@ -387,6 +486,30 @@ inline void poll_client() noexcept {
             {"boundary","actual_same_address_CPU_pose_buffer_edges_not_atomic_native_or_GPU_completion; SDK_motion_lease_and_part_matrices_are_historical_requests"},
             {"parents",s->parents},{"bind",s->bind},{"left_arm",s->left_arm},{"right_arm",s->right_arm},{"left_leg",s->left_leg},{"right_leg",s->right_leg},
             {"hips",s->hips},{"head",s->head},{"spine",s->spine},{"neck",s->neck},{"shoulders",s->shoulders},{"toe_base",s->toe_base},{"rows",std::move(rows)}};
+        report["capture_mode"]=state.stationary?"manually_armed_stationary":"airborne_ramp";
+        report["finger_order"]=std::array<const char*,5>{"index","middle","ring","pinky","thumb"};
+        report["finger_chain_fields"]=std::array<const char*,4>{"metacarpal","proximal","intermediate","distal"};
+        report["left_fingers"]=s->left_fingers;report["right_fingers"]=s->right_fingers;
+        report["requested_bar_part"]=5;
+        if(state.stationary){const auto& w=s->stationary_window;
+            report["window_cue"]="explicit_console_arm_then_30_stable_native_listener_samples";
+            report["armed"]=w.armed;report["sealed"]=w.sealed;
+            report["owner_changed"]=w.stop==policy::StationaryStop::owner_changed;
+            report["clock_rewound"]=w.stop==policy::StationaryStop::clock_rewound;
+            report["missing_clock"]=nullptr;report["duplicates"]=w.duplicates;report["serial_gaps"]=w.serial_gaps;
+            report["stationary_window"]=Json{{"stop",policy::name(w.stop)},{"arm_request_tick_ms",w.requested_wall},
+                {"capture_start_tick_ms",w.capture_wall},{"last_tick_ms",w.last_wall},{"stable_native_samples",w.stable_samples},
+                {"invalid_samples",w.invalid_samples},{"owner",owner_array(w.owner)},{"native_body_token",w.token},
+                {"arm_timeout_ms",policy::stationary_arm_ms},{"capture_timeout_ms",policy::stationary_capture_ms},
+                {"required_stable_samples",policy::stationary_settle_samples},
+                {"maximum_allowed_speed_mps",policy::stationary_maximum_speed},{"maximum_allowed_angular_speed_radps",policy::stationary_maximum_angular_speed},
+                {"maximum_allowed_root_drift_m",policy::stationary_maximum_drift},{"maximum_allowed_rotation_drift_rad",policy::stationary_maximum_rotation_drift},
+                {"observed_maximum_step_speed_mps",w.maximum_step_speed},{"observed_maximum_angular_speed_radps",w.maximum_angular_speed},
+                {"observed_maximum_root_drift_m",w.maximum_root_drift},{"observed_maximum_rotation_drift_rad",w.maximum_rotation_drift},
+                {"observed_maximum_requested_speed_mps",w.maximum_requested_speed},
+                {"maxima_scope","all valid post-request observations including rejected settling windows"},
+                {"support_contact_proven",false},{"camera_gpu_join_proven",false},{"projection_qualified_by_pixels",false}};
+        }
         const auto text=report.dump();if(text.size()>1024*1024)return;
         (void)index_file.write(text.data(),text.size());
         Json raw=Json::array();

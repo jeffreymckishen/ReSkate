@@ -1,5 +1,6 @@
 #include "Extension/Console/commands.h"
 #include "bmx_runtime.h"
+#include "bmx_rider.h"
 #include "bmx_skeleton_phase_probe.h"
 #include "bmx_board_handoff_trace.h"
 #include "bmx_chassis_probe.h"
@@ -33,6 +34,18 @@ void register_bmx_commands(Commands& registry) {
         out("The bike uses native world rendering. BMX trick tallies are separate from Skate scoring; grinds and multiplayer are unfinished.");
     };
     registry.add(std::move(status));
+    auto grip_arm=action("bmx grip-probe arm", "Arm one passive stationary CPU grip capture in its explicitly selected private profile", Group::movement);
+    grip_arm.execution=Execution::local;
+    grip_arm.run=[](const Model&,const Values&,const Output& out){
+        out(bmx::rider::arm_private_stationary_grip_probe()?
+            "One-shot stationary grip observation queued; hold controls neutral while 30 native samples qualify, then up to128 records are retained.":
+            "Stationary grip arm rejected: private stationary launch unavailable, scope changed, or one shot already used.");
+    };
+    registry.add(std::move(grip_arm));
+    auto grip_status=action("bmx grip-probe status", "Show the passive stationary grip capture window", Group::movement);
+    grip_status.execution=Execution::local;
+    grip_status.run=[](const Model&,const Values&,const Output& out){out(bmx::rider::private_stationary_grip_probe_status());};
+    registry.add(std::move(grip_status));
     auto handoff_arm=action("bmx handoff-trace arm", "Arm the explicitly selected native-only passive observer; does not mount equipment", Group::movement);
     handoff_arm.execution=Execution::local;
     handoff_arm.run=[](const Model&,const Values&,const Output& out) {

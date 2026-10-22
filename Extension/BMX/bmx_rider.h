@@ -7,6 +7,8 @@ namespace dingosdk::bmx::board_handoff_trace {struct ClientState;}
 namespace dingosdk::bmx::rider {
 void poll_private_board_handoff(std::uintptr_t base,bool idle,const board_handoff_trace::ClientState&) noexcept;
 void finish_private_grip_probe() noexcept; // explicit end_ride diagnostic export request; no native work
+bool arm_private_stationary_grip_probe() noexcept; // queues a single passive capture; no native/input work
+std::string private_stationary_grip_probe_status();
 void begin_client_tick() noexcept; // revoke admission, preserving logical mount contacts
 visual::Publication pending_placement() noexcept;
 bool complete_placement(std::uint64_t revision,std::uintptr_t entity,bool all_parts_placed) noexcept;

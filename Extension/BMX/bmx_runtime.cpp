@@ -251,6 +251,8 @@ struct Runtime {
     bool native_chassis_mode{}, chassis_started{};
     chassis_ride::Step chassis_step;
     ride_trace::History<> ride_history, pending_ride_history;
+    ride_trace::BufferPair<> long_ride_history;
+    bool ride_trace_long_active{},ride_trace_long_pending{},long_ride_trace_reported{};
     fall_lifecycle::History<> fall_history,lab_fall_history;
     // Runtime is heap-owned. All eight large report slots are filled in place;
     // native sampling and sealing never allocate a report or copy it to stack.
@@ -455,24 +457,64 @@ Json velocity_rejections_json(const snapshot_retry::VelocityRejections& history)
         {"coherent_rejected_snapshot_proved",false},{"native_completion_proved",false},
         {"records",std::move(records)}};
 }
-void begin_ride_trace() {
-    auto& r=runtime();r.ride_history.reset();r.ride_trace_root.clear();
+bool ride_trace_path(std::filesystem::path& path) {
+    auto& r=runtime();
     wchar_t flag[2]{},image[32768]{};
     if(GetEnvironmentVariableW(L"RESKATE_BMX_RIDE_TRACE",flag,2)!=1||flag[0]!=L'1'||
-       !user_data::development_requested()||r.ride_trace_files>=64)return;
-    const auto root=user_data::override_root();if(!root)return;
+       !user_data::development_requested()||r.ride_trace_files>=64)return false;
+    const auto root=user_data::override_root();if(!root)return false;
     const auto length=GetModuleFileNameW(nullptr,image,static_cast<DWORD>(std::size(image)));
-    if(!length||length>=std::size(image))return;
+    if(!length||length>=std::size(image))return false;
     const auto executable=user_data::detail::canonical(std::filesystem::path(image));
     const auto isolated=user_data::detail::canonical(root->parent_path()/L"bmx-game");
-    if(_wcsicmp(executable.filename().c_str(),L"Skate.exe")||executable.parent_path()!=isolated)return;
-    r.ride_trace_root=*root/L"bmx-traces";
+    if(_wcsicmp(executable.filename().c_str(),L"Skate.exe")||executable.parent_path()!=isolated)return false;
+    path=*root/L"bmx-traces";return true;
+}
+bool long_ride_trace_requested() noexcept {
+    wchar_t flag[2]{};return GetEnvironmentVariableW(L"RESKATE_BMX_LONG_RIDE_TRACE",flag,2)==1&&flag[0]==L'1';
+}
+bool long_ride_trace_scope() {
+    auto& r=runtime();const auto root=user_data::override_root();
+    wchar_t human[2]{},native[2]{},mode[16]{};
+    return r.native_chassis_mode&&!r.rehearsal&&root&&root->filename()==L"bmx-user-data-human-native-test"&&
+        GetEnvironmentVariableW(L"RESKATE_BMX_HUMAN_NATIVE_SWITCH",human,2)==1&&human[0]==L'1'&&
+        GetEnvironmentVariableW(L"RESKATE_BMX_NATIVE_CHASSIS",native,2)==1&&native[0]==L'1'&&
+        GetEnvironmentVariableW(L"RESKATE_BMX_LAUNCH_MODE",mode,16)==10&&std::wstring_view(mode)==L"human-ride";
+}
+void report_long_ride_trace_unavailable(const char* why) {
+    auto& r=runtime();if(r.long_ride_trace_reported)return;r.long_ride_trace_reported=true;
+    logging::log(logging::Level::warning,logging::Channel::skater,"BMX long ride trace disabled: {}. No 240-sample fallback is claimed.",why);
+}
+void prepare_long_ride_trace() {
+    if(!long_ride_trace_requested())return;
+    auto& r=runtime();std::filesystem::path path;
+    if(!ride_trace_path(path)||!long_ride_trace_scope()){report_long_ride_trace_unavailable("private scope refused");return;}
+    if(!r.long_ride_history.prepare())report_long_ride_trace_unavailable("fixed buffer allocation failed");
+}
+void begin_ride_trace() {
+    auto& r=runtime();r.ride_history.reset();r.ride_trace_root.clear();r.ride_trace_long_active=false;
+    std::filesystem::path path;if(!ride_trace_path(path))return;
+    if(long_ride_trace_requested()) {
+        if(!long_ride_trace_scope()||!r.long_ride_history.begin()) {
+            report_long_ride_trace_unavailable(r.long_ride_history.failed()?"fixed buffer allocation failed":"private scope/storage unavailable or eight-capture limit");return;
+        }
+        r.ride_trace_long_active=true;
+    }
+    r.ride_trace_root=std::move(path);
 }
 void freeze_ride_trace(std::string_view reason) {
     auto& r=runtime();
-    if(r.ride_trace_files>=64||r.ride_trace_root.empty()||!r.ride_history.seal())return;
-    if(r.ride_trace_pending){++r.ride_trace_dropped;return;}
-    r.pending_ride_history=r.ride_history;r.ride_trace_reason=reason;
+    if(r.ride_trace_files>=64||r.ride_trace_root.empty())return;
+    if(r.ride_trace_long_active) {
+        const auto result=r.long_ride_history.freeze(r.ride_trace_pending);
+        if(result==ride_trace::Freeze::pending){++r.ride_trace_dropped;return;}
+        if(result!=ride_trace::Freeze::ready)return;
+    }else {
+        if(!r.ride_history.seal())return;
+        if(r.ride_trace_pending){++r.ride_trace_dropped;return;}
+        r.pending_ride_history=r.ride_history;
+    }
+    r.ride_trace_long_pending=r.ride_trace_long_active;r.ride_trace_reason=reason;
     r.ride_trace_has_fall_request=r.ride_trace_fall_accepted=r.ride_trace_fall_status_fresh=false;r.ride_trace_fall_status={};
     r.pending_ride_trace_root=r.ride_trace_root;
     r.ride_trace_entity=r.entity;r.ride_trace_pending=true;
@@ -492,7 +534,7 @@ void flush_ride_trace() noexcept {
     try {
         const auto chassis_diagnostics=native_chassis::status();
         auto samples=Json::array();
-        r.pending_ride_history.each([&](const ride_trace::Sample& row){
+        const auto append_samples=[&](const auto& history){history.each([&](const ride_trace::Sample& row){
             const auto& s=row.step;const auto& raw=row.input;const auto& p=row.producer;
             samples.push_back(Json{{"serial",s.serial},{"native_time",s.native_simulation_seconds},
                 {"native_step_seconds",s.native_step_seconds},{"com",s.observed_com},{"quaternion",s.observed_quaternion},
@@ -577,9 +619,24 @@ void flush_ride_trace() noexcept {
                     {"duplicate_total",shadow.duplicate_total},{"rejected_total",shadow.rejected_total},{"reset_total",shadow.reset_total}};
             }
 #endif
-        });
+        });};
+        if(r.ride_trace_long_pending)append_samples(r.long_ride_history.pending());
+        else append_samples(r.pending_ride_history);
+        const auto retention=[](const auto& history){
+            const auto* first=history.first();const auto* last=history.last();
+            return Json{{"capacity",history.capacity()},{"retained",history.size()},{"total_accepted",history.total_accepted()},
+                {"overwritten",history.overwritten()},{"first_serial",first?first->step.serial:0},{"last_serial",last?last->step.serial:0},
+                {"first_native_time",first?Json(first->step.native_simulation_seconds):Json(nullptr)},
+                {"last_native_time",last?Json(last->step.native_simulation_seconds):Json(nullptr)},
+                {"native_span_seconds",first&&last?Json(last->step.native_simulation_seconds-first->step.native_simulation_seconds):Json(nullptr)},
+                {"window_kind","bounded accepted samples; not a guaranteed duration or complete action window"}};
+        };
+        const auto metadata=r.ride_trace_long_pending?retention(r.long_ride_history.pending()):retention(r.pending_ride_history);
+        const auto token=r.ride_trace_long_pending?r.long_ride_history.pending().token():r.pending_ride_history.token();
+        const auto count=r.ride_trace_long_pending?r.long_ride_history.pending().size():r.pending_ride_history.size();
         const Json report{{"schema",1},{"process_id",GetCurrentProcessId()},{"rider_entity",r.ride_trace_entity},
-            {"body_token",r.pending_ride_history.token()},{"termination_reason",r.ride_trace_reason},
+            {"body_token",token},{"termination_reason",r.ride_trace_reason},{"trace_retention",metadata},
+            {"long_trace_selected",r.ride_trace_long_pending},{"long_capture_limit",ride_trace::long_capture_limit},
             {"dropped_histories",r.ride_trace_dropped},{"fall_generation_at_flush",fall.intent_generation},
             {"fall_status_available",fall.intent_status_available},{"fall_reset_pending",fall.intent_reset_pending},
             {"fall_request_observed",r.ride_trace_has_fall_request},
@@ -606,7 +663,7 @@ void flush_ride_trace() noexcept {
         std::ofstream file(path,std::ios::binary);file.exceptions(std::ios::failbit|std::ios::badbit);
         file<<report.dump(2)<<'\n';file.close();
         logging::log(logging::Level::info,logging::Channel::skater,"BMX ride trace: {} samples; body token={}; report={}",
-            r.pending_ride_history.size(),r.pending_ride_history.token(),path.string());
+            count,token,path.string());
     } catch(...) {
         logging::write(logging::Level::warning,logging::Channel::skater,"BMX ride trace could not be written.");
     }
@@ -2378,6 +2435,9 @@ void tick_native_chassis(std::uintptr_t base, const NativeFrame& observed_frame,
             if(service_retained_owner(base,frame.client))return;
             end_ride("BMX retained mount predecessor changed before acquisition.");return;
         }
+        // Explicit diagnostic buffers are prepared before native activation.
+        // Existing chassis admission rechecks its fresh support/owner afterward.
+        prepare_long_ride_trace();
         if (!chassis_ride::start(base, frame, root, yaw, r.root_height,selected_seed)) {
             if(service_retained_owner(base,frame.client,&frame))return;
             const auto status=native_chassis::status();const std::string_view issue=status.issue;
@@ -2510,8 +2570,12 @@ void tick_native_chassis(std::uintptr_t base, const NativeFrame& observed_frame,
     // overwritten by the ordinary240-sample trailing ride history.
     const auto producer_observation=(!r.ride_trace_root.empty()||
         (r.rehearsal&&r.chassis_samples.size()<900))?native_chassis::status():native_chassis::Status{};
-    if(!r.ride_trace_root.empty())(void)r.ride_history.record({step,raw,producer_observation,
-        frame.position,frame.offboard,frame.standable,frame.motion_supported,sampled_raw,input_source,input_neutralized,private_switch_gate});
+    if(!r.ride_trace_root.empty()) {
+        const ride_trace::Sample row{step,raw,producer_observation,frame.position,frame.offboard,frame.standable,
+            frame.motion_supported,sampled_raw,input_source,input_neutralized,private_switch_gate};
+        if(r.ride_trace_long_active)(void)r.long_ride_history.record(row);
+        else (void)r.ride_history.record(row);
+    }
     if(step.bail.bail) {
         skeleton_phase_probe::arm(skeleton_phase_probe::Window::first_bail);
         logging::log(logging::Level::info,logging::Channel::skater,
@@ -2527,7 +2591,8 @@ void tick_native_chassis(std::uintptr_t base, const NativeFrame& observed_frame,
             fresh_request_status?impact_receipt::capture(requested,request_status,frame.entity):impact_receipt::Receipt{},
             r.crash_serial,r.crash_native_time);
         begin_fall_lifecycle(base,frame,requested,request_status,fresh_request_status);
-        if(r.ride_trace_pending&&r.pending_ride_history.token()==step.body_token&&r.ride_trace_entity==frame.entity){
+        const auto pending_trace_token=r.ride_trace_long_pending?r.long_ride_history.pending().token():r.pending_ride_history.token();
+        if(r.ride_trace_pending&&pending_trace_token==step.body_token&&r.ride_trace_entity==frame.entity){
             r.ride_trace_has_fall_request=true;r.ride_trace_fall_accepted=requested;r.ride_trace_fall_status=request_status;
             r.ride_trace_fall_status_fresh=fresh_request_status;
         }

@@ -25,7 +25,9 @@ function(dingosdk_add_bmx_tests source_root)
             COMMAND "${DINGOSDK_BMX_PWSH}" -NoProfile -File "${source_root}/contrib/bmx-lab/Test-Watch-BmxOwnedTrial.ps1")
         add_test(NAME bmx_forearm_repair_selection
             COMMAND "${DINGOSDK_BMX_PWSH}" -NoProfile -File "${source_root}/contrib/bmx-lab/Test-ForearmRepairSelection.ps1")
-        set_tests_properties(bmx_stationary_grip_selection bmx_owned_trial_watchdog bmx_forearm_repair_selection PROPERTIES
+        add_test(NAME bmx_long_ride_trace_selection
+            COMMAND "${DINGOSDK_BMX_PWSH}" -NoProfile -File "${source_root}/contrib/bmx-lab/Test-LongRideTraceSelection.ps1")
+        set_tests_properties(bmx_stationary_grip_selection bmx_owned_trial_watchdog bmx_forearm_repair_selection bmx_long_ride_trace_selection PROPERTIES
             WORKING_DIRECTORY "${source_root}" TIMEOUT 30 LABELS "BMX;PowerShell")
     endif()
     if(DINGOSDK_BMX_STANDALONE_MOVEMENT AND DINGOSDK_BMX_NATIVE_COUPLED)

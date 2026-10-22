@@ -119,7 +119,7 @@ inline Quat from_to(Vec a,Vec b) {
     if(d<-.9999f){v=unit(cross(a,std::abs(a[1])<.9f?Vec{0,1,0}:Vec{1,0,0}));return {v[0],v[1],v[2],0};}
     return normal({v[0],v[1],v[2],1+d});
 }
-inline std::vector<Transform> compose(std::span<const Bone> bones,const Rig& rig) {
+inline std::vector<Transform> compose_uncached(std::span<const Bone> bones,const Rig& rig) {
     std::vector<Transform> out(rig.parents.size());
     for(std::size_t i=0;i<out.size();++i) {
         const auto& b=bones[i];Transform t{{b.position[0],b.position[1],b.position[2]},b.rotation,(b.scale[0]+b.scale[1]+b.scale[2])/3};
@@ -127,6 +127,43 @@ inline std::vector<Transform> compose(std::span<const Bone> bones,const Rig& rig
         out[i]=t;
     }
     return out;
+}
+// A selected private solve repeats the same hierarchy across bounded candidate
+// trials. Cache only exact local/parent dependencies within that single call;
+// every returned vector remains a separate snapshot for the existing callers.
+struct ComposeCache {
+    const Rig* rig{};
+    std::vector<int> parents;
+    std::vector<Bone> local;
+    std::vector<Transform> global;
+    std::vector<unsigned char> changed;
+};
+inline thread_local ComposeCache* active_compose_cache{};
+struct ComposeCacheScope {
+    ComposeCache cache;
+    ComposeCache* previous{};
+    ComposeCacheScope():previous(active_compose_cache){active_compose_cache=&cache;}
+    ComposeCacheScope(const ComposeCacheScope&)=delete;
+    ComposeCacheScope& operator=(const ComposeCacheScope&)=delete;
+    ComposeCacheScope(ComposeCacheScope&&)=delete;
+    ComposeCacheScope& operator=(ComposeCacheScope&&)=delete;
+    ~ComposeCacheScope(){active_compose_cache=previous;}
+};
+inline std::vector<Transform> compose(std::span<const Bone> bones,const Rig& rig) {
+    if(!active_compose_cache)return compose_uncached(bones,rig);
+    auto& c=*active_compose_cache;const auto count=rig.parents.size();
+    const bool fresh=c.rig!=&rig||c.global.size()!=count||c.parents!=rig.parents;
+    if(fresh){c.rig=&rig;c.parents=rig.parents;c.local.resize(count);c.global.resize(count);c.changed.resize(count);}
+    for(std::size_t i=0;i<count;++i) {
+        const auto& b=bones[i];const int parent=rig.parents[i];
+        const bool changed=fresh||std::memcmp(&c.local[i],&b,sizeof(Bone))||(parent>=0&&c.changed[static_cast<std::size_t>(parent)]);
+        c.changed[i]=static_cast<unsigned char>(changed);if(!changed)continue;
+        // Retain compose_uncached's float expressions and operation order.
+        Transform t{{b.position[0],b.position[1],b.position[2]},b.rotation,(b.scale[0]+b.scale[1]+b.scale[2])/3};
+        if(parent>=0){const auto& p=c.global[static_cast<std::size_t>(parent)];t.position=add(p.position,turn(p.rotation,mul(t.position,p.scale)));t.rotation=normal(multiply(p.rotation,t.rotation));t.scale*=p.scale;}
+        c.global[i]=t;c.local[i]=b;
+    }
+    return c.global;
 }
 #if defined(DINGOSDK_BMX_STANDALONE_MOVEMENT) && defined(DINGOSDK_BMX_NATIVE_COUPLED)
 inline coupled_posture::Delta sample_coupled_posture(std::span<const Bone> bones,const Rig& rig,
@@ -885,6 +922,7 @@ inline Result solve(std::span<Bone> bones,const Rig& rig,const visual::Frame& fr
     // The unselected route is the retained solver directly: no scratch copy,
     // extra anatomy gate, different target or changed fallback policy.
     if(!forearm_repair_eligible(frame,observed_selected))return solve_baseline(bones,rig,frame,entry,observed_selected,spring_binding);
+    ComposeCacheScope compose_scope;
     const std::vector<Bone> source(bones.begin(),bones.end());
     auto baseline=solve_baseline(bones,rig,frame,entry,observed_selected,spring_binding);
     baseline.forearm_repair_requested=true;

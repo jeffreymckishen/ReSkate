@@ -52,3 +52,31 @@ repair median 3.227 ms/p95 3.797 ms/worst 6.950 ms. Repair made 511 allocation c
 with about 5.53 MB cumulative allocation traffic per solve, and it may run in
 both animation and render callbacks. These measurements are not a native frame
 budget. A scratch optimization and actual callback/visual trials remain required.
+
+## Private composition optimization
+
+The follow-up retains the full candidate search and all geometry checks. It
+caches hierarchy transforms only during one selected eligible solve, recomputing
+nodes when local bone bits or their parent transform change. A topology-value
+check invalidates the cache when the same rig is reparented. Scope is thread
+local, nested scopes restore their caller, and exception cleanup releases the
+scope. Returned transforms remain independent value snapshots. Ordinary
+unselected solves use the retained uncached calculation.
+
+The independent judge accepts this private optimization at engineering 9.0.
+MSVC Release passes all 94 CTests in 32.17 seconds, including 2,040 cache checks.
+A separate MSVC paired proof compares the final source with a preserved,
+hash-verified uncached header: 10,759 checks across 4,371 solves, including 934
+repairs, match every result field and all 395 bone records bit for bit.
+The full forearm fixture suite retains its original results.
+
+The GCC reference benchmark measured repair median 3.064 to 1.077 ms and p95
+3.329 to 1.147 ms, retaining all nine evaluations. Allocation traffic remains
+high: 515 calls/5,561,426 bytes per repaired solve versus 511/5,528,616 before;
+the temporary cache adds 32,810 bytes while preserving all result-vector copies.
+These are CPU benchmark measurements, not native callback or frame timing.
+
+Optimized runtime SHA-256:
+`FDEC92FDBD0799B157E370C23D461AA6DA9DB0189CBFA919A5550192F914C54A`.
+No native rendering, controller recovery or likeness acceptance follows from
+this exact-output optimization. The existing uphill rejections remain.

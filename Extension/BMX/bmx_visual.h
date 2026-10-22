@@ -52,6 +52,7 @@ struct Frame {
     // which their command was evaluated and subsequently acknowledged; the
     // pose solver joins it to the current actual Spring/bike successor.
     bool coupled_posture_selected{}, coupled_motion_committed{};
+    bool forearm_repair_selected{}; // exact private client-selected presentation trial; no write permission
     native_coupled::policy::Epoch coupled_motion_epoch;
 };
 struct Publication {Frame frame;std::uint64_t revision{};bool available{};};

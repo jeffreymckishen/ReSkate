@@ -21,7 +21,9 @@ function(dingosdk_add_bmx_tests source_root)
             COMMAND "${DINGOSDK_BMX_PWSH}" -NoProfile -File "${source_root}/contrib/bmx-lab/Test-StationaryGripSelection.ps1")
         add_test(NAME bmx_owned_trial_watchdog
             COMMAND "${DINGOSDK_BMX_PWSH}" -NoProfile -File "${source_root}/contrib/bmx-lab/Test-Watch-BmxOwnedTrial.ps1")
-        set_tests_properties(bmx_stationary_grip_selection bmx_owned_trial_watchdog PROPERTIES
+        add_test(NAME bmx_forearm_repair_selection
+            COMMAND "${DINGOSDK_BMX_PWSH}" -NoProfile -File "${source_root}/contrib/bmx-lab/Test-ForearmRepairSelection.ps1")
+        set_tests_properties(bmx_stationary_grip_selection bmx_owned_trial_watchdog bmx_forearm_repair_selection PROPERTIES
             WORKING_DIRECTORY "${source_root}" TIMEOUT 30 LABELS "BMX;PowerShell")
     endif()
     if(DINGOSDK_BMX_STANDALONE_MOVEMENT AND DINGOSDK_BMX_NATIVE_COUPLED)
@@ -191,6 +193,11 @@ function(dingosdk_add_bmx_tests source_root)
     target_compile_features(dingosdk_bmx_rider_pose_tests PRIVATE cxx_std_20)
     target_include_directories(dingosdk_bmx_rider_pose_tests PRIVATE "${source_root}")
     add_test(NAME bmx_rider_pose COMMAND dingosdk_bmx_rider_pose_tests)
+    add_executable(dingosdk_bmx_forearm_repair_tests "${source_root}/Extension/BMX/Test/bmx_forearm_repair_tests.cpp")
+    target_compile_features(dingosdk_bmx_forearm_repair_tests PRIVATE cxx_std_20)
+    target_include_directories(dingosdk_bmx_forearm_repair_tests PRIVATE "${source_root}")
+    add_test(NAME bmx_forearm_repair COMMAND dingosdk_bmx_forearm_repair_tests)
+    set_tests_properties(bmx_forearm_repair PROPERTIES TIMEOUT 120 LABELS "BMX")
     add_executable(dingosdk_bmx_world_transform_tests "${source_root}/Extension/BMX/Test/bmx_world_transform_tests.cpp")
     target_compile_features(dingosdk_bmx_world_transform_tests PRIVATE cxx_std_20)
     target_include_directories(dingosdk_bmx_world_transform_tests PRIVATE "${source_root}")

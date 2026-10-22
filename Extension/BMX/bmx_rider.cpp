@@ -60,6 +60,8 @@ struct Shared {
     native_render_phase::Receipt spring_presentation; // only a completed actual render write
     std::uint64_t frame_revision{},contact_revision{};
     pose_write::PlacementGate placement; // mutex protected, separate from logical mount contacts
+    pose::Result forearm_receipt;std::uint64_t forearm_receipt_revision{}; // completed render only, mutex protected
+    std::atomic<std::uint64_t> forearm_attempts{},forearm_unrepaired{};
 };
 Shared& shared() { static auto* value=new Shared;return *value; }
 struct LastError { DWORD value=GetLastError(); ~LastError(){SetLastError(value);} };
@@ -117,6 +119,34 @@ bool coupled_debug_selected() noexcept {
 #else
     return false;
 #endif
+}
+// Client publisher only. The copied Frame pins selection; a render callback
+// never initializes a trial or acquires any new write permission.
+bool forearm_repair_selected_client() noexcept {
+    LastError error;try {
+        if(!grip_probe::flag(L"RESKATE_BMX_FOREARM_REPAIR"))return false;
+        bool conflict=false;
+        for(const auto* key:{L"RESKATE_BMX_GRIP_STATIONARY_PROBE",L"RESKATE_BMX_GRIP_PROBE",L"RESKATE_BMX_GRIP_REQUEST_HUD",
+            L"RESKATE_BMX_RAMP_RIDE",L"RESKATE_BMX_RAMP_TEST",L"RESKATE_BMX_AUTOMATED_RIDE",L"RESKATE_BMX_AUTOMATED_SWITCH",
+            L"RESKATE_BMX_HUMAN_NATIVE_SWITCH",L"RESKATE_BMX_NATIVE_INPUT_HANDOFF",L"RESKATE_BMX_QUICK_SWITCH_TEST",
+            L"RESKATE_BMX_NATIVE_COUPLED",L"RESKATE_BMX_COUPLED_RIDE",L"RESKATE_BMX_COUPLED_CONTROLLER_TRIAL",
+            L"RESKATE_BMX_COUPLED_FORCE_PROBE",L"RESKATE_BMX_COUPLED_CALIBRATION",L"RESKATE_BMX_COUPLED_POSTURE",
+            L"RESKATE_BMX_PROP_TRANSFORM_TRACE",L"RESKATE_BMX_OBSERVED_POSTURE",L"RESKATE_BMX_BOARD_HANDOFF_TRACE",
+            L"RESKATE_BMX_NATIVE_BOARD_CONTROL",L"RESKATE_BMX_NATIVE_BOARD_DEFERRED_ARM",L"RESKATE_BMX_HANDOFF_PHASE_PROBE",
+            L"RESKATE_BMX_FIRST_MOUNT_PRODUCER_PROBE",L"RESKATE_BMX_CHASSIS_PROBE",L"RESKATE_BMX_CHASSIS_PROBE_PULSE",
+            L"RESKATE_BMX_GETUP_PULSE",L"RESKATE_BMX_IMPACT_RECOVERY",L"RESKATE_BMX_POSTFALL_REMOUNT_TEST",
+            L"RESKATE_BMX_INTENT_OBSERVER",L"RESKATE_BMX_INTENT_ACTIVATION",L"RESKATE_BMX_BINDING_OBSERVER",
+            L"RESKATE_BMX_NATIVE_FALL_OBSERVER",L"RESKATE_BMX_TRICK_REHEARSAL",L"RESKATE_BMX_APPROACH_WITNESS",
+            L"RESKATE_BMX_APPROACH_NORMAL",L"RESKATE_BMX_CONTACT_COMPLIANCE",L"RESKATE_BMX_LANDING_CONTACT_COMPLIANCE"})
+            conflict=conflict||grip_probe::nonzero_setting(key);
+        for(const auto* key:{L"RESKATE_BMX_IMPACT_TEST",L"RESKATE_BMX_CATALOG_TEST",L"RESKATE_BMX_BOARD_HANDOFF_MODE"}){
+            wchar_t value[1]{};conflict=conflict||GetEnvironmentVariableW(key,value,1)!=0;}
+        conflict=conflict||!grip_probe::value_is(L"RESKATE_BMX_POSE_COMPARISON",L"Default")||
+            !grip_probe::value_is(L"RESKATE_BMX_MOTION_BASIS_COMPARISON",L"Default");
+        constexpr wchar_t exact[]=L"C:\\Users\\Jeffr\\Desktop\\reskate\\build\\bmx-user-data-forearm-repair-test";
+        return forearm_repair::selected({true,user_data::runtime_development_selected(L"bmx-user-data-forearm-repair-test",exact),
+            grip_probe::value_is(L"RESKATE_BMX_LAUNCH_MODE",L"human-ride"),grip_probe::flag(L"RESKATE_BMX_NATIVE_CHASSIS"),conflict});
+    }catch(...){return false;}
 }
 void apply_rider_pose(std::uintptr_t component, bool rendering, std::uintptr_t render_data = 0, const NoBailSkater* evidence_owner = nullptr) noexcept {
     LastError error;
@@ -185,6 +215,8 @@ void apply_rider_pose(std::uintptr_t component, bool rendering, std::uintptr_t r
             trace.solved(solved);
         }
         evidence.solution(solved,bones);
+        if(rendering&&solved.forearm_repair_attempted)shared().forearm_attempts.fetch_add(1,std::memory_order_relaxed);
+        if(rendering&&solved.forearm_repair_requested&&!solved.ready)shared().forearm_unrepaired.fetch_add(1,std::memory_order_relaxed);
         if(solved.posture_requested&&!solved.ready)shared().posture_rejections.fetch_add(1,std::memory_order_relaxed);
         trace.at(coupled_debug::Stage::solved);if(!solved.ready)return;
         trace.at(coupled_debug::Stage::lease_recheck);if(!spring_lease_current())return;
@@ -288,6 +320,7 @@ void apply_rider_pose(std::uintptr_t component, bool rendering, std::uintptr_t r
         trace.at(coupled_debug::Stage::completed);
         shared().updates.fetch_add(1,std::memory_order_relaxed);
         if(rendering){
+            shared().forearm_receipt=solved;shared().forearm_receipt_revision=frame_revision;
             const auto count=shared().render_updates.fetch_add(1,std::memory_order_relaxed)+1;
             shared().render_metrics={solved.hand_error,solved.foot_error,owner,GetTickCount64(),count,true,solved.hand_contact,solved.foot_contact,
                 frame.movement_id,frame.movement_phase,frame.movement_progress,frame.rider_mode,frame_revision,
@@ -470,8 +503,9 @@ Json coupled_pose_diagnostic() noexcept {
 }
 std::string status() {
     LastError error;const auto& selected=comparison();
-    const auto contact=metrics();std::uint64_t revision{};bool admitted{};
-    {std::lock_guard lock(shared().mutex);revision=shared().frame_revision;admitted=shared().placement.ready(revision);}
+    const auto contact=metrics();std::uint64_t revision{},repair_revision{};bool admitted{},repair_selected{};pose::Result repair;
+    {std::lock_guard lock(shared().mutex);revision=shared().frame_revision;admitted=shared().placement.ready(revision);
+        repair_selected=shared().frame.forearm_repair_selected;repair=shared().forearm_receipt;repair_revision=shared().forearm_receipt_revision;}
     return std::string("pose listener=")+(shared().registered.load()?"ready":"waiting")+
         ", source skeleton="+(shared().layout.load()?"validated":"waiting")+", successful pose updates="+std::to_string(updates())+
         ", rider render updates="+std::to_string(shared().render_updates.load())+
@@ -496,7 +530,11 @@ std::string status() {
         ", uphill posture requested/fallback="+std::to_string(contact.posture_requested)+"/"+std::to_string(contact.posture_fallback)+
         ", posture attempts/scale="+std::to_string(contact.posture_attempts)+"/"+std::to_string(contact.posture_scale)+
         ", posture pelvis reach fit m/gaze counterpitch rad="+std::to_string(contact.posture_fit_adjustment)+"/"+std::to_string(contact.posture_gaze)+
-        ", local board render hides="+std::to_string(shared().board_updates.load(std::memory_order_relaxed));
+        ", local board render hides="+std::to_string(shared().board_updates.load(std::memory_order_relaxed))+
+        ", private forearm repair selected="+std::to_string(repair_selected)+
+        ", forearm repair attempted/unrepaired render solves="+std::to_string(shared().forearm_attempts.load())+"/"+std::to_string(shared().forearm_unrepaired.load())+
+        ", completed forearm revision/baseline valid/applied/extra clavicle drop m="+std::to_string(repair_revision)+"/"+
+            std::to_string(repair.forearm_baseline_valid)+"/"+std::to_string(repair.forearm_repair_applied)+"/"+std::to_string(repair.forearm_repair_extra_drop);
 }
 PrivateHandoffPublication private_handoff_publication() noexcept {
     std::lock_guard lock(shared().mutex);
@@ -543,7 +581,8 @@ void publish(const visual::Frame& frame) noexcept {
             shared().mount_contacts={};++shared().contact_revision;
         }
         shared().frame_revision=shared().placement.publish(frame.active,frame.entity);
-        shared().frame=frame;shared().at=std::chrono::steady_clock::now();}
+        shared().frame=frame;shared().frame.forearm_repair_selected=frame.active&&forearm_repair_selected_client();
+        shared().at=std::chrono::steady_clock::now();}
     if(!frame.active||!frame.entity)return;
     try {
         std::call_once(shared().preparation,prepare);

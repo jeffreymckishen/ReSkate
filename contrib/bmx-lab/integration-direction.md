@@ -3,6 +3,10 @@
 Source review and isolated game tests: October 21, 2026, starting from checkpoint
 `4ede3bc`. This records the integration direction and bounded acceptance evidence.
 The process-bound receipts below define the tested scope.
+The October 22 [private forearm checkpoint](judging/checkpoints/2026-10-22-forearm-repair.md)
+records the pedaling repair, independent reviews, 93-test MSVC build and its
+performance/native acceptance limits. The [matched Streets reference](bmx-streets-reference-2026-10-22.md)
+supersedes historical method offsets for the currently installed reference.
 
 ## Decision
 

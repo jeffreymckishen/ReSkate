@@ -5,6 +5,7 @@
 #include "bmx_rider_motion.h"
 #include "bmx_observed_posture.h"
 #include "Engine/Game/BMX/bmx_mount_transition.h"
+#include "Engine/Game/BMX/bmx_forearm_repair_policy.h"
 #if defined(DINGOSDK_BMX_STANDALONE_MOVEMENT) && defined(DINGOSDK_BMX_NATIVE_COUPLED)
 #include "bmx_coupled_posture_delta.h"
 #include <bmx/suspension.hpp>
@@ -12,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <span>
 #include <vector>
 
@@ -48,6 +50,9 @@ struct Transform { Vec position{}; Quat rotation{0,0,0,1}; float scale{1}; };
 // Errors measure the current intended palm/ankle targets. A released limb must
 // not be rejected merely because its target is deliberately away from the bike.
 struct Result {
+    bool forearm_repair_requested{},forearm_baseline_valid{},forearm_repair_attempted{},forearm_repair_applied{};
+    float forearm_repair_extra_drop{};
+    unsigned forearm_repair_evaluations{};
     bool ready{}; float hand_error{}, foot_error{}, hand_contact{1}, foot_contact{1};
     // Completed candidate diagnostics, not visual acceptance or physics state.
     unsigned posture_attempts{};float posture_scale{},posture_fit_adjustment{},posture_gaze{};
@@ -515,12 +520,13 @@ inline bool proposed_small_bike_anatomy(std::span<const Bone> bones,const Rig& r
 // keep the arm-chain origins lower while the hips extend. Aiming changes only
 // joint rotations; each native shoulder-to-arm segment keeps its exact length.
 // This is independent of gaze and never moves a grip, pedal or native root.
-inline bool articulate_clavicles(std::span<Bone> bones,const Rig& rig,const visual::Frame& frame) {
+inline bool articulate_clavicles(std::span<Bone> bones,const Rig& rig,const visual::Frame& frame,float extra_drop=0) {
+    if(!std::isfinite(extra_drop)||extra_drop<0||extra_drop>forearm_repair::maximum_extra_drop)return false;
     for(unsigned side=0;side<2;++side) {
         const int arm=side==0?rig.left_arm[0]:rig.right_arm[0];
         if(rig.parents[static_cast<std::size_t>(arm)]!=rig.shoulders[side])return false;
     }
-    const auto q=bike_rotation(frame);const auto down=turn(q,{0,-.04f,0});
+    const auto q=bike_rotation(frame);const auto down=turn(q,{0,extra_drop>0?-(.04f+extra_drop):-.04f,0});
     for(unsigned side=0;side<2;++side) {
         const int clavicle=rig.shoulders[side];
         const int arm=side==0?rig.left_arm[0]:rig.right_arm[0];
@@ -529,7 +535,7 @@ inline bool articulate_clavicles(std::span<Bone> bones,const Rig& rig,const visu
     }
     return true;
 }
-inline Result solve_riding_candidate(std::span<Bone> bones,const Rig& rig,const visual::Frame& frame,float posture_scale,const observed::Targets* measured=nullptr,const SpringTargets* spring=nullptr) {
+inline Result solve_riding_candidate(std::span<Bone> bones,const Rig& rig,const visual::Frame& frame,float posture_scale,const observed::Targets* measured=nullptr,const SpringTargets* spring=nullptr,float clavicle_extra_drop=0) {
     Result result;
     // These are bounded posture cues, not copied Unity humanoid channels or
     // physics forces. Pedals stay driven by the actual bike crank phase. The
@@ -556,7 +562,7 @@ inline Result solve_riding_candidate(std::span<Bone> bones,const Rig& rig,const 
         for(unsigned a=0;a<3;++a)bones[static_cast<std::size_t>(rig.hips)].position[a]=local[a];
         desired_hip=spring->hip;
         aim(bones,rig,rig.spine[0],rig.spine[3],spring->chest);
-        if(!articulate_clavicles(bones,rig,frame))return result;
+        if(!articulate_clavicles(bones,rig,frame,clavicle_extra_drop))return result;
     } else {
     if((frame.movement_bike_pitch!=0||frame.movement_bike_roll!=0)&&
         hand_release(frame,true)==0&&hand_release(frame,false)==0) {
@@ -615,7 +621,7 @@ inline Result solve_riding_candidate(std::span<Bone> bones,const Rig& rig,const 
     aim(bones,rig,rig.spine[0],rig.spine[3],world(frame,
         add({0,small_bike_stance::chest_aim_height-.16f*preload+extension-.06f*recovery+pedal_bob*.5f,
             small_bike_stance::chest_aim_z-.03f*preload+.06f*front+.04f*rear},add(movement.torso_offset,posture.torso))));
-    if(!articulate_clavicles(bones,rig,frame))return result;
+    if(!articulate_clavicles(bones,rig,frame,clavicle_extra_drop))return result;
     }
     if(!fit_pelvis_to_limbs(bones,rig,frame,nullptr,.18f,measured))return result;
     result.posture_fit_adjustment=length(sub(compose(bones,rig)[static_cast<std::size_t>(rig.hips)].position,desired_hip));
@@ -648,7 +654,7 @@ inline Result solve_riding_candidate(std::span<Bone> bones,const Rig& rig,const 
     return result;
 }
 inline Result solve_entry(std::span<Bone> bones,const Rig& rig,const visual::Frame& frame,EntryContacts& contacts);
-inline Result solve(std::span<Bone> bones,const Rig& rig,const visual::Frame& frame,EntryContacts* entry=nullptr,bool observed_selected=false,SpringBinding* spring_binding=nullptr) {
+inline Result solve_baseline(std::span<Bone> bones,const Rig& rig,const visual::Frame& frame,EntryContacts* entry=nullptr,bool observed_selected=false,SpringBinding* spring_binding=nullptr,float clavicle_extra_drop=0) {
     Result result;
     if(frame.rider_mode!=visual::RiderMode::riding&&frame.rider_mode!=visual::RiderMode::carrying)return result;
     if(!std::isfinite(frame.rider_blend)||!std::isfinite(frame.mount_progress)||frame.mount_progress<0||frame.mount_progress>1)return result;
@@ -764,7 +770,7 @@ inline Result solve(std::span<Bone> bones,const Rig& rig,const visual::Frame& fr
     const bool posture_requested=spring_requested||measured.available||length(requested.hip)>0||length(requested.torso)>0||requested.gaze>0;
     if(!posture_requested) {
         for(int i:joints)bones[static_cast<std::size_t>(i)].rotation=rig.bind[static_cast<std::size_t>(i)];
-        result=solve_riding_candidate(bones,rig,frame,0);
+        result=solve_riding_candidate(bones,rig,frame,0,nullptr,nullptr,clavicle_extra_drop);
     } else {
         // One retained scratch allocation for at most three candidates. The
         // source pose stays untouched until a strict contact candidate wins.
@@ -785,7 +791,7 @@ inline Result solve(std::span<Bone> bones,const Rig& rig,const visual::Frame& fr
                 }
             }
 #endif
-            auto tried=solve_riding_candidate(candidate,rig,frame,amount,measured.available&&amount>0?&scaled:nullptr,candidate_spring);
+            auto tried=solve_riding_candidate(candidate,rig,frame,amount,measured.available&&amount>0?&scaled:nullptr,candidate_spring,clavicle_extra_drop);
 #if defined(DINGOSDK_BMX_STANDALONE_MOVEMENT) && defined(DINGOSDK_BMX_NATIVE_COUPLED)
             tried.coupled_posture_requested=spring&&frame.coupled_posture_selected;
             tried.coupled_posture_applied=procedural_applied;
@@ -842,6 +848,80 @@ inline Result solve(std::span<Bone> bones,const Rig& rig,const visual::Frame& fr
         result.hand_contact*=transition;result.foot_contact*=transition;
     }
     return result;
+}
+inline bool forearm_repair_eligible(const visual::Frame& f,bool observed_selected) noexcept {
+    if(!f.forearm_repair_selected||observed_selected||!f.active||!f.native_body_token||f.mount_token||
+       f.rider_mode!=visual::RiderMode::riding||f.mount_progress!=1||f.rider_blend!=1||!f.chassis_quaternion_available||
+       f.spring_avatar.requested||f.coupled_posture_selected||f.coupled_motion_committed||f.airborne||
+       f.movement_id!=catalog::TrickId::none||f.movement_holding||f.movement_recovering)return false;
+    for(float cue:{f.preload,f.front_weight,f.rear_weight,f.landing_compression,f.air_extension_blend,
+        f.barspin,f.tailwhip,f.barspin_release,f.tailwhip_release,f.movement_phase,f.movement_progress,
+        f.release_left_hand,f.release_right_hand,f.release_left_foot,f.release_right_foot,
+        f.movement_bike_pitch,f.movement_bike_roll,f.rider_uphill_blend,f.rider_gaze_counterpitch})
+        if(!std::isfinite(cue)||cue!=0)return false;
+    return true;
+}
+inline bool finite_riding_output(std::span<const Bone> bones,const Rig& rig) noexcept {
+    if(bones.size()<rig.parents.size())return false;
+    // Retain the source solver's native quaternion envelope. Unchanged native
+    // rotations need not be exactly unit; the existing write guard separately
+    // normalizes each changed quaternion immediately before its lane write.
+    for(std::size_t i=0;i<rig.parents.size();++i){float norm{};
+        for(float q:bones[i].rotation){if(!std::isfinite(q))return false;norm+=q*q;}
+        if(!std::isfinite(norm)||norm<.9f||norm>1.1f)return false;
+        for(unsigned a=0;a<3;++a)if(!std::isfinite(bones[i].position[a]))return false;
+    }
+    return true;
+}
+inline bool forearm_height_exceeded(std::span<const Bone> bones,const Rig& rig,const visual::Frame& frame) {
+    const auto g=compose(bones,rig);const auto q=inverse(bike_rotation(frame));
+    const auto point=[&](int joint){return turn(q,sub(g[static_cast<std::size_t>(joint)].position,frame.position));};
+    for(auto chain:{rig.left_arm,rig.right_arm}){
+        if(std::abs(point(chain[1])[1]-point(chain[2])[1])>=.10f)return true;
+    }
+    return false;
+}
+inline Result solve(std::span<Bone> bones,const Rig& rig,const visual::Frame& frame,EntryContacts* entry=nullptr,bool observed_selected=false,SpringBinding* spring_binding=nullptr) {
+    // The unselected route is the retained solver directly: no scratch copy,
+    // extra anatomy gate, different target or changed fallback policy.
+    if(!forearm_repair_eligible(frame,observed_selected))return solve_baseline(bones,rig,frame,entry,observed_selected,spring_binding);
+    const std::vector<Bone> source(bones.begin(),bones.end());
+    auto baseline=solve_baseline(bones,rig,frame,entry,observed_selected,spring_binding);
+    baseline.forearm_repair_requested=true;
+    const bool contacts=baseline.ready&&std::isfinite(baseline.hand_error)&&std::isfinite(baseline.foot_error)&&
+        baseline.hand_error<.003f&&baseline.foot_error<.003f;
+    const bool finite=finite_riding_output(bones,rig);
+    baseline.forearm_baseline_valid=contacts&&finite&&proposed_small_bike_anatomy(bones,rig,frame);
+    if(baseline.forearm_baseline_valid)return baseline; // keep every valid baseline byte
+    baseline.ready=false;
+    if(!contacts||!finite||!forearm_height_exceeded(bones,rig,frame))return baseline;
+    baseline.forearm_repair_attempted=true;
+    const std::vector<Bone> baseline_pose(bones.begin(),bones.end());
+    std::vector<int> allowed{rig.shoulders[0],rig.shoulders[1]};
+    for(auto chain:{rig.left_arm,rig.right_arm})for(int i:chain)allowed.push_back(i);
+    for(auto fingers:{rig.left_fingers,rig.right_fingers})for(const auto& finger:fingers){
+        if(finger.metacarpal>=0)allowed.push_back(finger.metacarpal);for(int i:finger.joints)if(i>=0)allowed.push_back(i);}
+    std::vector<Bone> candidate=source,best;Result best_result;
+    const auto accepts=[&](float extra){
+        std::copy(source.begin(),source.end(),candidate.begin());
+        const auto tried=solve_baseline(candidate,rig,frame,entry,observed_selected,spring_binding,extra);
+        if(!tried.ready||!std::isfinite(tried.hand_error)||!std::isfinite(tried.foot_error)||
+           tried.hand_error>=.003f||tried.foot_error>=.003f||!finite_riding_output(candidate,rig)||
+           !proposed_small_bike_anatomy(candidate,rig,frame))return false;
+        for(std::size_t i=0;i<candidate.size();++i){
+            if(std::memcmp(candidate[i].scale.data(),baseline_pose[i].scale.data(),sizeof(Bone::scale))||
+               std::memcmp(candidate[i].position.data(),baseline_pose[i].position.data(),sizeof(Bone::position)))return false;
+            if(std::find(allowed.begin(),allowed.end(),static_cast<int>(i))==allowed.end()&&
+               std::memcmp(candidate[i].rotation.data(),baseline_pose[i].rotation.data(),sizeof(Bone::rotation)))return false;
+        }
+        best=candidate;best_result=tried;return true;
+    };
+    const auto search=forearm_repair::minimum_drop(accepts);
+    if(!search.ready){baseline.forearm_repair_evaluations=search.evaluations;return baseline;}
+    std::copy(best.begin(),best.end(),bones.begin());
+    best_result.forearm_repair_requested=best_result.forearm_repair_attempted=best_result.forearm_repair_applied=true;
+    best_result.forearm_baseline_valid=false;best_result.forearm_repair_extra_drop=search.extra_drop;
+    best_result.forearm_repair_evaluations=search.evaluations;return best_result;
 }
 // A mount uses the observed native stance and the supplied model's tube/pedals.
 // It has no authored humanoid clip or guessed bone offsets. World-space anchors

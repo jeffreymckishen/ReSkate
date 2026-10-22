@@ -626,6 +626,112 @@ class HarnessTests(unittest.TestCase):
         return h.StartGate(directory / "fresh-gate", "a" * 32, h.Owner(123, 456, "fake-owned-game", "B" * 64),
                            "native-y", "C" * 64)
 
+    def gate_payload_read_fixture(self, faults, *, payload=None, persistent=False, guard_issue=None,
+                                  directory_denied=False):
+        folder = h.WORKSPACE / "build" / "bmx"
+        with tempfile.TemporaryDirectory(prefix="virtual-pad-read-retry-", dir=folder) as temporary:
+            gate, backend, reads, started = self.new_gate(Path(temporary)), Backend(), [], []
+
+            class RetryClock(h.PreviewClock):
+                def sleep(self, seconds):
+                    # Exercise the unchanged real60s budget without6000 filesystem polls.
+                    super().sleep(30.001 if persistent and reads else seconds)
+
+            clock, test = RetryClock(), self
+
+            class TriggerSink(Sink):
+                def write(self, event, **fields):
+                    super().write(event, **fields)
+                    if event == "controller_start_gate_wait":
+                        started.append(clock.now())
+                        text = json.dumps(gate.trigger_fields()) if payload is None else payload
+                        gate.go.write_text(text)
+
+            sink = TriggerSink()
+
+            class ReadGuard(Guard):
+                def check(self):
+                    super().check()
+                    if reads and guard_issue:
+                        raise h.Refused(guard_issue)
+
+            guard = ReadGuard(clock)
+            original_read, original_directory = Path.read_bytes, gate.check_directory
+
+            def payload_read(path):
+                if path != gate.go:
+                    return original_read(path)
+                reads.append(clock.now())
+                test.assertFalse(any(row["event"] == "controller_report" for row in sink.rows))
+                test.assertFalse(any(state.buttons for state in backend.states))
+                fault = faults[min(len(reads) - 1, len(faults) - 1)]
+                if fault == "deny":
+                    raise PermissionError("fake GO payload sharing denial")
+                if fault == "other_error":
+                    raise OSError("fake non-permission payload error")
+                raw = original_read(path)
+                if fault == "changed":
+                    path.write_bytes(raw + b" ")
+                return raw
+
+            def check_directory():
+                if started and directory_denied:
+                    raise PermissionError("fake gate directory permission denial")
+                return original_directory()
+
+            with patch.object(Path, "read_bytes", payload_read), patch.object(gate, "check_directory", check_directory):
+                result = h.run(self.short(), guard, lambda: backend, sink, execute=True, clock=clock, start_gate=gate)
+            self.assertEqual((backend.states[-1], backend.closed, guard.closed), (h.NEUTRAL, 1, 1))
+            self.assertTrue(result["neutral_release_succeeded"] and result["disconnect_succeeded"])
+            return result, sink, reads, clock.now() - started[0]
+
+    def test_start_gate_transient_payload_permission_denial_waits_neutral_then_validates(self):
+        result, sink, reads, elapsed = self.gate_payload_read_fixture(("deny", "deny", "read"))
+        self.assertTrue(result["completed"])
+        self.assertEqual((len(reads), result["report_count"]), (3, 5))
+        go = next(i for i, row in enumerate(sink.rows) if row["event"] == "controller_start_gate_go")
+        first = next(i for i, row in enumerate(sink.rows) if row["event"] == "controller_report")
+        self.assertLess(go, first)
+        self.assertGreaterEqual(elapsed, .02)
+
+    def test_start_gate_persistent_payload_denial_retains_original60s_deadline_and_cleanup(self):
+        self.assertEqual(h.START_GATE_LIMIT_MS, 60000)
+        result, _, reads, elapsed = self.gate_payload_read_fixture(("deny",), persistent=True)
+        self.assertFalse(result["completed"])
+        self.assertIn("Start-gate deadline/clock failed", result["issue"])
+        self.assertEqual((len(reads), result["report_count"]), (2, 0))
+        self.assertGreaterEqual(elapsed, 60)
+        self.assertLess(elapsed, 60.01)
+
+    def test_start_gate_payload_denial_still_checks_focus_escape_and_owner_after_read(self):
+        for issue in ("Owned game lost foreground", "Escape abort", "Owned creation FILETIME changed"):
+            with self.subTest(issue=issue):
+                result, _, reads, _ = self.gate_payload_read_fixture(("deny", "read"), guard_issue=issue)
+                self.assertFalse(result["completed"])
+                self.assertIn(issue, result["issue"])
+                self.assertEqual((len(reads), result["report_count"]), (1, 0))
+
+    def test_start_gate_payload_denial_does_not_mask_malformed_mismatch_or_changed_next_read(self):
+        wrong = dict(schema=1, event="bmx_virtual_gamepad_go", process_id=123,
+                     process_creation_filetime="456", nonce="b" * 32)
+        for payload, fault, issue in (("{", "read", "Malformed start trigger JSON"),
+                                      (json.dumps(wrong), "read", "nonce mismatch"),
+                                      (None, "changed", "changed during read")):
+            with self.subTest(issue=issue):
+                result, _, reads, _ = self.gate_payload_read_fixture(("deny", fault), payload=payload)
+                self.assertFalse(result["completed"])
+                self.assertIn(issue, result["issue"])
+                self.assertEqual((len(reads), result["report_count"]), (2, 0))
+
+    def test_start_gate_only_payload_permission_error_can_wait(self):
+        for directory, fault, issue, count in ((True, "read", "gate directory permission denial", 0),
+                                               (False, "other_error", "non-permission payload error", 1)):
+            with self.subTest(directory=directory):
+                result, _, reads, _ = self.gate_payload_read_fixture((fault,), directory_denied=directory)
+                self.assertFalse(result["completed"])
+                self.assertIn(issue, result["issue"])
+                self.assertEqual((len(reads), result["report_count"]), (count, 0))
+
     def test_start_gate_neutral_ready_before_go_and_scenario_clock_after_go(self):
         folder = h.WORKSPACE / "build" / "bmx"
         with tempfile.TemporaryDirectory(prefix="virtual-pad-gate-test-", dir=folder) as temporary:

@@ -15,8 +15,10 @@ limit.
 
 `Bmx-CoupledVirtualTest.py` imports the exact approved
 `contrib/bmx-lab/Bmx-VirtualGamepad.py`, requiring SHA256
-`2964E18026D92EBD2239E0B938D25FACE48A792F2F14C18C43EF094BE3A2AFFE`.
-The original file and all its scenarios remain unchanged. Its native owner,
+`3F756CE24AB3E6BFB274C5F109B85911B8A781A6915DBADDF46363D8A933632B`.
+Its scenarios remain unchanged. A denied read of the GO payload now waits
+neutral within the original deadline; a later successful read still passes all
+file, owner and nonce checks before any scheduled input. Its native owner,
 executable/runtime, foreground, Escape, dependency and report guards are reused,
 as are bootstrap, ready/go, scheduler, finally-neutral and disconnect handling.
 The original six reviewed package/client files and already installed ViGEm are

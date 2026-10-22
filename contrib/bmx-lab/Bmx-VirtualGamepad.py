@@ -188,7 +188,12 @@ class StartGate:
         before = self.go.stat()
         if not self.go.is_file() or not 1 <= before.st_size <= 8192:
             raise Refused("Start trigger must be a regular JSON file within8KiB")
-        raw = self.go.read_bytes()
+        try:
+            raw = self.go.read_bytes()
+        except PermissionError:
+            # Atomic publication can briefly leave only the payload unreadable.
+            # The guarded wait stays neutral and retains its original deadline.
+            return False
         after = self.go.stat()
         token = lambda item: (item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns, item.st_ctime_ns)
         self.check_directory()

@@ -1,5 +1,9 @@
 # Controller recovery: established evidence and next trial
 
+This is the prior neutral-only checkpoint. The
+[three-trial controller GetUp follow-up](2026-10-22-controller-getup.md)
+records the later native recovery observations and their remaining limits.
+
 The latest runtime is
 `FDEC92FDBD0799B157E370C23D461AA6DA9DB0189CBFA919A5550192F914C54A`,
 with all 94 MSVC Release CTests passing. Its ordinary neutral side-impact run

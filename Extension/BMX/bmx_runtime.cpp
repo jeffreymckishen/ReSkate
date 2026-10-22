@@ -3057,8 +3057,10 @@ void poll_human_native_input_handoff(std::uintptr_t base,std::uintptr_t client) 
                 if(!output.good())++r.human_native_report_drops;
             }else ++r.human_native_report_drops;
         }catch(...){++r.human_native_report_drops;}
+        // The game's accepted input can finish after our observer stops. Its
+        // unconfirmed result does not prove that equipment stayed unchanged.
         message(overlay::detail::human_native_handoff_complete()?"Native skateboard equipped. LB/L1 + Y/Triangle: bike.":
-            "Native skateboard switch canceled. No automatic retry. See BMX status.",true);return;
+            "Switch not confirmed. Check your equipment before trying again.",true);return;
     }
     const auto frame=read_native_frame(base,client);const auto body=native_chassis::released_ownership_status();
     const auto physical=native_chassis::status();const auto publication=rider::private_handoff_publication();

@@ -88,3 +88,41 @@ Both additional dossiers are retained in
 `build/bmx-streets-current-20261021/rea-landing-extension-evidence.json`.
 Remaining seeded methods still need separate analysis. No physics behavior was
 changed from this narrow reference confirmation.
+
+## Body-motion cadence follow-up
+
+Current `FullBodyMotionBehaviour.FixedUpdate` at RVA `0x988A30` contains 1,445
+native bytes. Its original file range at `0x987430` matches the carrier exactly;
+the body SHA-256 is
+`871C576F9D3763D9A14A2F9227D85321C806159220B2ED9DA6084EBA2D0A19F2`.
+Current metadata identifies the time getter as `Time.fixedDeltaTime`. For
+ordered finite inputs, the scalar/vector interpolation factor is
+`clamp(30 * fixedDeltaTime, 0, 1)`.
+
+| Channel | Observed update in this body |
+|---|---|
+| Spine curl and twist | One interpolation from current toward wanted. |
+| Shared elbow roll | One interpolation, then clamp to -90 through 90 degrees. |
+| Left/right elbow roll | Two successive interpolations using the same factor; the second result is clamped to -90 through 90 degrees. |
+| Shared knee roll | One interpolation. |
+| Left/right knee roll | Existing current values are published; this body does not update them toward their wanted values. |
+| Head twist | The actual expression uses `wanted - wanted`, then adds wanted. For finite values this assigns wanted directly. |
+| Hips position | Component-wise interpolation. |
+| Hips rotation | Calls the metadata-identified `Quaternion.Slerp` with `30 * fixedDeltaTime`, then converts the result to positive Euler degrees for the component. |
+
+The successful component-publication path clears the scalar wanted fields and
+replaces wanted hips position/rotation from static values. The static-value
+initializers and Unity callee bodies were not analyzed. The head expression,
+double elbow interpolation and unchanged individual knee currents are recorded
+as observed, rather than replaced with an assumed intended implementation.
+Ghidra also reports a terminal call on the missing-component path; this is not
+evidence of its runtime failure semantics.
+
+This supplies a current reference for the channel update order and request
+lifetime. It does not establish ReSkate's correct callback cadence, authored
+poses, contact offsets or rendered alignment, and no timing constant was
+adopted from this observation. Evidence:
+`ev_3c00b870c82b81720a883f35d3a8a7c87d0ca921b2b10b07601bdce4bd59c5b7`.
+The dossier and byte-match receipt are retained locally as
+`build/bmx-streets-current-20261021/rea-fullbody-extension-evidence.json` and
+`fullbody-body-proof.json` beside it.

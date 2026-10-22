@@ -3104,8 +3104,14 @@ void poll_human_native_input_handoff(std::uintptr_t base,std::uintptr_t client) 
             canonical.base==base&&canonical.entity==frame.entity&&canonical.core==frame.core&&canonical.context==frame.context&&canonical.rig==frame.rig);
     s.protected_owner=protected_now;
     std::uint64_t serial{};double time{};
-    s.clock_coherent=frame.available&&frame.timing_available&&
-        (reads.clock_read_attempted=true,reads.clock_read_succeeded=read_native_clock_try(frame.entity,frame.core,serial,time))&&
+    const auto read_clock=[&]() noexcept {
+        reads.clock_read_attempted=true;
+        const auto result=read_native_clock_try_result(frame.entity,frame.core,serial,time,reads.clock_observed_ms);
+        reads.clock_read_result=static_cast<unsigned>(result);
+        reads.clock_mutex_busy=result==NativeClockRead::mutex_busy;
+        return reads.clock_read_succeeded=result==NativeClockRead::ok;
+    };
+    s.clock_coherent=frame.available&&frame.timing_available&&read_clock()&&
         (reads.clock_equality_evaluated=true,reads.clock_equal=serial==frame.serial&&time==frame.simulation_time)&&
         (reads.physics_read_attempted=true,reads.physics_read_succeeded=memory::peek(frame.context+0x1414,s.physics));
     reads.clock_serial=serial;reads.clock_time=time;

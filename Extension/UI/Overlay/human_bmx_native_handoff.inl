@@ -162,7 +162,14 @@ void update_human_native_handoff(handoff::Sample sample,human::Guard guard,const
     guard.allowed=guard.allowed&&human_native_handoff_configuration();sample.configuration=sample.configuration&&human_native_handoff_configuration();
     sample.capture_released=sample.capture_released&&polled_capture()==input::BmxNativeCapture::none&&
         !input::bmx_capture_live(bmx_quick_switch_until.load(),sample.now,true);
-    s.intent.observe(sample,guard,reads);ReleaseSRWLockExclusive(&s.lock);SetLastError(error);
+    if(reads.clock_mutex_busy){
+        // Include any adapter-lock wait in the refusal bound. SDK/native
+        // sample timestamps remain unchanged and cannot become fresh here.
+        sample.now=guard.now=GetTickCount64();
+        (void)s.intent.observe_clock_busy(sample,guard,reads);
+    }
+    else s.intent.observe(sample,guard,reads);
+    ReleaseSRWLockExclusive(&s.lock);SetLastError(error);
 }
 void apply_human_native_handoff(bool outer,DWORD user,DWORD original_packet,const XINPUT_GAMEPAD& raw,XINPUT_STATE* output) noexcept {
     auto& s=human_native_handoff();if(!s.requested.load()||!outer||!output||user>3)return;
@@ -231,6 +238,9 @@ std::string human_native_handoff_status() {
         {"only_selected_original",v.only_slot0},{"sdk_quiet",v.sdk_quiet},{"gesture_released",v.gesture_released}};};
     const auto read_witness=[](const human::ReadWitness& v)->Json {
         if(!v.present)return nullptr;
+        static constexpr std::array<const char*,6> clock_results{"ok","mutex_busy","wrong_owner","stale","nonfinite","error"};
+        const char* clock_result=!v.clock_read_attempted?"not_attempted":
+            v.clock_read_result<clock_results.size()?clock_results[v.clock_read_result]:"unclassified";
         return Json{{"sdk_sampled_ms",v.sdk_sampled_ms},{"sdk_device",v.sdk_device},{"sdk_buttons",v.sdk_buttons},
             {"sdk_keyboard",v.sdk_keyboard},{"sdk_available",v.sdk_available},{"sdk_focused",v.sdk_focused},{"sdk_overlay_ready",v.sdk_overlay_ready},
             {"sdk_menu_blocked",v.sdk_menu_blocked},{"sdk_menu_requested",v.sdk_menu_requested},{"sdk_capture_blocked",v.sdk_capture_blocked},{"sdk_capturing",v.sdk_capturing},
@@ -240,6 +250,7 @@ std::string human_native_handoff_status() {
             {"canonical_read_attempted",v.canonical_read_attempted},{"canonical_read_succeeded",v.canonical_read_succeeded},
             {"canonical_owner_evaluated",v.canonical_owner_evaluated},{"canonical_owner_equal",v.canonical_owner_equal},
             {"clock_read_attempted",v.clock_read_attempted},{"clock_read_succeeded",v.clock_read_succeeded},
+            {"clock_read_result",clock_result},{"clock_mutex_busy",v.clock_mutex_busy},{"clock_observed_ms",v.clock_observed_ms},
             {"clock_equality_evaluated",v.clock_equality_evaluated},{"clock_equal",v.clock_equal},{"clock_serial",v.clock_serial},{"clock_time",v.clock_time},
             {"physics_read_attempted",v.physics_read_attempted},{"physics_read_succeeded",v.physics_read_succeeded}};
     };
@@ -255,7 +266,8 @@ std::string human_native_handoff_status() {
         Json originals=Json::array();for(unsigned i=0;i<4;++i){const auto& o=rejected.originals[i];originals.push_back(Json{{"slot",i},{"wall_ms",o.wall},
             {"success",o.success},{"packet",o.packet},{"raw_pad",pad(o.raw)}});}
         const auto origin=rejected.origin==human::GuardOrigin::pre_ticket?"pre_ticket_guard":
-            rejected.origin==human::GuardOrigin::forward_observer?"forward_observer":"unspecified_guard_caller";
+            rejected.origin==human::GuardOrigin::forward_observer?"forward_observer":
+            rejected.origin==human::GuardOrigin::clock_busy_observer?"clock_busy_observer":"unspecified_guard_caller";
         first_rejected_guard=Json{{"origin",origin},{"rejection_bits",rejected.bits},{"failed_checks_in_rejected_branch",std::move(failed)},
             {"guard",Json{{"wall_ms",g.now},{"sampled_ms",g.sampled_ms},{"owner",g.owner},{"device",g.device},{"allowed",g.allowed},
                 {"sdk_gesture_only",g.sdk_gesture_only},{"sdk_released",g.sdk_released}}},
@@ -298,6 +310,15 @@ std::string human_native_handoff_status() {
         {"cleanup_ticket_counters",ticket.counters},{"cleanup_ticket_serial",ticket.serial},{"cleanup_ticket_native_time",ticket.native_time},
         {"first_native103",intent.first103().serial?sample(intent.first103()):Json(nullptr)},
         {"first_native100",intent.first100().serial?sample(intent.first100()):Json(nullptr)},{"latest_native",sample(intent.session().latest())},
+        {"qualifying_native100_dwell",Json{{"started",intent.session().current_dwell().started},
+            {"first_native",intent.session().current_dwell().first_native},{"last_native",intent.session().current_dwell().last_native},
+            {"first_wall_ms",intent.session().current_dwell().first_wall},{"last_wall_ms",intent.session().current_dwell().last_wall},
+            {"last_serial",intent.session().current_dwell().last_serial},{"required_seconds",intent.session().current_dwell().seconds}}},
+        {"clock_busy_observation",Json{{"paused",intent.session().observation_paused()},{"count",intent.busy_observation().count},
+            {"first_wall_ms",intent.busy_observation().first_wall},{"last_wall_ms",intent.busy_observation().last_wall},
+            {"last_coherent_feed_observed_ms",intent.busy_observation().last_coherent_feed_observed_ms},
+            {"current_coherent_feed_observed_ms",intent.coherent_feed_observed_ms()},
+            {"freshness_limit_ms",human::native::freshness_ms},{"deadline_extended",false},{"input_resent",false}}},
         {"first_rejected_guard",std::move(first_rejected_guard)},{"latest_offered_forward_observation",offered(intent.latest_offered_observation())},
         {"guard_diagnostic_scope","first rejected active guard; forward offered samples precede logical source normalization; pre-ticket and unspecified callers may have no offered sample or read witness; latest_native retains existing Session::latest update semantics"},
         {"pulse_phase",unsigned(intent.pulse().phase)},{"pulse_issue",intent.pulse().issue},{"sources",std::move(sources)},

@@ -107,6 +107,12 @@ NativeMotionLeaseStatus native_motion_lease_status(bool details=false) noexcept;
 // movement lease, or establish a physics-world synchronization boundary.
 bool read_native_clock(std::uintptr_t entity, std::uintptr_t core,
                        std::uint64_t& serial, double& simulation_time) noexcept;
+// Passive result classification only; no wait or authorization is implied.
+enum class NativeClockRead:unsigned {ok,mutex_busy,wrong_owner,stale,nonfinite,error};
+// Successful outputs, including the feed's wall stamp, share the existing lock.
+// Failures leave outputs unchanged; the Boolean callback signature stays intact.
+NativeClockRead read_native_clock_try_result(std::uintptr_t entity,std::uintptr_t core,
+    std::uint64_t& serial,double& simulation_time,std::uint64_t& observed_ms) noexcept;
 // Native callbacks must not wait for the time-feed writer.
 bool read_native_clock_try(std::uintptr_t entity, std::uintptr_t core,
                            std::uint64_t& serial,double& simulation_time) noexcept;

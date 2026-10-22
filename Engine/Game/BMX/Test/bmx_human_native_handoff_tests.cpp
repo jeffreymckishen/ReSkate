@@ -84,6 +84,179 @@ void input_and_native(){
         case 14:v.capture_released=false;break;case 15:v.sdk_quiet=false;break;case 16:v.gesture_released=false;break;}
         i.observe(v,guard(0,1048));check(!i.active(),"all cleanup and current-native proof gates retained after queue");}
 }
+// Successful stamp and BUSY proof are built independently of the Sample's
+// aggregate gates, so contradictory producer flags are meaningful negatives.
+h::ReadWitness clock_reads(const n::Sample& s,std::uint64_t observed,bool busy=false){
+    h::ReadWitness r;r.present=true;r.clock_mutex_busy=busy;r.clock_observed_ms=observed;
+    r.sdk_sampled_ms=s.sampled_ms;r.sdk_device=s.sdk_device;
+    r.sdk_available=r.sdk_focused=r.sdk_overlay_ready=r.gameplay_ready=true;
+    r.frame_available=r.frame_timing_available=true;r.frame_serial=s.serial;r.frame_time=s.native_time;
+    r.canonical_read_attempted=r.canonical_read_succeeded=r.canonical_owner_evaluated=r.canonical_owner_equal=true;
+    r.clock_read_attempted=true;
+    if(!busy){r.clock_read_succeeded=r.clock_equality_evaluated=r.clock_equal=r.physics_read_attempted=r.physics_read_succeeded=true;
+        r.clock_serial=s.serial;r.clock_time=s.native_time;}
+    return r;
+}
+n::Sample actual_sample(unsigned slot,std::uint64_t now,std::uint64_t serial,double time,unsigned physics=504){
+    auto s=sample(now,serial,time);s.sdk_device=1u<<slot;s.physics=physics;return s;
+}
+h::Intent delivered(unsigned slot=0,std::uint64_t observed=1248){
+    auto i=queued(slot);
+    for(auto now:{1032u,1052u,1132u,1212u,1232u})(void)i.poll(now,slot,true,true,true,504,{});
+    check(i.pulse().phase==b::Phase::complete&&i.session().phase()==n::Phase::observing,"fixture actually delivers one complete original Pulse");
+    auto s=actual_sample(slot,1248,13,1.248);note(i,slot,1248);i.observe(s,guard(slot,1248),clock_reads(s,observed));
+    check(i.active(),"coherent post-delivery sample remains observing");return i;
+}
+void clock_busy_observation(){
+    for(unsigned slot=0;slot<4;++slot){auto i=delivered(slot);auto s=actual_sample(slot,1264,14,1.264,0);s.clock_coherent=false;
+        auto g=guard(slot,1264);g.allowed=false;const auto reads=clock_reads(s,0,true);
+        const auto latest=i.session().latest();const auto rewrites=i.pulse().rewrites,press=i.pulse().press_reports,release=i.pulse().release_reports;
+        check(i.observe_clock_busy(s,g,reads)&&i.active(),"actual selected slot BUSY permits only passive post-delivery pause");
+        check(!s.clock_coherent&&!g.allowed&&s.sdk_device==(1u<<slot)&&!s.original_slot0_fresh&&!s.only_slot0,"BUSY never rewrites failed clock/Guard or normalizes actual source sample");
+        check(i.session().observation_paused()&&!i.session().ready()&&!i.session().callback_snapshot_ready(1264),"BUSY explicitly invalidates callback proof and readiness");
+        check(i.session().latest().serial==latest.serial&&i.session().latest().native_time==latest.native_time&&i.session().latest().now==latest.now&&
+            i.session().latest().physics==latest.physics&&!i.session().saw103()&&!i.session().saw100(),"unread frame does not replace accepted sample or invent103/100");
+        check(i.coherent_feed_observed_ms()==1248&&i.busy_observation().count==1&&i.busy_observation().first_wall==1264&&
+            i.busy_observation().last_wall==1264&&i.busy_observation().last_coherent_feed_observed_ms==1248,"BUSY receipt retains actual last coherent feed stamp");
+        check(!i.admit(1264,1u<<slot,ticket().owner)&&i.busy_observation().count==1&&i.coherent_feed_observed_ms()==1248,
+            "rejected admission cannot clear another generation's BUSY evidence");
+        const auto r=i.poll(1264,slot,true,true,true,504,{});
+        check(!r.rewrite&&i.pulse().rewrites==rewrites&&i.pulse().press_reports==press&&i.pulse().release_reports==release,"passive BUSY cannot replay a completed Pulse");
+        auto fresh=actual_sample(slot,1280,15,1.280);note(i,slot,1280);i.observe(fresh,guard(slot,1280),clock_reads(fresh,1280));
+        check(i.active()&&!i.session().observation_paused()&&i.session().callback_snapshot_ready(1280),"only a fully validated coherent sample restores callback proof");
+        i.cancel("fixture ended");note(i,slot,1290);note(i,slot,1300,chord());check(i.admit(1300,1u<<slot,ticket().owner),"new genuine chord admits a new generation");
+        check(i.busy_observation().count==0&&i.coherent_feed_observed_ms()==0&&!i.session().current_dwell().started,"successful admission resets BUSY and current dwell receipts");
+    }
+    for(unsigned age:{249u,250u,251u}){auto i=delivered();const auto now=1248+age;auto s=actual_sample(0,now,14,1.4,0);s.clock_coherent=false;
+        auto g=guard(0,now);g.allowed=false;note(i,0,now);
+        check(i.observe_clock_busy(s,g,clock_reads(s,0,true))==(age<250),"native feed freshness is strict at250ms, never Sample.now based");
+        check(i.active()==(age<250),"expired feed BUSY is terminal");}
+    {auto i=delivered();for(unsigned age:{100u,200u,249u,250u}){const auto now=1248+age;auto s=actual_sample(0,now,14,1.4,0);s.clock_coherent=false;
+            auto g=guard(0,now);g.allowed=false;note(i,0,now);check(i.observe_clock_busy(s,g,clock_reads(s,0,true))==(age<250),"repeated BUSY never refreshes coherent feed budget");}
+        check(i.busy_observation().count==3&&i.busy_observation().first_wall==1348&&i.busy_observation().last_wall==1497&&
+            i.coherent_feed_observed_ms()==1248,"only admitted pauses count; expiration does not renew or overwrite their evidence");}
+    for(unsigned delta:{9u,10u}){auto i=delivered(0,1008);const auto now=1248+delta;auto s=actual_sample(0,now,14,1.3,0);s.clock_coherent=false;
+        auto g=guard(0,now);g.allowed=false;note(i,0,now);
+        check(i.observe_clock_busy(s,g,clock_reads(s,0,true))==(delta==9),"already240ms-old helper feed retains only its actual remaining9ms budget");}
+    for(auto stamp:{std::uint64_t(0),std::uint64_t(999),std::uint64_t(1249)}){auto i=delivered(0,stamp);auto s=actual_sample(0,1264,14,1.264,0);s.clock_coherent=false;
+        auto g=guard(0,1264);g.allowed=false;note(i,0,1264);
+        check(!i.observe_clock_busy(s,g,clock_reads(s,0,true))&&!i.active(),"missing/stale/future successful-helper stamp cannot enable BUSY wait");}
+    {auto i=delivered();auto s=actual_sample(0,1264,14,1.264,103);note(i,0,1264);i.observe(s,guard(0,1264),clock_reads(s,1264));
+        s=actual_sample(0,1280,15,1.280,100);note(i,0,1280);i.observe(s,guard(0,1280),clock_reads(s,1280));
+        s=actual_sample(0,2280,16,2.280,100);note(i,0,2280);i.observe(s,guard(0,2280),clock_reads(s,2280));
+        check(i.session().current_dwell().started&&i.session().current_dwell().first_wall==1280,"native100 dwell is genuinely running before interruption");
+        s=actual_sample(0,2300,17,2.300,0);s.clock_coherent=false;auto g=guard(0,2300);g.allowed=false;note(i,0,2300);
+        check(i.observe_clock_busy(s,g,clock_reads(s,0,true)),"BUSY interrupts a partial100 dwell");
+        const auto& d=i.session().current_dwell();check(!d.started&&!d.first_wall&&!d.last_wall&&!d.last_serial&&d.first_native==0&&d.last_native==0,"BUSY clears every current dwell anchor");
+        check(i.first100().now==1280&&i.first103().now==1264&&i.session().saw103()&&i.session().saw100(),"historical first103/100 remain historical, no gap progress");
+        for(auto now:{2316u,3550u,4567u}){s=actual_sample(0,now,now==2316?17:now==3550?18:19,double(now)/1000,100);note(i,0,now);i.observe(s,guard(0,now),clock_reads(s,now));
+            check(i.active()==(now!=4567),"100 must meet full new native AND wall dwell after BUSY");}
+        check(i.session().phase()==n::Phase::complete&&i.session().current_dwell().first_wall==2316&&i.first100().now==1280,"completed receipt distinguishes current dwell from old historical100");}
+    for(unsigned unread_physics:{0u,103u,100u,200u}){auto i=delivered();auto s=actual_sample(0,1264,14,1.264,unread_physics);s.clock_coherent=false;auto g=guard(0,1264);g.allowed=false;note(i,0,1264);
+        check(i.observe_clock_busy(s,g,clock_reads(s,0,true)),"BUSY before any103 can pause without observing physics");
+        s=actual_sample(0,1280,15,1.280,100);note(i,0,1280);i.observe(s,guard(0,1280),clock_reads(s,1280));
+        check(!i.active()&&!i.session().saw103()&&std::string(i.issue())=="native100_without_observed103","BUSY cannot invent a missed103 to admit100");}
+    {auto i=delivered();auto s=actual_sample(0,15900,100,15.9);note(i,0,15900);i.observe(s,guard(0,15900),clock_reads(s,15900));
+        check(i.active()&&i.coherent_feed_observed_ms()==15900,"deadline fixture has a genuinely fresh late native feed");
+        s=actual_sample(0,15999,101,15.999,0);s.clock_coherent=false;auto g=guard(0,15999);g.allowed=false;note(i,0,15999);
+        check(i.observe_clock_busy(s,g,clock_reads(s,0,true)),"fresh feed permits passive pause just before original deadline");
+        s.now=s.sampled_ms=16000;g.now=g.sampled_ms=16000;note(i,0,16000);
+        check(!i.observe_clock_busy(s,g,clock_reads(s,0,true))&&!i.active()&&
+            std::string(i.issue())=="original_switch_deadline_or_wall_clock","still-fresh feed cannot renew original15s deadline");
+        check(i.session().ticket().deadline_ms==16000&&i.busy_observation().count==1,"deadline and accepted BUSY count remain fixed");}
+    {auto i=delivered();auto s=actual_sample(0,1264,14,1.264,0);s.clock_coherent=false;auto g=guard(0,1264);g.allowed=false;note(i,0,1264);
+        auto reads=clock_reads(s,0,true);reads.sdk_focused=false;
+        check(!i.observe_clock_busy(s,g,reads)&&!i.active(),"actual producer focus loss rejects the BUSY path");
+        const auto frozen=i.first_guard_rejection();
+        check(frozen.present&&frozen.origin==h::GuardOrigin::clock_busy_observer&&frozen.guard.now==1264&&
+            !frozen.reads.sdk_focused&&frozen.reads.clock_mutex_busy&&frozen.offered.sample.serial==14,
+            "first BUSY refusal retains actual typed read, Guard and offered sample");
+        note(i,0,1280);s=actual_sample(0,1280,15,1.280);i.observe(s,guard(0,1280),clock_reads(s,1280));
+        check(i.first_guard_rejection().guard.now==1264&&!i.first_guard_rejection().reads.sdk_focused&&
+            i.first_guard_rejection().offered.sample.serial==14,"later calls cannot overwrite first BUSY refusal");}
+    for(unsigned missing=0;missing<2;++missing){auto i=delivered();auto s=actual_sample(0,1264,14,1.264,103);note(i,0,1264);i.observe(s,guard(0,1264),clock_reads(s,1264));
+        s=actual_sample(0,1280,15,1.280,100);note(i,0,1280);i.observe(s,guard(0,1280),clock_reads(s,1280));
+        s=actual_sample(0,1300,16,1.300,0);s.clock_coherent=false;auto g=guard(0,1300);g.allowed=false;note(i,0,1300);
+        check(i.observe_clock_busy(s,g,clock_reads(s,0,true)),"one-sided dwell fixture interrupts prior100");
+        s=actual_sample(0,1320,16,1.320,100);note(i,0,1320);i.observe(s,guard(0,1320),clock_reads(s,1320));
+        const auto now=missing==0?3600u:1400u;const auto native_time=missing==0?1.5:3.6;
+        s=actual_sample(0,now,17,native_time,100);note(i,0,now);i.observe(s,guard(0,now),clock_reads(s,now));
+        check(i.active()&&i.session().phase()==n::Phase::observing,"neither wall duration alone nor native duration alone can finish restarted dwell");}
+    // Every phase before complete delivery remains fail-closed, including
+    // cleanup_wait, queued waiting, baseline, press, and release.
+    for(unsigned phase=0;phase<7;++phase){auto i=phase==0?admitted():phase==1?admitted():queued();
+        if(phase==1)check(i.transfer(ticket(),1000),"cleanup-only phase fixture");
+        if(phase>=3)(void)i.poll(1032,0,true,true,true,504,{});
+        if(phase>=4)(void)i.poll(1052,0,true,true,true,504,{});
+        if(phase>=5){(void)i.poll(1132,0,true,true,true,504,{});(void)i.poll(1212,0,true,true,true,504,{});}
+        if(phase==6)i.cancel("fixture terminal");
+        auto s=actual_sample(0,1220,13,1.220,0);s.clock_coherent=false;auto g=guard(0,1220);g.allowed=false;note(i,0,1220);
+        const auto count=i.pulse().rewrites;check(!i.observe_clock_busy(s,g,clock_reads(s,0,true))&&!i.active(),"BUSY before completed Pulse or after terminal cannot defer");
+        check(i.pulse().rewrites==count&&i.busy_observation().count==0,"phase rejection never offers input or credits BUSY");}
+    // Independently mutate actual immutable identities, all counters, context,
+    // cleanup leases, input, clocks and guard proof. None can hide behind BUSY.
+    for(unsigned variant=0;variant<53;++variant){auto i=delivered();auto s=actual_sample(0,1348,14,1.348,0);s.clock_coherent=false;
+        auto g=guard(0,1348);g.allowed=false;note(i,0,1348);auto reads=clock_reads(s,0,true);
+        if(variant<6){++s.owner[variant];g.owner=s.owner;}
+        else if(variant<13)++s.counters[variant-6];
+        else switch(variant){case 13:++s.body.world;break;case 14:++s.body.state;break;case 15:++s.body.index;break;
+        case 16:++s.body.generation;break;case 17:++s.body.token;break;case 18:s.configuration=false;break;case 19:s.gates=false;break;
+        case 20:s.canonical=false;break;case 21:s.protected_owner=true;break;case 22:s.pool_released=false;break;case 23:s.sdk_idle=false;break;
+        case 24:s.motion_released=false;break;case 25:s.publication_inactive=false;break;case 26:s.parts_zero=false;break;case 27:s.capture_released=false;break;
+        case 28:s.gesture_released=false;break;case 29:s.sdk_quiet=false;break;case 30:g.sdk_gesture_only=false;break;case 31:g.sdk_released=false;break;
+        case 32:s.sdk_device=g.device=2;reads.sdk_device=2;break;case 33:s.sdk_device=2;break;case 34:++g.owner[0];break;
+        case 35:s.sampled_ms=g.sampled_ms=reads.sdk_sampled_ms=0;break;case 36:s.sampled_ms=g.sampled_ms=reads.sdk_sampled_ms=1349;break;
+        case 37:s.sampled_ms=g.sampled_ms=reads.sdk_sampled_ms=1097;break;case 38:--s.now;break;case 39:--s.sampled_ms;break;
+        case 40:s.serial=12;reads.frame_serial=s.serial;break;case 41:s.native_time=1.2;reads.frame_time=s.native_time;break;
+        case 42:s.serial=13;reads.frame_serial=s.serial;break;case 43:s.native_time=1.248;reads.frame_time=s.native_time;break;
+        case 44:s.native_time=std::numeric_limits<double>::quiet_NaN();reads.frame_time=s.native_time;break;
+        case 45:--reads.frame_serial;break;case 46:reads.frame_time=1.5;break;case 47:g.allowed=true;break;
+        case 48:s.clock_coherent=true;break;case 49:s.now=s.sampled_ms=g.now=g.sampled_ms=reads.sdk_sampled_ms=1247;break;
+        case 50:s.now=s.sampled_ms=g.now=g.sampled_ms=reads.sdk_sampled_ms=16000;break;
+        case 51:i.note(true,0,false,1348,0,{});break;case 52:note(i,1,1348);break;}
+        check(!i.observe_clock_busy(s,g,reads)&&!i.active(),"actual owner/body/counter/context/source/release/clock failure stays terminal despite typed BUSY");}
+    for(unsigned variant=0;variant<32;++variant){auto i=delivered();auto s=actual_sample(0,1348,14,1.348,0);s.clock_coherent=false;
+        auto g=guard(0,1348);g.allowed=false;note(i,0,1348);auto r=clock_reads(s,0,true);
+        switch(variant){case 0:r.present=false;break;case 1:r.clock_mutex_busy=false;break;case 2:r.clock_read_attempted=false;break;
+        case 3:r.clock_read_succeeded=true;break;case 4:r.clock_equality_evaluated=true;break;case 5:r.clock_equal=true;break;
+        case 6:r.clock_observed_ms=1248;break;case 7:r.physics_read_attempted=true;break;case 8:r.physics_read_succeeded=true;break;
+        case 9:r.gameplay_ready=false;break;case 10:r.multiplayer_active=true;break;case 11:r.lobby_joining=true;break;
+        case 12:r.sdk_available=false;break;case 13:r.sdk_focused=false;break;case 14:r.sdk_overlay_ready=false;break;
+        case 15:r.sdk_menu_blocked=true;break;case 16:r.sdk_menu_requested=true;break;case 17:r.sdk_capture_blocked=true;break;
+        case 18:r.sdk_capturing=true;break;case 19:r.sdk_keyboard=true;break;case 20:r.sdk_buttons=0x8000;break;
+        case 21:r.sdk_device=2;break;case 22:--r.sdk_sampled_ms;break;case 23:r.frame_available=false;break;
+        case 24:r.frame_timing_available=false;break;case 25:r.canonical_read_attempted=false;break;case 26:r.canonical_read_succeeded=false;break;
+        case 27:r.canonical_owner_evaluated=false;break;case 28:r.canonical_owner_equal=false;break;
+        case 29:++r.frame_serial;break;case 30:r.frame_time=std::numeric_limits<double>::infinity();break;case 31:r.frame_time=1.1;break;}
+        check(!i.observe_clock_busy(s,g,r)&&!i.active(),"contradictory producer witness cannot rescue aggregate Sample.gates=true");}
+    for(unsigned variant=0;variant<9;++variant){auto i=delivered();b::Pad p{};
+        switch(variant){case 0:p.buttons=1;break;case 1:p.left_trigger=13;break;case 2:p.right_trigger=13;break;
+        case 3:p.left_x=1639;break;case 4:p.left_y=-1639;break;case 5:p.right_x=1639;break;case 6:p.right_y=-1639;break;
+        case 7:p.buttons=0x100;break;case 8:p.buttons=0x8000;break;}
+        note(i,0,1348,p);auto s=actual_sample(0,1348,14,1.348,0);s.clock_coherent=false;auto g=guard(0,1348);g.allowed=false;
+        check(!i.observe_clock_busy(s,g,clock_reads(s,0,true))&&!i.active(),"new actual physical control remains terminal during BUSY");}
+    // Source age retains its original inclusive250ms boundary separately from
+    // the stricter native feed cutoff; feed itself is only100ms old here.
+    for(unsigned age:{250u,251u}){auto i=delivered();auto s=actual_sample(0,1348,14,1.348,0);s.clock_coherent=false;s.sampled_ms=1348-age;
+        auto g=guard(0,1348);g.allowed=false;g.sampled_ms=s.sampled_ms;note(i,0,1348);
+        check(i.observe_clock_busy(s,g,clock_reads(s,0,true))==(age==250),"BUSY retains ordinary SDK freshness boundary without broadening it");}
+    {auto i=queued();for(auto now:{1032u,1052u,1132u,1212u,1232u})(void)i.poll(now,0,true,true,true,504,{});
+        auto s=actual_sample(0,1248,13,1.248);i.observe(s,guard(0,1248),clock_reads(s,1248));
+        check(i.active(),"last coherent sample may use original source already216ms old");
+        s=actual_sample(0,1348,14,1.348,0);s.clock_coherent=false;auto g=guard(0,1348);g.allowed=false;
+        check(!i.observe_clock_busy(s,g,clock_reads(s,0,true))&&!i.active(),"fresh SDK and feed cannot hide a stale selected original source");}
+    {auto i=delivered();note(i,0,1349);auto s=actual_sample(0,1348,14,1.348,0);s.clock_coherent=false;auto g=guard(0,1348);g.allowed=false;
+        check(!i.observe_clock_busy(s,g,clock_reads(s,0,true))&&!i.active(),"future selected original source is not fresh during BUSY");}
+    {auto i=delivered();auto s=actual_sample(0,1348,14,1.348,0);s.clock_coherent=false;auto g=guard(0,1348);g.allowed=false;note(i,0,1348);
+        check(i.observe_clock_busy(s,g,clock_reads(s,0,true)),"fresh-source setup before source disappearance");
+        s=actual_sample(0,1498,14,1.348,0);s.clock_coherent=false;g=guard(0,1498);g.allowed=false;
+        check(!i.observe_clock_busy(s,g,clock_reads(s,0,true))&&!i.active(),"fresh SDK cannot extend original coherent feed expiry");}
+    for(unsigned variant=0;variant<5;++variant){auto i=delivered();auto s=actual_sample(0,1264,14,1.264,0);s.clock_coherent=false;auto g=guard(0,1264);g.allowed=false;note(i,0,1264);
+        check(i.observe_clock_busy(s,g,clock_reads(s,0,true)),"resumed proof negative fixture paused");
+        s=actual_sample(0,1280,15,1.280);g=guard(0,1280);note(i,0,1280);
+        switch(variant){case 0:++s.owner[2];break;case 1:++s.body.token;break;case 2:++s.counters[0];break;case 3:s.capture_released=false;break;case 4:s.clock_coherent=false;break;}
+        i.observe(s,g,clock_reads(s,1280));check(!i.active()&&!i.session().callback_snapshot_ready(1280),"next coherent offer must pass full ordinary proof before callback restoration");}
+}
 void packet_domains(){
     h::Intent i;b::Pad p{};check(i.packet(0,3,p,false)==3,"default-off passthrough");
     const auto a=i.packet(2,0xffffffffu,p,true);check(a==0,"counter wraps naturally");
@@ -209,4 +382,4 @@ void rejected_guard_diagnostics(){
             std::string(with.issue())==without.issue(),"passive read witness leaves successful and rejected control decisions unchanged");}
 }
 
-int main(){pending_admission();admission();release_and_context();input_and_native();packet_domains();rejected_guard_diagnostics();std::cout<<checks<<" human native handoff checks passed\n";}
+int main(){pending_admission();admission();release_and_context();input_and_native();clock_busy_observation();packet_domains();rejected_guard_diagnostics();std::cout<<checks<<" human native handoff checks passed\n";}

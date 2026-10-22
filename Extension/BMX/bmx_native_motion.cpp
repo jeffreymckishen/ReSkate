@@ -254,14 +254,22 @@ bool read_native_clock(std::uintptr_t entity, std::uintptr_t core,
         return true;
     } catch (...) { return false; }
 }
-bool read_native_clock_try(std::uintptr_t entity,std::uintptr_t core,
-                           std::uint64_t& serial,double& simulation_time) noexcept {
+NativeClockRead read_native_clock_try_result(std::uintptr_t entity,std::uintptr_t core,
+    std::uint64_t& serial,double& simulation_time,std::uint64_t& observed_ms) noexcept {
     try {
         auto& feed=time_feed();std::unique_lock lock(feed.mutex,std::try_to_lock);
-        if(!lock.owns_lock()||!entity||!core||feed.entity!=entity||feed.core!=core||
-           GetTickCount64()-feed.observed>=250||!std::isfinite(feed.seconds))return false;
-        serial=feed.serial;simulation_time=feed.seconds;return true;
-    }catch(...) {return false;}
+        if(!lock.owns_lock())return NativeClockRead::mutex_busy;
+        if(!entity||!core||feed.entity!=entity||feed.core!=core)return NativeClockRead::wrong_owner;
+        if(GetTickCount64()-feed.observed>=250)return NativeClockRead::stale;
+        if(!std::isfinite(feed.seconds))return NativeClockRead::nonfinite;
+        serial=feed.serial;simulation_time=feed.seconds;observed_ms=feed.observed;
+        return NativeClockRead::ok;
+    }catch(...) {return NativeClockRead::error;}
+}
+bool read_native_clock_try(std::uintptr_t entity,std::uintptr_t core,
+                           std::uint64_t& serial,double& simulation_time) noexcept {
+    std::uint64_t observed_ms{};
+    return read_native_clock_try_result(entity,core,serial,simulation_time,observed_ms)==NativeClockRead::ok;
 }
 NativeFrame read_native_frame(std::uintptr_t base, std::uintptr_t client) noexcept {
     NativeFrame frame;

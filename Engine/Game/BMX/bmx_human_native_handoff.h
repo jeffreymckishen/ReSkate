@@ -17,9 +17,13 @@ inline unsigned single_slot(unsigned mask) noexcept {
 }
 struct Original {std::uint64_t wall{};bool success{};std::uint32_t packet{};bridge::Pad raw{};};
 struct Guard {std::uint64_t now{},sampled_ms{};native::Owner owner{};unsigned device{};bool allowed{},sdk_gesture_only{},sdk_released{};};
-// Passive producer results only: no read, retry, allocation or authority is
-// supplied by this witness. Attempt flags distinguish short-circuit skips.
+// Producer results never authorize input or completion. A typed BUSY result
+// can bound a separate passive observation pause. Attempts distinguish skips.
 struct ReadWitness {
+    // Set BUSY only from the producer's typed native mutex_busy result, never
+    // from a false read bool/text. observed_ms is a same-lock successful output.
+    bool clock_mutex_busy{};std::uint64_t clock_observed_ms{};
+    unsigned clock_read_result=~0u;
     bool present{};std::uint64_t sdk_sampled_ms{};unsigned sdk_device{},sdk_buttons{};
     bool sdk_keyboard{},sdk_available{},sdk_focused{},sdk_overlay_ready{},sdk_menu_blocked{},sdk_menu_requested{},sdk_capture_blocked{},sdk_capturing{};
     bool gameplay_ready{},multiplayer_active{},lobby_joining{},frame_available{},frame_timing_available{};
@@ -28,7 +32,7 @@ struct ReadWitness {
     bool canonical_read_attempted{},canonical_read_succeeded{},canonical_owner_evaluated{},canonical_owner_equal{};
     bool clock_read_attempted{},clock_read_succeeded{},clock_equality_evaluated{},clock_equal{},physics_read_attempted{},physics_read_succeeded{};
 };
-enum class GuardOrigin:unsigned {unspecified,pre_ticket,forward_observer};
+enum class GuardOrigin:unsigned {unspecified,pre_ticket,forward_observer,clock_busy_observer};
 enum GuardRejectionBit:unsigned {
     wall_reversed=1u<<0,deadline_reached=1u<<1,context_disallowed=1u<<2,owner_changed=1u<<3,device_changed=1u<<4,
     sample_missing=1u<<5,sample_future=1u<<6,sample_stale=1u<<7,selected_original_not_fresh=1u<<8,extra_original_fresh=1u<<9,
@@ -40,6 +44,9 @@ struct GuardRejection {
     native::Owner expected_owner{};unsigned selected_slot=4,expected_device{},fresh_original_mask{};
     std::uint64_t previous_wall{},deadline{};bool released{};
     std::array<Original,4> originals{};OfferedObservation offered{};ReadWitness reads{};
+};
+struct BusyObservation {
+    std::uint64_t count{},first_wall{},last_wall{},last_coherent_feed_observed_ms{};
 };
 class Intent {
     std::array<Original,4> originals_{};
@@ -54,6 +61,12 @@ class Intent {
     unsigned slot_=4;bool active_{},transferred_{},released_{},original_released_{};
     const char* issue_="not_requested";
     GuardRejection first_guard_rejection_{};OfferedObservation latest_offered_{};
+    std::uint64_t coherent_feed_observed_ms_{};BusyObservation busy_{};
+    bool coherent_feed_witness(const native::Sample& s,const ReadWitness& r) const noexcept {
+        return r.present&&!r.clock_mutex_busy&&r.clock_read_attempted&&r.clock_read_succeeded&&
+            r.clock_equality_evaluated&&r.clock_equal&&r.clock_serial==s.serial&&r.clock_time==s.native_time&&
+            r.clock_observed_ms&&r.clock_observed_ms<=s.now&&s.now-r.clock_observed_ms<native::freshness_ms;
+    }
     bool fresh(unsigned slot,std::uint64_t now) const noexcept {
         const auto& o=originals_[slot];return o.success&&o.wall&&now>=o.wall&&now-o.wall<=native::freshness_ms;
     }
@@ -104,7 +117,7 @@ public:
         slot_=selected;++generation_;spent_rise_[slot_]=north_rise_[slot_];owner_=owner;accepted_=last_=now;active_=true;
         transferred_=released_=original_released_=false;
         admission_=originals_;first103_=first100_={};
-        first_guard_rejection_={};latest_offered_={};
+        first_guard_rejection_={};latest_offered_={};coherent_feed_observed_ms_=0;busy_={};
         session_={};pulse_={};issue_="stepping_off_release_LB_and_Y";return true;
     }
     bool guard(const Guard& g,GuardOrigin origin=GuardOrigin::unspecified,const native::Sample* offered=nullptr,const ReadWitness* reads=nullptr) noexcept {
@@ -140,6 +153,67 @@ public:
         transferred_=true;last_=now;observed_serial_=ticket.serial;observed_time_=ticket.native_time;
         issue_="waiting_for_release_cleanup_and_native504";return true;
     }
+    // Separate post-delivery passive path. Never changes Guard.allowed or
+    // copies an expected owner into the actual Sample. All available non-clock
+    // proof is checked directly; unknown physics is neither inspected nor used.
+    bool observe_clock_busy(const native::Sample& sample,const Guard& g,const ReadWitness& reads) noexcept {
+        if(!active_)return false;
+        latest_offered_={true,sample,reads};
+        const auto deadline=transferred_?session_.ticket().deadline_ms:accepted_+15000;
+        const auto previous_wall=last_;
+        const auto refuse=[&](const char* why) noexcept {
+            const auto mask=fresh_mask(g.now),expected=1u<<slot_;
+            const unsigned bits=(g.now<last_?wall_reversed:0u)|(g.now>=deadline?deadline_reached:0u)|
+                (!g.allowed?context_disallowed:0u)|(g.owner!=owner_?owner_changed:0u)|(g.device!=expected?device_changed:0u)|
+                (!g.sampled_ms?sample_missing:0u)|(g.sampled_ms>g.now?sample_future:0u)|
+                (g.sampled_ms&&g.sampled_ms<=g.now&&g.now-g.sampled_ms>native::freshness_ms?sample_stale:0u)|
+                (!(mask&expected)?selected_original_not_fresh:0u)|((mask&~expected)?extra_original_fresh:0u)|
+                (!g.sdk_gesture_only?sdk_activity:0u)|(!quiet(originals_[slot_].raw)?original_activity:0u)|
+                (!g.sdk_released?sdk_release_lost:0u);
+            retain_guard_rejection(g,GuardOrigin::clock_busy_observer,bits,previous_wall,deadline,&sample,&reads);
+            cancel(why);return false;
+        };
+        if(!transferred_||pulse_.phase!=bridge::Phase::complete||session_.phase()!=native::Phase::observing||
+            !released_||!original_released_)return refuse("clock_busy_outside_completed_input_observation");
+        if(g.now<last_||g.now>=deadline)return refuse("original_switch_deadline_or_wall_clock");
+        if(!reads.present||!reads.clock_mutex_busy||!reads.clock_read_attempted||
+            reads.clock_read_succeeded||reads.clock_equality_evaluated||reads.clock_equal||reads.clock_observed_ms||
+            reads.physics_read_attempted||reads.physics_read_succeeded||sample.clock_coherent||g.allowed){
+            return refuse("clock_busy_typed_proof_invalid");
+        }
+        // This is the observation stamp from the last accepted coherent clock
+        // read, never the SDK timestamp, this frame's wall time, or a BUSY read.
+        if(!coherent_feed_observed_ms_||g.now<coherent_feed_observed_ms_||
+            g.now-coherent_feed_observed_ms_>=native::freshness_ms)return refuse("clock_busy_coherent_feed_expired");
+        const auto& t=session_.ticket();
+        if(sample.now!=g.now||sample.sampled_ms!=g.sampled_ms||!sample.sampled_ms||sample.sampled_ms>g.now||
+            g.now-sample.sampled_ms>native::freshness_ms||sample.owner!=g.owner||sample.owner!=owner_||sample.owner!=t.owner||
+            sample.sdk_device!=g.device||g.device!=(1u<<slot_)||!unique(g.now,slot_)){
+            return refuse("clock_busy_actual_owner_device_or_source_changed");
+        }
+        if(!sample.configuration||!sample.gates||!sample.canonical||sample.protected_owner||sample.body!=t.body||
+            !sample.pool_released||sample.counters!=t.counters||!sample.sdk_idle||!sample.motion_released||
+            !sample.publication_inactive||!sample.parts_zero||!sample.capture_released||!sample.gesture_released||
+            !sample.sdk_quiet||!g.sdk_gesture_only||!g.sdk_released||!quiet(originals_[slot_].raw)){
+            return refuse("clock_busy_nonclock_context_or_cleanup_changed");
+        }
+        if(!reads.gameplay_ready||reads.multiplayer_active||reads.lobby_joining||!reads.sdk_available||!reads.sdk_focused||
+            !reads.sdk_overlay_ready||reads.sdk_menu_blocked||reads.sdk_menu_requested||reads.sdk_capture_blocked||
+            reads.sdk_capturing||reads.sdk_keyboard||reads.sdk_buttons||reads.sdk_device!=g.device||
+            reads.sdk_sampled_ms!=g.sampled_ms||!reads.frame_available||!reads.frame_timing_available||
+            !reads.canonical_read_attempted||!reads.canonical_read_succeeded||!reads.canonical_owner_evaluated||
+            !reads.canonical_owner_equal)return refuse("clock_busy_producer_nonclock_proof_changed");
+        if(!sample.serial||!std::isfinite(sample.native_time)||sample.serial<observed_serial_||sample.native_time<observed_time_||
+            (sample.serial==observed_serial_)!=(sample.native_time==observed_time_)||
+            reads.frame_serial!=sample.serial||reads.frame_time!=sample.native_time){
+            return refuse("clock_busy_available_frame_clock_changed");
+        }
+        if(!session_.pause_observation(g.now))return refuse(session_.issue());
+        last_=g.now;
+        if(!busy_.count)busy_.first_wall=g.now;
+        ++busy_.count;busy_.last_wall=g.now;busy_.last_coherent_feed_observed_ms=coherent_feed_observed_ms_;
+        issue_=session_.issue();return true;
+    }
     void observe(native::Sample sample,const Guard& g,const ReadWitness& reads={}) noexcept {
         if(active_)latest_offered_={true,sample,reads};
         if(!guard(g,GuardOrigin::forward_observer,&sample,&reads)||!transferred_)return;
@@ -165,6 +239,12 @@ public:
         if(session_.observe(sample)) {
             if(!pulse_.queue(sample.now,slot_)||!session_.pulse_queued())cancel("human_pulse_queue_refused");
         }
+        // This stamp cannot authorize input or completion. Its only use is
+        // limiting a future passive BUSY pause to the existing feed freshness.
+        // Missing/invalid typed evidence clears it without changing this normal
+        // observation's frozen decision or supplying a fabricated clock.
+        if(session_.phase()!=native::Phase::aborted)
+            coherent_feed_observed_ms_=coherent_feed_witness(sample,reads)?reads.clock_observed_ms:0;
         if(sample.physics==103&&session_.saw103()&&!first103_.serial)first103_=sample;
         if(sample.physics==100&&session_.saw100()&&!first100_.serial)first100_=sample;
         if(session_.terminal()){active_=false;issue_=session_.issue();}
@@ -198,6 +278,8 @@ public:
     const auto& first103() const noexcept{return first103_;}const auto& first100() const noexcept{return first100_;}
     const auto& first_guard_rejection() const noexcept{return first_guard_rejection_;}
     const auto& latest_offered_observation() const noexcept{return latest_offered_;}
+    const auto& busy_observation() const noexcept{return busy_;}
+    std::uint64_t coherent_feed_observed_ms() const noexcept{return coherent_feed_observed_ms_;}
 };
 // SDK sampling can precede the next genuine game-facing original poll. This
 // bounded intent waits for that poll; it cannot admit, park, pulse or forge input.

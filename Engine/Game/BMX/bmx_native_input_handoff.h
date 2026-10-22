@@ -31,7 +31,7 @@ class Session {
     Phase phase_=Phase::idle;Ticket ticket_{};Sample latest_{};
     std::uint64_t last_wall_{},last_serial_{},ready_serial_{};
     board_handoff_policy::Dwell dwell_;
-    double last_time_{};bool used_{},saw103_{},saw100_{},ready_{};
+    double last_time_{};bool used_{},saw103_{},saw100_{},ready_{},observation_paused_{};
     const char* issue_="not_requested";
 public:
     bool begin(const Ticket& t,std::uint64_t now) noexcept {
@@ -47,6 +47,17 @@ public:
     bool saw103() const noexcept{return saw103_;}bool saw100() const noexcept{return saw100_;}
     const char* issue() const noexcept{return issue_;}const Ticket& ticket() const noexcept{return ticket_;}
     const Sample& latest() const noexcept{return latest_;}
+    bool observation_paused() const noexcept{return observation_paused_;}
+    const board_handoff_policy::Dwell& current_dwell() const noexcept{return dwell_;}
+    // An unread post-input clock is never native progress. Preserve the last
+    // accepted native sample/103 history and original deadline; interrupt only
+    // the CURRENT qualifying dwell, with no Pulse or cleanup readiness.
+    bool pause_observation(std::uint64_t now) noexcept {
+        if(phase_!=Phase::observing)return false;
+        if(now<last_wall_||now>=ticket_.deadline_ms){abort("handoff_deadline_or_wall_clock");return false;}
+        last_wall_=now;dwell_.interrupt();ready_=false;ready_serial_=0;observation_paused_=true;
+        issue_="clock_mutex_busy_passive_observation_pause";return true;
+    }
     void abort(const char* why) noexcept {if(live()){phase_=Phase::aborted;ready_=false;issue_=why;}}
     // Returns true exactly while a fresh ready504 snapshot can queue the shared Pulse.
     bool observe(const Sample& s) noexcept {
@@ -63,6 +74,7 @@ public:
         if(!s.original_slot0_fresh||!s.only_slot0||s.sdk_device!=1||!s.original_quiet||!s.sdk_quiet){abort("handoff_actual_xinput_source_or_activity");return false;}
         const bool released=s.sdk_idle&&s.motion_released&&s.publication_inactive&&s.parts_zero&&s.capture_released&&s.gesture_released;
         if(!released){ready_serial_=0;if(phase_!=Phase::cleanup_wait)abort("handoff_cleanup_readiness_lost");else issue_="waiting_for_chord_release_and_cleanup";return false;}
+        observation_paused_=false;
         if(phase_==Phase::cleanup_wait) {
             if(s.physics!=504||!s.offboard||!s.standable||!s.motion_supported){abort("handoff_initial_native_state_not_standing504");return false;}
             if(!advanced)return false;
@@ -94,7 +106,7 @@ public:
     // Callback consumes only the immutable fresh client proof; canonical owner,
     // protection, current physics/focus and original raw pad are checked again.
     bool callback_snapshot_ready(std::uint64_t now) const noexcept {
-        return live()&&phase_!=Phase::cleanup_wait&&now>=latest_.now&&now-latest_.now<=freshness_ms&&
+        return live()&&!observation_paused_&&phase_!=Phase::cleanup_wait&&now>=latest_.now&&now-latest_.now<=freshness_ms&&
             now<ticket_.deadline_ms&&latest_.sdk_idle&&latest_.pool_released&&latest_.motion_released&&
             latest_.publication_inactive&&latest_.parts_zero&&latest_.capture_released&&latest_.gesture_released;
     }

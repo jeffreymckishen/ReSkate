@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <cmath>
 
 namespace dingosdk::bmx::forearm_repair {
@@ -21,5 +22,20 @@ inline Search minimum_drop(Try&& accepts) {
     for(unsigned i=0;i<search_iterations;++i){const float middle=(low+high)*.5f;++out.evaluations;
         if(accepts(middle))high=middle;else low=middle;}
     out.ready=true;out.extra_drop=high;return out;
+}
+inline constexpr std::array<float,3> posture_amounts{1.f,.5f,0.f};
+// Previous proposals can consume only one failed endpoint each. Stop at the
+// first successful amount, whose original endpoint/eight-midpoint search stays
+// unchanged. Retained zero-drop proposals make the full solve bound3+11=14.
+inline constexpr unsigned maximum_posture_evaluations=static_cast<unsigned>(posture_amounts.size())-1+search_iterations+1;
+struct PostureSearch {bool ready{};float extra_drop{};unsigned evaluations{},proposal{};};
+template<class Eligible,class Try>
+inline PostureSearch retry_posture(Eligible&& eligible,Try&& accepts) {
+    PostureSearch out;
+    for(unsigned i=0;i<posture_amounts.size();++i){if(!eligible(i))continue;
+        const auto search=minimum_drop([&](float drop){return accepts(i,drop);});out.evaluations+=search.evaluations;
+        if(search.ready){out.ready=true;out.extra_drop=search.extra_drop;out.proposal=i;return out;}
+    }
+    return out;
 }
 }

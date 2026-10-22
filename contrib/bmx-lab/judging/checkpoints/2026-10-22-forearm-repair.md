@@ -1,5 +1,9 @@
 # Private pedaling forearm repair
 
+This records the initial pedaling repair and composition-cache checkpoints.
+The later private uphill extension is recorded in
+`2026-10-22-uphill-forearm-repair.md`.
+
 The ordinary pose solver can place an elbow more than 10 cm above or below its
 wrist during strong pedaling and steering. On the captured native rig, the
 full-pedal, 45-degree crank, +0.4 steer case reaches 104.9 mm; changing the elbow

@@ -14,6 +14,7 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -56,6 +57,7 @@ struct Result {
     bool ready{}; float hand_error{}, foot_error{}, hand_contact{1}, foot_contact{1};
     // Completed candidate diagnostics, not visual acceptance or physics state.
     unsigned posture_attempts{};float posture_scale{},posture_fit_adjustment{},posture_gaze{};
+    // On success fallback describes the winning amount; failures retain attempt history.
     bool posture_requested{},posture_fallback{};
     bool observed_requested{},observed_applied{};float observed_strength{};
     bool spring_requested{},spring_calibrated{},spring_applied{};float spring_fit_adjustment{};
@@ -691,6 +693,23 @@ inline Result solve_riding_candidate(std::span<Bone> bones,const Rig& rig,const 
     return result;
 }
 inline Result solve_entry(std::span<Bone> bones,const Rig& rig,const visual::Frame& frame,EntryContacts& contacts);
+inline bool finite_riding_output(std::span<const Bone> bones,const Rig& rig) noexcept;
+inline bool forearm_height_exceeded(std::span<const Bone> bones,const Rig& rig,const visual::Frame& frame);
+// Presentation selection only. This is consumed inside the already validated
+// ordinary posture block; it never retries an arbitrary public solve failure.
+inline bool uphill_forearm_repair_eligible(const visual::Frame& f,bool observed_selected) noexcept {
+    if(!f.forearm_repair_selected||observed_selected||!f.active||!f.entity||!f.native_body_token||f.mount_token||
+       f.rider_mode!=visual::RiderMode::riding||f.mount_progress!=1||f.rider_blend!=1||!f.chassis_quaternion_available||
+       f.spring_avatar.requested||f.coupled_posture_selected||f.coupled_motion_committed||f.airborne||
+       f.movement_id!=catalog::TrickId::none||f.movement_holding||f.movement_recovering||
+       !f.rider_posture_available||!motion::valid(f)||!std::isfinite(f.steer)||std::abs(f.steer)>.4f||
+       (f.rider_uphill_blend==0&&f.rider_gaze_counterpitch==0))return false;
+    for(float cue:{f.preload,f.front_weight,f.rear_weight,f.landing_compression,f.air_extension_blend,
+        f.barspin,f.tailwhip,f.barspin_release,f.tailwhip_release,f.movement_phase,f.movement_progress,
+        f.release_left_hand,f.release_right_hand,f.release_left_foot,f.release_right_foot,
+        f.movement_bike_pitch,f.movement_bike_roll})if(!std::isfinite(cue)||cue!=0)return false;
+    return true;
+}
 inline Result solve_baseline(std::span<Bone> bones,const Rig& rig,const visual::Frame& frame,EntryContacts* entry=nullptr,bool observed_selected=false,SpringBinding* spring_binding=nullptr,float clavicle_extra_drop=0) {
     Result result;
     if(frame.rider_mode!=visual::RiderMode::riding&&frame.rider_mode!=visual::RiderMode::carrying)return result;
@@ -811,6 +830,10 @@ inline Result solve_baseline(std::span<Bone> bones,const Rig& rig,const visual::
     } else {
         // One retained scratch allocation for at most three candidates. The
         // source pose stays untouched until a strict contact candidate wins.
+        const bool repair_posture=clavicle_extra_drop==0&&uphill_forearm_repair_eligible(frame,observed_selected);
+        std::optional<ComposeCacheScope> posture_cache;if(repair_posture)posture_cache.emplace();
+        struct Rejected {std::vector<Bone> bones;Result result;};
+        std::array<Rejected,3> rejected;
         std::vector<Bone> candidate(bones.begin(),bones.end());
         for(float amount:{1.f,.5f,0.f}) {
             std::copy(bones.begin(),bones.end(),candidate.begin());
@@ -841,7 +864,44 @@ inline Result solve_baseline(std::span<Bone> bones,const Rig& rig,const visual::
             if(tried.ready&&tried.hand_error<.003f&&tried.foot_error<.003f&&proposed_small_bike_anatomy(candidate,rig,frame)) {
                 std::copy(candidate.begin(),candidate.end(),bones.begin());break;
             }
+            if(repair_posture){auto& retained=rejected[attempts-1];retained.bones=candidate;retained.result=result;}
             result.ready=false;
+        }
+        // Preserve every original winner, including valid .5/0 fallbacks.
+        // Only exhausted, validated ordinary proposals enter the private pass.
+        if(repair_posture&&!result.ready) {
+            std::vector<int> allowed{rig.shoulders[0],rig.shoulders[1]};
+            for(auto chain:{rig.left_arm,rig.right_arm})for(int i:chain)allowed.push_back(i);
+            for(auto fingers:{rig.left_fingers,rig.right_fingers})for(const auto& finger:fingers){
+                if(finger.metacarpal>=0)allowed.push_back(finger.metacarpal);for(int i:finger.joints)if(i>=0)allowed.push_back(i);}
+            std::vector<Bone> best;Result best_result;
+            const auto eligible=[&](unsigned i){const auto& retained=rejected[i];const auto& r=retained.result;
+                return r.ready&&std::isfinite(r.hand_error)&&std::isfinite(r.foot_error)&&r.hand_error<.003f&&r.foot_error<.003f&&
+                    finite_riding_output(retained.bones,rig)&&forearm_height_exceeded(retained.bones,rig,frame);};
+            const auto accepts=[&](unsigned i,float extra){const auto& reference=rejected[i].bones;
+                std::copy(bones.begin(),bones.end(),candidate.begin());
+                for(int joint:joints)candidate[static_cast<std::size_t>(joint)].rotation=rig.bind[static_cast<std::size_t>(joint)];
+                const auto tried=solve_riding_candidate(candidate,rig,frame,forearm_repair::posture_amounts[i],nullptr,nullptr,extra);
+                if(!tried.ready||!std::isfinite(tried.hand_error)||!std::isfinite(tried.foot_error)||tried.hand_error>=.003f||tried.foot_error>=.003f||
+                   !finite_riding_output(candidate,rig)||!proposed_small_bike_anatomy(candidate,rig,frame))return false;
+                for(std::size_t bone=0;bone<candidate.size();++bone){
+                    if(std::memcmp(candidate[bone].position.data(),reference[bone].position.data(),sizeof(Bone::position))||
+                       std::memcmp(candidate[bone].scale.data(),reference[bone].scale.data(),sizeof(Bone::scale)))return false;
+                    if(std::find(allowed.begin(),allowed.end(),static_cast<int>(bone))==allowed.end()&&
+                       std::memcmp(candidate[bone].rotation.data(),reference[bone].rotation.data(),sizeof(Bone::rotation)))return false;
+                }
+                best=candidate;best_result=tried;return true;
+            };
+            const auto search=forearm_repair::retry_posture(eligible,accepts);
+            result.forearm_repair_requested=true;result.forearm_repair_attempted=search.evaluations>0;
+            result.forearm_repair_evaluations=search.evaluations;
+            if(search.ready){
+                best_result.posture_requested=true;best_result.posture_attempts=result.posture_attempts;
+                best_result.posture_scale=forearm_repair::posture_amounts[search.proposal];best_result.posture_fallback=best_result.posture_scale<1;
+                best_result.forearm_repair_requested=best_result.forearm_repair_attempted=best_result.forearm_repair_applied=true;
+                best_result.forearm_repair_extra_drop=search.extra_drop;best_result.forearm_repair_evaluations=search.evaluations;
+                std::copy(best.begin(),best.end(),bones.begin());result=best_result;
+            }
         }
     }
     if(spring_requested) {

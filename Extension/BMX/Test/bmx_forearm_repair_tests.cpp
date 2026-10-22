@@ -9,7 +9,7 @@
 namespace p=dingosdk::bmx::rider::pose;
 namespace v=dingosdk::bmx::visual;
 namespace policy=dingosdk::bmx::forearm_repair;
-unsigned checks{},cases{},baseline_failures{},repaired{},retained_excluded_failures{},new_failures{},valid_baseline_preserved{};
+unsigned checks{},cases{},baseline_failures{},repaired{},uphill_repaired{},retained_excluded_failures{},new_failures{},valid_baseline_preserved{};
 float maximum_drop{},maximum_hand{},maximum_foot{},maximum_sequence_step{},maximum_sequence_rotation{};
 void check(bool okay,const char* why){++checks;if(!okay){std::fprintf(stderr,"FAIL %s case=%u\n",why,cases);std::exit(1);}}
 bool exact(const std::vector<p::Bone>& a,const std::vector<p::Bone>& b){return a.size()==b.size()&&!std::memcmp(a.data(),b.data(),a.size()*sizeof(p::Bone));}
@@ -40,16 +40,22 @@ p::Result run(const actual276::Fixture& fixture,v::Frame frame,bool require_repa
         "unselected route retains baseline pose and result exactly");
     frame.forearm_repair_selected=true;const auto result=p::solve(actual,fixture.rig,frame);
     const bool base_valid=strict(baseline,fixture.rig,frame,legacy),actual_valid=strict(actual,fixture.rig,frame,result);
-    if(!p::forearm_repair_eligible(frame,false))check(exact(actual,baseline)&&legacy.ready==result.ready,"loaded/released/nonordinary routes unchanged");
+    const bool uphill=p::uphill_forearm_repair_eligible(frame,false);
+    if(!p::forearm_repair_eligible(frame,false)&&!uphill)check(exact(actual,baseline)&&legacy.ready==result.ready,"loaded/released/nonordinary routes unchanged");
     if(base_valid){++valid_baseline_preserved;check(actual_valid&&exact(actual,baseline),"every valid baseline byte preserved");if(!actual_valid)++new_failures;}
     else {++baseline_failures;if(result.forearm_repair_applied)++repaired;
-        else if(!p::forearm_repair_eligible(frame,false))++retained_excluded_failures;}
+        else if(!p::forearm_repair_eligible(frame,false)&&!uphill)++retained_excluded_failures;}
     if(require_repair&&!base_valid)check(result.forearm_repair_applied&&actual_valid,"known forearm failure repaired under unchanged gates");
     if(result.forearm_repair_applied){
         check(result.forearm_repair_requested&&result.forearm_repair_attempted&&!result.forearm_baseline_valid,"receipt distinguishes invalid baseline and applied correction");
         check(actual_valid&&result.forearm_repair_extra_drop>0&&result.forearm_repair_extra_drop<=policy::maximum_extra_drop,"bounded repair commits only strict valid output");
         check(result.forearm_repair_evaluations==policy::search_iterations+1,"bounded endpoint plus binary search only");
-        invariants(fixture,baseline,actual);maximum_drop=std::max(maximum_drop,result.forearm_repair_extra_drop);
+        if(uphill){auto reference=fixture.bones;for(int joint:p::changed(fixture.rig))reference[static_cast<unsigned>(joint)].rotation=fixture.rig.bind[static_cast<unsigned>(joint)];
+            const auto proposed=p::solve_riding_candidate(reference,fixture.rig,frame,result.posture_scale);
+            check(proposed.ready&&!p::proposed_small_bike_anatomy(reference,fixture.rig,frame),"historical uphill failure remains in its original same-amount proposal");
+            invariants(fixture,reference,actual);++uphill_repaired;}
+        else invariants(fixture,baseline,actual);
+        maximum_drop=std::max(maximum_drop,result.forearm_repair_extra_drop);
     }
     maximum_hand=std::max(maximum_hand,result.hand_error);maximum_foot=std::max(maximum_foot,result.foot_error);
     return result;
@@ -122,7 +128,8 @@ void excluded_and_invalid(const actual276::Fixture& fixture){auto f=neutral(fixt
 }
 int main(){policy_checks();const auto fixture=actual276::get();original_matrix(fixture);nearby_and_mixed(fixture);boundary_sequence(fixture);excluded_and_invalid(fixture);
     check(new_failures==0,"no new anatomy/contact failures");
-    check(baseline_failures==repaired+retained_excluded_failures&&retained_excluded_failures==12,"12 mixed-cue failures remain explicitly excluded baseline cases");
+    check(baseline_failures==repaired+retained_excluded_failures&&retained_excluded_failures==0&&uphill_repaired==12,
+        "all12 historical mixed uphill baseline failures remain counted and are now repaired privately");
     std::printf("PASS %u checks; %u cases; baseline failures=%u repaired=%u excluded baseline failures=%u valid baseline byte-preserved=%u; max extra drop=%.9f hand=%.9f foot=%.9f m; sequence XYZ=%.9f m rotation=%.9f rad\n",
         checks,cases,baseline_failures,repaired,retained_excluded_failures,valid_baseline_preserved,maximum_drop,maximum_hand,maximum_foot,maximum_sequence_step,maximum_sequence_rotation);
 }

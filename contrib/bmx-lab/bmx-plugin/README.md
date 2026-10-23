@@ -85,10 +85,11 @@ this package has not yet been installed or tested for real riding in the game.
 
 The experimental [`world.physics` API](../../Owned%20Bodies%20API.md) now provides
 opaque owned bodies, measured state and bounded commands with a four-record
-receipt pipeline. Portable and Host tests pass; actual native allocation,
-integration, sustained 60 Hz operation and cleanup remain unqualified. The first
-private game trial reached a pre-allocation clock-warmup refusal; it did not
-demonstrate a body or impulse.
+receipt pipeline. Portable and Host tests pass. A [native one-body trial](../luau-native-body-trial.md)
+also created one 12 kg capsule, applied one 48 Ns impulse, observed its successor
+and parked the allocation on release after explicit clock warmup. Sustained
+60 Hz operation, other body compounds and unload/world-change/partial-failure
+cleanup remain unqualified.
 
 The following generic SDK pieces are still missing for real riding:
 

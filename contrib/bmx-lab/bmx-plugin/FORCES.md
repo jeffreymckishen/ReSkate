@@ -117,8 +117,9 @@ until the Lua solver is optimized and the same benchmark passes with headroom.
 
 The generic owned-body service now has a four-record receipt ring and a separate
 pending inbox, so its tested contract permits consecutive 60Hz publications.
-Native allocation, integration and sustained every-step transport remain
-unqualified; the API contract alone does not prove them. The
+A separate native trial has now confirmed one 12kg capsule and one48Ns impulse
+with an actual measured successor and accepted park/release. Sustained every-step
+transport and this riding kernel remain unqualified in the game. The
 generic probe still lacks qualified contact normals, surface velocity and body/
 world/epoch provenance required here. Input device epochs/atomic actor handoff,
 part rendering, rider pose binding, fall and recovery also remain to be wired

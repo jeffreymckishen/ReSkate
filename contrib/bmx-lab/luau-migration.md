@@ -63,9 +63,10 @@ replace the physical prototype; implemented contracts still require native proof
    and angular velocity, native step serial/time and validity. Never expose
    pointers or permit foreign/stock actor mutation through an object handle.
    The experimental `world.physics` implementation now supplies this contract
-   with permission and ownership tests. Actual native allocation and integration
-   remain unqualified after a pre-allocation clock-warmup refusal in the first
-   private game trial.
+   with permission and ownership tests. A [native one-body trial](luau-native-body-trial.md)
+   now proves one 12kg capsule and one48Ns impulse/application/successor/park
+   sequence after explicit clock warmup. Other compounds, sustained control and
+   unload/world-change/partial-failure behavior remain unqualified in the game.
 2. **Contacts.** Return the actual hit point, normal, surface velocity when
    available, feature, ignored-owned-body status and world/step provenance.
    Existing raycasts do not expose enough information to implement wheel forces;

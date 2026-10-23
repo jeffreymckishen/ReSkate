@@ -5,9 +5,12 @@ It grants no access to the skater's bodies, native pointers, collision masks, co
 progression or paid content. This is a generic SDK building block. Vehicle policy,
 contacts, controls, hop strength and steering belong in a Luau mod.
 
-This initial implementation still needs a real one-body native trial. Portable and Host
-tests qualify the contracts and sandbox, not native integration or a playable vehicle.
-There is no actor motion, pose or render binding in this slice.
+The [first native trial](bmx-lab/luau-native-body-trial.md) created one 12 kg capsule,
+applied one 48 Ns impulse, obtained its independently measured successor and parked
+the allocation on release. Sustained every-step control, torque, other compounds and
+unload/world-change/partial-failure cleanup remain unqualified in the game. Portable
+and Host tests qualify the contracts and sandbox; they do not prove those native cases
+or a playable vehicle. There is no actor motion, pose or render binding in this slice.
 
 ## API
 

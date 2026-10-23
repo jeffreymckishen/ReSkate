@@ -7,13 +7,15 @@ body's `physics.read` sample. It retains that immutable complete sample internal
 including position, rotation, linear/angular velocity, mass and inertia. A query
 grants no force, motion, pose or ownership authority.
 
-The current native adapter refuses every batch before casting: owned-body
-exclusion is not yet qualified. With actor exclusion requested the reason is
-`local_actor_exclusion_unavailable`; otherwise it is
-`body_exclusions_unavailable`, after the initial owner and observation checks.
-Both report zero native casts and publish no geometry. The result and fence
-contracts below are exercised by the portable executor and plugin host tests;
-they do not establish an available native query backend.
+The native adapter has a conservative query path with actor exclusion disabled.
+It sends no native ignored-owner IDs or ignored entities, and does no owner
+lookup. Each actual nearest hit must pass the pinned native shape reader,
+current shape-to-body association, independent body capacity/allocation and
+current generation checks. An excluded or unqualified nearest hit makes the
+whole batch unavailable; the adapter never skips it, retries through it or
+substitutes a farther surface. In-game qualification of this replacement path
+remains required. Actor exclusion still returns
+`local_actor_exclusion_unavailable` before any native cast.
 
 ```lua
 local sample = assert(reskate.world.physics.read(body))
@@ -28,7 +30,7 @@ elseif batch.reason == "body_epoch_or_observation_changed" then
 elseif batch.reason == "local_actor_exclusion_unavailable" then
     -- The current native adapter cannot qualify this exclusion. Keep the vehicle inactive.
 elseif batch.reason == "body_exclusions_unavailable" then
-    -- The mandatory anchoring-body exclusion is also unavailable.
+    -- Native association metadata is unavailable; no ray was attempted.
 end
 ```
 
@@ -43,8 +45,8 @@ Options are `exclude_bodies = {other_owned_body, ...}` and
 are accepted. Every exclusion must still belong to this VM, its current native
 world and a fresh owned generation. The anchoring body must always be excluded.
 The native ray filter consumes owner indices, not body or shape handles, and the
-SDK-owned capsules have no native owner. Until a correct exclusion method is
-qualified, the adapter refuses the batch rather than forwarding those handles.
+SDK-owned capsules have no native owner. The adapter supplies an empty filter
+list and checks the nearest hit's current body against the owned exclusions.
 Native body references are resolved internally; plugins cannot supply addresses, native
 body indices or actor IDs. `exclude_local_actor` defaults to false. Setting it to
 true currently returns `local_actor_exclusion_unavailable` before any native cast.
@@ -67,12 +69,17 @@ same. A token cannot be submitted, read, released or used as an exclusion handle
 It represents a qualified body observation, not a collider, face or surface
 feature, and carries no proof of static or moving contact. Unqualified identities
 are omitted while valid hit geometry may still be returned.
-The current native adapter omits this optional token: the picking reader returns
-a shape handle, and its conversion to a rigid body is not yet qualified. Matching
-shape and body index/generation numbers cannot establish that conversion. The
-portable binding's token tests do not prove a native body association.
+The current native adapter omits this optional token. Its private association
+check uses the actual hit shape, the native shape-to-body index table, then the
+distinct body's capacity, allocation and u32 generation. Matching shape and body
+index/generation numbers cannot establish that conversion. Every returned
+shape/body pair is rechecked before publication, including different shapes
+sharing one body. These checks establish current association only: the native
+hit reader obtains a byte generation after the ray, so collision-time index
+reuse and generation wrap are not ruled out. No arbitrary-index conversion API
+or universal foreign shape-array capacity is exposed or claimed.
 
-Before and after any executed batch, the backend contract requires rechecking
+Before and after any executed batch, the native adapter rechecks
 the owned anchor, context, native world/state, SDK world and body generations, owned exclusions, and
 the exact listener sample epoch. Both fences also require the latest published
 sample and a fresh read-only native body observation to match every numeric lane
@@ -106,19 +113,24 @@ rather than inventing an actual count.
 
 Pre-cast refusals distinguish `client_phase_unavailable` (initial client gate),
 `local_actor_exclusion_unavailable` (the requested actor exclusion is unqualified),
-`body_exclusions_unavailable` (the mandatory owned-body exclusion is unqualified),
+`body_exclusions_unavailable` (association metadata is unavailable before casting),
 and `query_preconditions_unavailable` (the backend was unavailable before any batch
-ray cast). A ray-executing backend reports `query_backend_exception` when a caught
-exception leaves its cast accounting incomplete; this closes the remaining budget
-and omits `native_casts`. The current metadata-only native adapter attempts no ray:
-its catch reports `query_preconditions_unavailable` with known zero casts instead.
+ray cast). A C++ exception escaping the counted helper after query entry reports
+`query_backend_exception`, closes the remaining budget and omits `native_casts`
+because the adapter's accounting may be incomplete. The helper itself counts
+immediately before each native ray invocation; a C++ exception it catches can
+retain that exact attempted-call count as an ordinary unavailable result, without
+retrying. Its result cleanup guard is installed before the invocation. Exceptions
+before entering the query path report `query_preconditions_unavailable` with known
+zero casts instead. These C++ exception boundaries do not establish recovery from
+every native fault or from a failing cleanup routine.
 An unavailable batch after any accounted cast
 remains `query_unavailable`; observation changes and budget failures retain their
 existing precedence. These categories do not identify an individual failed native
 contract or relax any guard.
 
-Native execution remains unavailable pending the correct exclusion implementation
-and in-game validation. This does not activate a vehicle or establish
+This replacement requires a clean runtime build, focused contracts and in-game
+validation. It does not activate a vehicle or establish
 in-game contact accuracy, motion qualification or performance.
 
 The first native query-plus-force trial used source `716f2ddd` and runtime
@@ -147,7 +159,9 @@ The adapter previously tested those bits against the distinct rigid-body pool
 before creating a body token. That interpretation is removed. A second inspection
 proved that the ignored-ID list is compared with a shape's owner index, not its
 shape or rigid-body index. Owned capsules require an unassigned owner, which
-bypasses that list's membership loop. The native batch path is therefore withdrawn;
-it cannot honestly promise the mandatory owned-body exclusion. Shape-to-body
-conversion and an actual owned/actor exclusion method remain required before
-vehicle contact queries can be admitted in the game.
+bypasses that list's membership loop. Commit `4222ecf` withdrew that incorrect
+native path. The replacement uses zero native ignored IDs and a conservative
+post-hit current-body check. A retail query consumer confirms the actual
+ray-result-to-shape-reader interface; the native association getter independently
+confirms the shape-to-body index table. This static evidence supports the source
+implementation, not native success, actor coverage, normals or surface velocity.

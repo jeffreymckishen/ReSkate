@@ -90,9 +90,11 @@ replace the physical prototype; implemented contracts still require native proof
    Native ray hits were also confirmed to be shape handles, not rigid-body
    handles, and the ignored-ID list compares native owner indices. Owned capsules
    have no native owner; body or shape IDs cannot implement that exclusion.
-   The incorrect native batch path is removed. Requests without actor exclusion
-   now return `body_exclusions_unavailable`, with zero casts and no geometry,
-   until a correct exclusion method is qualified.
+   The incorrect native batch path was removed in `4222ecf`. Its replacement
+   queries with no native ignored IDs or owner lookup, qualifies the actual
+   nearest hit's current shape-to-body association, and refuses the whole batch
+   for excluded or unknown identity. Every returned pair is rechecked. Native
+   validation is still required; actor exclusion remains unavailable.
    Vehicle queries must retain actor exclusion and the observation checks.
 3. **Commands and receipts.** Queue finite bounded force, torque and one-shot
    impulse against an exact observed body epoch. Commit once in the supported

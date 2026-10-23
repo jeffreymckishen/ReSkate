@@ -1,6 +1,7 @@
 #include "Extension/Objects/ParkEditor/park_editor_surface.h"
 #include <cstdio>
 #include <limits>
+#include <stdexcept>
 
 namespace {
 using namespace dingosdk::editor;
@@ -139,6 +140,40 @@ int main() {
     malformed=false;children=100;bounded_calls=0;
     check(!cast_surface_probe(bounded_api,1234,from,to,{},bounded_owner,local_entity,bounded_body).available&&bounded_calls==32,
         "existing unbounded diagnostic API retains exact original32-attempt semantics");
+    auto geometry_api = api;
+    geometry_api.ray = [](std::uintptr_t world, NativeSurfaceResult* out, const NativeSurfaceRay* request, const char* label) -> void* {
+        check(request->ignored_bodies == std::array<std::uintptr_t, 5>{}, "geometry query passes no native owner IDs");
+        return api.ray(world, out, request, label);
+    };
+    static unsigned shape_reads{};
+    const SurfaceBodyReader zero_shape = [](std::uintptr_t world, std::uint32_t, std::uintptr_t, SurfaceBody& shape) {
+        ++shape_reads; shape = {world, 0}; return true;
+    };
+    scenario = Scenario::hit; const auto geometry_calls = calls;
+    auto geometry = cast_surface_geometry_probe_bounded(geometry_api, 1234, from, to, 2, zero_shape);
+    check(geometry.surface.available && geometry.surface.hit && geometry.surface.fraction == .25f &&
+        geometry.surface.body == SurfaceBody{1234, 0} && geometry.native_casts == 1 && calls == geometry_calls + 1 && shape_reads == 2,
+        "geometry keeps the nearest native hit and zero index/generation without owner lookup or a second cast");
+    geometry = cast_surface_geometry_probe_bounded(geometry_api, 1234, from, to, 2, nullptr);
+    check(geometry.surface.available && geometry.surface.hit && geometry.surface.body == SurfaceBody{} && geometry.native_casts == 1,
+        "missing shape identity stays a hit for the caller to refuse, never a clear or farther ray");
+    scenario = Scenario::null_empty_array; shape_reads = 0;
+    geometry = cast_surface_geometry_probe_bounded(geometry_api, 1234, from, to, 2, zero_shape);
+    check(geometry.surface.available && !geometry.surface.hit && geometry.native_casts == 1 && !shape_reads,
+        "only a validated empty native result clears without an identity");
+    scenario = Scenario::bad_fraction;
+    geometry = cast_surface_geometry_probe_bounded(geometry_api, 1234, from, to, 2, zero_shape);
+    check(!geometry.surface.available && geometry.native_casts == 1 && !geometry.budget_exhausted,
+        "unqualified geometry is discarded without retrying through it");
+    scenario = Scenario::hit;
+    geometry_api.ray = [](std::uintptr_t world, NativeSurfaceResult* out, const NativeSurfaceRay* request, const char* label) -> void* {
+        api.ray(world, out, request, label);
+        throw std::runtime_error("test query exception after partial native result");
+    };
+    geometry = cast_surface_geometry_probe_bounded(geometry_api, 1234, from, to, 2, zero_shape);
+    check(!geometry.surface.available && geometry.native_casts == 1 && !geometry.budget_exhausted,
+        "caught query exception retains the one attempted native call and does not retry");
+    check(releases == calls - 1 && scopes == releases, "single geometry path retains native result cleanup");
     if (failures) return 1;
     std::printf("Surface backend assertions including repeated callbacks: %u\n",assertions);
     std::puts("Typed surface probes: hit/clear/unavailable, empty native arrays, validation and cleanup passed.");

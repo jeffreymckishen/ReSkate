@@ -8,6 +8,7 @@
 #include "Engine/Game/Build/20260929/remote_collision.h"
 #include "Engine/Game/Build/20260929/rigid_bodies.h"
 #include "Engine/Game/Build/20260929/skater_state.h"
+#include "Engine/Game/World/body_hit_identity.h"
 #include "Extension/Multiplayer/Session/session.h"
 #include "Extension/Skater/no_bail.h"
 #include "Extension/Profile/local_profile_runtime.h"
@@ -25,11 +26,7 @@ namespace c = addr::remote_collision;
 namespace e = addr::engine;
 namespace k = addr::skater_state;
 using V4 = std::array<float, 4>;
-struct NativeHandle {
-    std::uintptr_t world{};
-    std::uint32_t index = 0xffffffffU, generation{};
-    bool operator==(const NativeHandle&) const = default;
-};
+using NativeHandle = body_hit_identity::NativeHandle;
 static_assert(sizeof(NativeHandle) == 16);
 using World = std::uintptr_t (*)(std::uintptr_t);
 using Allocate = NativeHandle* (*)(std::uintptr_t, NativeHandle*);
@@ -579,9 +576,11 @@ std::string read(std::uint64_t owner, const Handle& handle, Sample& out) noexcep
         return {};
     } catch (...) { return "native body observation failed closed"; }
 }
-body_query::Result probe_batch(std::uint64_t owner, const Handle& handle, const body_query::Request& request, unsigned) noexcept {
+body_query::Result probe_batch(std::uint64_t owner, const Handle& handle, const body_query::Request& request, unsigned allowance) noexcept {
     LastError error;
     body_query::Result failed; failed.count = request.count <= body_query::maximum_rays ? request.count : 0;
+    unsigned performed{};
+    bool ray_entered{};
     try {
         if (!body_query::valid(request, 1000)) { failed.failure = body_query::Failure::invalid; return failed; }
         if (!eligible()) { failed.failure = body_query::Failure::client_phase_unavailable; return failed; }
@@ -593,23 +592,80 @@ body_query::Result probe_batch(std::uint64_t owner, const Handle& handle, const 
             requested_epoch.body != selected->handle.generation) {
             failed.failure = body_query::Failure::observation_changed; return failed;
         }
+        const auto& anchor = selected->anchor;
+        const auto generation = service.world_generation;
+        std::array<const Slot*, body_query::maximum_exclusions + 1> owners{};
+        std::size_t excluded_count = 1; owners[0] = selected;
         for (std::size_t i = 0; i < request.exclusions; ++i) {
             const auto* other = lookup(owner, request.excluded[i]);
             if (!other || !other->active || other->retained || other->quarantined || !fresh(*other) ||
                 !selected->anchor.same(other->anchor)) { failed.failure = body_query::Failure::observation_changed; return failed; }
+            if (std::find(owners.begin(), owners.begin() + excluded_count, other) == owners.begin() + excluded_count)
+                owners[excluded_count++] = other;
         }
         // The placement root resolver takes a packed entity key, not the raw
         // SkaterEntity pointer held by Anchor. Actor conversion and the root
         // descriptor's actor support are unqualified; never submit that pointer.
         if (request.exclude_local_actor) { failed.failure = body_query::Failure::local_actor_exclusion_unavailable; return failed; }
-        // The native ray's ignored IDs are owner indices. Owned body and shape
-        // handles are different domains, and these capsules have no native owner.
-        // The anchor must always be excluded, so no batch can run until a correct
-        // exclusion path is qualified. Never manufacture a clear ray or body token.
-        failed.failure = body_query::Failure::body_exclusions_unavailable; return failed;
+        for (const auto field : {anchor.state + r::shape_allocated_bits, anchor.state + r::shape_generations,
+            anchor.state + r::shape_body_indices, anchor.world + r::world_body_generations}) {
+            std::uintptr_t array{};
+            if (!peek(field, array) || !pointer(array)) { failed.failure = body_query::Failure::body_exclusions_unavailable; return failed; }
+        }
+        body_hit_identity::Witnesses<body_query::maximum_rays> witnesses;
+        const auto world_current = [&] { return service.world_generation == generation && anchor_current(anchor); };
+        const auto qualify = [&](const NativeHandle& shape, NativeHandle& body) {
+            return body_hit_identity::resolve(anchor.world, anchor.state, shape, body,
+                [](std::uintptr_t at, auto& value) { return peek(at, value); }, world_current,
+                [&](const NativeHandle& value) { return valid_handle(service.api.shape_valid, value) && world_current(); },
+                [&](std::uint32_t index) { return allocated(anchor.state, index); },
+                [&](const NativeHandle& value) {
+                    return value.world == anchor.world && world_current() && allocated(anchor.state, value.index) &&
+                        valid_handle(service.api.body_valid, value) && allocated(anchor.state, value.index) && world_current();
+                });
+        };
+        const auto fence = [&] {
+            Anchor current; Epoch epoch{};
+            if (!eligible() || service.world_generation != generation || !capture(current) || !anchor.same(current) ||
+                !watched(anchor) || !watched(current) || !clock(current, epoch)) return false;
+            epoch.world = generation; epoch.body = selected->handle.generation;
+            if (epoch != requested_epoch || !body_query::same_sample(canonical, selected->latest)) return false;
+            for (std::size_t i = 0; i < excluded_count; ++i)
+                if (!owners[i]->active || owners[i]->retained || owners[i]->quarantined || !fresh(*owners[i])) return false;
+            Sample measured;
+            if (!observe(*selected, measured) || !body_query::same_sample(canonical, measured) ||
+                !witnesses.current([&](const body_hit_identity::Witness& witness) {
+                    NativeHandle body; return qualify(witness.shape, body) && body == witness.body;
+                })) return false;
+            Epoch after{}; after.world = generation; after.body = selected->handle.generation;
+            return world_current() && clock(anchor, after) && after == requested_epoch &&
+                body_query::same_sample(canonical, selected->latest);
+        };
+        const auto query = [&](const body_query::Ray& ray, unsigned permitted) {
+            body_query::Probe out;
+            // Native ignored IDs are owner indices. Query without either list or
+            // the ECS owner resolver; classify only the actual nearest hit below.
+            ray_entered = true;
+            const auto counted = probe_local_surface_geometry_bounded(ray.from, ray.to, permitted);
+            performed += counted.native_casts; out.native_casts = counted.native_casts; out.budget_exhausted = counted.budget_exhausted;
+            const auto& hit = counted.surface;
+            if (!hit.available || hit.context != anchor.context || hit.world != anchor.world) return out;
+            if (!hit.hit) { out.hit.status = body_query::Status::clear; return out; }
+            NativeHandle shape, body;
+            std::memcpy(&shape, hit.hit_body.data(), sizeof(shape));
+            if (!qualify(shape, body)) return out;
+            for (std::size_t i = 0; i < excluded_count; ++i)
+                if (body.world == owners[i]->body.world && body.index == owners[i]->body.index) return out;
+            if (!witnesses.add({shape, body})) return out;
+            out.hit.status = body_query::Status::hit; out.hit.position = hit.position; out.hit.fraction = hit.fraction;
+            // No public body token, normal or surface motion is inferred here.
+            return out;
+        };
+        return body_query::execute(request, allowance, 1000, query, fence);
     } catch (...) {
-        // This path performs metadata checks only; no native ray was attempted.
-        failed.failure = body_query::Failure::query_preconditions_unavailable; return failed;
+        failed.native_casts = performed; failed.accounting_valid = !ray_entered;
+        failed.failure = ray_entered ? body_query::Failure::query_backend_exception : body_query::Failure::query_preconditions_unavailable;
+        return failed;
     }
 }
 std::string submit(std::uint64_t owner, const Handle& handle, const Command& command, std::uint64_t& sequence) noexcept {

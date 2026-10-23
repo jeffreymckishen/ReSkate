@@ -120,6 +120,10 @@ struct BoundedLocalSurfaceProbe {
 };
 BoundedLocalSurfaceProbe probe_local_surface_bounded(const std::array<float,3>& from,const std::array<float,3>& to,
     unsigned maximum_casts,std::span<const std::array<std::uint64_t,2>> ignored_bodies={},std::uint64_t ignore_local_entity=0);
+// One geometry query, with no native owner ignore list, entity lookup or retry.
+// hit_body retains the native picking reader's shape handle; it is not a body.
+BoundedLocalSurfaceProbe probe_local_surface_geometry_bounded(const std::array<float,3>& from,const std::array<float,3>& to,
+    unsigned maximum_casts);
 // Small allowlisted progression commands, executed on the game update thread.
 bool set_local_progression(const std::vector<std::string>& arguments);
 // Small ReSkate-owned booleans saved beside the profile under a "ReSkate."

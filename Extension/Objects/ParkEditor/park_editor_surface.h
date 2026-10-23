@@ -203,8 +203,6 @@ inline std::optional<Vec3> cast_surface_once_counted(const NativeSurfaceApi &api
     std::copy(start.begin(), start.end(), request.start.begin());
     std::copy(end.begin(), end.end(), request.end.begin());
     NativeSurfaceResult result;
-    ++native_casts;
-    api.ray(world, &result, &request, "ReSkate_ParkSurface");
     struct Release {
         const NativeSurfaceApi &api;
         NativeSurfaceResult &result;
@@ -222,6 +220,8 @@ inline std::optional<Vec3> cast_surface_once_counted(const NativeSurfaceApi &api
                 api.release(&result.allocator_vtable, result.data);
         }
     } release{api, result};
+    ++native_casts;
+    api.ray(world, &result, &request, "ReSkate_ParkSurface");
     if (result.world != world || !result.data || result.count > 4096 ||
         result.first > UINT32_MAX - result.count)
         return {};
@@ -293,6 +293,12 @@ inline BoundedSurfaceCastProbe cast_surface_probe_bounded(const NativeSurfaceApi
     }
     out.budget_exhausted=true;return out; // unresolved exclusion is unavailable, never clear or self-hit
     }catch(...){return out;} // preserve actual backend-call accounting even on allocation/query exceptions
+}
+// A single nearest-hit query. Owner lookup and native owner-ID exclusions are
+// deliberately absent; callers may reject the returned hit but must not skip it.
+inline BoundedSurfaceCastProbe cast_surface_geometry_probe_bounded(const NativeSurfaceApi& api, std::uintptr_t world,
+    Vec3 start, Vec3 end, unsigned maximum_casts, SurfaceBodyReader shape_reader) {
+    return cast_surface_probe_bounded(api, world, start, end, maximum_casts, {}, nullptr, {}, shape_reader);
 }
 inline std::optional<Vec3> cast_surface(const NativeSurfaceApi &api, std::uintptr_t world, Vec3 start,
                                         Vec3 end, SurfaceOwner owner = nullptr,

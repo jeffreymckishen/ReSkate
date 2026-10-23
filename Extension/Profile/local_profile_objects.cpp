@@ -193,12 +193,13 @@ LocalSurfaceProbe probe_local_surface(const std::array<float, 3>& from, const st
     result.excluded_bodies = cast.excluded_bodies;
     return result;
 }
-BoundedLocalSurfaceProbe probe_local_surface_bounded(const std::array<float, 3>& from, const std::array<float, 3>& to,
-    unsigned maximum_casts, std::span<const std::array<std::uint64_t, 2>> ignored_bodies, std::uint64_t ignore_local_entity) {
+static BoundedLocalSurfaceProbe probe_local_surface_bounded_impl(const std::array<float, 3>& from, const std::array<float, 3>& to,
+    unsigned maximum_casts, std::span<const std::array<std::uint64_t, 2>> ignored_bodies, std::uint64_t ignore_local_entity,
+    bool resolve_entity) {
     BoundedLocalSurfaceProbe result;const auto began=std::chrono::steady_clock::now();
     const auto finish=[&] {result.elapsed_microseconds=static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-began).count());return result;};
-    if(maximum_casts<1||maximum_casts>2)return finish();
+    if(maximum_casts<1||maximum_casts>2||(!resolve_entity&&ignore_local_entity))return finish();
     std::lock_guard lock(local_runtime().native_mutex);
     auto& r = placements_runtime();
     if (!local_runtime().active || !r.context || ignored_bodies.size() > 4096) return finish();
@@ -226,10 +227,12 @@ BoundedLocalSurfaceProbe probe_local_surface_bounded(const std::array<float, 3>&
     }
     if (ignore_local_entity && (!picking.api.ready || !r.resolve || !r.valid)) return finish();
     const std::array<std::uint64_t, 1> ignored{ignore_local_entity};
-    const auto cast = editor::cast_surface_probe_bounded(api, result.surface.world, from, to, maximum_casts, ignored_bodies,
+    const auto cast = resolve_entity ? editor::cast_surface_probe_bounded(api, result.surface.world, from, to, maximum_casts, ignored_bodies,
         picking.api.ready ? &surface_probe_entity : nullptr,
         ignore_local_entity ? std::span<const std::uint64_t>(ignored) : std::span<const std::uint64_t>{},
-        picking.api.ready ? &surface_probe_body : nullptr);
+        picking.api.ready ? &surface_probe_body : nullptr) :
+        editor::cast_surface_geometry_probe_bounded(api, result.surface.world, from, to, maximum_casts,
+            picking.api.ready ? &surface_probe_body : nullptr);
     result.native_casts=cast.native_casts;result.budget_exhausted=cast.budget_exhausted;
     result.surface.available = cast.surface.available;
     result.surface.hit = cast.surface.hit;
@@ -239,6 +242,14 @@ BoundedLocalSurfaceProbe probe_local_surface_bounded(const std::array<float, 3>&
     result.surface.hit_body = cast.surface.body;
     result.surface.excluded_bodies = cast.surface.excluded_bodies;
     return finish();
+}
+BoundedLocalSurfaceProbe probe_local_surface_bounded(const std::array<float, 3>& from, const std::array<float, 3>& to,
+    unsigned maximum_casts, std::span<const std::array<std::uint64_t, 2>> ignored_bodies, std::uint64_t ignore_local_entity) {
+    return probe_local_surface_bounded_impl(from, to, maximum_casts, ignored_bodies, ignore_local_entity, true);
+}
+BoundedLocalSurfaceProbe probe_local_surface_geometry_bounded(const std::array<float, 3>& from, const std::array<float, 3>& to,
+    unsigned maximum_casts) {
+    return probe_local_surface_bounded_impl(from, to, maximum_casts, {}, 0, false);
 }
 bool teleport_to_local_placed_object(std::string_view map, std::uint64_t token) {
     std::lock_guard lock(local_runtime().native_mutex);

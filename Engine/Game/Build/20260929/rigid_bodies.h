@@ -45,6 +45,11 @@ inline constexpr std::uintptr_t velocity_ring = 0x930, spin_ring = 0x940;
 inline constexpr std::uintptr_t pending_force = 0x970, pending_torque = 0x978;
 inline constexpr std::uintptr_t inverse_mass_array = 0x980, inertia_ratio_array = 0x988;
 inline constexpr std::uintptr_t allocated_bits = 0x9c8, dynamic_bits = 0xa08;
+// The native hit reader returns a shape. 0x25d3cb0 maps that shape through F98;
+// 0x25d7e00 checks its allocation bit and byte generation in this state.
+inline constexpr std::uintptr_t shape_allocated_bits = 0xf58, shape_body_indices = 0xf98, shape_generations = 0xff8;
+// 0x25d7b10 compares a body's u32 generation in the world, not its state.
+inline constexpr std::uintptr_t world_body_generations = 0x680;
 inline constexpr std::uintptr_t shape_categories = 0xfe8, shape_collides = 0xff0, shape_owners = 0x1008;
 // The local client/physics participant qualifies the observed producer phase;
 // it does not grant ownership of that participant or its bodies to a plugin.

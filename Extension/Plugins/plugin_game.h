@@ -300,6 +300,15 @@ public:
     virtual std::vector<std::string> entity_blueprints(std::string_view /*prefix*/, bool /*meshes_only*/) { return {}; }
     // A world object blueprint's mesh box in its own frame (min, max), when it has a loaded mesh.
     virtual std::optional<std::array<Vec3, 2>> entity_bounds(std::string_view /*blueprint*/) { return std::nullopt; }
+    // One current client-world ray, distinguishing an unavailable query from a successful clear
+    // ray. A hit supplies its actual position and segment fraction only. No surface normal,
+    // velocity, native handles or world/owner epoch is qualified by this observation.
+    struct WorldProbe {
+        bool available{}, hit{};
+        Vec3 position{};
+        float fraction{};
+    };
+    virtual WorldProbe world_probe(const Vec3& /*from*/, const Vec3& /*to*/) { return {}; }
     // The world raycast and the object it meets (Extension/Objects/ParkEditor/park_editor_runtime.h,
     // local_world_pick): where; and the object's transform (rows right, up, forward with their
     // scale, then position) and blueprint, when known.

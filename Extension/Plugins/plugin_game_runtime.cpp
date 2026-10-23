@@ -273,6 +273,13 @@ public:
         if (!box) return std::nullopt;
         return std::array<Vec3, 2>{(*box)[0], (*box)[1]};
     }
+    WorldProbe world_probe(const Vec3& from, const Vec3& to) override {
+        // The existing client-thread query locks native_mutex and resolves the current TLS
+        // context/world. With no exclusions it makes at most one native cast. Its diagnostic
+        // pointers and body/entity IDs stay native; this is not an ownership/epoch receipt.
+        const auto probe = probe_local_surface(from, to);
+        return {probe.available, probe.hit, probe.position, probe.fraction};
+    }
     std::optional<WorldPick> world_pick(const Vec3& from, const Vec3& to) override {
         const auto pick = local_world_pick(from, to);
         if (!pick) return std::nullopt;

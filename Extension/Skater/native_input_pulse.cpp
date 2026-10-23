@@ -69,6 +69,23 @@ policy::Key key(const Entry& entry) noexcept {
         entry.actor.ticket.generation, entry.receipt.user};
 }
 bool eligible_state(const actor_control_native::State& state) noexcept { return state.known; }
+bool warmup_profile_lock(const Entry& entry, const model::ActorObservation& observation) noexcept {
+    using Phase = actor_observation::Phase;
+    using Reason = actor_control_native::Reason;
+    const auto& receipt = entry.receipt;
+    // Only a positively identified profile Try-lock refusal may defer a sample.
+    // Skipped actor/clock facts remain absent; none becomes ready by waiting.
+    return entry.started && entry.ending == model::Status::released && !entry.rejection_recorded &&
+        receipt.status == model::Status::warming && !receipt.press_candidates && !receipt.press_publications &&
+        !receipt.neutral_publications && !receipt.report_debt && !receipt.orphaned && !receipt.quarantined &&
+        !receipt.claim_released && receipt.first_rejection_mask == 0 &&
+        receipt.first_rejection_stage == model::RejectionStage::none &&
+        observation.known && observation.owner_present && observation.call_active &&
+        observation.enter.phase == Phase::qualified && observation.enter.reason == Reason::none &&
+        observation.inspect_attempted && !observation.inspect_succeeded && !observation.actor_equal &&
+        observation.inspect.phase == Phase::controls_profile_lock && observation.inspect.reason == Reason::unavailable &&
+        !observation.clock_attempted && !observation.clock_known;
+}
 model::Reason native_issue(actor_control_native::Reason reason) noexcept {
     using Native = actor_control_native::Reason;
     switch (reason) {
@@ -276,6 +293,7 @@ void finish(Poll& poll, bool outer, std::uint32_t user, DWORD original_result,
     const auto raw_pad = pad(raw);
     policy::Output plan{original_result, raw_packet, has_output ? pad(returned.Gamepad) : policy::Pad{}};
     policy::Input input;
+    bool deferred{};
     Entry* entry{};
     if (shared.active != no_entry) {
         auto& candidate = shared.entries[shared.active];
@@ -317,8 +335,12 @@ void finish(Poll& poll, bool outer, std::uint32_t user, DWORD original_result,
             input.focused = environment::focused(); input.gameplay = environment::gameplay();
             input.menu_closed = environment::menu_closed();
             input.interference_clear = interference_clear && environment::interference_clear();
-            plan = shared.pulse.poll(poll.ticket, input);
-            remember_policy_rejection(*entry, model::RejectionStage::core_plan, observation);
+            deferred = warmup_profile_lock(*entry, observation) && shared.pulse.defer_warmup(poll.ticket, input, plan);
+            if (deferred) increment(r.warmup_deferrals);
+            else {
+                plan = shared.pulse.poll(poll.ticket, input);
+                remember_policy_rejection(*entry, model::RejectionStage::core_plan, observation);
+            }
             if (plan.press_candidate) increment(r.press_candidates);
             r.report_debt = shared.pulse.release_debt();
         }
@@ -344,7 +366,7 @@ void finish(Poll& poll, bool outer, std::uint32_t user, DWORD original_result,
             raw_packet, returned.dwPacketNumber, raw_pad, pad(returned.Gamepad), plan.press_candidate);
         const bool published = publish(output, returned);
         if (entry && entry->started) {
-            (void)shared.pulse.confirm(plan, published);
+            if (!deferred) (void)shared.pulse.confirm(plan, published);
             auto& r = entry->receipt;
             if (published && plan.press_candidate) increment(r.press_publications);
             if (published && plan.release_candidate) increment(r.neutral_publications);

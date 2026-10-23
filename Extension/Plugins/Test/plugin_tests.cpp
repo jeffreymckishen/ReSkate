@@ -1632,6 +1632,7 @@ void input_pulse_api_keeps_report_receipts_opaque_and_owner_bound() {
         assert(r.observed_ms==r.requested_ms and r.source_epoch=="9007199254741009")
         assert(r.user==2 and r.button==0x8000 and r.status=="queued" and not r.terminal)
         assert(r.first_rejection_mask==0 and r.first_rejection_stage=="none")
+        assert(r.warmup_deferrals=="0")
         assert(not r.first_actor_observation_known and not r.first_actor_owner_present and not r.first_actor_call_active)
         assert(not r.first_actor_inspect_attempted and not r.first_actor_inspect_succeeded and not r.first_actor_equal)
         assert(not r.first_actor_clock_attempted and not r.first_actor_clock_known)
@@ -1652,6 +1653,7 @@ void input_pulse_api_keeps_report_receipts_opaque_and_owner_bound() {
                 assert(v.terminal and v.consumption=="unobserved" and v.semantic_completion=="unobserved")
                 assert(v.press_candidates=="9007199254741012" and v.press_publications=="9007199254741011")
                 assert(v.neutral_publications=="1" and v.contentions=="9007199254741013")
+                assert(v.warmup_deferrals=="9007199254741014")
                 assert(v.original_result_known and v.original_result==1167)
                 assert(v.first_rejection_mask==33024 and v.first_rejection_stage=="core_plan")
                 assert(v.first_actor_observation_known and v.first_actor_owner_present and v.first_actor_call_active)
@@ -1712,6 +1714,7 @@ void input_pulse_api_keeps_report_receipts_opaque_and_owner_bound() {
     receipt.press_publications=1; malformed("pulse receipt confirmed more presses than candidates");
     receipt.status=p::Status::released; receipt.report_debt=receipt.quarantined=true;
     receipt.press_candidates=9007199254741012ULL; receipt.press_publications=9007199254741011ULL;
+    receipt.warmup_deferrals=9007199254741014ULL;
     receipt.neutral_publications=1; receipt.contentions=9007199254741013ULL;
     receipt.original_result_known=true; receipt.original_result=1167;
     receipt.first_rejection_mask=dingosdk::input_pulse::failure_bit(dingosdk::input_pulse::FailedCheck::native_clock) |

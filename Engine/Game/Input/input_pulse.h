@@ -95,6 +95,28 @@ public:
         return true;
     }
 
+    // Only a trusted caller can classify the precise temporary observation
+    // refusal. This does not make the missing actor or native clock known.
+    // Failed attempts leave both policy state and the caller's output untouched.
+    bool defer_warmup(Ticket ticket, const Input& in, Output& passthrough) noexcept {
+        if (ticket.generation != generation_ || phase_ != Phase::warming || failed_ || debt_ || rejection_recorded_ ||
+            in.key != key_ || !in.outer_game_poll || in.original_result != 0 || !in.has_output ||
+            !in.source_fresh || !in.transport_matches || !in.interference_clear || in.returned != in.raw || in.raw != Pad{} ||
+            !in.focused || !in.gameplay || !in.menu_closed || in.actor_current ||
+            in.serial != 0 || in.clock_observed_ms != 0 || in.seconds != 0 ||
+            in.now_ms < last_now_ || !in.source_observed_ms || in.source_observed_ms > in.now_ms ||
+            in.now_ms - in.source_observed_ms > maximum_gap_ms ||
+            (last_poll_ && in.now_ms - last_poll_ > maximum_gap_ms) || in.now_ms - started_ >= lifetime_ms) return false;
+
+        // Keep the immutable request and native high-water marks. A later full
+        // observation still has to advance them and build an entirely new dwell.
+        warm_started_ = 0;
+        samples_ = 0;
+        last_now_ = last_poll_ = in.now_ms;
+        passthrough = {in.original_result, in.original_packet, in.returned, false, false, revision_, generation_};
+        return true;
+    }
+
     Output poll(Ticket ticket, const Input& in) noexcept {
         Output out{in.original_result, in.original_packet, in.returned, false, false, revision_, generation_};
         if (ticket.generation != generation_ || phase_ == Phase::idle || terminal()) return out;

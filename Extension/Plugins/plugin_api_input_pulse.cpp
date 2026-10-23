@@ -122,7 +122,7 @@ struct InputPulseApi {
         text(L, "expires_ms", r.expires_ms); text(L, "observed_ms", r.observed_ms); text(L, "source_epoch", r.source_epoch);
         text(L, "press_candidates", r.press_candidates); text(L, "press_publications", r.press_publications);
         text(L, "neutral_publications", r.neutral_publications); text(L, "original_failures", r.original_failures);
-        text(L, "contentions", r.contentions);
+        text(L, "contentions", r.contentions); text(L, "warmup_deferrals", r.warmup_deferrals);
         boolean(L, "report_debt", r.report_debt); boolean(L, "claim_released", r.claim_released);
         boolean(L, "actor_retired", r.actor_retired); boolean(L, "orphaned", r.orphaned); boolean(L, "quarantined", r.quarantined);
         boolean(L, "original_result_known", r.original_result_known);

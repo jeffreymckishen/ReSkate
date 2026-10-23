@@ -146,6 +146,7 @@ bool acquire(std::uint64_t owner, std::uint64_t sequence, Admission admission, A
 bool inspect(std::uint64_t owner, std::uint64_t sequence, const Actor& expected,
     Actor& out, State& state, Reason& reason, bool) noexcept {
     ++fixture::env.inspect_calls; out = {}; state = {}; reason = fixture::env.inspect_failure.reason;
+    SetLastError(0x8765); // Exercise the service's preservation across a refusing provider too.
     if (!fixture::env.inspect_ok || !fixture::owns(owner, sequence, expected)) return false;
     out = expected; state.known = true; state.value = 42; reason = Reason::none; return true;
 }
@@ -406,8 +407,44 @@ void physical_conflict() {
 }
 void actor_clock_lost() {
     namespace observed = dingosdk::actor_observation;
-    const auto h = press(); env.inspect_ok = false;
-    check(frame(250).value.Gamepad.wButtons == 0 && !read(h).report_debt, "same-source raw neutral cleanup does not write or require an old actor's clock");
+    prime(100); const auto deferred_handle = request();
+    Frame passthrough; passthrough.raw_packet = 0x44556677; passthrough.prior_packet = 0x11223344;
+    (void)frame(100, passthrough);
+    env.inspect_ok = false;
+    env.inspect_failure = {observed::Phase::controls_profile_lock, actor::Reason::unavailable};
+    const auto acquisitions = env.acquire_calls, clock_reads = env.clock_reads;
+    for (const auto ms : {120u, 140u, 160u}) {
+        SetLastError(0x1234);
+        const auto output = frame(ms, passthrough);
+        check(GetLastError() == 0x1234 && output.value.dwPacketNumber == passthrough.prior_packet &&
+            std::memcmp(&output.value.Gamepad, &passthrough.raw, sizeof(passthrough.raw)) == 0,
+            "exact lock-busy deferral preserves LastError, every raw field and inactive packet tags");
+        const auto pending = read(deferred_handle);
+        check(pending.status == model::Status::warming && !pending.press_candidates && !pending.press_publications &&
+            !pending.neutral_publications && !pending.report_debt && !pending.claim_released &&
+            pending.first_rejection_mask == 0 && pending.first_rejection_stage == model::RejectionStage::none &&
+            !pending.first_actor_observation.known,
+            "accepted no-output deferrals remain warming without a rejection or invented actor-clock success");
+    }
+    check(read(deferred_handle).warmup_deferrals == 3 && env.acquire_calls == acquisitions && env.clock_reads == clock_reads,
+        "repeated profile-lock misses use the same handle/claim and never probe a skipped clock");
+    model::Handle blocked; model::Reason blocked_reason{};
+    check(!service::request(2, 0, 0x2000, blocked, blocked_reason) && blocked_reason == model::Reason::busy &&
+        env.acquire_calls == acquisitions, "deferral cannot replace or reacquire the active request");
+    env.inspect_ok = true;
+    for (const auto ms : {194u, 227u, 260u})
+        check(frame(ms).value.Gamepad.wButtons == 0, "three fresh samples cannot borrow the pre-deferral warmup dwell");
+    const auto resumed = frame(294);
+    check(resumed.value.Gamepad.wButtons == 0x1000 && resumed.value.dwPacketNumber != 7 &&
+        read(deferred_handle).press_publications == 1 && read(deferred_handle).warmup_deferrals == 3 &&
+        env.acquire_calls == acquisitions,
+        "four fresh advancing samples over100ms resume the original handle through the persistent packet finalizer");
+    check(service::cancel(1, deferred_handle), "explicit cancellation still owns the deferred request");
+    (void)frame(320); retire(321);
+    check(service::acknowledge(1, deferred_handle), "the original deferred handle joins real neutral cleanup and retirement");
+    const auto h = press(1, 1200); env.inspect_ok = false;
+    env.inspect_failure = {observed::Phase::capture, actor::Reason::unavailable};
+    check(frame(1350).value.Gamepad.wButtons == 0 && !read(h).report_debt, "same-source raw neutral cleanup does not write or require an old actor's clock");
     const auto rejected = read(h);
     check((rejected.first_rejection_mask & pulse_policy::failure_bit(pulse_policy::FailedCheck::actor)) != 0 &&
         rejected.first_rejection_stage == model::RejectionStage::core_plan,
@@ -416,11 +453,11 @@ void actor_clock_lost() {
     check(first.known && first.owner_present && first.call_active && first.inspect_attempted && !first.inspect_succeeded &&
         !first.actor_equal && !first.clock_attempted && !first.clock_known && first.inspect == env.inspect_failure,
         "failed inspection retains its real phase and records that the clock was never probed");
-    retire(251); check(read(h).status == model::Status::revoked, "lost actor qualification cannot continue assertions");
+    retire(1351); check(read(h).status == model::Status::revoked, "lost actor qualification cannot continue assertions");
     check(service::acknowledge(1, h), "retired actor-loss receipt can be explicitly acknowledged");
     env.inspect_ok = true;
-    const auto clock_handle = press(1, 1200); env.clock_enabled = false;
-    check(frame(1350).value.Gamepad.wButtons == 0 && !read(clock_handle).report_debt,
+    const auto clock_handle = press(1, 2300); env.clock_enabled = false;
+    check(frame(2450).value.Gamepad.wButtons == 0 && !read(clock_handle).report_debt,
         "independent clock loss still permits fresh raw neutral cleanup");
     const auto clock_rejected = read(clock_handle);
     check((clock_rejected.first_rejection_mask & pulse_policy::failure_bit(pulse_policy::FailedCheck::native_clock)) != 0 &&
@@ -432,14 +469,14 @@ void actor_clock_lost() {
         !clock_observation.clock_known && clock_observation.enter.phase == observed::Phase::qualified &&
         clock_observation.inspect.phase == observed::Phase::qualified,
         "an actually attempted unavailable clock remains distinct from its short-circuited absence");
-    retire(1351);
+    retire(2451);
     check(service::acknowledge(1, clock_handle), "resolved clock-loss receipt can be acknowledged");
     constexpr observed::Phase phases[]{observed::Phase::inspect_owner_lock, observed::Phase::controls_profile, observed::Phase::context,
         observed::Phase::controls_profile_lock, observed::Phase::controls_profile_inactive,
         observed::Phase::controls_profile_manager_read, observed::Phase::controls_profile_manager_null,
         observed::Phase::controls_profile_phase_read, observed::Phase::controls_profile_exception};
     for (unsigned fault = 0; fault < std::size(phases) + 1; ++fault) {
-        const auto base = 2300 + static_cast<std::uint64_t>(fault) * 1100;
+        const auto base = 3400 + static_cast<std::uint64_t>(fault) * 1100;
         prime(base); const auto handle = request();
         for (const auto offset : {0u, 34u, 67u}) (void)frame(base + offset);
         if (fault == 0) env.enter_ok = false;
@@ -451,6 +488,22 @@ void actor_clock_lost() {
         const auto reads = env.clock_reads, inspections = env.inspect_calls;
         check(frame(base + 100).value.Gamepad.wButtons == 0, "diagnostic observations do not bypass a failed warmup guard");
         const auto receipt = read(handle); const auto witness = receipt.first_actor_observation;
+        if (fault && phases[fault - 1] == observed::Phase::controls_profile_lock) {
+            check(receipt.status == model::Status::warming && receipt.warmup_deferrals == 1 &&
+                receipt.first_rejection_mask == 0 && !witness.known && !receipt.press_candidates &&
+                !receipt.press_publications && !receipt.neutral_publications && env.clock_reads == reads,
+                "only the exact profile-lock phase defers without publishing or retaining a rejection");
+            env.inspect_ok = true;
+            for (const auto offset : {134u, 167u, 200u})
+                check(frame(base + offset).value.Gamepad.wButtons == 0, "resumption needs a wholly new warmup suffix");
+            check(frame(base + 234).value.Gamepad.wButtons == 0x1000,
+                "the one exact lock refusal can resume after four fresh samples over100ms");
+            check(service::cancel(1, handle), "same deferred handle remains cancellable");
+            (void)frame(base + 250); retire(base + 251);
+            check(read(handle).warmup_deferrals == 1 && service::acknowledge(1, handle),
+                "clean retirement preserves the accepted deferral count until acknowledgement");
+            continue;
+        }
         check(receipt.first_rejection_mask == (pulse_policy::failure_bit(pulse_policy::FailedCheck::actor) |
             pulse_policy::failure_bit(pulse_policy::FailedCheck::native_clock)) && !receipt.press_candidates &&
             !receipt.press_publications && !receipt.neutral_publications && env.clock_reads == reads,
@@ -466,6 +519,70 @@ void actor_clock_lost() {
         check(terminal.first_actor_observation == witness && terminal.status == model::Status::revoked &&
             terminal.claim_released && !terminal.report_debt && service::acknowledge(1, handle),
             "later positive facts and cleanup do not rewrite the first actor witness or revive the same pulse");
+    }
+    {
+        constexpr std::uint64_t base = 16000;
+        prime(base); const auto handle = request(); (void)frame(base);
+        env.inspect_ok = false; env.inspect_failure = {observed::Phase::controls_profile_lock, actor::Reason::unavailable};
+        const auto acquired = env.acquire_calls;
+        for (unsigned offset = 50; offset < 1000; offset += 50) {
+            check(frame(base + offset).value.Gamepad.wButtons == 0, "repeated misses never publish an SDK press");
+            check(read(handle).status == model::Status::warming, "exact misses may wait only inside the original request lifetime");
+        }
+        const auto pending = read(handle);
+        check(pending.warmup_deferrals == 19 && pending.expires_ms == base + 1000 && env.acquire_calls == acquired,
+            "deferral preserves the original expiry and claim across repeated samples");
+        (void)frame(base + 1000); retire(base + 1001);
+        const auto expired = read(handle);
+        check(expired.status == model::Status::expired && expired.warmup_deferrals == 19 && !expired.press_candidates &&
+            !expired.press_publications && !expired.neutral_publications && !expired.report_debt &&
+            expired.first_rejection_mask == pulse_policy::failure_bit(pulse_policy::FailedCheck::deadline) &&
+            expired.first_rejection_stage == model::RejectionStage::service_plan && service::acknowledge(1, handle),
+            "original expiry overrides the busy observation without another request or delayed output");
+        env.inspect_ok = true;
+    }
+    for (unsigned guard = 0; guard < 6; ++guard) {
+        const auto base = 18000 + static_cast<std::uint64_t>(guard) * 1100;
+        prime(base); const auto handle = request(); (void)frame(base);
+        env.inspect_ok = false; env.inspect_failure = {observed::Phase::controls_profile_lock, actor::Reason::unavailable};
+        (void)frame(base + 20);
+        check(read(handle).warmup_deferrals == 1, "one exact busy sample precedes the independent override");
+        Frame physical;
+        if (guard == 0) physical.raw = physical.transformed = {0x1100, 1, 2, -32768, 32767, -123, 456};
+        if (guard == 1) physical.original = physical.returned = ERROR_DEVICE_NOT_CONNECTED;
+        if (guard == 2) physical.clean = false; // Equal raw bytes are not an independent transport qualification.
+        if (guard == 3) env.focus = false;
+        if (guard == 4) env.inspect_failure.reason = actor::Reason::context_changed;
+        if (guard == 5) { physical.transformed.bLeftTrigger = 1; physical.prior_packet = 123; }
+        SetLastError(0x1234); const auto output = frame(base + 50, physical);
+        check(GetLastError() == 0x1234 &&
+            std::memcmp(&output.value.Gamepad, &physical.transformed, sizeof(physical.transformed)) == 0,
+            "a failed deferral guard preserves full original fields and caller error");
+        const auto guard_rejected = read(handle);
+        check(guard_rejected.warmup_deferrals == 1 && guard_rejected.first_rejection_stage != model::RejectionStage::none &&
+            !guard_rejected.press_candidates && !guard_rejected.press_publications && !guard_rejected.neutral_publications && !guard_rejected.report_debt,
+            "physical/source/filter/focus/typed-reason/output mismatch refuses deferral and records normal rejection");
+        env.inspect_ok = env.focus = true;
+        (void)frame(base + 70); retire(base + 71);
+        check(read(handle).status == model::Status::revoked && read(handle).warmup_deferrals == 1 &&
+            read(handle).first_actor_observation == guard_rejected.first_actor_observation &&
+            service::acknowledge(1, handle), "a refused deferral cannot be revived by later good observations");
+    }
+    {
+        constexpr std::uint64_t base = 25000;
+        const auto handle = press(1, base);
+        env.inspect_ok = false; env.inspect_failure = {observed::Phase::controls_profile_lock, actor::Reason::unavailable};
+        check(frame(base + 150).value.Gamepad.wButtons == 0, "profile lock loss after assertion immediately stops the overlay");
+        const auto press_rejected = read(handle);
+        check(press_rejected.warmup_deferrals == 0 && press_rejected.press_candidates == 1 && press_rejected.press_publications == 1 &&
+            press_rejected.neutral_publications == 1 && !press_rejected.report_debt && press_rejected.first_actor_observation.known &&
+            press_rejected.first_actor_observation.inspect == env.inspect_failure &&
+            press_rejected.first_rejection_mask == (pulse_policy::failure_bit(pulse_policy::FailedCheck::actor) |
+                pulse_policy::failure_bit(pulse_policy::FailedCheck::native_clock)),
+            "after any press the exact busy phase still revokes with immutable witness and real neutral cleanup");
+        env.inspect_ok = true; retire(base + 151);
+        check(read(handle).first_actor_observation == press_rejected.first_actor_observation && service::acknowledge(1, handle),
+            "post-press cleanup and acknowledgement cannot erase the original failure");
     }
 }
 void environment_guards() {

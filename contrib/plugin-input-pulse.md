@@ -37,7 +37,7 @@ no GetKeystroke, DirectInput or raw-HID events. An observed state poll does not 
 
 `pulse_state` returns status/reason, `terminal`, requested user/button, and decimal strings for
 sequence, source epoch, times and 64-bit counters. It exposes `press_candidates`, `press_publications`,
-`neutral_publications`, `original_failures`, `contentions`, `report_debt`, `claim_released`,
+`neutral_publications`, `warmup_deferrals`, `original_failures`, `contentions`, `report_debt`, `claim_released`,
 `actor_retired`, `orphaned` and `quarantined`. A known original error code is optional. Epochs label
 SDK observations, not GUIDs. Terminal status alone does not authorize acknowledgement.
 
@@ -102,15 +102,33 @@ controls, validation, capture, actor/world/lifetime fences and final identity. T
 `qualified` and `not_attempted` distinguish successful and skipped probes. Grouped edges such
 as `controls_profile`, `capture`, `context` and `final_lifetime` do not identify which constituent
 condition failed. `enter_claim` means arbiter entry refused; its `busy` reason does not prove
-lock contention. This is classification only: provider calls, guard order, lock modes,
-warmup, revocation, deadlines and report publication behavior are unchanged.
+lock contention. These diagnostics classify the existing provider calls and short circuits;
+the narrow no-output warmup rule below is a separate service decision.
 
 Profile refusal now identifies the existing failed edge with `controls_profile_lock`,
 `controls_profile_inactive`, `controls_profile_manager_read`, `controls_profile_manager_null`,
 `controls_profile_phase_read` or `controls_profile_exception`. The native reason remains
 `unavailable`. A lock refusal means the nonblocking acquisition failed; it does not identify the
-lock holder or authorize waiting, retrying or treating the profile as ready. A queued teleport
+lock holder or establish profile readiness. The input callback never waits for that lock. A queued teleport
 still reports known/pending, and successful native-phase reads retain the existing Boolean result.
+
+Before any press candidate, press publication, neutral publication or report debt, the same
+warming request may discard one sample whose complete typed observation identifies only
+`controls_profile_lock`/`unavailable`: call admission succeeded, inspection actually ran and
+refused at that edge, and the actor clock was skipped. The original source, exact raw-neutral
+report, clean transport, focus, gameplay, closed menu and wall/deadline guards must still pass.
+That sample publishes no SDK button, claims no actor or native-clock success, and resets the
+neutral dwell/sample count. It keeps the original key, native high-water marks and one-second
+deadline; four fresh advancing native samples over 100 ms are required before a later press.
+There is no new request, claim acquisition, callback wait or automatic retry of a failed output.
+
+The decimal counter `warmup_deferrals` counts only accepted discarded warmup samples on that
+handle. It is unknown-actor/no-output bookkeeping, not an output-publication, profile-readiness
+or native-consumption witness. A refused deferral follows the normal rejection path, including
+every other profile phase, any other failed guard, an earlier rejection, or any prior candidate.
+After assertion, the exact same lock refusal still revokes and retains the first failure witness;
+fresh same-source raw-neutral cleanup remains independently qualified. Deferral preserves the
+normal packet finalizer and passes through the current report without pulse confirmation.
 
 The publication scope is `process_outer_xinput_buffer`. SDK output-buffer publication does not
 prove the wrapper subsequently returned normally. Both `consumption` and `semantic_completion`

@@ -486,6 +486,60 @@ function tests.run()
         check(Transition.limits().baseline_ms==600,"caller cannot weaken module limits")
         cases+=1
     end
+    do
+        local p=accepted();local count="9007199254740994"
+        local o=read(p,603,receipt("released",{warmup_deferrals=count}))
+        check(o.intents.store and o.receipt.warmup_deferrals==count
+            and o.terminal_receipt.warmup_deferrals==count and o.intents.store.receipt.warmup_deferrals==count,
+            "exact additive deferral count survives receipt, terminal and full store snapshots")
+        o.receipt.warmup_deferrals="0";o.intents.store.receipt.warmup_deferrals="0"
+        o=p:update(frame(604,{store_result={attempt=1,handle="pulse-a",sequence=sequence,accepted=true}}))
+        check(o.intents.acknowledge and o.terminal_receipt.warmup_deferrals==count,
+            "caller mutation cannot rewrite deferral history or bypass store-before-ack")
+        o=p:update(frame(605,{ack_result={attempt=1,handle="pulse-a",sequence=sequence,accepted=true}}))
+        check(not o.qualified_transition and o.phase=="settling",
+            "deferrals never replace the independently observed target suffix")
+        o=settle(p,504)
+        check(o.terminal_receipt.warmup_deferrals==count,"sampled success preserves the original transport counter")
+        cases+=1
+    end
+    do
+        for _,bad in {0,false,"","00","-1","1.0","18446744073709551616"} do
+            local p=accepted();local o=read(p,603,receipt("released",{warmup_deferrals=bad}))
+            check(o.outcome=="unresolved" and o.intents.cancel and not o.intents.store
+                and not o.intents.acknowledge,"malformed optional deferral count cannot authorize cleanup")
+            check(not p:update(frame(604)).intents.request,"malformed deferral telemetry never retries a request")
+        end
+        cases+=1
+    end
+    do
+        for _,change in {"regress","omit","advance"} do
+            local p=accepted();local o=read(p,603,receipt("warming",{warmup_deferrals="2"}))
+            check(o.receipt.warmup_deferrals=="2" and not o.intents.store,"warming skips are bookkeeping only")
+            p:update(frame(803));local next_receipt=receipt("released",{warmup_deferrals="3"})
+            if change=="regress" then next_receipt.warmup_deferrals="1"
+            elseif change=="omit" then next_receipt.warmup_deferrals=nil end
+            o=read(p,804,next_receipt,2)
+            if change=="advance" then
+                check(o.intents.store and o.terminal_receipt.warmup_deferrals=="3",
+                    "advancing telemetry on the same sequence remains compatible")
+            else
+                check(o.outcome=="unresolved" and o.intents.cancel and not o.intents.store
+                    and o.receipt.warmup_deferrals=="2","observed counter cannot regress or disappear")
+            end
+        end
+        cases+=1
+    end
+    do
+        local p=accepted();local changes={warmup_deferrals="2",report_debt=true,claim_released=false,quarantined=true}
+        local o=read(p,603,receipt("revoked",changes))
+        check(o.receipt and not o.intents.store,"unresolved terminal cannot be acknowledged based on its skip count")
+        p:update(frame(803));changes.warmup_deferrals="3"
+        o=read(p,804,receipt("revoked",changes),2)
+        check(o.outcome=="unresolved" and o.intents.cancel and not o.intents.acknowledge
+            and o.receipt.warmup_deferrals=="2","terminal deferral history is immutable")
+        cases+=1
+    end
     return {cases=cases,assertions=assertions,native_actions=0}
 end
 return tests

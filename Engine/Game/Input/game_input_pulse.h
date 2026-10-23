@@ -102,6 +102,8 @@ struct Receipt {
     std::uint16_t button{};
     std::uint64_t requested_ms{}, expires_ms{}, observed_ms{}, source_epoch{};
     std::uint64_t press_candidates{}, press_publications{}, neutral_publications{}, original_failures{}, contentions{};
+    // Qualified pre-publication skips, not successful actor observations or input delivery.
+    std::uint64_t warmup_deferrals{};
     bool report_debt{}, claim_released{}, actor_retired{}, orphaned{}, quarantined{};
     bool original_result_known{};
     std::uint32_t original_result{};

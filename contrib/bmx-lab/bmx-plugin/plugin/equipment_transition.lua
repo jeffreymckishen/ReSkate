@@ -71,7 +71,7 @@ for _,v in actor_flags do actor_fields[v]=true end
 for v in actor_enums do actor_fields[v]=true end
 local fields={status=true,reason=true,sequence=true,requested_ms=true,expires_ms=true,observed_ms=true,source_epoch=true,
     user=true,button=true,transport=true,source_identity=true,publication_scope=true,consumption=true,semantic_completion=true,
-    first_rejection_mask=true,first_rejection_stage=true,original_result=true}
+    first_rejection_mask=true,first_rejection_stage=true,original_result=true,warmup_deferrals=true}
 for _,v in counts do fields[v]=true end
 for _,v in flags do fields[v]=true end
 for v in actor_fields do fields[v]=true end
@@ -97,6 +97,8 @@ local function receipt_valid(r,previous,slot)
     if r.expires_ms~=plus_thousand(r.requested_ms) or less(r.observed_ms,r.requested_ms)
         or (r.claim_released and r.report_debt) then return false end
     for _,v in counts do if not decimal(r[v],false) then return false end end
+    -- Older receipts may omit this additive counter. It never establishes actor readiness.
+    if r.warmup_deferrals~=nil and not decimal(r.warmup_deferrals,false) then return false end
     if less(r.press_candidates,r.press_publications) or (r.original_result_known and not integer(r.original_result,4294967295))
         or (not r.original_result_known and r.original_result~=nil) then return false end
     if previous then
@@ -105,6 +107,8 @@ local function receipt_valid(r,previous,slot)
         end
         if less(r.observed_ms,previous.observed_ms) then return false end
         for _,v in counts do if less(r[v],previous[v]) then return false end end
+        if previous.warmup_deferrals~=nil and (r.warmup_deferrals==nil
+            or less(r.warmup_deferrals,previous.warmup_deferrals)) then return false end
         if previous.first_rejection_stage~="none" and (r.first_rejection_stage~=previous.first_rejection_stage
             or r.first_rejection_mask~=previous.first_rejection_mask) then return false end
         if previous.first_actor_observation_known==true then

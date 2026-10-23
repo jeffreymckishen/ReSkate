@@ -34,6 +34,25 @@ t::Output apply(t::Pulse& pulse, const t::Input& in, bool published = true) {
     return out;
 }
 t::Output poll(t::Pulse& pulse, std::uint64_t ms) { return apply(pulse, input(ms)); }
+// This input deliberately has no actor or native clock observation. Only the
+// trusted service's separate, precise reason classifier may choose to defer it.
+t::Input deferred_input(std::uint64_t ms) {
+    auto in = input(ms);
+    in.actor_current = false;
+    in.serial = in.clock_observed_ms = 0;
+    in.seconds = 0;
+    return in;
+}
+bool same_output(const t::Output& left, const t::Output& right) {
+    return left.result == right.result && left.packet == right.packet && left.pad == right.pad &&
+        left.press_candidate == right.press_candidate && left.release_candidate == right.release_candidate &&
+        left.revision == right.revision && left.generation == right.generation;
+}
+void begin_partial_warmup(t::Pulse& pulse) {
+    CHECK(pulse.request(key, 0x1000, 100));
+    for (const auto time : {100u, 134u, 167u}) CHECK(!poll(pulse, time).press_candidate);
+    CHECK(pulse.phase() == t::Phase::warming && !pulse.release_debt());
+}
 void begin_press(t::Pulse& pulse) {
     CHECK(pulse.request(key, 0x1000, 100));
     for (const auto time : {100u, 134u, 167u}) CHECK(!poll(pulse, time).press_candidate);
@@ -432,6 +451,230 @@ void first_rejection_records_checks_once() {
     (void)poll(deadline, 1100);
     CHECK(deadline.first_rejection_mask() == t::failure_bit(Check::deadline));
 }
+
+void deferred_warmup_requires_a_new_dwell() {
+    t::Pulse pulse;
+    begin_partial_warmup(pulse);
+    const auto ticket = pulse.ticket();
+    const auto revision = pulse.revision();
+    auto waiting = deferred_input(199);
+    waiting.original_packet = 37;
+    t::Output out;
+    CHECK(pulse.defer_warmup(ticket, waiting, out));
+    CHECK(out.result == 0 && out.packet == 37 && out.pad == waiting.raw);
+    CHECK(!out.press_candidate && !out.release_candidate);
+    CHECK(out.generation == ticket.generation && out.revision == revision);
+    CHECK(pulse.ticket().generation == ticket.generation && pulse.revision() == revision);
+    CHECK(pulse.phase() == t::Phase::warming && !pulse.release_debt() && pulse.first_rejection_mask() == 0);
+    for (const auto time : {200u, 234u, 267u}) CHECK(!poll(pulse, time).press_candidate);
+    CHECK(poll(pulse, 300).press_candidate && pulse.release_debt());
+
+    t::Pulse duplicate;
+    begin_partial_warmup(duplicate);
+    CHECK(duplicate.defer_warmup(duplicate.ticket(), deferred_input(199), out));
+    auto old = input(200);
+    old.serial = old.clock_observed_ms = 167;
+    old.seconds = .167;
+    CHECK(!apply(duplicate, old).press_candidate);
+    // The duplicate cannot count or start a dwell inherited by the first new
+    // sample. Four new samples span only 90 ms here, so a fifth is needed.
+    for (const auto time : {230u, 260u, 290u, 320u}) CHECK(!poll(duplicate, time).press_candidate);
+    CHECK(poll(duplicate, 330).press_candidate);
+}
+
+void deferred_warmup_keeps_the_original_deadline_and_counters() {
+    t::Pulse pulse;
+    begin_partial_warmup(pulse);
+    const auto ticket = pulse.ticket();
+    const auto revision = pulse.revision();
+    t::Output out;
+    for (std::uint64_t ms = 200; ms <= 1050; ms += 50) {
+        CHECK(pulse.defer_warmup(ticket, deferred_input(ms), out));
+        CHECK(pulse.ticket().generation == ticket.generation && pulse.revision() == revision);
+        CHECK(!out.press_candidate && !out.release_candidate && !pulse.release_debt());
+        CHECK(pulse.first_rejection_mask() == 0);
+    }
+    CHECK(pulse.defer_warmup(ticket, deferred_input(1099), out));
+    const auto before = out;
+    CHECK(!pulse.defer_warmup(ticket, deferred_input(1100), out));
+    CHECK(same_output(out, before) && pulse.phase() == t::Phase::warming);
+    CHECK(pulse.ticket().generation == ticket.generation && pulse.revision() == revision && pulse.first_rejection_mask() == 0);
+    CHECK(!apply(pulse, deferred_input(1100)).press_candidate && pulse.phase() == t::Phase::revoked);
+    CHECK((pulse.first_rejection_mask() & t::failure_bit(t::FailedCheck::deadline)) != 0);
+
+    constexpr auto maximum = std::numeric_limits<std::uint64_t>::max();
+    t::Pulse reserved(maximum - 3, maximum - 6);
+    CHECK(reserved.request(key, 0x1000, 100));
+    const auto reserved_ticket = reserved.ticket();
+    const auto reserved_revision = reserved.revision();
+    for (std::uint64_t ms = 100; ms <= 190; ms += 10) {
+        CHECK(reserved.defer_warmup(reserved_ticket, deferred_input(ms), out));
+        CHECK(reserved.ticket().generation == reserved_ticket.generation && reserved.revision() == reserved_revision);
+    }
+    for (const auto time : {200u, 234u, 267u}) CHECK(!poll(reserved, time).press_candidate);
+    CHECK(poll(reserved, 300).press_candidate);
+    CHECK(poll(reserved, 400).press_candidate);
+    CHECK(poll(reserved, 500).release_candidate && reserved.acknowledge(key));
+    auto next = key; ++next.sequence;
+    CHECK(!reserved.request(next, 0x1000, 501));
+
+    t::Pulse near_end;
+    const auto start = maximum - 1200;
+    CHECK(near_end.request(key, 0x1000, start));
+    const auto near_ticket = near_end.ticket();
+    for (std::uint64_t elapsed = 0; elapsed <= 900; elapsed += 100)
+        CHECK(near_end.defer_warmup(near_ticket, deferred_input(start + elapsed), out));
+    CHECK(near_end.defer_warmup(near_ticket, deferred_input(start + 999), out));
+    CHECK(!near_end.defer_warmup(near_ticket, deferred_input(start + 1000), out));
+    CHECK(!apply(near_end, deferred_input(start + 1000)).press_candidate && near_end.phase() == t::Phase::revoked);
+}
+
+void deferred_warmup_retains_native_high_water_marks() {
+    constexpr const char* faults[] = {
+        "native serial rewind after defer", "same serial changed time after defer", "new serial same time after defer",
+        "native gap after defer", "future native observation after defer", "stale native observation after defer",
+        "wall rewind after defer", "poll gap after defer"
+    };
+    for (unsigned fault = 0; fault < 8; ++fault) {
+        scenario = faults[fault];
+        t::Pulse pulse;
+        begin_partial_warmup(pulse);
+        t::Output out;
+        CHECK(pulse.defer_warmup(pulse.ticket(), deferred_input(200), out));
+        auto resumed = input(201);
+        auto expected = t::FailedCheck::native_continuity;
+        switch (fault) {
+        case 0: resumed.serial = 166; resumed.seconds = .166; break;
+        case 1: resumed.serial = 167; resumed.seconds = .168; break;
+        case 2: resumed.serial = 168; resumed.seconds = .167; break;
+        case 3: resumed.seconds = .5; expected = t::FailedCheck::native_gap; break;
+        case 4: resumed.clock_observed_ms = 202; expected = t::FailedCheck::native_clock; break;
+        case 5: resumed.clock_observed_ms = 100; expected = t::FailedCheck::native_clock; break;
+        case 6: resumed = input(199); expected = t::FailedCheck::source_clock; break;
+        case 7: resumed = input(301); expected = t::FailedCheck::poll_gap; break;
+        }
+        CHECK(!apply(pulse, resumed).press_candidate);
+        CHECK(pulse.phase() == t::Phase::revoked && !pulse.release_debt());
+        CHECK((pulse.first_rejection_mask() & t::failure_bit(expected)) != 0);
+    }
+    scenario = "";
+}
+
+void rejected_deferrals_do_not_mutate_or_hide_normal_rejection() {
+    constexpr const char* faults[] = {
+        "original failure", "no output", "inner poll", "stale source", "transport mismatch", "interference",
+        "filtered returned pad", "physical button", "physical axis", "focus lost", "gameplay lost", "menu open",
+        "foreign owner", "foreign sequence", "source epoch changed", "actor ticket changed", "unrelated slot",
+        "missing source timestamp", "future source timestamp", "old source timestamp", "wall rewind", "poll gap",
+        "original deadline", "actor unexpectedly known", "partial native serial", "partial native timestamp",
+        "partial native time", "negative native time", "nonfinite native time", "infinite native time"
+    };
+    for (unsigned fault = 0; fault < 30; ++fault) {
+        scenario = faults[fault];
+        t::Pulse pulse;
+        begin_partial_warmup(pulse);
+        auto reference = pulse;
+        auto fallback = pulse;
+        auto in = deferred_input(199);
+        switch (fault) {
+        case 0: in.original_result = 1167; break;
+        case 1: in.has_output = false; break;
+        case 2: in.outer_game_poll = false; break;
+        case 3: in.source_fresh = false; break;
+        case 4: in.transport_matches = false; break;
+        case 5: in.interference_clear = false; break;
+        case 6: in.returned.buttons = 2; break;
+        case 7: in.raw.buttons = 2; in.returned = in.raw; break;
+        case 8: in.raw.left_x = 1; in.returned = in.raw; break;
+        case 9: in.focused = false; break;
+        case 10: in.gameplay = false; break;
+        case 11: in.menu_closed = false; break;
+        case 12: ++in.key.owner; break;
+        case 13: ++in.key.sequence; break;
+        case 14: ++in.key.source_epoch; break;
+        case 15: ++in.key.actor_ticket; break;
+        case 16: ++in.key.source; break;
+        case 17: in.source_observed_ms = 0; break;
+        case 18: in.source_observed_ms = 200; break;
+        case 19: in.source_observed_ms = 98; break;
+        case 20: in = deferred_input(166); break;
+        case 21: in = deferred_input(268); break;
+        case 22: in = deferred_input(1100); break;
+        case 23: in.actor_current = true; break;
+        case 24: in.serial = 199; break;
+        case 25: in.clock_observed_ms = 199; break;
+        case 26: in.seconds = .199; break;
+        case 27: in.seconds = -.001; break;
+        case 28: in.seconds = std::numeric_limits<double>::quiet_NaN(); break;
+        case 29: in.seconds = std::numeric_limits<double>::infinity(); break;
+        }
+        t::Output out{123, 456, {3, 4, 5, 6, 7, 8, 9}, true, true, 789, 999};
+        const auto sentinel = out;
+        CHECK(!pulse.defer_warmup(pulse.ticket(), in, out));
+        CHECK(same_output(out, sentinel));
+        CHECK(pulse.phase() == reference.phase() && pulse.release_debt() == reference.release_debt());
+        CHECK(pulse.ticket().generation == reference.ticket().generation && pulse.revision() == reference.revision());
+        CHECK(pulse.first_rejection_mask() == 0);
+        // Matching future decisions also expose a hidden warmup/high-water or
+        // request-start mutation that the public status alone would not reveal.
+        for (const auto time : {200u, 250u, 300u, 400u})
+            CHECK(same_output(poll(pulse, time), poll(reference, time)));
+        const auto ordinary = apply(fallback, in);
+        CHECK(!ordinary.press_candidate);
+        if (fault == 2 || fault == 16) {
+            CHECK(fallback.phase() == t::Phase::warming && fallback.first_rejection_mask() == 0);
+        } else {
+            CHECK(fallback.phase() == t::Phase::revoked && fallback.first_rejection_mask() != 0);
+        }
+    }
+    scenario = "";
+}
+
+void deferral_cannot_reenter_after_assertion_or_retirement() {
+    const auto refused = [](t::Pulse& pulse, t::Ticket ticket, std::uint64_t ms) {
+        t::Output out{1, 2, {}, true, true, 3, 4};
+        const auto sentinel = out;
+        const auto phase = pulse.phase();
+        const auto generation = pulse.ticket().generation;
+        const auto revision = pulse.revision();
+        const auto mask = pulse.first_rejection_mask();
+        const auto debt = pulse.release_debt();
+        CHECK(!pulse.defer_warmup(ticket, deferred_input(ms), out));
+        CHECK(same_output(out, sentinel) && pulse.phase() == phase && pulse.release_debt() == debt);
+        CHECK(pulse.ticket().generation == generation && pulse.revision() == revision && pulse.first_rejection_mask() == mask);
+    };
+    t::Pulse idle;
+    refused(idle, idle.ticket(), 100);
+    const auto old = idle.ticket();
+    begin_partial_warmup(idle);
+    refused(idle, old, 199);
+    t::Output out;
+    CHECK(idle.defer_warmup(idle.ticket(), deferred_input(199), out));
+    const auto cancelled = idle.ticket();
+    CHECK(idle.revoke(key));
+    refused(idle, cancelled, 200);
+    refused(idle, idle.ticket(), 200);
+    CHECK(idle.acknowledge(key));
+    refused(idle, idle.ticket(), 201);
+
+    t::Pulse asserted;
+    begin_press(asserted);
+    refused(asserted, asserted.ticket(), 250);
+    CHECK(poll(asserted, 300).press_candidate);
+    const auto release = asserted.poll(asserted.ticket(), input(400));
+    CHECK(release.release_candidate && asserted.release_debt());
+    refused(asserted, asserted.ticket(), 401);
+    CHECK(asserted.confirm(release, true) && asserted.phase() == t::Phase::complete);
+    refused(asserted, asserted.ticket(), 402);
+
+    t::Pulse rejected;
+    begin_partial_warmup(rejected);
+    CHECK(!apply(rejected, deferred_input(199)).press_candidate && rejected.first_rejection_mask() != 0);
+    refused(rejected, rejected.ticket(), 200);
+    t::Pulse exhausted(std::numeric_limits<std::uint64_t>::max());
+    CHECK(!exhausted.request(key, 0x1000, 100));
+    refused(exhausted, exhausted.ticket(), 100);
+}
 }
 
 int main() {
@@ -443,5 +686,10 @@ int main() {
     packet_domain_survives_full_lifecycle();
     publication_confirmation_and_counter_exhaustion();
     first_rejection_records_checks_once();
+    deferred_warmup_requires_a_new_dwell();
+    deferred_warmup_keeps_the_original_deadline_and_counters();
+    deferred_warmup_retains_native_high_water_marks();
+    rejected_deferrals_do_not_mutate_or_hide_normal_rejection();
+    deferral_cannot_reenter_after_assertion_or_retirement();
     std::cout << "input_pulse checks=" << checks << " native_actions=0\n";
 }

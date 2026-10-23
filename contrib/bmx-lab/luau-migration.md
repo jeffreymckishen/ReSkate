@@ -6,6 +6,13 @@ This supersedes the earlier plan to keep a BMX-specific C++ controller as the
 ordinary implementation. Existing native trials remain useful comparison evidence;
 they do not establish the intended architecture or BMX Streets parity.
 
+The default runtime no longer dispatches the legacy C++ riding, chassis-probe
+or ramp controllers, and its console no longer registers the legacy `bmx`
+commands. This retirement requires a fresh process; it is not a live stop of an
+already mounted bike. Preserved older DLLs remain historical comparison builds.
+The current Lua package is still a migration in progress and cannot yet ride a
+bike. New native trials must use the generic API.
+
 ## Latest upstream inspected
 
 Official `Dingo-Shenanigans/ReSkate` main is

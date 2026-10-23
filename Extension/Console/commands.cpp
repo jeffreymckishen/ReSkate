@@ -230,7 +230,6 @@ const Commands &game_commands() {
         register_capture_commands(*result);
         register_trainer_commands(*result);
         register_replay_keyframes_commands(*result);
-        register_bmx_commands(*result);
         register_plugin_commands(*result);
         return result;
     }();

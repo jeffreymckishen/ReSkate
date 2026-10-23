@@ -49,8 +49,6 @@
 #include "Extension/Skater/pad_flight.h"
 #include "Extension/Trainer/trainer.h"
 #include "Extension/BMX/bmx_runtime.h"
-#include "Extension/BMX/bmx_chassis_probe.h"
-#include "Extension/BMX/bmx_ramp_test.h"
 #include "Extension/BMX/bmx_binding_observer.h"
 #include "Extension/BMX/bmx_intent_observer.h"
 #include "Extension/World/level_loading.h"
@@ -1735,23 +1733,6 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
     }
     dingosdk::spotify_station::tick();
     dingosdk::music_inject::tick();
-        }
-        {
-            DINGO_PROFILE_ZONE("tick/BMX");
-            auto& recording_start = startup_recording_start();
-            bool coupled_permitted = true;
-            if (recording_start.configured && recording_start.coupled_required) {
-                bool world_ready{};
-                { std::lock_guard lock(r.mutex); world_ready = multiplayer_ready && r.named_context_ready && r.model.can_queue_load &&
-                    !r.requests.loading() && !r.requests.pending_load(); }
-                coupled_permitted = recording_start.permit_coupled_tick(world_ready);
-            }
-            // Do not start the private operator/entry clock before recorder ACK.
-            // Original native/render/model work above continues while waiting.
-            if (coupled_permitted) dingosdk::bmx::tick(r.base, client, multiplayer_ready);
-            dingosdk::bmx::tick_chassis_probe(r.base, client, multiplayer_ready);
-            if (dingosdk::bmx::ramp_test::enabled() && dingosdk::bmx::enable_native_motion(r.base))
-                dingosdk::bmx::ramp_test::tick(r.base, dingosdk::bmx::read_native_frame(r.base, client), multiplayer_ready);
         }
         dingosdk::multiplayer::refresh_identity_lists();
         // How much memory the game holds, beside what a session adds to it: said when it has

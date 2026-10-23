@@ -1,5 +1,6 @@
 #pragma once
 #include "developer_board_material.h"
+#include "Engine/Game/Build/supported_build.h"
 #include <cstring>
 #include <format>
 #include <optional>
@@ -75,9 +76,9 @@ inline Kind kind_of(std::uint32_t type_hash, std::uint16_t type_size, const deve
     namespace n = addr::native_cosmetics;
     if (!live || key.count != 1 || key.size != type_size) return Kind::other;
     if (type_hash == n::color_rgb_type_hash && type_size == sizeof(Colour)) return Kind::colour;
-    if (type_hash == n::float_type_hash && type_size == 4) return Kind::number;
-    if (type_hash == n::integer_type_hash && type_size == 4) return Kind::integer;
-    if (type_hash == n::boolean_type_hash && type_size == 4) return Kind::toggle;
+    if (type_hash == n::float_type_hash && type_size == sizeof(float)) return Kind::number;
+    if (type_hash == n::integer_type_hash && type_size == sizeof(std::int32_t)) return Kind::integer;
+    if (type_hash == n::boolean_type_hash && type_size == sizeof(std::uint32_t)) return Kind::toggle;
     return Kind::other;
 }
 template <class Memory> std::vector<Node> parameters(Memory& m, std::uintptr_t material) {
@@ -88,10 +89,10 @@ template <class Memory> std::vector<Node> parameters(Memory& m, std::uintptr_t m
     std::vector<Node> out;
     if (!buckets || !size) return out;
     m.check(size <= 1024 && total <= most_nodes, "Board parameter map exceeds bounds.");
-    const auto sentinel = m.ptr(buckets, size * 8ULL);
+    const auto sentinel = m.ptr(buckets, size * sizeof(std::uintptr_t));
     for (std::uint32_t b = 0; b < size; ++b) {
         std::uint32_t visited{};
-        for (auto node = m.ptr(buckets, b * 8ULL); node && node != sentinel; node = m.ptr(node, n::parameter_next)) {
+        for (auto node = m.ptr(buckets, b * sizeof(std::uintptr_t)); node && node != sentinel; node = m.ptr(node, n::parameter_next)) {
             m.check(++visited <= total && out.size() < total, "Board parameter chain exceeds bounds.");
             const auto key = m.template get<developer_hoodie_detail::ParameterKey>(node);
             const auto raw = m.template get<std::array<std::uint32_t, 4>>(node, n::parameter_value);
@@ -101,9 +102,9 @@ template <class Memory> std::vector<Node> parameters(Memory& m, std::uintptr_t m
             if (type) {
                 const auto info = m.ptr(type);
                 // A type's information is in the game's image, as the board's colour descriptor is.
-                if (info >= m.base && info < m.base + 0x09144000)
-                    p.kind = kind_of(m.template get<std::uint32_t>(info), m.template get<std::uint16_t>(info, 6), key,
-                                     (m.template get<std::uint32_t>(node, n::parameter_flags) & 1) != 0);
+                if (info >= m.base && info < m.base + supported_build::game_image_size)
+                    p.kind = kind_of(m.template get<std::uint32_t>(info), m.template get<std::uint16_t>(info, n::type_info_size), key,
+                                     (m.template get<std::uint32_t>(node, n::parameter_flags) & n::parameter_live_mask) != 0);
             }
             if (p.kind == Kind::colour || p.kind == Kind::number) {
                 std::memcpy(p.value.data(), raw.data(), p.kind == Kind::colour ? sizeof(Colour) : sizeof(float));
@@ -121,43 +122,48 @@ template <class Memory> std::vector<Node> parameters(Memory& m, std::uintptr_t m
 // The board actor's parts (developer_board_detail::materials walks the same way to its colours).
 template <class Read> Found walk(Read& read, std::uintptr_t base, std::uintptr_t entity) {
     using namespace multiplayer;
+    namespace n = addr::native_cosmetics;
     CosmeticMemory<Read&> m{read, base};
     Found out;
     m.check(m.ptr(entity) == base + addr::engine::board_entity_vtable, "Board actor type differs.");
     const auto component = m.component(entity);
-    out.pending = m.template get<std::uint8_t>(component, 0x10a) || m.template get<std::uint8_t>(component, 0x10d);
+    out.pending = m.template get<std::uint8_t>(component, n::component_pending_a) ||
+                  m.template get<std::uint8_t>(component, n::component_pending_b);
     const auto appearance = read_native_component(read, entity, base + addr::engine::skater_appearance_vtable);
-    const auto begin = m.ptr(appearance, 0x90), end = m.ptr(appearance, 0x98), capacity = m.ptr(appearance, 0xa0);
-    m.check(begin <= end && end <= capacity && (end - begin) % 8 == 0 && (capacity - begin) / 8 <= 64 && (begin || !capacity),
+    const auto begin = m.ptr(appearance, n::appearance_controllers), end = m.ptr(appearance, n::appearance_controllers_end),
+               capacity = m.ptr(appearance, n::appearance_controllers_capacity);
+    m.check(begin <= end && end <= capacity && (end - begin) % sizeof(std::uintptr_t) == 0 &&
+                (capacity - begin) / sizeof(std::uintptr_t) <= 64 && (begin || !capacity),
             "Board controller array exceeds bounds.");
     const auto& slots = developer_board_detail::slots;
     std::array<bool, developer_board_detail::slots.size()> seen{};
-    for (auto entry = begin; entry < end; entry += 8) {
+    for (auto entry = begin; entry < end; entry += sizeof(std::uintptr_t)) {
         const auto item = m.ptr(entry);
         if (!item) continue;
-        m.check(m.ptr(item, 0x48) == appearance + 0x40, "Board controller ownership differs.");
-        const auto assigned = std::find(slots.begin(), slots.end(), m.text(m.ptr(item, 0x30)));
+        m.check(m.ptr(item, n::controller_owner) == appearance + n::appearance_controller_owner, "Board controller ownership differs.");
+        const auto assigned = std::find(slots.begin(), slots.end(), m.text(m.ptr(item, n::controller_slot_name)));
         if (assigned == slots.end()) continue;
         const auto slot = static_cast<std::size_t>(assigned - slots.begin());
         m.check(!seen[slot], "Board has duplicate slot controllers.");
         seen[slot] = true;
-        if (!(m.template get<std::uint32_t>(item, 0xb0) & 2)) { out.pending = true; continue; }
-        const auto buckets = m.ptr(item, 0x1f0);
-        const auto size = m.template get<std::uint32_t>(item, 0x1f8), total = m.template get<std::uint32_t>(item, 0x1fc);
+        if (!(m.template get<std::uint32_t>(item, n::controller_flags) & n::controller_ready_mask)) { out.pending = true; continue; }
+        const auto buckets = m.ptr(item, n::item_materials);
+        const auto size = m.template get<std::uint32_t>(item, n::item_material_buckets),
+                   total = m.template get<std::uint32_t>(item, n::item_material_count);
         if (!total) { out.pending = true; continue; }
         m.check(buckets && size && size <= 256 && total <= 128, "Board material map exceeds bounds.");
-        const auto sentinel = m.ptr(buckets, size * 8ULL);
+        const auto sentinel = m.ptr(buckets, size * sizeof(std::uintptr_t));
         for (const auto& target : targets) {
             if (target.slot != slot) continue;
             const auto hash = developer_hoodie_detail::material_hash(target.material);
-            auto node = m.ptr(buckets, (hash % size) * 8ULL);
+            auto node = m.ptr(buckets, (hash % size) * sizeof(std::uintptr_t));
             std::uint32_t visited{};
-            for (; node && node != sentinel && visited < total; ++visited, node = m.ptr(node, 0x28))
+            for (; node && node != sentinel && visited < total; ++visited, node = m.ptr(node, n::item_material_node_next))
                 if (m.template get<std::uint32_t>(node) == hash) break;
             if (!node || node == sentinel || visited == total) continue;
-            std::array<std::uintptr_t, 4> variants{};
+            std::array<std::uintptr_t, n::item_material_variant_count> variants{};
             for (std::size_t v = 0; v < variants.size(); ++v) {
-                const auto material = m.ptr(node, 8 + v * 8);
+                const auto material = m.ptr(node, n::item_material_node_variants + v * sizeof(std::uintptr_t));
                 if (!material || std::find(variants.begin(), variants.begin() + v, material) != variants.begin() + v) continue;
                 variants[v] = material;
                 out.materials.push_back({item, material, target.part, parameters(m, material)});

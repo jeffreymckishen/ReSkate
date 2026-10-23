@@ -27,6 +27,26 @@ inline constexpr std::array<unsigned char, 24> set_shader_parameter_prefix{
     0x55,0x48,0x8d,0x6c,0x24,0xc9,0x48,0x81};
 // Initialized ColorRgb type descriptor; validate its type hash, size and index.
 inline constexpr std::uintptr_t color_rgb_type = 0x7780c50;
+// The local board material walk uses these cosmetic/appearance fields. The two pending bytes
+// both defer writes while a recipe is changing; their distinct transition meanings are not used.
+inline constexpr std::size_t component_pending_a = 0x10a;
+inline constexpr std::size_t component_pending_b = 0x10d;
+inline constexpr std::size_t appearance_controllers = 0x90;
+inline constexpr std::size_t appearance_controllers_end = 0x98;
+inline constexpr std::size_t appearance_controllers_capacity = 0xa0;
+inline constexpr std::size_t appearance_controller_owner = 0x40;
+inline constexpr std::size_t controller_owner = 0x48;
+inline constexpr std::size_t controller_slot_name = 0x30;
+inline constexpr std::size_t controller_flags = 0xb0;
+inline constexpr std::uint32_t controller_ready_mask = 2;
+// An AppearanceItem's named-material map is separate from each material's shader-parameter map.
+inline constexpr std::size_t item_materials = 0x1f0;
+inline constexpr std::size_t item_material_buckets = 0x1f8;
+inline constexpr std::size_t item_material_count = 0x1fc;
+inline constexpr std::size_t item_material_node_next = 0x28;
+inline constexpr std::size_t item_material_node_variants = 8;
+inline constexpr std::size_t item_material_variant_count = 4;
+inline constexpr std::size_t type_info_size = 6;
 // A material instance's own shader parameters (an AppearanceItem's named material): a hash map at
 // +0x268 of buckets, +0x270 its bucket count, +0x274 how many it holds. A node holds its ParamDbKey
 // at +0 (identity, size, type index and count words, then the key's 64-bit hash at +8), the value
@@ -40,6 +60,7 @@ inline constexpr std::size_t material_changed = 0x2f6;
 inline constexpr std::size_t parameter_value = 0x10;
 inline constexpr std::size_t parameter_type = 0x20;
 inline constexpr std::size_t parameter_flags = 0x28;
+inline constexpr std::uint32_t parameter_live_mask = 1;
 inline constexpr std::size_t parameter_next = 0x40;
 // The type hash (the first word of the TypeInfo a type object points to; its size is the word at
 // +6) of each kind of value the board's materials hold: ColorRgb, Float32, an integer (values like

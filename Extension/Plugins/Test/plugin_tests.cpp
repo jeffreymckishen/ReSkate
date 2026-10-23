@@ -3111,6 +3111,33 @@ void bmx_lua_equipment_requests_match_the_retained_gesture_rules() {
     std::cout << environment.all();
 }
 
+void bmx_lua_recovery_policy_keeps_native_cleanup_separate() {
+    const auto directory = std::filesystem::path(RESKATE_SOURCE_DIR) / "contrib" / "bmx-lab" / "bmx-plugin";
+    std::map<std::string, std::string> files{{manifest_file, R"({"api":1,"entry":"plugin/main.lua","permissions":[]})"}};
+    for (const auto* name : {"recovery.lua", "recovery_tests.lua"}) {
+        std::ifstream file(directory / "plugin" / name, std::ios::binary);
+        check(file.good(), std::string("BMX Lua recovery source is available: ") + name);
+        files[std::string("plugin/") + name] = std::string(std::istreambuf_iterator<char>(file), {});
+    }
+    files["plugin/main.lua"] = R"(
+        local result = require("./recovery_tests").run()
+        assert(result.cases >= 8 and result.assertions >= 100 and result.native_actions == 0,
+            string.format("unexpected recovery coverage: %s/%s", tostring(result.cases), tostring(result.assertions)))
+        reskate.log(string.format("BMX Lua recovery: %d cases, %d assertions, 0 native actions", result.cases, result.assertions))
+    )";
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({package("bmx-lua-recovery-tests", files)});
+    running(host, "bmx-lua-recovery-tests", environment);
+    check(environment.logged("BMX Lua recovery:") && environment.fake.calls.empty() && environment.fake.binds.empty() &&
+        environment.fake.native_action_requests == 0 && environment.fake.native_recovery_requests == 0 &&
+        environment.fake.native_recovery_reads == 0 && environment.fake.native_recovery_cancels == 0 &&
+        environment.fake.native_recovery_acks == 0 && environment.fake.body_creates == 0 &&
+        environment.fake.body_submissions == 0 && environment.teleports.empty() && environment.rays == 0,
+        "Recovery policy runs without native services or gameplay permissions\n" + environment.all());
+    std::cout << environment.all();
+}
+
 void bmx_lua_trick_policy_uses_actual_package_modules() {
     const auto directory = std::filesystem::path(RESKATE_SOURCE_DIR) / "contrib" / "bmx-lab" / "bmx-plugin";
     const auto contents = [](const std::filesystem::path& path) {
@@ -5374,6 +5401,7 @@ int main() {
         run(camera_inspector_prepares_then_explicitly_requests_a_view);
         run(bmx_lua_policy_runs_as_modules_and_the_inspector_starts_inert);
         run(bmx_lua_equipment_requests_match_the_retained_gesture_rules);
+        run(bmx_lua_recovery_policy_keeps_native_cleanup_separate);
         run(bmx_lua_trick_policy_uses_actual_package_modules);
         run(bmx_lua_forces_use_actual_modules_and_match_the_portable_kernel);
         run(plugins_have_pages);

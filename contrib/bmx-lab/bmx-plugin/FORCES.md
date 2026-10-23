@@ -28,6 +28,17 @@ local output, candidate = controller:preview(
 history for support normals, steering, neutral-air reservations, pump windows and
 the last consumed hop ID. `reset` clears all of them. Inputs are not modified.
 
+Native acceptance and measured response have different phases. The
+[varying-force diagnostic](../native-phase-trial/README.md) observed command C_N
+applied at N+1 with its velocity effect first visible at N+2. Pairing the full
+modeled step for C_N with measured body B_N+1 would advance the model ahead of
+that body. Keep immutable, epoch-labeled command/controller/wheel histories;
+an older confirmation must not replace a newer applied checkpoint or replay a
+hop. The adapter needs a qualified earlier producer or delay-aware reconciliation.
+Waiting for confirmation before every solve would reduce cadence and would not
+preserve this module's fixed-step contract. This module predicts velocities;
+it does not integrate future pose or establish future contact geometry.
+
 Vectors are three-element double-number tables. Quaternions are Hamilton XYZW,
 body axes to world. The body has `mass`, `inertia_body`, `orientation`,
 `center_of_mass`, `linear_velocity` and `angular_velocity`. Wheels are front then

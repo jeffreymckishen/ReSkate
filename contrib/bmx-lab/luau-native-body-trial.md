@@ -57,6 +57,10 @@ completed one 120-command constant-force burst with measured successors and orde
 acknowledgements. Whole-session control, torque, other body compounds, cleanup
 of an active body during unload or world changes, and partial native failures
 still need separate trials.
+A [varying-force diagnostic](native-phase-trial/README.md) also completed 120
+commands and independently identified N+2 velocity visibility for commands
+requested at N and applied at N+1. It does not identify the internal integration
+boundary or qualify a closed-loop controller.
 The overlay marked measured positions; it was not a rendered capsule mesh.
 Controller consumption, rider binding, wheel contacts, bike/board switching,
 fall recovery and BMX Streets likeness were not tested by this fixture.

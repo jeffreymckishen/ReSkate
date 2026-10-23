@@ -20,5 +20,9 @@ contrib/bmx-lab/Bmx-*.py text eol=lf
 # Native diagnostic receipts pin these exact source bytes.
 contrib/bmx-lab/native-pipeline-trial/plugin/main.lua text eol=lf
 contrib/bmx-lab/native-pipeline-trial/reskate-plugin.json text eol=lf
+contrib/bmx-lab/native-phase-trial/plugin/main.lua text eol=lf
+contrib/bmx-lab/native-phase-trial/reskate-plugin.json text eol=lf
+contrib/bmx-lab/native-phase-trial/analyze_phase.py text eol=lf
+contrib/bmx-lab/native-phase-trial/test_analysis.py text eol=lf
 External/luau/** -text
 External/luau/** whitespace=-blank-at-eol

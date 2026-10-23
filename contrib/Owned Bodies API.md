@@ -102,6 +102,13 @@ producer epoch. Each record freezes its **first** independently observed success
 later reads never substitute a more convenient sample. The plugin can inspect the actual resulting motion. Neither the API nor
 the tests fabricate an integrated result from the command.
 
+A [varying-force native diagnostic](bmx-lab/native-phase-trial/README.md) found
+that command C_N was applied at N+1 but first affected measured velocity at N+2.
+Only that offset matched the same 117 transitions with fixed native mass, h and
+gravity; shifted controls failed. This qualifies one short linear-force burst,
+not the internal consumption boundary, angular/position timing or a closed-loop
+vehicle. Preserve modeled command history separately from measured confirmation.
+
 `P.acknowledge(body, receipt.sequence)` frees only the oldest terminal record, once;
 an applied command additionally requires its actual measured successor. Selecting a
 later record for inspection never permits unordered acknowledgement or waives proof.

@@ -1,5 +1,11 @@
 # BMX integration direction
 
+**Superseded architecture:** the October 22 maintainer direction, confirmed by
+the user, requires all BMX functionality to use the Luau mod API. Read
+[BMX as a Luau mod](luau-migration.md) for the current migration and SDK API gaps.
+The native implementation and results below are historical comparison evidence,
+not the final architecture or permission to add further BMX policy to C++.
+
 Source review and isolated game tests: October 21, 2026, starting from checkpoint
 `4ede3bc`. This records the integration direction and bounded acceptance evidence.
 The process-bound receipts below define the tested scope.

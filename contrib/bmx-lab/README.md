@@ -1,5 +1,10 @@
 # BMX development
 
+The current direction is [BMX as a Luau mod](luau-migration.md): all BMX policy
+and presentation must move into the mod, with generic SDK extensions for missing
+native capabilities. The C++ prototype and numbered tests below are historical
+comparison evidence, not a completed plugin implementation or parity claim.
+
 The `BMX` branch includes an in-game offline prototype and a separate synthetic controls lab.
 Start with [integration-direction.md](integration-direction.md) for the source-based architecture
 review, backend boundaries, build provenance and next acceptance milestones.

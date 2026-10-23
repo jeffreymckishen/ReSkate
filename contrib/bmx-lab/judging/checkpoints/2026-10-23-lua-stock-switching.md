@@ -1,6 +1,7 @@
 # Lua stock switching checkpoint — 2026-10-23
 
-One clean stock on-foot → skateboard → on-foot roundtrip was recorded through
+Two clean stationary stock on-foot → skateboard → on-foot roundtrips were recorded
+across separate game launches through
 the production [Lua adapter](../../bmx-plugin/plugin/equipment_runtime.lua) and
 [transition model](../../bmx-plugin/plugin/equipment_transition.lua). This is
 stock equipment switching. Rider follow, rider alignment and rideable BMX are
@@ -21,7 +22,7 @@ General reliability and BMX Streets likeness remain unscored.
 - The pinned Release build completed cleanly and all 28 focused CTests passed.
   These are source/offline checks, not a gameplay likeness score.
 
-## Recorded native session
+## First native session
 
 Private evidence remains in the ignored
 [session folder](../../../../build/bmx/input-pulse-profile-observation-v1/).
@@ -53,6 +54,28 @@ The earlier context-continuity-v2 trial failed at grouped `controls_profile`
 before any publication. These successful probes do not identify that failure's
 precise cause and do not justify adding waiting, deferral or retry behavior.
 
+## Fresh-session repeat
+
+The unchanged package and binaries completed one further explicitly armed pair
+in a fresh v5 package/storage identity and process. The
+[repeat evidence](../../../../build/bmx/lua-stock-switching-repeat-v1/) retains
+the fresh owner, original deadlines, separate per-leg gates and raw driver ledgers.
+
+| Leg | Stock states | SDK sequence | Terminal report | Target suffix |
+| --- | --- | --- | --- | --- |
+| Trial 1 | On foot `504` → board `100` | `1` | `released / none`, mask `0` | 2.5 s; 151 qualified / 175 total samples |
+| Trial 2 | Board `100` → on foot `504` | `2` | `released / none`, mask `0` | 2.5 s; 151 qualified / 151 total samples |
+
+Each repeat leg recorded 49 press publications and one neutral publication,
+the same clean claim/debt/acknowledgement and `1/3/1/1` request/read/store/ack
+counts, and 301 completed neutral driver reports with successful release and
+disconnect. Separate endpoint images show the expected standing states.
+Normal game exit, process absence and subsequent v5 manifest withdrawal were
+recorded; zero Lua manifests remained active. The independent
+[repeat and closure audit](../../../../build/bmx/lua-stock-switching-repeat-v1/independent-repeat-closure-audit-v1.json)
+passed, SHA-256
+`3EEB9E0674529F6BA67AEC180FA76D19E875D9661BF81A94E7449AC7E406A0EC`.
+
 ## Minimal next checks
 
 These are proposed bounded tests, not completed coverage or new native admission.
@@ -61,11 +84,10 @@ the full receipt and require an explicit new Arm for every later experiment.
 
 | Check | Required result |
 | --- | --- |
-| One stationary repeat roundtrip | Both legs cleanly released and acknowledged, with no debt, the existing target suffix and saved endpoint visuals. |
 | Fall before SDK dispatch | No SDK request; the armed/baseline attempt stops without retry or qualified transition. |
 | Fall after terminal acknowledgement but before the target suffix completes | Preserve the transport receipt, latch the fall/readiness boundary and refuse a qualified transition even if the rider later stands. |
 
 A fall outside the intended window leaves that interruption case untested.
 No automatic GetUp, body following or BMX activation is part of this matrix.
-One clean roundtrip is concrete progress, not broad switching reliability,
+Two stationary roundtrips are concrete progress, not broad switching reliability,
 rideable-bike acceptance or a 9.5 likeness claim.

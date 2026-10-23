@@ -1,18 +1,10 @@
 #pragma once
-#include "Engine/Game/Skater/actor_control_policy.h"
+#include "actor_control.h"
 #include "Engine/Game/Skater/native_recovery.h"
 #include <cstdint>
 
 namespace dingosdk::skater_recovery {
-// Internal native identity only. None of these addresses is exposed to Lua.
-// The No Bail owner service captures and repeats its complete local chain.
-struct RecoveryActor {
-    std::uintptr_t base{}, client{}, entity{}, player{}, player_handle{}, component{}, core{}, context{},
-        selector{}, causes{}, rig{}, game_context{}, world{}, world_state{};
-    std::uint64_t world_generation{}, lifetime_epoch{}, actor_epoch{};
-    actor_control::Ticket ticket{};
-    bool operator==(const RecoveryActor&) const = default;
-};
+using RecoveryActor = actor_control_native::Actor;
 
 // Implemented alongside the shared actor arbiter in no_bail.cpp. These calls
 // acquire its lock internally; the recovery service never holds its own lock

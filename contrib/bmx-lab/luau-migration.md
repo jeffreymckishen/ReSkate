@@ -12,6 +12,9 @@ commands. This retirement requires a fresh process; it is not a live stop of an
 already mounted bike. Preserved older DLLs remain historical comparison builds.
 The current Lua package is still a migration in progress and cannot yet ride a
 bike. New native trials must use the generic API.
+The ordinary force policy now passes portable regression comparisons, but an
+actual-Host benchmark exposes a normal 2ms budget failure under strong braking.
+Optimization and repeat performance evidence are required before activation.
 
 ## Latest upstream inspected
 
@@ -47,18 +50,22 @@ must not contain BMX gestures, dimensions, steering curves, trick names, rider
 postures, equipment policy or special BMX profile selectors. Bike assets and
 parameters belong to the mod package; no extracted game content enters Git.
 
-## Concrete API gaps
+## Generic API contracts and remaining gaps
 
 The existing API already offers gamepad input, bindings, input hiding, owned
 visual entities, raycasts, local pose/reach/carry, board presentation, cameras,
-menus and skater physics events. The following contracts still need generic
-extensions before a Lua mod can replace the current physical prototype:
+menus and skater physics events. These contracts determine whether a Lua mod can
+replace the physical prototype; implemented contracts still require native proof:
 
 1. **Owned bodies.** Create/configure an authorized body with plugin-supplied
    mass, inertia and bounded collision shapes. Return opaque handles scoped to
    the plugin and world generation. Read actual position, orientation, linear
    and angular velocity, native step serial/time and validity. Never expose
    pointers or permit foreign/stock actor mutation through an object handle.
+   The experimental `world.physics` implementation now supplies this contract
+   with permission and ownership tests. Actual native allocation and integration
+   remain unqualified after a pre-allocation clock-warmup refusal in the first
+   private game trial.
 2. **Contacts.** Return the actual hit point, normal, surface velocity when
    available, feature, ignored-owned-body status and world/step provenance.
    Existing raycasts do not expose enough information to implement wheel forces;
@@ -67,6 +74,10 @@ extensions before a Lua mod can replace the current physical prototype:
    impulse against an exact observed body epoch. Commit once in the supported
    native phase, then expose applied/rejected/expired and the actual successor.
    A queue acknowledgement is not a completed native application.
+   The generic implementation now separates one immutable pending command from
+   four retained receipt records, allowing consecutive publications while older
+   commands await their first independently measured successor. Contract tests
+   pass; sustained native 60Hz control still needs a game trial.
 4. **Actor ownership and actions.** Obtain and release exclusive movement,
    pose and input ownership together. Bind the local actor to an owned body
    through generic transform/pose primitives. Typed board/on-foot/GetUp actions
@@ -93,9 +104,9 @@ First port the actual portable input/catalog/trick/controller policies into Lua
 and exercise them against the retained C++ baseline. In parallel, implement and
 review the generic body/contact/command contract. Then wire those Lua modules to
 real owned bodies, followed by rider presentation and the complete equipment and
-fall lifecycle. Retire the BMX-specific runtime only after each responsibility
-has a tested plugin replacement. Keeping historical source during this process
-is not approval to add more BMX policy to C++.
+fall lifecycle. The legacy BMX dispatcher is already retired, so keep the new
+gameplay entry inactive until these native bridges are qualified. Keeping
+historical source during this process is not approval to add more BMX policy to C++.
 
 Current human feedback identifies **hops and turning** as the main feel problem.
 The recorded ReSkate test contains full-strength hops and repeated tilted frame

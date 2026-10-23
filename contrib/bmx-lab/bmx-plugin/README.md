@@ -15,6 +15,15 @@ measured body-local quaternion turns, canceled attempts and its own landing tall
 58 IDs; it contains no extracted clips or source asset IDs. These targets do not
 rotate a native body. The inspector does not activate this controller for riding.
 
+`plugin/forces.lua` and its math, tire, brake and pump modules now port our ordinary
+single-body riding policy. The actual Host tests passed 16 groups, 654 assertions
+and 19 representative comparisons against our retained C++ model. This preserves
+our proposed laws; it is not recovered Streets physics or verified riding feel.
+See [FORCES.md](FORCES.md) for inputs, candidate history and remaining limits.
+A separate actual-Host performance check currently fails the normal 2ms average
+budget under strong braking. Gameplay stays inactive pending optimization and
+the same performance check with adequate headroom.
+
 Create it with `require("./tricks").new(settings)` and call
 `controller:update(native_seconds, Tricks.input(observation))`. The adapter must
 supply measured heading/orientation, actual support and qualified native elapsed
@@ -74,10 +83,15 @@ attempts, body-local quaternion turns, busy-request consumption and tally bounds
 This validates Lua model and sandbox integration;
 this package has not yet been installed or tested for real riding in the game.
 
+The experimental [`world.physics` API](../../Owned%20Bodies%20API.md) now provides
+opaque owned bodies, measured state and bounded commands with a four-record
+receipt pipeline. Portable and Host tests pass; actual native allocation,
+integration, sustained 60 Hz operation and cleanup remain unqualified. The first
+private game trial reached a pre-allocation clock-warmup refusal; it did not
+demonstrate a body or impulse.
+
 The following generic SDK pieces are still missing for real riding:
 
-- Plugin-owned generation-fenced dynamic bodies, actual pose/velocity/mass/
-  inertia observations, bounded forces/impulses and exact native-step receipts.
 - Contact normals, surface velocity and owned body/world/epoch provenance.
   The generic `world.probe` now distinguishes unavailable, clear and hit and
   returns hit position/fraction; it does not yet supply those contact properties.

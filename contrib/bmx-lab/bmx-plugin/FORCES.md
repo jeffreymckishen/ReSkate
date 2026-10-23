@@ -107,8 +107,18 @@ inside one load call. It makes no claim that this table-heavy implementation fit
 the normal 2ms plugin tick budget. Native-phase transport, performance and actual
 feel must be measured before activation.
 
-The generic owned-body service can transport a bounded native impulse and
-receipts; its initial single mailbox cannot yet carry every 60Hz step. The
+A separate standalone actual-Host benchmark with the unchanged normal limits
+found a concrete activation blocker: strong braking took about 17ms per step,
+and the 2ms rolling watchdog stopped the plugin after 183 ticks in each of three
+repeats, for both direct steps and preview/adopt. Coasting averaged about 1.8ms,
+leaving little headroom and sometimes stopping under desktop load. This is
+offline Host evidence, not a native frame measurement. Keep gameplay inactive
+until the Lua solver is optimized and the same benchmark passes with headroom.
+
+The generic owned-body service now has a four-record receipt ring and a separate
+pending inbox, so its tested contract permits consecutive 60Hz publications.
+Native allocation, integration and sustained every-step transport remain
+unqualified; the API contract alone does not prove them. The
 generic probe still lacks qualified contact normals, surface velocity and body/
 world/epoch provenance required here. Input device epochs/atomic actor handoff,
 part rendering, rider pose binding, fall and recovery also remain to be wired

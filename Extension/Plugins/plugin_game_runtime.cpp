@@ -19,6 +19,7 @@
 #include "Extension/Skater/native_actions.h"
 #include "Extension/Skater/native_recovery.h"
 #include "Extension/Skater/native_input_trace.h"
+#include "Extension/Skater/native_input_pulse.h"
 #include "Extension/Skater/outfit_overlay.h"
 #include "Extension/Skater/board_pose.h"
 #include "Extension/Customization/board_material.h"
@@ -209,6 +210,16 @@ public:
     bool input_trace_stop(std::uint64_t owner, input_trace::Handle handle) override { return native_input_trace::stop(owner, handle); }
     bool input_trace_acknowledge(std::uint64_t owner, input_trace::Handle handle) override { return native_input_trace::acknowledge(owner, handle); }
     void input_trace_release_all(std::uint64_t owner) override { native_input_trace::release_all(owner); }
+    bool input_pulse_request(std::uint64_t owner, std::uint32_t user, std::uint16_t button,
+        game_input_pulse::Handle& handle, game_input_pulse::Reason& reason) override {
+        return native_input_pulse::request(owner, user, button, handle, reason);
+    }
+    bool input_pulse_read(std::uint64_t owner, game_input_pulse::Handle handle, game_input_pulse::Receipt& receipt) override {
+        return native_input_pulse::read(owner, handle, receipt);
+    }
+    bool input_pulse_cancel(std::uint64_t owner, game_input_pulse::Handle handle) override { return native_input_pulse::cancel(owner, handle); }
+    bool input_pulse_acknowledge(std::uint64_t owner, game_input_pulse::Handle handle) override { return native_input_pulse::acknowledge(owner, handle); }
+    void input_pulse_release_all(std::uint64_t owner) override { native_input_pulse::release_all(owner); }
 
     // ---- the local skater ----------------------------------------------------------------------
     std::optional<std::uint32_t> physics_state() override {

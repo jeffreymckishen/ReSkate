@@ -17,7 +17,7 @@ struct Key {
 };
 struct Input {
     Key key{};
-    std::uint64_t now_ms{}, clock_observed_ms{}, serial{};
+    std::uint64_t now_ms{}, source_observed_ms{}, clock_observed_ms{}, serial{};
     double seconds{};
     std::uint32_t original_result{}, original_packet{};
     Pad raw{}, returned{};
@@ -33,7 +33,7 @@ struct Output {
     std::uint64_t revision{}, generation{};
 };
 
-// Portable report policy, currently unconnected to runtime input. The caller
+// Portable report policy. The private runtime report service is its caller and
 // supplies qualified facts and serializes poll, publication and confirmation.
 // A planned or published report is not proof that native input consumed it.
 class Pulse {
@@ -84,6 +84,8 @@ public:
         if (ticket.generation != generation_ || phase_ == Phase::idle || terminal()) return out;
         if (!in.outer_game_poll || in.key.source != key_.source) return out;
 
+        const bool source_clock = in.now_ms >= last_now_ && in.source_observed_ms &&
+            in.source_observed_ms <= in.now_ms && in.now_ms - in.source_observed_ms <= maximum_gap_ms;
         const bool clock = in.now_ms >= last_now_ && in.serial && std::isfinite(in.seconds) && in.seconds >= 0 &&
             in.clock_observed_ms && in.clock_observed_ms <= in.now_ms &&
             in.now_ms - in.clock_observed_ms <= maximum_gap_ms &&
@@ -91,17 +93,20 @@ public:
                 (in.serial != serial_ || in.seconds == seconds_) &&
                 (in.serial == serial_ || in.seconds > seconds_)));
         const bool raw_path = in.original_result == 0 && in.has_output && in.outer_game_poll &&
-            in.source_fresh && in.actor_current && in.key == key_ && in.returned == in.raw;
-        const bool ready = raw_path && clock && in.focused && in.gameplay && in.menu_closed && in.interference_clear &&
+            in.source_fresh && in.interference_clear && in.key == key_ && in.returned == in.raw;
+        const bool ready = raw_path && source_clock && clock && in.actor_current &&
+            in.focused && in.gameplay && in.menu_closed && in.interference_clear &&
             (!serial_ || in.seconds - seconds_ <= 0.25) &&
             (!last_poll_ || in.now_ms - last_poll_ <= maximum_gap_ms) && in.now_ms - started_ < lifetime_ms;
         if (!ready && phase_ != Phase::releasing) (void)revoke(key_);
 
-        if (raw_path && clock) {
+        if (raw_path && source_clock) {
             const bool advanced = in.serial != serial_;
-            serial_ = in.serial;
-            seconds_ = in.seconds;
             last_now_ = last_poll_ = in.now_ms;
+            if (clock && in.actor_current) {
+                serial_ = in.serial;
+                seconds_ = in.seconds;
+            }
             if (phase_ == Phase::warming) {
                 if (in.raw != Pad{}) {
                     warm_started_ = 0;
@@ -129,6 +134,8 @@ public:
                     debt_ = true;
                 }
             }
+            // Returning the original neutral report removes our overlay. It
+            // neither touches an old actor nor needs that actor's step clock.
             if (phase_ == Phase::releasing && in.raw == Pad{}) out.release_candidate = debt_;
         }
         out.revision = revision_;
@@ -183,18 +190,25 @@ class PacketContinuity {
 public:
     std::uint32_t translate(std::uint64_t epoch, std::uint64_t revision, std::uint32_t original,
                             const Pad& raw, const Pad& final, bool activate) noexcept {
+        return translate(epoch, revision, original, original, raw, final, activate);
+    }
+
+    std::uint32_t translate(std::uint64_t epoch, std::uint64_t revision, std::uint32_t original,
+                            std::uint32_t returned, const Pad& raw, const Pad& final, bool activate) noexcept {
         if (!active_) {
             if (activate) {
-                packet_ = seen_ ? packet_ + 1 : original + 1;
+                packet_ = seen_ ? packet_ + 1 : returned + 1;
                 active_ = true;
-            } else packet_ = original;
-        } else if (epoch != epoch_ || revision != revision_ || original != original_ || raw != raw_ || final != final_) {
+            } else packet_ = returned;
+        } else if (epoch != epoch_ || revision != revision_ || original != original_ || returned != returned_ ||
+                   raw != raw_ || final != final_) {
             ++packet_;
         }
         seen_ = true;
         epoch_ = epoch;
         revision_ = revision;
         original_ = original;
+        returned_ = returned;
         raw_ = raw;
         final_ = final;
         return packet_;
@@ -202,7 +216,7 @@ public:
 
 private:
     bool active_{}, seen_{};
-    std::uint32_t packet_{}, original_{};
+    std::uint32_t packet_{}, original_{}, returned_{};
     std::uint64_t epoch_{}, revision_{};
     Pad raw_{}, final_{};
 };

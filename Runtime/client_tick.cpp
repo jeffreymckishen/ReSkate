@@ -46,6 +46,7 @@
 #include "Extension/Skater/native_actions.h"
 #include "Extension/Skater/native_recovery.h"
 #include "Extension/Skater/native_input_trace.h"
+#include "Extension/Skater/native_input_pulse.h"
 #include "Extension/World/owned_bodies.h"
 #include "Extension/Skater/skater_slot_override.h"
 #include "Extension/Throwdowns/native_throwdowns.h"
@@ -1290,6 +1291,9 @@ void update_model(std::uintptr_t client, TickState& frame) {
         !r.observer_failed && named_context_ready && !debug_busy && !r.requests.loading() &&
         !r.debug_model.noclip && !r.debug_model.free_camera);
     dingosdk::native_input_trace::tick(r.base, client,
+        !r.observer_failed && named_context_ready && !debug_busy && !r.requests.loading() &&
+        !r.debug_model.noclip && !r.debug_model.free_camera);
+    dingosdk::native_input_pulse::tick(r.base, client,
         !r.observer_failed && named_context_ready && !debug_busy && !r.requests.loading() &&
         !r.debug_model.noclip && !r.debug_model.free_camera);
     if (r.observer_failed) return; // Keep the bounded restore/telemetry path available after catalog failure.

@@ -19,6 +19,7 @@ void install_world_api(Plugin& plugin, lua_State* L);
 void install_physics_api(Plugin& plugin, lua_State* L);
 void install_native_actions_api(Plugin& plugin, lua_State* L);
 void install_input_trace_api(Plugin& plugin, lua_State* L);
+void install_input_pulse_api(Plugin& plugin, lua_State* L);
 // General services for a game layer: the skater's telemetry and Bone Cam, the pad and keys, the
 // free and pad-flown cameras, the session's world, competition physics and the trick feed
 // (plugin_api_services.cpp).

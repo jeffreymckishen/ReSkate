@@ -5,6 +5,7 @@
 #include "Engine/Game/Skater/native_action.h"
 #include "Engine/Game/Skater/native_recovery.h"
 #include "Engine/Game/Input/native_input_trace.h"
+#include "Engine/Game/Input/game_input_pulse.h"
 #include "Extension/AnimationStudio/anim_core.h"
 #include "Extension/Throwdowns/throwdown_kit.h"
 #include <array>
@@ -299,6 +300,15 @@ public:
     virtual bool input_trace_stop(std::uint64_t, input_trace::Handle) { return false; }
     virtual bool input_trace_acknowledge(std::uint64_t, input_trace::Handle) { return false; }
     virtual void input_trace_release_all(std::uint64_t) {}
+    // Generic report-buffer publications, not native input consumption or actions.
+    virtual bool input_pulse_request(std::uint64_t, std::uint32_t, std::uint16_t,
+        game_input_pulse::Handle&, game_input_pulse::Reason& reason) {
+        reason = game_input_pulse::Reason::unavailable; return false;
+    }
+    virtual bool input_pulse_read(std::uint64_t, game_input_pulse::Handle, game_input_pulse::Receipt&) { return false; }
+    virtual bool input_pulse_cancel(std::uint64_t, game_input_pulse::Handle) { return false; }
+    virtual bool input_pulse_acknowledge(std::uint64_t, game_input_pulse::Handle) { return false; }
+    virtual void input_pulse_release_all(std::uint64_t) {}
     // ---- the local skater ----------------------------------------------------------------------
     // Its physics state (100s riding, 200s in the air, 300 a wipeout, 400s grinding, 504 off the
     // board), or empty without a skater; and how many wipeouts it has had this session.

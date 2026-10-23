@@ -28,6 +28,7 @@ using namespace dingosdk::plugins;
 namespace plugin_ui = dingosdk::plugin_ui;
 namespace owned_body = dingosdk::owned_body;
 namespace body_query = dingosdk::body_query;
+namespace game_input_pulse = dingosdk::game_input_pulse;
 namespace {
 void check(bool value, const std::string& message) { if (!value) throw std::runtime_error(message); }
 
@@ -36,6 +37,61 @@ std::filesystem::path scratch;
 
 // The wider set's game, faked: it records what plugins asked of it and answers as told.
 struct FakeGame final : Game {
+    struct InputPulse { std::uint64_t owner{}; game_input_pulse::Receipt receipt{}; };
+    std::map<std::uint64_t, InputPulse> input_pulses;
+    std::vector<std::uint64_t> input_pulse_releases;
+    std::uint64_t input_pulse_sequence{9007199254740994ULL};
+    unsigned input_pulse_requests{}, input_pulse_reads{}, input_pulse_cancels{}, input_pulse_acks{};
+    bool input_pulse_available{true};
+    game_input_pulse::Reason input_pulse_refusal{game_input_pulse::Reason::unsupported_transport};
+    std::uint64_t last_input_pulse_owner{};
+    bool input_pulse_request(std::uint64_t owner, std::uint32_t user, std::uint16_t button,
+        game_input_pulse::Handle& handle, game_input_pulse::Reason& reason) override {
+        ++input_pulse_requests; last_input_pulse_owner = owner;
+        if (!input_pulse_available) { reason = input_pulse_refusal; return false; }
+        handle.sequence = ++input_pulse_sequence;
+        auto& row = input_pulses[handle.sequence]; row.owner = owner;
+        auto& r = row.receipt; r.handle = handle; r.user = user; r.button = button;
+        r.requested_ms = r.observed_ms = 9007199254740997ULL;
+        r.expires_ms = r.requested_ms + game_input_pulse::lifetime_ms;
+        r.source_epoch = 9007199254741009ULL;
+        reason = game_input_pulse::Reason::none; return true;
+    }
+    bool input_pulse_read(std::uint64_t owner, game_input_pulse::Handle handle, game_input_pulse::Receipt& receipt) override {
+        ++input_pulse_reads;
+        const auto at = input_pulses.find(handle.sequence);
+        if (at == input_pulses.end() || at->second.owner != owner) return false;
+        receipt = at->second.receipt; return true;
+    }
+    bool input_pulse_cancel(std::uint64_t owner, game_input_pulse::Handle handle) override {
+        ++input_pulse_cancels;
+        const auto at = input_pulses.find(handle.sequence);
+        if (at == input_pulses.end() || at->second.owner != owner || game_input_pulse::terminal(at->second.receipt.status)) return false;
+        auto& r = at->second.receipt; r.reason = game_input_pulse::Reason::cancelled;
+        r.status = r.report_debt ? game_input_pulse::Status::releasing : game_input_pulse::Status::cancelled;
+        if (!r.report_debt) r.claim_released = true;
+        return true;
+    }
+    bool input_pulse_acknowledge(std::uint64_t owner, game_input_pulse::Handle handle) override {
+        ++input_pulse_acks;
+        const auto at = input_pulses.find(handle.sequence);
+        if (at == input_pulses.end() || at->second.owner != owner || !game_input_pulse::terminal(at->second.receipt.status) ||
+            at->second.receipt.report_debt || !at->second.receipt.claim_released || at->second.receipt.quarantined) return false;
+        input_pulses.erase(at); return true;
+    }
+    void input_pulse_release_all(std::uint64_t owner) override {
+        input_pulse_releases.push_back(owner);
+        bool pulse_release_recorded{};
+        for (auto at = input_pulses.begin(); at != input_pulses.end();) {
+            if (at->second.owner != owner) { ++at; continue; }
+            if (!pulse_release_recorded) { release_order.emplace_back(owner, "input_pulse"); pulse_release_recorded = true; }
+            auto& r = at->second.receipt;
+            if (r.report_debt) {
+                r.orphaned = r.quarantined = true; r.status = game_input_pulse::Status::revoked;
+                r.reason = game_input_pulse::Reason::cancelled; ++at;
+            } else at = input_pulses.erase(at);
+        }
+    }
     struct InputTrace { std::uint64_t owner{}; dingosdk::input_trace::Receipt receipt{}; };
     std::map<std::uint64_t, InputTrace> input_traces;
     std::vector<std::uint64_t> input_trace_releases;
@@ -1553,6 +1609,161 @@ void native_recovery_enforces_permission_phase_arguments_and_shared_request_rate
     )"}})}); running(server, "recovery-server", server_environment);
     check(server_environment.fake.native_recovery_requests == 0 && server_environment.fake.native_recovery_reads == 0 &&
         server_environment.fake.native_recovery_cancels == 0 && server_environment.fake.native_recovery_acks == 0, "server reached native recovery");
+}
+
+void input_pulse_api_keeps_report_receipts_opaque_and_owner_bound() {
+    namespace p = game_input_pulse;
+    TestEnvironment environment; Host host(environment, Side::client);
+    host.apply({script("input-pulse", R"(
+        local P=reskate.input
+        assert(not pcall(P.pulse) and not pcall(P.pulse,0) and not pcall(P.pulse,0,"y",nil))
+        for _,user in {-1,4,.5,math.huge,0/0,"0",false,{}} do assert(not pcall(P.pulse,user,"y")) end
+        for _,button in {0,3,0x400,0x800,.5,math.huge,0/0,false,{},"0x8000","Y","y\0junk","board"} do
+            assert(not pcall(P.pulse,2,button))
+        end
+        local h=assert(P.pulse(2,"y"))
+        assert(type(h)=="userdata" and getmetatable(h)=="locked")
+        for _,fn in {P.pulse_state,P.pulse_cancel,P.pulse_acknowledge} do
+            assert(not pcall(fn,{}) and not pcall(fn,"9007199254740995") and not pcall(fn,h,nil))
+        end
+        local r=assert(P.pulse_state(h))
+        assert(r.sequence=="9007199254740995" and r.requested_ms=="9007199254740997" and r.expires_ms=="9007199254741997")
+        assert(r.observed_ms==r.requested_ms and r.source_epoch=="9007199254741009")
+        assert(r.user==2 and r.button==0x8000 and r.status=="queued" and not r.terminal)
+        assert(r.transport=="xinput" and r.source_identity=="observed_stream" and r.publication_scope=="process_outer_xinput_buffer")
+        assert(r.consumption=="unobserved" and r.semantic_completion=="unobserved" and r.native_consumed==nil)
+        assert(r.address==nil and r.actor_ticket==nil and r.device_guid==nil and r.original_result==nil)
+        assert(not P.pulse_acknowledge(h))
+        reskate.on("tick",function()
+            if not h then return end
+            local v,why=P.pulse_state(h)
+            if not v then assert(why:find("invalid observations"));reskate.log("pulse malformed rejected");return end
+            if v.status=="released" then
+                assert(v.terminal and v.consumption=="unobserved" and v.semantic_completion=="unobserved")
+                assert(v.press_candidates=="9007199254741012" and v.press_publications=="9007199254741011")
+                assert(v.neutral_publications=="1" and v.contentions=="9007199254741013")
+                assert(v.original_result_known and v.original_result==1167)
+                if v.report_debt or not v.claim_released or v.quarantined then
+                    assert(not P.pulse_acknowledge(h));reskate.log("pulse debt retained")
+                else
+                    assert(P.pulse_acknowledge(h) and P.pulse_state(h)==nil)
+                    h=nil;reskate.log("pulse record acknowledged")
+                end
+            end
+        end)
+    )", R"("input.control")")}); running(host,"input-pulse",environment);
+    check(environment.fake.input_pulse_requests==1 && environment.fake.input_pulses.size()==1,
+        "invalid input-pulse arguments reached backend or consumed its start budget");
+    auto& row=environment.fake.input_pulses.begin()->second;
+    const auto owner=row.owner; const auto handle=row.receipt.handle;
+    auto& receipt=row.receipt; const auto valid=receipt;
+    const auto malformed=[&](const char* why) {
+        environment.lines.clear(); ticks(host,environment,1); running(host,"input-pulse",environment);
+        check(environment.logged("pulse malformed rejected"),why); receipt=valid;
+    };
+    receipt.status=static_cast<p::Status>(999); malformed("unknown pulse status was serialized");
+    receipt.reason=static_cast<p::Reason>(999); malformed("unknown pulse reason was serialized");
+    ++receipt.handle.sequence; malformed("pulse receipt changed its opaque sequence");
+    receipt.user=1; malformed("pulse receipt changed the requested slot");
+    receipt.button=0x1000; malformed("pulse receipt changed the requested button");
+    --receipt.expires_ms; malformed("pulse receipt changed its bounded lifetime");
+    --receipt.observed_ms; malformed("pulse receipt predates admission");
+    receipt.press_publications=1; malformed("pulse receipt confirmed more presses than candidates");
+    receipt.status=p::Status::released; receipt.report_debt=receipt.quarantined=true;
+    receipt.press_candidates=9007199254741012ULL; receipt.press_publications=9007199254741011ULL;
+    receipt.neutral_publications=1; receipt.contentions=9007199254741013ULL;
+    receipt.original_result_known=true; receipt.original_result=1167;
+    ticks(host,environment,1); running(host,"input-pulse",environment);
+    check(environment.logged("pulse debt retained") && environment.fake.input_pulses.size()==1,
+        "terminal pulse status alone discarded unresolved publication duty");
+    receipt.report_debt=receipt.quarantined=false; receipt.claim_released=true;
+    ticks(host,environment,1); running(host,"input-pulse",environment);
+    check(environment.logged("pulse record acknowledged") && environment.fake.input_pulses.empty(),
+        "resolved pulse could not be acknowledged");
+    host.apply({});
+    host.apply({script("input-pulse","assert(reskate.input.pulse(0,0x1000))",R"("input.control")")});
+    running(host,"input-pulse",environment);
+    const auto replacement=environment.fake.input_pulses.begin()->second;
+    check(replacement.owner!=owner && replacement.receipt.user==0 && replacement.receipt.button==0x1000,
+        "input pulse reload reused VM identity or numeric bit lost its value");
+    p::Receipt stale;
+    check(!environment.fake.input_pulse_read(replacement.owner,handle,stale) &&
+        !environment.fake.input_pulse_cancel(owner,replacement.receipt.handle) &&
+        !environment.fake.input_pulse_acknowledge(owner,replacement.receipt.handle), "pulse crossed VM owner boundary");
+}
+
+void input_pulse_api_enforces_permission_client_phase_and_shared_budget() {
+    TestEnvironment environment; Host host(environment,Side::client);
+    host.apply({script("input-pulse-denied",R"(
+        for _,name in {"pulse","pulse_state","pulse_cancel","pulse_acknowledge"} do
+            local ok,why=pcall(reskate.input[name],{})
+            assert(not ok and why:find("input.control"),name)
+        end
+    )",R"("input","skater.control")")}); running(host,"input-pulse-denied",environment);
+    check(!environment.fake.input_pulse_requests && !environment.fake.input_pulse_reads &&
+        !environment.fake.input_pulse_cancels && !environment.fake.input_pulse_acks,"permission denial reached pulse backend");
+    host.apply({script("input-pulse-budget",R"(
+        local P=reskate.input
+        for i=1,4 do
+            local h=assert(P.pulse(0,"a"))
+            for j=1,5 do assert(P.pulse_state(h).status=="queued") end
+            assert(P.pulse_cancel(h) and P.pulse_acknowledge(h))
+        end
+        local h,why=P.pulse(0,"a");assert(h==nil and why:find("4 times"))
+    )",R"("input.control")")}); running(host,"input-pulse-budget",environment);
+    check(environment.fake.input_pulse_requests==4 && environment.fake.input_pulses.empty(),
+        "pulse state polls consumed start budget or fifth start reached backend");
+    host.apply({script("input-pulse-shared-budget",R"(
+        local h=assert(reskate.skater.recover())
+        assert(reskate.skater.recovery_cancel(h) and reskate.skater.recovery_acknowledge(h))
+        for i=1,3 do
+            local p=assert(reskate.input.pulse(0,"b"))
+            assert(reskate.input.pulse_cancel(p) and reskate.input.pulse_acknowledge(p))
+        end
+        local p,why=reskate.input.pulse(0,"a");assert(p==nil and why:find("4 times"))
+    )",R"("input.control","skater.control")")}); running(host,"input-pulse-shared-budget",environment);
+    check(environment.fake.input_pulse_requests==7 && environment.fake.native_recovery_requests==1,
+        "report pulse bypassed shared VM control-start budget");
+
+    TestEnvironment refused; refused.fake.input_pulse_available=false; Host unsupported(refused,Side::client);
+    unsupported.apply({script("input-pulse-unsupported",R"(
+        local h,why=reskate.input.pulse(0,"a");assert(h==nil and why=="unsupported_transport")
+    )",R"("input.control")")}); running(unsupported,"input-pulse-unsupported",refused);
+    check(refused.fake.input_pulse_requests==1 && refused.fake.input_pulses.empty() &&
+        refused.fake.native_actions.empty() && refused.fake.native_recoveries.empty(), "unsupported pulse transport used a different actuator");
+
+    TestEnvironment server_environment; Host server(server_environment,Side::server);
+    server.apply({package("input-pulse-server",{{manifest_file,manifest(R"("input.control")","server")},{"plugin/main.lua",R"(
+        for _,name in {"pulse","pulse_state","pulse_cancel","pulse_acknowledge"} do
+            local ok,why=pcall(reskate.input[name],{})
+            assert(not ok and why:find("client phase only"),name)
+        end
+    )"}})}); running(server,"input-pulse-server",server_environment);
+    check(!server_environment.fake.input_pulse_requests && !server_environment.fake.input_pulse_reads &&
+        !server_environment.fake.input_pulse_cancels && !server_environment.fake.input_pulse_acks,"server reached pulse backend");
+}
+
+void input_pulse_unload_retains_debt_before_other_actor_cleanup() {
+    TestEnvironment environment; Host host(environment,Side::client);
+    host.apply({script("input-pulse-orphan","assert(reskate.input.pulse(0,0x1000))",R"("input.control")")});
+    running(host,"input-pulse-orphan",environment);
+    auto& row=environment.fake.input_pulses.begin()->second;
+    const auto owner=row.owner; const auto handle=row.receipt.handle;
+    row.receipt.report_debt=true; row.receipt.status=game_input_pulse::Status::pressing;
+    environment.fake.release_order.clear(); host.apply({});
+    check(environment.fake.input_pulses.size()==1 && row.receipt.report_debt && row.receipt.orphaned &&
+        row.receipt.quarantined && !row.receipt.claim_released,"VM unload discarded unresolved report duty");
+    check(!environment.fake.release_order.empty() && environment.fake.release_order.front()==std::pair{owner,std::string("input_pulse")},
+        "pulse unload did not precede other actor/body cleanup");
+    environment.fake.input_pulse_available=false; environment.fake.input_pulse_refusal=game_input_pulse::Reason::busy;
+    host.apply({script("input-pulse-orphan",R"(
+        local h,why=reskate.input.pulse(0,"a");assert(h==nil and why=="busy")
+    )",R"("input.control")")}); running(host,"input-pulse-orphan",environment);
+    const auto fresh_owner=environment.fake.last_input_pulse_owner;
+    game_input_pulse::Receipt denied;
+    check(fresh_owner!=owner && !environment.fake.input_pulse_read(fresh_owner,handle,denied) &&
+        !environment.fake.input_pulse_cancel(fresh_owner,handle) && !environment.fake.input_pulse_acknowledge(fresh_owner,handle),
+        "reload acquired an orphaned VM's pulse authority");
 }
 
 void input_trace_api_keeps_bounded_observations_opaque_and_vm_owned() {
@@ -4151,6 +4362,53 @@ Candidate contributed(const std::string& id) {
     const auto directory = contrib_plugin(id);
     return {id, directory, "1", check_package_files(directory)};
 }
+void the_tracked_input_pulse_fixture_loads_and_ticks_inert() {
+    const auto directory = std::filesystem::path(RESKATE_SOURCE_DIR) / "contrib" / "bmx-lab" / "input-pulse-trial";
+    check(std::filesystem::is_regular_file(directory / manifest_file) &&
+        std::filesystem::is_regular_file(directory / "plugin" / "main.lua"), "tracked input pulse fixture files are required");
+    check(check_package_files(directory).empty(), "input pulse fixture is a source-only sandbox package");
+    constexpr const char* id = "LuaInputPulse_20261023_v1";
+    TestEnvironment environment;
+    const auto storage = environment.storage_root() / id / "storage.json";
+    check(!std::filesystem::exists(storage), "input pulse fixture starts with fresh test storage");
+    // Give accidental automatic arming a usable baseline, rather than masking it
+    // behind an unavailable skater or focus in the fake game.
+    environment.local_skater = SkaterState{};
+    environment.fake.focus_now = {true, false, true};
+    environment.fake.telemetry = SkaterTelemetry{};
+    environment.fake.telemetry->skater = true;
+    environment.fake.telemetry->watch.valid = true;
+    environment.fake.telemetry->watch.state = 100;
+    environment.fake.telemetry->watch.ragdoll_known = true;
+    Host host(environment, Side::client);
+    host.apply({{id, directory, "tracked-input-pulse-inert-v1", {}}}); running(host, id, environment);
+    environment.panels_open = true; environment.shown = id;
+    ticks(host, environment, 60); running(host, id, environment);
+    const auto page = std::find_if(environment.panels.begin(), environment.panels.end(), [&](const auto& panel) {
+        return panel.plugin == id && panel.page && panel.title == "Lua Input Pulse";
+    });
+    check(page != environment.panels.end(), "actual tracked input pulse menu builds within Host text limits");
+    for (unsigned slot = 0; slot < 4; ++slot) {
+        check(std::any_of(page->widgets.begin(), page->widgets.end(), [&](const auto& widget) {
+            return widget.kind == plugin_ui::Widget::Kind::button && widget.id == "arm" + std::to_string(slot);
+        }), "actual fixture exposes each explicit slot Arm button");
+    }
+    check(std::any_of(page->widgets.begin(), page->widgets.end(), [](const auto& widget) {
+        return widget.kind == plugin_ui::Widget::Kind::info && widget.text == "Phase" && widget.help == "idle";
+    }), "actual fixture remains idle, rather than silently refusing its ID or arming");
+    check(!environment.fake.input_pulse_requests && !environment.fake.input_pulse_reads &&
+        !environment.fake.input_pulse_cancels && !environment.fake.input_pulse_acks &&
+        !environment.fake.native_action_requests && !environment.fake.native_action_reads &&
+        !environment.fake.native_action_cancels && !environment.fake.native_action_acks &&
+        !environment.fake.native_recovery_requests && !environment.fake.native_recovery_reads &&
+        !environment.fake.native_recovery_cancels && !environment.fake.native_recovery_acks,
+        "loading and 60 ticks/menu builds must not reach pulse/action/recovery before Arm");
+    check(!environment.fake.body_creates && !environment.fake.body_submissions && !environment.fake.batch_calls &&
+        environment.fake.owned.empty() && environment.fake.calls.empty() && environment.teleports.empty() && !environment.rays,
+        "unarmed actual fixture must not actuate bodies, other controls, or queries");
+    check(!std::filesystem::exists(storage), "unarmed actual fixture must not write a trial ledger");
+    std::cout << "tracked input pulse fixture inert-load: exact main/manifest, 60 ticks/menu, 0 native requests\n";
+}
 void the_private_input_trace_fixture_loads_inert_when_present() {
     for (const auto* version : {"v1", "v2"}) {
     const auto directory = std::filesystem::path(RESKATE_SOURCE_DIR) / "build" / "bmx" / (std::string("native-input-observer-trial-") + version) / "fixture";
@@ -5527,6 +5785,10 @@ int main() {
         run(native_recovery_keeps_unresolved_cleanup_quarantined_on_unload);
         run(input_trace_api_keeps_bounded_observations_opaque_and_vm_owned);
         run(input_trace_api_requires_permission_client_phase_and_start_budget);
+        run(input_pulse_api_keeps_report_receipts_opaque_and_owner_bound);
+        run(input_pulse_api_enforces_permission_client_phase_and_shared_budget);
+        run(input_pulse_unload_retains_debt_before_other_actor_cleanup);
+        run(the_tracked_input_pulse_fixture_loads_and_ticks_inert);
         run(the_private_input_trace_fixture_loads_inert_when_present);
         run(the_private_native_recovery_fixture_loads_inert_when_present);
         run(owned_body_batches_are_permissioned_opaque_and_transactional);

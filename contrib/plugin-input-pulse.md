@@ -1,9 +1,55 @@
 # Portable input report pulses
 
 `Engine/Game/Input/input_pulse.h` supplies a generic, portable policy for one owned XInput
-button report. It is currently **unconnected to runtime input**: there is no hook, OS call,
-Luau API, input lease or active gameplay integration. Loading ReSkate does not run it.
-The tests use constructed facts; they do not qualify the native source or an actor.
+button report. The permissioned client API requests this transport explicitly; loading a plugin
+or ReSkate does not itself request a pulse. Equipment mappings and gameplay success checks belong
+in Lua. Portable and Host tests use constructed facts, not native-consumption evidence.
+
+## Client API
+
+Declare `input.control` in `reskate-plugin.json`. Existing `input` permission alone does not grant
+pulse control. The four methods refuse on the dedicated/server side before touching the backend.
+
+```lua
+local h, why = reskate.input.pulse(0, "a")
+if h then
+    local receipt, read_why = reskate.input.pulse_state(h)
+    -- Cancel only stops future assertions; cleanup can still be pending.
+    local accepted, cancel_why = reskate.input.pulse_cancel(h)
+    -- Only a terminal record with no report debt and a released claim can be acknowledged.
+    local removed, ack_why = reskate.input.pulse_acknowledge(h)
+end
+```
+
+The first argument is an integral XInput user slot 0..3, an observed stream rather than a physical
+device identity. The second is one canonical name (`up`, `down`, `left`, `right`, `start`, `back`,
+`left_stick`, `right_stick`, `lb`, `rb`, `a`, `b`, `x`, `y`) or one valid numeric button bit.
+Fractions, coercible numeric strings, unknown/embedded-NUL names, reserved bits, combinations and
+extra arguments refuse. There are no equipment action names or axis/trigger writes.
+
+The opaque userdata is bound to its VM instance. A reload cannot use an older VM's handles.
+Starts share the VM's four-control-attempt fixed-window budget; the service additionally enforces
+four starts per rolling 1000 ms globally, one active/unresolved request and eight retained records.
+Read/cancel/ack are not starts. Unsupported/unobserved transports refuse; no fake connection or
+fallback to another input API is provided. Dropping a userdata is not a cleanup mechanism.
+This is state-buffer transport through outer GetState/GetStateEx/front wrappers; it synthesizes
+no GetKeystroke, DirectInput or raw-HID events. An observed state poll does not identify a gameplay consumer.
+
+`pulse_state` returns status/reason, `terminal`, requested user/button, and decimal strings for
+sequence, source epoch, times and 64-bit counters. It exposes `press_candidates`, `press_publications`,
+`neutral_publications`, `original_failures`, `contentions`, `report_debt`, `claim_released`,
+`actor_retired`, `orphaned` and `quarantined`. A known original error code is optional. Epochs label
+SDK observations, not GUIDs. Terminal status alone does not authorize acknowledgement.
+
+The publication scope is `process_outer_xinput_buffer`. SDK output-buffer publication does not
+prove the wrapper subsequently returned normally. Both `consumption` and `semantic_completion`
+remain `"unobserved"`, including after `released`. No receipt grants raw memory or an actor ticket.
+VM unload requests stop but retains outstanding report cleanup duty instead of releasing it as completed.
+The native adapter waits for its first claim-bound clock observation without resetting the one-second
+request deadline. A failed original poll ends the observed source epoch. If a possible press is still
+unresolved, a new epoch cannot discharge it and new requests remain blocked. Actor destruction is
+not used to excuse process-wide report debt. `contentions` does not classify failures in the provider's
+Try locks; a zero value is not proof that those providers never became unavailable.
 
 ## Caller contract
 
@@ -20,7 +66,7 @@ Revocation invalidates earlier generations. Copying/recreating the policy per ca
 another thread to publish outside that gate breaks the contract. `confirm` is an at-most-once
 caller operation; the caller must not submit an obsolete candidate after a newer owned poll.
 
-`Input.now_ms` must be a fresh post-original decision timestamp, with a further publication-time
+`Input.source_observed_ms` records the successful original report; `Input.now_ms` must be a fresh post-original decision timestamp, with a further publication-time
 deadline check in the eventual wrapper. The policy cannot bound OS scheduling latency. All native
 readiness facts need a real producer; changing booleans in a test is not that producer.
 
@@ -42,15 +88,20 @@ accounted for by the broker; full raw/returned equality alone does not establish
 
 No new assertion is planned when elapsed wall time reaches 200 ms, or when request age reaches
 1000 ms. These deadlines are checked on subsequent owned outer polls. With no such poll, phase
-does not advance by itself: a future broker must revoke on its client deadline. Neither expiry
+does not advance by itself: the runtime broker revokes on its client deadline. Neither expiry
 nor revocation invents an asynchronous release of a report already cached by the game.
 
 Once a press is possible, source loss, disconnection, unload and uncertain publication retain
-potential report-release debt. A successful unchanged, fresh, same-source/same-actor raw-neutral
+potential report-release debt. A successful unchanged, fresh, same-source raw-neutral
 publication, followed by `confirm(output, true)`, clears it. A failed neutral confirmation or stale
-generation does not. Fresh monotonic post-gap input may qualify cleanup despite focus/menu loss;
-it only forwards raw neutral. A new source epoch or actor cannot stand in for the previous one.
-Unknown retirement leaves debt unresolved and prevents acknowledgement/rearming.
+generation does not. Cleanup requires a fresh monotonic original-report timestamp, including after
+a poll gap and a qualified clean transport. It may qualify despite actor or native-clock loss because it only forwards
+the current raw neutral report, without dereferencing or resetting a native actor. Actor and native
+clock qualification remain mandatory for assertion. A new source epoch cannot stand in for the
+previous stream, and actor destruction cannot prove that a cached process-wide report was released.
+Focus/menu loss cannot authorize another assertion. A competing menu/capture/script filter defers
+cleanup even if its bytes happen to equal raw neutral. Unknown source retirement leaves debt
+unresolved and prevents acknowledgement/rearming.
 
 `press_candidate` and `release_candidate` are publication intentions. `confirm` records a caller's
 output-buffer publication, **not** normal wrapper return, native input consumption, an animation,
@@ -58,7 +109,7 @@ equipment switching, recovery or gameplay completion. Those need separate eviden
 
 Request admission reserves three generation and six revision advances. Revocation is idempotent;
 neither counter wraps. Exhausted counters refuse new requests. Optional initial counter values
-exist for boundary testing; an eventual service constructs the persistent policy once at zero.
+exist for boundary testing; the runtime service constructs the persistent policy once at zero.
 
 ## Packet continuity
 
@@ -67,7 +118,9 @@ GetStateEx and front wrapper. Finalize exactly once on every successful outer re
 permitted transformations, including after request retirement. Never reset it on VM unload or
 acknowledgement. The policy revision must likewise persist across requests.
 
-Before first assertion, raw packet numbers pass through. Afterwards the helper retains a private
+Before first assertion, the actual pre-finalizer returned packet passes through, preserving existing
+filter/XOR tags. The overload accepting separate raw and returned packet numbers tracks both.
+Afterwards the helper retains a private
 modulo-32-bit domain. Epoch, revision, raw packet, full raw pad or final pad changes advance it.
 This distinguishes adjacent changed publications, including same-raw-packet press/release,
 retirement, raw-counter collisions and wrap. It does not promise global uniqueness across 2^32
@@ -80,4 +133,10 @@ With `DINGOSDK_BUILD_PLUGIN_TESTS=ON`, build `dingosdk_input_pulse_tests` and ru
 The portable suite covers readiness failures, duplicate-clock warmup, the 200 ms boundary,
 deadline revocation, physical-field preservation, stale in-flight generations, uncertain
 publication, release debt, counter exhaustion and a complete same-packet report lifecycle.
-It neither invokes the game nor establishes that any report is consumed there.
+It neither invokes the game nor establishes that any report is consumed there. The actual Host
+suite also checks permission/side denial, strict arguments, opaque owner-bound handles, receipt
+validation and large integer serialization, shared request limits, and unload debt semantics.
+On Windows, `dingosdk_game_input_pulse_tests` links the actual runtime service against constructed
+private providers, exercising its real locks, claim cookies and output buffers. Those tests cover
+deterministic cancellation/unload interleavings, retained debt, source failures and the publication
+deadline. Their fake actor facts do not qualify native guards or demonstrate gameplay parity.

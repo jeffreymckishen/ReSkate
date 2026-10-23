@@ -21,7 +21,7 @@ void check(bool value, const char* expression, const char* test, int line) {
 t::Input input(std::uint64_t ms) {
     t::Input in;
     in.key = key;
-    in.now_ms = in.clock_observed_ms = ms;
+    in.now_ms = in.source_observed_ms = in.clock_observed_ms = ms;
     in.serial = ms;
     in.seconds = static_cast<double>(ms) / 1000;
     in.has_output = in.outer_game_poll = in.source_fresh = in.actor_current = true;
@@ -159,8 +159,17 @@ void admission_failures_revoke_without_rewriting() {
         if (fault == 2) in.seconds = .19;
         if (fault == 3) in.clock_observed_ms = 251;
         if (fault == 4) { in.serial = 201; in.seconds = .2; }
-        CHECK(!apply(pulse, in).press_candidate && pulse.release_debt());
-        CHECK(poll(pulse, 280).release_candidate);
+        const auto stopped = apply(pulse, in);
+        CHECK(!stopped.press_candidate);
+        if (fault == 0) {
+            CHECK(pulse.release_debt());
+            CHECK(poll(pulse, 280).release_candidate);
+        } else {
+            // Native-clock faults stop pressing, but do not invalidate this
+            // separately fresh original neutral report from the same source.
+            CHECK(stopped.release_candidate && !pulse.release_debt());
+        }
+        CHECK(pulse.phase() == t::Phase::revoked && !pulse.release_debt());
     }
     scenario = "";
     t::Pulse unloaded;
@@ -190,6 +199,7 @@ void admission_failures_revoke_without_rewriting() {
     begin_press(stale);
     auto old = input(250);
     old.clock_observed_ms = 149;
+    old.source_observed_ms = 149;
     CHECK(!apply(stale, old).press_candidate && stale.release_debt());
     auto failed = input(260);
     failed.original_result = 1167;
@@ -212,6 +222,41 @@ void admission_failures_revoke_without_rewriting() {
     unrelated.outer_game_poll = false;
     CHECK(!apply(routed, unrelated).press_candidate && routed.phase() == t::Phase::press);
     CHECK(poll(routed, 280).press_candidate);
+}
+
+void neutral_cleanup_does_not_reuse_native_actor_authority() {
+    t::Pulse pulse;
+    begin_press(pulse);
+    auto lost_actor = input(250);
+    lost_actor.actor_current = false;
+    lost_actor.serial = lost_actor.clock_observed_ms = 0;
+    lost_actor.seconds = std::numeric_limits<double>::quiet_NaN();
+    const auto release = apply(pulse, lost_actor);
+    CHECK(!release.press_candidate && release.release_candidate && release.pad == lost_actor.raw);
+    CHECK(pulse.phase() == t::Phase::revoked && !pulse.release_debt());
+
+    for (unsigned fault = 0; fault < 7; ++fault) {
+        t::Pulse guarded;
+        begin_press(guarded);
+        CHECK(guarded.revoke(key));
+        auto cleanup = input(250);
+        cleanup.actor_current = false;
+        cleanup.serial = cleanup.clock_observed_ms = 0;
+        switch (fault) {
+        case 0: ++cleanup.key.source_epoch; break;
+        case 1: cleanup.original_result = 1167; break;
+        case 2: cleanup.source_observed_ms = 149; break;
+        case 3: cleanup.source_observed_ms = 251; break;
+        case 4: cleanup.now_ms = 199; break;
+        case 5: cleanup.returned.buttons = 2; break;
+        case 6: cleanup.interference_clear = false; break;
+        }
+        CHECK(!apply(guarded, cleanup).release_candidate && guarded.release_debt());
+        cleanup = input(280);
+        cleanup.actor_current = false;
+        cleanup.serial = cleanup.clock_observed_ms = 0;
+        CHECK(apply(guarded, cleanup).release_candidate && !guarded.release_debt());
+    }
 }
 
 void packet_domain_survives_full_lifecycle() {
@@ -251,6 +296,15 @@ void packet_domain_survives_full_lifecycle() {
     CHECK(publish(400) == 19);
     CHECK(pulse.acknowledge(key));
     CHECK(publish(401) == 20);
+
+    t::PacketContinuity filtered;
+    constexpr std::uint32_t tag = 0x80000000;
+    CHECK(filtered.translate(1, 0, 7, 7 ^ tag, t::Pad{}, t::Pad{}, false) == (7 ^ tag));
+    CHECK(filtered.translate(1, 0, 7, 7, t::Pad{}, t::Pad{}, false) == 7);
+    CHECK(filtered.translate(1, 1, 7, 7, t::Pad{}, pressed, true) == 8);
+    CHECK(filtered.translate(1, 1, 7, 7 ^ tag, t::Pad{}, pressed, false) == 9);
+    CHECK(filtered.translate(1, 1, 7 ^ tag, 7 ^ tag, t::Pad{}, pressed, false) == 10);
+    CHECK(filtered.translate(1, 2, 7 ^ tag, 7 ^ tag, t::Pad{}, t::Pad{}, false) == 11);
 }
 
 void publication_confirmation_and_counter_exhaustion() {
@@ -301,6 +355,7 @@ int main() {
     repeated_native_sample_cannot_launch();
     physical_inputs_are_preserved();
     admission_failures_revoke_without_rewriting();
+    neutral_cleanup_does_not_reuse_native_actor_authority();
     packet_domain_survives_full_lifecycle();
     publication_confirmation_and_counter_exhaustion();
     std::cout << "input_pulse checks=" << checks << " native_actions=0\n";

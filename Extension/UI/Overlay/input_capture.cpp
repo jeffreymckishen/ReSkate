@@ -3,6 +3,7 @@
 #include "input_capture.h"
 #include "held_input.h"
 #include "scripted_pad.h"
+#include "Extension/Skater/native_input_pulse.h"
 #include "Extension/Throwdowns/throwdown_kit.h"
 #include "Engine/Game/Input/playstation_report.h"
 #include "Engine/Game/Input/bmx_input_sample.h"
@@ -739,6 +740,13 @@ bool bmx_private_pad_reserved() noexcept {
         private_bmx_native_input_handoff_requested() || human_native_handoff_requested() ||
         private_board_input_bridge().requested.load(std::memory_order_acquire);
 }
+bool input_pulse_available() noexcept {
+    return !overlay_input_access && polled_capture() == input::BmxNativeCapture::none &&
+        !mode_hidden_buttons.load(std::memory_order_relaxed) &&
+        !mode_held_buttons.load(std::memory_order_relaxed) &&
+        !mode_input_capture_active() && !suppress_challenge_menu() &&
+        !bmx_private_pad_reserved() && !block_polled_input();
+}
 
 template<std::size_t I>
 DWORD WINAPI captured_front(DWORD user, XINPUT_STATE* output) {
@@ -747,18 +755,25 @@ DWORD WINAPI captured_front(DWORD user, XINPUT_STATE* output) {
         mode_hidden_buttons.load(std::memory_order_relaxed) |
         (suppress_challenge_menu()?XINPUT_GAMEPAD_START:0));
     const bool outer = overlay_input_access == 0;
+    native_input_pulse::Poll pulse_poll;
+    native_input_pulse::begin(outer, user, pulse_poll);
     note_prompt_read(prompt_xinput);
     DWORD result;
     { // It may go on to XInput's own entry point, which is hooked as well.
         OverlayInputAccess access;
         result = original<DWORD(WINAPI*)(DWORD, XINPUT_STATE*)>(input_hooks().xinput_front[I])(user, output);
     }
+    const auto original_ms = GetTickCount64();
     const auto raw_pad=result==ERROR_SUCCESS&&output?output->Gamepad:XINPUT_GAMEPAD{};
     const auto raw_packet=result==ERROR_SUCCESS&&output?output->dwPacketNumber:0;
     note_private_bmx_original_xinput(user,result,output);
     note_human_native_original(outer,user,result,output);
     // Character-room scripts cannot replace the physical source of an owned BMX/handoff poll.
-    if (outer && output && !bmx_private_pad_reserved() && scripted_pad(user,*output)) return ERROR_SUCCESS;
+    if (outer && output && !bmx_private_pad_reserved() && scripted_pad(user,*output)) {
+        native_input_pulse::finish(pulse_poll, outer, user, result, original_ms, raw_packet, raw_pad,
+            ERROR_SUCCESS, output, false);
+        return ERROR_SUCCESS;
+    }
     if (result == ERROR_SUCCESS && output && capture!=input::BmxNativeCapture::none) {
         if(capture==input::BmxNativeCapture::interaction)filter_pad(outer,user,output);
         input::bmx_filter_native_pad(output->Gamepad,capture);
@@ -776,6 +791,8 @@ DWORD WINAPI captured_front(DWORD user, XINPUT_STATE* output) {
         apply_private_bmx_native_input_handoff(outer,user,raw_packet,raw_pad,output);
         apply_human_native_handoff(outer,user,raw_packet,raw_pad,output);
     }
+    native_input_pulse::finish(pulse_poll, outer, user, result, original_ms, raw_packet, raw_pad,
+        result, output, input_pulse_available());
     return result;
 }
 void keep_xinput_capture_first() {
@@ -1205,6 +1222,8 @@ DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
     const auto& hook = Extended ? input_hooks().xinput_extended[I] : input_hooks().xinput_state[I];
     const auto capture = polled_capture();
     const bool outer = overlay_input_access == 0;
+    native_input_pulse::Poll pulse_poll;
+    native_input_pulse::begin(outer, user, pulse_poll);
     note_prompt_read(prompt_xinput);
     const auto hidden = overlay_input_access ? std::uint16_t{} : static_cast<std::uint16_t>(
         mode_hidden_buttons.load(std::memory_order_relaxed) |
@@ -1214,12 +1233,17 @@ DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
         OverlayInputAccess access;
         result = original<DWORD(WINAPI*)(DWORD, XINPUT_STATE*)>(hook)(user, output);
     }
+    const auto original_ms = GetTickCount64();
     const auto raw_pad=result==ERROR_SUCCESS&&output?output->Gamepad:XINPUT_GAMEPAD{};
     const auto raw_packet=result==ERROR_SUCCESS&&output?output->dwPacketNumber:0;
     note_private_bmx_original_xinput(user,result,output);
     note_human_native_original(outer,user,result,output);
     // Character-room scripts cannot replace the physical source of an owned BMX/handoff poll.
-    if (outer && output && !bmx_private_pad_reserved() && scripted_pad(user,*output)) return ERROR_SUCCESS;
+    if (outer && output && !bmx_private_pad_reserved() && scripted_pad(user,*output)) {
+        native_input_pulse::finish(pulse_poll, outer, user, result, original_ms, raw_packet, raw_pad,
+            ERROR_SUCCESS, output, false);
+        return ERROR_SUCCESS;
+    }
     if (result == ERROR_SUCCESS && output && capture!=input::BmxNativeCapture::none) {
         if(capture==input::BmxNativeCapture::interaction)filter_pad(outer,user,output);
         input::bmx_filter_native_pad(output->Gamepad,capture);
@@ -1238,6 +1262,8 @@ DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
         apply_private_bmx_native_input_handoff(outer,user,raw_packet,raw_pad,output);
         apply_human_native_handoff(outer,user,raw_packet,raw_pad,output);
     }
+    native_input_pulse::finish(pulse_poll, outer, user, result, original_ms, raw_packet, raw_pad,
+        result, output, input_pulse_available());
     return result;
 }
 template<std::size_t I>

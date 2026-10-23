@@ -41,6 +41,8 @@ std::string xinput_entry_owners();
 // there is nothing to do; called about once a second while a controller is being read.
 void keep_xinput_capture_first();
 bool install_input_capture();
+// Current competing capture/filter state for permissioned report publication.
+bool input_pulse_available() noexcept;
 // Explicit, once-per-process XInput slot0 experiment; requires fresh passive
 // NativeOnly, deferred observer arming and the private flag present at install.
 bool queue_private_native_board_input() noexcept;

@@ -95,6 +95,8 @@ struct Actions {
     std::uint64_t equipment_owner{}; // protected by the No Bail lock
     actor_control_native::Actor claimed_actor;
     std::uint64_t claim_owner{}, claim_sequence{};
+    std::atomic<std::uint64_t> clock_enabled_ticket{};
+    std::uint64_t clock_started_ticket{}; // protected by the No Bail lock
     std::atomic<std::uint64_t> destruction_notice{};
     std::atomic<std::uintptr_t> watched_entity{};
     std::atomic<std::uint64_t> actor_destruction{};
@@ -125,6 +127,8 @@ struct Protection {
     std::atomic<NoBailNativeObserver> native_observer{};
     std::atomic<std::uint64_t> skeleton_observation_sequence{};
     std::array<std::atomic<NoBailStepObserver>, no_bail_step_listener_slots> listeners{};
+    SRWLOCK clock_lock = SRWLOCK_INIT;
+    actor_clock::Ledger<actor_control_native::Actor> claim_clock;
 };
 Protection& protection() { static auto* value = new Protection; return *value; }
 struct StateWatch {
@@ -510,6 +514,48 @@ bool published_skater(std::uintptr_t rig, NoBailSkater& skater, bool nonblocking
         return true;
     };
     return accept(published) || (GetTickCount64() < bmx.until && accept(bmx.owner));
+}
+using ClaimClockKey = actor_clock::Key<actor_control_native::Actor>;
+ClaimClockKey claim_clock_key(std::uint64_t owner, std::uint64_t sequence,
+    const actor_control_native::Actor& actor) noexcept {
+    return {owner, sequence, actor.ticket.generation, actor};
+}
+bool clock_owned_locked(std::uint64_t owner, std::uint64_t sequence,
+    const actor_control_native::Actor& actor, bool ready) noexcept {
+    const auto& a = protection().actions;
+    if (!owner || !sequence || !actor.ticket || a.claim_owner != owner || a.claim_sequence != sequence ||
+        a.claimed_actor != actor || !a.motion_claim.owns(owner, actor.ticket, actor_control::Domain::equipment)) return false;
+    if (!ready) return true;
+    const ActionBinding expected{{actor.client, actor.entity, actor.player, actor.player_handle,
+        actor.component, actor.core, actor.context, actor.selector, actor.causes, actor.rig},
+        actor.game_context, actor.world, actor.world_state, actor.world_generation, actor.lifetime_epoch, actor.actor_epoch};
+    return a.ready && a.world_generation == actor.world_generation && a.published == expected;
+}
+bool clock_lifetime(const actor_control_native::Actor& actor) noexcept {
+    std::uint64_t epoch{};
+    return multiplayer::entity_destruction_epoch(actor.base, epoch) && epoch == actor.lifetime_epoch &&
+        protection().actions.actor_destruction.load(std::memory_order_acquire) == actor.actor_epoch;
+}
+void feed_claim_clock(const NoBailSkater& source, float seconds) noexcept {
+    auto& p = protection(); auto& a = p.actions;
+    const auto enabled = a.clock_enabled_ticket.load(std::memory_order_acquire);
+    if (!enabled) return;
+    LastError error;
+    if (!TryAcquireSRWLockShared(&p.lock)) return;
+    const auto actor = a.claimed_actor;
+    const auto key = claim_clock_key(a.claim_owner, a.claim_sequence, actor);
+    const bool matching = enabled == actor.ticket.generation &&
+        a.clock_enabled_ticket.load(std::memory_order_acquire) == enabled &&
+        clock_owned_locked(key.owner, key.sequence, actor, true) &&
+        source.base == actor.base && source.entity == actor.entity && source.core == actor.core &&
+        source.context == actor.context && source.rig == actor.rig;
+    ReleaseSRWLockShared(&p.lock);
+    if (!matching || !clock_lifetime(actor) || !TryAcquireSRWLockExclusive(&p.clock_lock)) return;
+    actor_clock::Feed<actor_control_native::Actor> feed;
+    if (a.clock_enabled_ticket.load(std::memory_order_acquire) == enabled && clock_lifetime(actor) &&
+        p.claim_clock.begin(key, feed))
+        (void)p.claim_clock.publish(feed, seconds, GetTickCount64());
+    ReleaseSRWLockExclusive(&p.clock_lock);
 }
 bool cancel_request(std::uintptr_t context, std::uintptr_t offset, LONG mask) noexcept {
     const auto address = context + offset;
@@ -2522,14 +2568,20 @@ void skeleton_response(std::uintptr_t rig, float seconds, bool wipeout) {
         listeners[i] = protection().listeners[i].load(std::memory_order_acquire);
         any = any || listeners[i];
     }
+    const bool clock_enabled = protection().actions.clock_enabled_ticket.load(std::memory_order_acquire) != 0;
     if (any) {
         LastError error;
         NoBailSkater skater;
         if (published_skater(rig, skater)) {
+            if (clock_enabled) feed_claim_clock(skater, seconds);
             if (observer) observer(skater, seconds, wipeout);
             for (const auto listener : listeners)
                 if (listener) listener(skater, seconds, wipeout);
         }
+    } else if (clock_enabled) {
+        LastError error;
+        NoBailSkater skater;
+        if (published_skater(rig, skater, true)) feed_claim_clock(skater, seconds);
     }
     // Disabled seam adds no owner reads and preserves original dispatch.
     const auto phase = protection().skeleton_observer.load(std::memory_order_acquire);
@@ -3468,11 +3520,77 @@ bool retire(std::uint64_t owner, std::uint64_t sequence,
     const bool retired = owned_locked(owner, sequence, actor) &&
         a.motion_claim.revoke(owner, actor.ticket) && a.motion_claim.retire(owner, actor.ticket);
     if (retired) {
+        if (a.clock_enabled_ticket.load(std::memory_order_acquire) == actor.ticket.generation)
+            a.clock_enabled_ticket.store(0, std::memory_order_release);
         a.claimed_actor = {}; a.claim_owner = a.claim_sequence = 0;
         if (!a.ledger.active()) a.watched_entity.store(0, std::memory_order_release);
     }
     ReleaseSRWLockExclusive(&p.lock);
     return retired;
+}
+
+bool enable_clock(std::uint64_t owner, std::uint64_t sequence,
+    const Actor& actor, Reason& reason) noexcept {
+    LastError error; reason = Reason::unavailable;
+    auto& p = protection(); auto& a = p.actions;
+    if (!TryAcquireSRWLockShared(&p.lock)) return false;
+    const auto enabled = a.clock_enabled_ticket.load(std::memory_order_acquire);
+    const bool matching = GetCurrentThreadId() == a.client_thread && clock_owned_locked(owner, sequence, actor, true) &&
+        (!enabled || enabled == actor.ticket.generation) &&
+        (a.clock_started_ticket != actor.ticket.generation || enabled == actor.ticket.generation);
+    ReleaseSRWLockShared(&p.lock);
+    if (!matching || !clock_lifetime(actor) || !TryAcquireSRWLockExclusive(&p.clock_lock)) return false;
+    const auto key = claim_clock_key(owner, sequence, actor);
+    const bool initialized = p.claim_clock.enable(key);
+    ReleaseSRWLockExclusive(&p.clock_lock);
+    if (!initialized || !clock_lifetime(actor) || !TryAcquireSRWLockExclusive(&p.lock)) return false;
+    const auto current = a.clock_enabled_ticket.load(std::memory_order_acquire);
+    const bool unchanged = GetCurrentThreadId() == a.client_thread && clock_owned_locked(owner, sequence, actor, true) &&
+        (!current || current == actor.ticket.generation) &&
+        (a.clock_started_ticket != actor.ticket.generation || current == actor.ticket.generation) && clock_lifetime(actor);
+    if (unchanged) {
+        a.clock_started_ticket = actor.ticket.generation;
+        a.clock_enabled_ticket.store(actor.ticket.generation, std::memory_order_release);
+        reason = Reason::none;
+    }
+    ReleaseSRWLockExclusive(&p.lock);
+    return unchanged;
+}
+
+bool read_clock(std::uint64_t owner, std::uint64_t sequence,
+    const Actor& actor, Clock& value) noexcept {
+    LastError error; value = {};
+    auto& p = protection(); auto& a = p.actions;
+    if (!clock_lifetime(actor) || !TryAcquireSRWLockShared(&p.lock)) return false;
+    const bool matching = clock_owned_locked(owner, sequence, actor, true) &&
+        a.clock_enabled_ticket.load(std::memory_order_acquire) == actor.ticket.generation;
+    ReleaseSRWLockShared(&p.lock);
+    if (!matching || !TryAcquireSRWLockShared(&p.clock_lock)) return false;
+    Clock observed;
+    const bool sampled = p.claim_clock.read(claim_clock_key(owner, sequence, actor), GetTickCount64(), observed);
+    ReleaseSRWLockShared(&p.clock_lock);
+    if (!sampled || !clock_lifetime(actor) || !TryAcquireSRWLockShared(&p.lock)) return false;
+    const bool unchanged = clock_owned_locked(owner, sequence, actor, true) &&
+        a.clock_enabled_ticket.load(std::memory_order_acquire) == actor.ticket.generation;
+    ReleaseSRWLockShared(&p.lock);
+    if (!unchanged || !clock_lifetime(actor)) return false;
+    value = observed; return true;
+}
+
+bool disable_clock(std::uint64_t owner, std::uint64_t sequence,
+    const Actor& actor) noexcept {
+    LastError error;
+    auto& p = protection(); auto& a = p.actions;
+    if (!TryAcquireSRWLockExclusive(&p.lock)) return false;
+    const auto enabled = a.clock_enabled_ticket.load(std::memory_order_acquire);
+    const bool matching = clock_owned_locked(owner, sequence, actor, false) &&
+        a.clock_started_ticket == actor.ticket.generation && (!enabled || enabled == actor.ticket.generation);
+    if (matching) a.clock_enabled_ticket.store(0, std::memory_order_release);
+    ReleaseSRWLockExclusive(&p.lock);
+    if (!matching || !TryAcquireSRWLockExclusive(&p.clock_lock)) return false;
+    const bool disabled = p.claim_clock.disable(claim_clock_key(owner, sequence, actor));
+    ReleaseSRWLockExclusive(&p.clock_lock);
+    return disabled;
 }
 } // namespace dingosdk::actor_control_native
 

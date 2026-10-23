@@ -5,8 +5,8 @@
 #include <vector>
 
 // A scripted Xbox pad for player 0, read by the game through the XInput hook (PR 297, after PR 230 by
-// Norms): the character room's walk presses RB on it (Extension/World/character_room.cpp). Not for
-// plugins: they never press the game's buttons.
+// Norms): the character room's walk presses RB on it (Extension/World/character_room.cpp). Not
+// exposed to plugins: permissioned input pulses use the separate bounded report service.
 namespace dingosdk::overlay {
 struct PadStep {
     std::uint32_t tick{}; // game ticks from the start of the script

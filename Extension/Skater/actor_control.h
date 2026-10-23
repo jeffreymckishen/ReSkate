@@ -1,5 +1,6 @@
 #pragma once
 #include "Engine/Game/Skater/actor_control_policy.h"
+#include "Engine/Game/Skater/actor_clock.h"
 #include "Engine/Game/Skater/native_action_policy.h"
 #include <cstdint>
 
@@ -30,4 +31,12 @@ bool enter(std::uint64_t owner, std::uint64_t sequence,
 // observed exact-actor retirement can retire the shared claim.
 bool retire(std::uint64_t owner, std::uint64_t sequence,
     const Actor& actor, bool duty_resolved) noexcept;
+using Clock = actor_clock::Sample;
+// Opt-in observation only. No sample exists until a qualified native step.
+bool enable_clock(std::uint64_t owner, std::uint64_t sequence,
+    const Actor& actor, Reason& reason) noexcept;
+bool read_clock(std::uint64_t owner, std::uint64_t sequence,
+    const Actor& actor, Clock& value) noexcept;
+bool disable_clock(std::uint64_t owner, std::uint64_t sequence,
+    const Actor& actor) noexcept;
 } // namespace dingosdk::actor_control_native

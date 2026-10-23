@@ -1,9 +1,9 @@
 -- Explicit stock-input diagnostic. Equipment expectations below are Lua policy.
-local ID="LuaInputPulse_20261023_v2"
-local RUN="e39e9852-11b0-44b9-b374-e4f019cff258"
+local ID="LuaInputPulse_20261023_v3"
+local RUN="6020e988-7e83-4ef3-957a-f0c1d2672df9"
 local KEY="game_input_pulse_v1"
 local P,S=reskate.input,reskate.skater
-local ARM_MS,WATCH_MS,POST_MS,DWELL_MS,SAMPLE_MS=30000,8000,2500,600,200
+local ARM_MS,WATCH_MS,POST_MIN_MS,POST_MAX_MS,SUFFIX_MS,DWELL_MS,SAMPLE_MS=60000,8000,2500,6000,2500,600,200
 local phase,detail,used="idle","Choose one explicit slot, then close the menu.",0
 local ledger,trial,handle,last_now,last_sample,last_poll,last_persist,quiet_since,quiet_last,quiet_state,post_at
 local bound_sequence,cancel_sent,ack_sent
@@ -142,16 +142,36 @@ local function suffix(c,t)
         s.first_ms=nil;s.last_ms=nil;s.qualified_samples=0;s.seconds=0
     end
 end
+local function qualify_observation(c,t)
+    local r=trial.terminal_receipt
+    trial.post_observed_ms=t-post_at
+    trial.cleanup_qualified=r.terminal==true and r.report_debt==false and r.claim_released==true and
+        r.quarantined==false and trial.acknowledged==true
+    local publications=r.press_publications~="0" and r.neutral_publications~="0"
+    trial.normal_report_completion=trial.cleanup_qualified and publications and r.status=="released"
+    -- This is a sampled Lua state predicate. Keep the SDK's status/reason/mask
+    -- intact even if a revoked report precedes a qualified expected-state suffix.
+    trial.qualified_sampled_transition=trial.cleanup_qualified and publications and
+        trial.post_observed_ms>=POST_MIN_MS and trial.post_observed_ms<=POST_MAX_MS and standing(c,trial.expected_state) and
+        trial.observed_suffix.seconds*1000>=SUFFIX_MS and trial.observed_suffix.qualified_samples>=10 and
+        not trial.request_fall_observed and not trial.request_readiness_lost and
+        not trial.post_fall_observed and not trial.post_readiness_lost
+end
 local function arm(slot)
     if used>=4 or handle or phase~="idle" and phase~="stopped" then return end
     local t=now();if not t then phase,detail="refused","Invalid fresh clock" return end
     used+=1
-    ledger={schema=1,plugin=ID,run_id=RUN,fixture="explicit-input-pulse-v2",arm=used,samples={},
-        limits={arms=4,arm_ms=ARM_MS,request_watch_ms=WATCH_MS,post_observe_ms=POST_MS,
+    ledger={schema=1,plugin=ID,run_id=RUN,fixture="explicit-input-pulse-v3",arm=used,samples={},
+        limits={arms=4,arm_ms=ARM_MS,request_watch_ms=WATCH_MS,post_observe_min_ms=POST_MIN_MS,
+            post_observe_max_ms=POST_MAX_MS,expected_suffix_ms=SUFFIX_MS,expected_suffix_lua_frames=10,
             ready_dwell_ms=DWELL_MS,sample_interval_ms=SAMPLE_MS,samples=48,json_bytes=62000},
-        scope="SDK report publications and sampled Lua equipment expectations; no native consumption, global-step, physical-device, or semantic-transition proof."}
+        scope="SDK cleanup/report facts and sampled Lua equipment expectations are separate; no native consumption, global-step, physical-device, or causal semantic-transition proof.",
+        qualification_scope={cleanup_qualified="Terminal debt-free released claim, no quarantine, acknowledgement accepted",
+            normal_report_completion="Qualified cleanup, SDK status released, nonzero press and neutral publications",
+            qualified_sampled_transition="Qualified cleanup/publications plus bounded expected-state suffix; independent of SDK released/revoked status"}}
     trial={arm=used,slot=slot,armed_wall_ms=t,phase="armed",calls={request=0,read=0,cancel=0,acknowledge=0},
-        sample_observations=0,observed_suffix={samples=0,qualified_samples=0,seconds=0}}
+        sample_observations=0,cleanup_qualified=false,normal_report_completion=false,qualified_sampled_transition=false,
+        observed_suffix={samples=0,qualified_samples=0,seconds=0}}
     ledger.trial=trial
     phase,detail="armed","Close menu; wait for 600ms qualified stock baseline"
     ledger.phase=phase
@@ -179,9 +199,17 @@ reskate.on("tick",function()
         finish("Invalid/reversed clock; cancelled once, any cleanup duty retained",nil)
         return
     end
+    -- A delayed tick may deliver the stop after the observation deadline. Do
+    -- not read or append a new gameplay observation outside that window.
+    if phase=="observing" and t-post_at>POST_MAX_MS then
+        trial.post_observation_deadline_wall_ms=post_at+POST_MAX_MS
+        trial.post_deadline_delivered_wall_ms=t
+        finish("6s follow-up bound; sampled transition not qualified",t)
+        return
+    end
     local c=safe_context(t)
     if phase=="armed" then
-        if t-trial.armed_wall_ms>=ARM_MS then finish("30s arm deadline; no request",t) return end
+        if t-trial.armed_wall_ms>=ARM_MS then finish("60s arm deadline; no request",t) return end
         if not c.focus or c.focus.focused~=true then finish("Focus lost before request",t) return end
         if fallen(c) then finish("Fall observed before request",t) return end
         if not standing(c,nil) then quiet_since,quiet_last,quiet_state=nil,nil,nil return end
@@ -206,20 +234,25 @@ reskate.on("tick",function()
         suffix(c,t);sample(c,t)
         if fallen(c) then trial.post_fall_observed=true end
         if not common(c) then trial.post_readiness_lost=true end
-        if t-post_at>=POST_MS then
-            trial.post_observed_ms=t-post_at;trial.final_context=copy(c)
-            local good=trial.acknowledged==true and trial.terminal_receipt.status=="released" and
-                trial.terminal_receipt.press_publications~="0" and trial.terminal_receipt.neutral_publications~="0" and
-                standing(c,trial.expected_state) and trial.observed_suffix.seconds>=2.5 and
-                trial.observed_suffix.qualified_samples>=10 and not trial.post_fall_observed and not trial.post_readiness_lost
-            finish(good and "Released reports; expected Lua state observed after bounded follow-up" or
-                "Follow-up complete; requested transition not qualified",t)
+        qualify_observation(c,t)
+        trial.final_context=copy(c)
+        if trial.qualified_sampled_transition or t-post_at>=POST_MAX_MS then
+            local result="6s follow-up bound; sampled transition not qualified"
+            if trial.qualified_sampled_transition then
+                result=trial.normal_report_completion and "Normal report completion; expected sampled transition qualified" or
+                    "Expected sampled transition qualified; SDK report remains "..trial.terminal_receipt.status
+            end
+            finish(result,t)
         else persist(false,t) end
         return
     end
     local expired=t-trial.request_wall_ms>=WATCH_MS
-    if fallen(c) then if not cancel_once("Fall observed after request",t) then return end
-    elseif not common(c) then if not cancel_once("Focus/menu/gameplay/local readiness lost",t) then return end
+    if fallen(c) then
+        trial.request_fall_observed=true
+        if not cancel_once("Fall observed after request",t) then return end
+    elseif not common(c) then
+        trial.request_readiness_lost=true
+        if not cancel_once("Focus/menu/gameplay/local readiness lost",t) then return end
     elseif expired then if not cancel_once("8s request watchdog",t) then return end end
     if not last_poll or t-last_poll>=SAMPLE_MS or expired then
         last_poll=t
@@ -235,8 +268,11 @@ reskate.on("tick",function()
                 if trial.acknowledged then handle=nil end
             end
             post_at=t;phase,trial.phase,ledger.phase="observing","observing","observing"
-            detail="Terminal receipt saved; observing at least 2.5 wall seconds"
-            suffix(c,t);persist();return
+            detail="Terminal receipt saved; observing up to 6s for a 2.5s expected-state suffix"
+            if fallen(c) then trial.post_fall_observed=true end
+            if not common(c) then trial.post_readiness_lost=true end
+            trial.final_context=copy(c)
+            suffix(c,t);qualify_observation(c,t);persist();return
         end
     end
     if expired then finish("8s watchdog; last receipt and unresolved duty retained",t) else persist(false,t) end

@@ -394,7 +394,8 @@ struct FakeGame final : Game {
     }
     // The general services a game layer in Lua reads and drives (plugin_api_services.cpp).
     std::optional<SkaterTelemetry> telemetry;
-    std::optional<SkaterTelemetry> skater_telemetry(std::string_view) override { return telemetry; }
+    unsigned telemetry_reads{};
+    std::optional<SkaterTelemetry> skater_telemetry(std::string_view) override { ++telemetry_reads; return telemetry; }
     std::uint64_t world_id() override { return 77; }
     std::string world_map() override { return "test_map"; }
     std::string pad_flight(std::string_view plugin, bool on) override {
@@ -4374,7 +4375,7 @@ void the_tracked_input_pulse_fixture_loads_and_ticks_inert() {
     check(std::filesystem::is_regular_file(directory / manifest_file) &&
         std::filesystem::is_regular_file(directory / "plugin" / "main.lua"), "tracked input pulse fixture files are required");
     check(check_package_files(directory).empty(), "input pulse fixture is a source-only sandbox package");
-    constexpr const char* id = "LuaInputPulse_20261023_v2";
+    constexpr const char* id = "LuaInputPulse_20261023_v3";
     TestEnvironment environment;
     const auto storage = environment.storage_root() / id / "storage.json";
     check(!std::filesystem::exists(storage), "input pulse fixture starts with fresh test storage");
@@ -4388,7 +4389,7 @@ void the_tracked_input_pulse_fixture_loads_and_ticks_inert() {
     environment.fake.telemetry->watch.state = 100;
     environment.fake.telemetry->watch.ragdoll_known = true;
     Host host(environment, Side::client);
-    host.apply({{id, directory, "tracked-input-pulse-inert-v2", {}}}); running(host, id, environment);
+    host.apply({{id, directory, "tracked-input-pulse-inert-v3", {}}}); running(host, id, environment);
     environment.panels_open = true; environment.shown = id;
     ticks(host, environment, 60); running(host, id, environment);
     const auto page = std::find_if(environment.panels.begin(), environment.panels.end(), [&](const auto& panel) {
@@ -4415,6 +4416,111 @@ void the_tracked_input_pulse_fixture_loads_and_ticks_inert() {
         "unarmed actual fixture must not actuate bodies, other controls, or queries");
     check(!std::filesystem::exists(storage), "unarmed actual fixture must not write a trial ledger");
     std::cout << "tracked input pulse fixture inert-load: exact main/manifest, 60 ticks/menu, 0 native requests\n";
+}
+void the_tracked_input_pulse_fixture_bounds_and_separates_active_observations() {
+    using dingosdk::Json;
+    namespace p = game_input_pulse;
+    constexpr const char* id = "LuaInputPulse_20261023_v3";
+    const auto directory = std::filesystem::path(RESKATE_SOURCE_DIR) / "contrib" / "bmx-lab" / "input-pulse-trial";
+    const char* scenarios[] = {"late deadline", "terminal fall", "terminal readiness", "watching fall", "watching readiness", "clean revoked"};
+    for (unsigned scenario = 0; scenario < std::size(scenarios); ++scenario) {
+        const std::string why = std::string("tracked pulse ") + scenarios[scenario] + ": ";
+        TestEnvironment environment;
+        const auto storage_directory = environment.storage_root() / id;
+        std::filesystem::remove_all(storage_directory);
+        environment.local_skater = SkaterState{};
+        auto& game = environment.fake;
+        game.focus_now = {true, true, true};
+        game.telemetry = SkaterTelemetry{};
+        game.telemetry->skater = true;
+        auto& watch = game.telemetry->watch;
+        watch.valid = watch.ragdoll_known = true;
+        watch.state = 504;
+        Host host(environment, Side::client);
+        host.apply({{id, directory, "tracked-input-pulse-active-v3", {}}}); running(host, id, environment);
+        const auto step = [&](double at) {
+            const auto elapsed = at - environment.now;
+            check(elapsed >= 0, why + "test clock must be monotonic");
+            environment.now = at; host.tick(elapsed); running(host, id, environment);
+        };
+        environment.panels_open = true; environment.shown = id;
+        step(1000);
+        environment.actions = {plugin_ui::Action{id, "Lua Input Pulse", "arm0", false}};
+        step(1100);
+        check(game.input_pulse_requests == 0, why + "explicit menu Arm cannot request while menu is open");
+        environment.panels_open = false; game.focus_now.interface_open = false;
+        for (unsigned at = 1200; at <= 1800; at += 100) step(at);
+        check(game.input_pulse_requests == 1 && game.input_pulses.size() == 1, why + "actual fixture requests exactly once after its baseline");
+        auto& receipt = game.input_pulses.begin()->second.receipt;
+        receipt.status = p::Status::pressing; receipt.report_debt = true;
+        receipt.press_candidates = receipt.press_publications = 7;
+        if (scenario == 3) watch.ragdoll = true;
+        if (scenario == 4) game.focus_now.focused = false;
+        step(1900);
+        watch.ragdoll = false; game.focus_now.focused = true;
+        step(2000);
+        receipt.status = p::Status::revoked; receipt.reason = p::Reason::unavailable;
+        receipt.report_debt = receipt.quarantined = false; receipt.claim_released = true;
+        receipt.neutral_publications = 1;
+        receipt.first_rejection_mask = dingosdk::input_pulse::failure_bit(dingosdk::input_pulse::FailedCheck::actor) |
+            dingosdk::input_pulse::failure_bit(dingosdk::input_pulse::FailedCheck::native_clock);
+        receipt.first_rejection_stage = p::RejectionStage::core_plan;
+        watch.state = scenario == 0 ? 504 : 100;
+        if (scenario == 1) watch.ragdoll = true;
+        if (scenario == 2) game.focus_now.focused = false;
+        step(2100); // The real fixture saves this terminal frame before acknowledging.
+        check(game.input_pulse_acks == 1 && game.input_pulses.empty(), why + "clean terminal receipt is acknowledged once");
+        watch.ragdoll = false; game.focus_now.focused = true;
+        for (unsigned at = 2200; at <= 8000; at += 100) step(at);
+        if (scenario == 0) {
+            const auto reads = game.telemetry_reads;
+            step(8300); // 6200 ms after terminal, beyond the hard observation window.
+            check(game.telemetry_reads == reads, why + "late observing tick must stop before another telemetry read");
+        } else step(8100);
+        check(game.input_pulse_requests == 1 && !game.native_action_requests && !game.native_recovery_requests &&
+            !game.body_creates && !game.body_submissions && game.calls.empty() && environment.teleports.empty() && !environment.rays,
+            why + "actual fixture must not retry or activate another actuator before unload");
+        host.apply({}); // Flush the actual plugin storage after its bounded stop.
+        // Host unload always calls Game::release; this fake records its entity
+        // cleanup even when the plugin never owned an entity. Keep that single
+        // bookkeeping call separate from the fixture's pre-unload actuator check.
+        check(game.calls == std::vector<std::string>{std::string("entities clear ") + id} &&
+            game.released == std::vector<std::string>{id}, why + "unload records exactly the expected generic cleanup");
+        std::ifstream stored(storage_directory / "storage.json", std::ios::binary);
+        check(stored.good(), why + "actual fixture must persist its ledger");
+        const auto document = Json::parse(std::istreambuf_iterator<char>(stored), std::istreambuf_iterator<char>());
+        const auto& ledger = document.at("game_input_pulse_v1");
+        const auto& trial = ledger.at("trial");
+        check(ledger.at("phase").string() == "stopped" && trial.at("calls").at("request").get<unsigned>() == 1 &&
+            trial.at("calls").at("acknowledge").get<unsigned>() == 1 && trial.at("request").at("detail").string() == "accepted",
+            why + "classification must not add requests or rewrite acceptance");
+        check(trial.at("cleanup_qualified").get<bool>() && !trial.at("normal_report_completion").get<bool>() &&
+            trial.at("terminal_receipt").at("status").string() == "revoked" &&
+            trial.at("terminal_receipt").at("first_rejection_mask").get<unsigned>() == 1280,
+            why + "clean report debt and original revoked receipt remain separate facts");
+        if (scenario == 0) {
+            check(!trial.at("qualified_sampled_transition").get<bool>() &&
+                trial.at("post_observation_deadline_wall_ms").get<unsigned>() == 8100 &&
+                trial.at("post_deadline_delivered_wall_ms").get<unsigned>() == 8300 &&
+                trial.at("final_context").at("wall_ms").get<unsigned>() == 8000,
+                why + "late stop must retain the last in-window gameplay context");
+            for (const auto& row : ledger.at("samples"))
+                check(row.at("wall_ms").get<unsigned>() <= 8100, why + "samples cannot extend the hard window");
+        } else if (scenario < 5) {
+            const auto* failure = scenario == 1 ? "post_fall_observed" : scenario == 2 ? "post_readiness_lost" :
+                scenario == 3 ? "request_fall_observed" : "request_readiness_lost";
+            check(!trial.at("qualified_sampled_transition").get<bool>() &&
+                trial.at(failure).get<bool>() && trial.at("observed_suffix").at("seconds").get<double>() >= 2.5,
+                why + "failure before the standing suffix must not be erased by later good frames");
+        } else {
+            check(trial.at("qualified_sampled_transition").get<bool>() &&
+                trial.at("post_observed_ms").get<unsigned>() >= 2500 && trial.at("post_observed_ms").get<unsigned>() <= 6000 &&
+                trial.at("observed_suffix").at("seconds").get<double>() >= 2.5 &&
+                trial.at("observed_suffix").at("qualified_samples").get<unsigned>() >= 10,
+                why + "revoked report can independently precede a qualified sampled transition");
+        }
+    }
+    std::cout << "tracked input pulse active Host: six bounded classification cases, constructed receipts, native_actions=0\n";
 }
 void the_private_input_trace_fixture_loads_inert_when_present() {
     for (const auto* version : {"v1", "v2"}) {
@@ -5796,6 +5902,7 @@ int main() {
         run(input_pulse_api_enforces_permission_client_phase_and_shared_budget);
         run(input_pulse_unload_retains_debt_before_other_actor_cleanup);
         run(the_tracked_input_pulse_fixture_loads_and_ticks_inert);
+        run(the_tracked_input_pulse_fixture_bounds_and_separates_active_observations);
         run(the_private_input_trace_fixture_loads_inert_when_present);
         run(the_private_native_recovery_fixture_loads_inert_when_present);
         run(owned_body_batches_are_permissioned_opaque_and_transactional);

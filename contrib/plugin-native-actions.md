@@ -45,8 +45,9 @@ the table does not change the request. Status distinguishes:
 
 An offer is not proof that native code consumed a bit. The original selector
 candidate, final SDK candidate and later committed state are separate optional
-fields: `original_candidate`, `final_candidate` and `committed_state`. A normal
-board mount may select state 200 before reaching stable grounded state 100.
+fields: `original_candidate`, `final_candidate` and `committed_state`. A native
+board mount may select state 103 or 200 before reaching grounded state 100.
+Those intermediate candidates retain the request and do not complete it.
 On-foot completion requires committed 504 plus independently known false ragdoll
 and airborne flags. State 504 alone includes falls and does not prove walking.
 This slice recognizes board completion at grounded 100; it does not use a broad

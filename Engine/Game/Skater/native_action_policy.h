@@ -150,7 +150,7 @@ public:
         if (!restored) finish(e, Status::rejected, Reason::request_restore_failed, now);
         else if (original != final) finish(e, Status::rejected, Reason::selector_overridden, now);
         else if ((e.receipt.kind == Kind::on_foot && original != 504) ||
-                 (e.receipt.kind == Kind::board && original != 100 && original != 200))
+                 (e.receipt.kind == Kind::board && original != 100 && original != 103 && original != 200))
             finish(e, Status::rejected, Reason::native_refused, now);
         else e.receipt.status = Status::selected;
     }

@@ -58,16 +58,30 @@ void receipts() {
     require(ledger.acknowledge(7, handle) && !ledger.find(7, handle), "owner acknowledges terminal receipt");
     require(!ledger.acknowledge(7, handle), "duplicate acknowledgement denied");
 
-    require(ledger.enqueue(7, a::Kind::board, binding, walking, 120, handle, reason), "reverse enqueue");
-    entry = ledger.find(7, handle); require(Ledger::claim(*entry, 121), "reverse claim");
-    Ledger::offered(*entry, 121, 30); Ledger::selection(*entry, 200, 200, true, 122);
-    require(entry->receipt.status == a::Status::selected, "normal native mount candidate200 admitted");
-    auto mounting = board; mounting.value = 200;
-    Ledger::observe(*entry, mounting, 123, 31);
-    require(entry->receipt.status == a::Status::selected, "native200 is not grounded completion");
-    Ledger::observe(*entry, board, 124, 32);
-    require(entry->receipt.status == a::Status::completed, "mount completes only at later100");
-    require(ledger.acknowledge(7, handle), "reverse acknowledged");
+    for (const auto candidate : {100U, 103U, 200U}) {
+        require(ledger.enqueue(7, a::Kind::board, binding, walking, 120, handle, reason), "reverse enqueue");
+        entry = ledger.find(7, handle); require(Ledger::claim(*entry, 121), "reverse claim");
+        Ledger::offered(*entry, 121, 30); Ledger::selection(*entry, candidate, candidate, true, 122);
+        require(entry->receipt.status == a::Status::selected && entry->receipt.reason == a::Reason::none &&
+            entry->receipt.original_candidate == candidate && entry->receipt.final_candidate == candidate &&
+            !entry->receipt.committed_known && ledger.active() == entry,
+            candidate == 103 ? "native103 selection retains an active request without claiming completion" :
+                "native100/200 selection retains an active request without claiming completion");
+        require(!ledger.acknowledge(7, handle), "selected mount cannot release its receipt");
+        Ledger::observe(*entry, board, 123, 30);
+        require(entry->receipt.status == a::Status::selected && !entry->receipt.committed_known,
+                "even native100 needs a strictly later observation");
+        if (candidate != 100) {
+            auto mounting = board; mounting.value = candidate;
+            Ledger::observe(*entry, mounting, 124, 31);
+            require(entry->receipt.status == a::Status::selected && entry->receipt.committed_state == candidate &&
+                ledger.active() == entry, "native103/200 retain ownership while waiting for grounded100");
+        }
+        Ledger::observe(*entry, board, 125, 32);
+        require(entry->receipt.status == a::Status::completed && entry->receipt.committed_state == 100,
+                "mount completes only at later100");
+        require(ledger.acknowledge(7, handle), "reverse acknowledged");
+    }
 }
 void failures_and_lifetime() {
     for (const auto reason : {a::Reason::context_changed, a::Reason::native_lifetime_changed,

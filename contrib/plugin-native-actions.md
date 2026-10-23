@@ -225,4 +225,18 @@ or handle was admitted. That reason did not distinguish an unreadable equipment
 word from nonzero equipment bits. Recovery no longer requires that unrelated
 equipment-insertion preflight: it leaves those words untouched and retains its
 shared actor claim, legacy-request exclusion and fresh native GetUp predicate.
-This correction needs a fresh game trial; the refused trial proves no recovery.
+The refused trial proves no recovery.
+
+A fresh isolated trial on runtime `CC8F68CA`, built from source subsequently
+committed as `02473fc`, passed one SDK-induced lab fall recovery through the Lua
+API. Its sole request entered one true setter and one false setter on successive
+qualified native clocks,
+verified both values, then recorded 122 qualified standing observations spanning
+2.0167 simulated seconds before one accepted acknowledgement. Those 122 samples
+are adapter bookkeeping; the fixture retained 11 receipt snapshots. The rider
+was visibly fallen before the request and upright after completion and diagnostic
+unload. Total request-to-finish time was about 3.84 wall seconds. The closed trial
+receipt is retained locally at
+`build/bmx/lua-native-recovery-native-guard-v1/closed-trial-receipt.json`.
+This establishes one staged recovery case, not ordinary-contact fall recovery,
+repeated switching, BMX body/rider integration or BMX Streets likeness.

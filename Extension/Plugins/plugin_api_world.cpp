@@ -574,7 +574,10 @@ struct WorldApi {
             luaL_error(L, "more than %d raycasts in one tick", plugin.limits_.raycasts_per_tick);
         // The native query also refuses segments below this squared length. Do not call it for
         // one, or label a nonexistent direction clear; still count this bounded API request.
-        const auto probe = distance_squared < 1e-10f ? Game::WorldProbe{} : game(plugin).world_probe(from, to);
+        const auto allowed = std::min(plugin.native_casts_.remaining(), body_query::casts_per_ray);
+        const auto counted = distance_squared < 1e-10f || !allowed ? Game::CountedProbe{} : game(plugin).world_probe_bounded(from, to, allowed);
+        auto probe = counted.probe;
+        if (!plugin.native_casts_.consume(counted.native_casts, allowed) || !counted.native_casts) probe = {};
         bool hit = probe.available && probe.hit && std::isfinite(probe.fraction) && probe.fraction >= 0 && probe.fraction <= 1;
         for (std::size_t i = 0; i < from.size() && hit; ++i) {
             const float expected = from[i] + (to[i] - from[i]) * probe.fraction;
@@ -605,7 +608,9 @@ struct WorldApi {
             luaL_error(L, "a ray is at most %d m long", static_cast<int>(plugin.limits_.raycast_metres));
         if (++plugin.raycasts_ > plugin.limits_.raycasts_per_tick)
             luaL_error(L, "more than %d raycasts in one tick", plugin.limits_.raycasts_per_tick);
-        const auto pick = game(plugin).world_pick(from, to);
+        const auto allowed = std::min(plugin.native_casts_.remaining(), body_query::casts_per_ray);
+        const auto counted = allowed ? game(plugin).world_pick_bounded(from, to, allowed) : Game::CountedPick{};
+        const auto pick = plugin.native_casts_.consume(counted.native_casts, allowed) && counted.native_casts ? counted.pick : std::nullopt;
         if (!pick) {
             lua_pushnil(L);
             return 1;
@@ -1592,11 +1597,18 @@ struct WorldApi {
         // The world in the way: anything it hits more than 0.4 m before the player (their own
         // collision capsule, when players are solid, stands about that far out from their body).
         bool blocked = false;
-        if (hit && world)
-            if (const auto wall = plugin.services_.raycast(from, hit->position)) {
-                const float wx = (*wall)[0] - from[0], wy = (*wall)[1] - from[1], wz = (*wall)[2] - from[2];
-                blocked = std::sqrt(wx * wx + wy * wy + wz * wz) < hit->distance - 0.4f;
+        if (hit && world) {
+            const auto allowed = std::min(plugin.native_casts_.remaining(), body_query::casts_per_ray);
+            const auto counted = allowed ? plugin.services_.raycast_bounded(from, hit->position, allowed) : Game::CountedProbe{};
+            const auto& wall = counted.probe;
+            blocked = !plugin.native_casts_.consume(counted.native_casts, allowed) || !counted.native_casts || !wall.available;
+            if (!blocked && wall.hit) {
+                const body_query::Hit qualified{body_query::Status::hit, wall.position, wall.fraction};
+                const float wx = wall.position[0] - from[0], wy = wall.position[1] - from[1], wz = wall.position[2] - from[2];
+                blocked = !body_query::consistent({from, hit->position}, qualified) ||
+                    std::sqrt(wx * wx + wy * wy + wz * wz) < hit->distance - 0.4f;
             }
+        }
         if (!hit || blocked) {
             lua_pushnil(L);
             return 1;

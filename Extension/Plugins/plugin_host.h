@@ -35,6 +35,7 @@ public:
     virtual std::optional<SkaterState> skater() { return std::nullopt; }
     virtual Teleport teleport(std::string_view /*plugin*/, const Vec3&, float) { return Teleport::unavailable; }
     virtual std::optional<Vec3> raycast(const Vec3&, const Vec3&) { return std::nullopt; }
+    virtual Game::CountedProbe raycast_bounded(const Vec3&, const Vec3&, unsigned) { return {}; }
     virtual std::optional<ScoreState> score() { return std::nullopt; }
     virtual void toast(std::string_view /*plugin*/, LogLevel, std::string_view) {}
     virtual bool ui_sound(std::string_view) { return false; }
@@ -130,6 +131,9 @@ private:
         return environment_.teleport(plugin, position, heading);
     }
     std::optional<Vec3> raycast(const Vec3& from, const Vec3& to) override { return environment_.raycast(from, to); }
+    Game::CountedProbe raycast_bounded(const Vec3& from, const Vec3& to, unsigned allowed) override {
+        return environment_.raycast_bounded(from, to, allowed);
+    }
     std::optional<ScoreState> score() override { return environment_.score(); }
     void toast(std::string_view plugin, LogLevel level, std::string_view text) override { environment_.toast(plugin, level, text); }
     bool ui_sound(std::string_view name) override { return environment_.ui_sound(name); }

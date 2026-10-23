@@ -612,7 +612,13 @@ struct ApiFunctions {
             luaL_error(L, "a ray is at most %d m long", static_cast<int>(plugin.limits_.raycast_metres));
         if (++plugin.raycasts_ > plugin.limits_.raycasts_per_tick)
             luaL_error(L, "more than %d raycasts in one tick", plugin.limits_.raycasts_per_tick);
-        if (const auto hit = plugin.services_.raycast(from, to)) push_position(L, *hit);
+        const auto allowed = std::min(plugin.native_casts_.remaining(), body_query::casts_per_ray);
+        const auto counted = allowed ? plugin.services_.raycast_bounded(from, to, allowed) : Game::CountedProbe{};
+        const bool accounted = plugin.native_casts_.consume(counted.native_casts, allowed);
+        const auto& hit = counted.probe;
+        const body_query::Hit qualified{body_query::Status::hit, hit.position, hit.fraction};
+        if (accounted && counted.native_casts && hit.available && hit.hit && body_query::consistent({from, to}, qualified))
+            push_position(L, hit.position);
         else lua_pushnil(L);
         return 1;
     }

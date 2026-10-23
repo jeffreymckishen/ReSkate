@@ -210,7 +210,10 @@ void log_plugin_object_ids(std::uint64_t raw, std::uint64_t root) {
     logging::log(logging::Level::info, logging::Channel::level, "World pick: the hit's ids {:#x} (body) and {:#x} (root) are in none of {} plugin objects.", raw,
                  root, entities.size());
 }
-std::optional<WorldPick> local_world_pick(const std::array<float, 3> &from, const std::array<float, 3> &to) {
+std::optional<WorldPick> local_world_pick(const std::array<float, 3> &from, const std::array<float, 3> &to,
+                                         unsigned maximum_casts, unsigned* native_casts) {
+    if (native_casts) *native_casts = 0;
+    if (!maximum_casts || maximum_casts > 2) return std::nullopt;
     std::lock_guard lock(local_runtime().native_mutex);
     auto &r = placements_runtime();
     auto &e = editor_state();
@@ -222,11 +225,12 @@ std::optional<WorldPick> local_world_pick(const std::array<float, 3> &from, cons
     if (!context[0]) return std::nullopt;
     const auto world = e.surface_api.world(context[0]);
     if (!world) return std::nullopt;
-    std::uint64_t root{};
-    const auto hit = editor::cast_surface(e.surface_api, world, from, to, &any_root, {}, &root);
-    if (!hit) return std::nullopt;
+    const auto counted = editor::cast_surface_probe_bounded(e.surface_api, world, from, to, maximum_casts, {}, &any_root);
+    if (native_casts) *native_casts = counted.native_casts;
+    if (!counted.surface.available || !counted.surface.hit) return std::nullopt;
+    const auto root = counted.surface.entity;
     WorldPick pick;
-    pick.at = *hit;
+    pick.at = counted.surface.position;
     pick.entity = root;
     static std::atomic<unsigned> steps_logged{};
     if (steps_logged.fetch_add(1) < 8)

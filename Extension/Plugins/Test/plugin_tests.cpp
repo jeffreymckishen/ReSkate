@@ -27,6 +27,7 @@
 using namespace dingosdk::plugins;
 namespace plugin_ui = dingosdk::plugin_ui;
 namespace owned_body = dingosdk::owned_body;
+namespace body_query = dingosdk::body_query;
 namespace {
 void check(bool value, const std::string& message) { if (!value) throw std::runtime_error(message); }
 
@@ -40,6 +41,7 @@ struct FakeGame final : Game {
         owned_body::Handle handle{};
         owned_body::Definition definition{};
         owned_body::Sample sample{};
+        owned_body::Sample latest{};
         owned_body::Mailbox mailbox{};
         bool released{}, quarantined{};
     };
@@ -47,6 +49,11 @@ struct FakeGame final : Game {
     std::vector<std::uint64_t> body_releases;
     unsigned body_creates{}, body_submissions{};
     std::uint64_t body_command_sequence{};
+    unsigned query_cast_cost{1}, native_casts{}, batch_calls{}, batch_rays{};
+    bool batch_available{true}, batch_clear{}, batch_unqualified{}, batch_change_after{}, batch_bad_count{};
+    unsigned batch_drift_field{};
+    unsigned batch_failure_ray{std::numeric_limits<unsigned>::max()};
+    body_query::Request last_batch;
     std::string body_create(std::uint64_t owner, const owned_body::Definition& definition, owned_body::Handle& handle) override {
         if (!owned_body::valid(definition) || owned.size() >= owned_body::retained_capacity) return "definition or capacity";
         ++body_creates; handle = {body_creates, body_creates - 1};
@@ -61,7 +68,7 @@ struct FakeGame final : Game {
     }
     std::string body_read(std::uint64_t owner, const owned_body::Handle& h, owned_body::Sample& sample) override {
         auto* b = body_of(owner, h); if (!b || b->released || b->quarantined) return "owner or generation";
-        (void)b->mailbox.observe_successor(b->sample); sample = b->sample; return {};
+        b->latest = b->sample; (void)b->mailbox.observe_successor(b->sample); sample = b->sample; return {};
     }
     std::string body_submit(std::uint64_t owner, const owned_body::Handle& h, const owned_body::Command& command, std::uint64_t& sequence) override {
         sequence = 0;
@@ -70,9 +77,45 @@ struct FakeGame final : Game {
             !b->mailbox.submit(command, b->sample.epoch, 0, body_command_sequence + 1)) return "owner, generation or packet";
         sequence = ++body_command_sequence; ++body_submissions; return {};
     }
+    body_query::Result body_probe_batch(std::uint64_t owner, const owned_body::Handle& h, const body_query::Request& request, unsigned allowed) override {
+        ++batch_calls; last_batch = request;
+        auto* selected = body_of(owner, h);
+        unsigned fences{}, rays{};
+        const auto fence = [&] {
+            if (!selected || selected->released || selected->quarantined || !body_query::same_sample(selected->sample, request.observation) ||
+                !body_query::same_sample(selected->latest, request.observation) ||
+                (++fences > 1 && batch_change_after)) return false;
+            for (std::size_t i = 0; i < request.exclusions; ++i) {
+                const auto* other = body_of(owner, request.excluded[i]);
+                if (!other || other->released || other->quarantined || other->sample.epoch.world != request.observation.epoch.world) return false;
+            }
+            return true;
+        };
+        return body_query::execute(request, allowed, 1000, [&](const body_query::Ray& ray, unsigned permitted) {
+            ++batch_rays; const auto index = rays++;
+            if (!index && batch_drift_field) {
+                switch (batch_drift_field) {
+                case 1: selected->sample.position[0] += .001f; break;
+                case 2: selected->sample.velocity[1] += .001f; break;
+                case 3: selected->sample.angular_velocity[2] += .001f; break;
+                case 4: selected->sample.rotation[0] += .001f; break;
+                }
+            }
+            const auto cast_count = std::min(permitted, query_cast_cost); native_casts += cast_count;
+            body_query::Probe out; out.native_casts = batch_bad_count ? permitted + 1 : cast_count;
+            out.budget_exhausted = cast_count < query_cast_cost;
+            if (!batch_available || !cast_count || out.budget_exhausted || index == batch_failure_ray) return out;
+            out.hit.status = batch_clear ? body_query::Status::clear : body_query::Status::hit;
+            for (std::size_t i = 0; i < ray.from.size(); ++i) out.hit.position[i] = (ray.from[i] + ray.to[i]) * .5f;
+            out.hit.fraction = .5f; out.hit.body = batch_unqualified || batch_clear ? 0 : 1;
+            return out;
+        }, fence);
+    }
     std::string body_receipt(std::uint64_t owner, const owned_body::Handle& h, std::uint64_t selected, owned_body::Receipt& receipt) override {
         auto* b = body_of(owner, h); if (!b) return "owner or generation";
-        if (!b->released && !b->quarantined) (void)b->mailbox.observe_successor(b->sample);
+        if (!b->released && !b->quarantined && b->mailbox.needs_successor()) {
+            b->latest = b->sample; (void)b->mailbox.observe_successor(b->sample);
+        }
         if (!b->mailbox.find(selected, receipt)) return "receipt sequence unavailable";
         receipt.retained = b->released; receipt.quarantined = b->quarantined; return {};
     }
@@ -363,11 +406,23 @@ struct FakeGame final : Game {
         probe_to = to;
         return probe_result;
     }
+    CountedProbe world_probe_bounded(const Vec3& from, const Vec3& to, unsigned allowed) override {
+        if (!allowed) return {};
+        const auto cast_count = std::min(allowed, query_cast_cost); native_casts += cast_count;
+        const auto probe = world_probe(from, to);
+        return {cast_count && cast_count == query_cast_cost ? probe : WorldProbe{}, cast_count};
+    }
     std::optional<WorldPick> world_pick(const Vec3& from, const Vec3&) override {
         ++world_picks;
         if (from[1] > 50) return std::nullopt; // the sky: nothing met
         WorldPick pick{{1, 0, 2}, true, std::array<float, 16>{0, 0, -1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 3, 1}, "World/Props/TrashCan_01"};
         return pick;
+    }
+    CountedPick world_pick_bounded(const Vec3& from, const Vec3& to, unsigned allowed) override {
+        if (!allowed) return {};
+        const auto cast_count = std::min(allowed, query_cast_cost); native_casts += cast_count;
+        const auto pick = world_pick(from, to);
+        return {cast_count && cast_count == query_cast_cost ? pick : std::nullopt, cast_count};
     }
     void entity_clear(std::string_view plugin) override {
         std::erase_if(entities, [&](const auto& e) { return e.first.first == plugin; });
@@ -750,6 +805,7 @@ struct TestEnvironment final : Environment {
     bool teleport_forbidden{}, teleport_unavailable{};
     std::vector<std::pair<Vec3, float>> teleports;
     int rays{};
+    unsigned ray_cast_cost{1}, native_ray_casts{};
     std::optional<SkaterState> skater() override { return local_skater; }
     std::optional<ScoreState> score_now;
     std::optional<ScoreState> score() override { return score_now; }
@@ -809,6 +865,14 @@ struct TestEnvironment final : Environment {
         if ((from[1] > 0) == (to[1] > 0)) return std::nullopt;
         const float f = from[1] / (from[1] - to[1]);
         return Vec3{from[0] + (to[0] - from[0]) * f, 0, from[2] + (to[2] - from[2]) * f};
+    }
+    Game::CountedProbe raycast_bounded(const Vec3& from, const Vec3& to, unsigned allowed) override {
+        if (!allowed) return {};
+        const auto calls = std::min(allowed, ray_cast_cost); native_ray_casts += calls;
+        const auto hit = raycast(from, to);
+        if (!calls || calls != ray_cast_cost) return {{}, calls};
+        const float f = hit ? from[1] / (from[1] - to[1]) : 0;
+        return {{true, hit.has_value(), hit.value_or(Vec3{}), f}, calls};
     }
     bool logged(std::string_view part) const {
         return std::any_of(logs.begin(), logs.end(), [&](const auto& line) { return line.find(part) != std::string::npos; });
@@ -1044,7 +1108,7 @@ void native_body_permission_and_client_boundary_are_enforced() {
     TestEnvironment environment; Host host(environment, Side::client);
     host.apply({script("no-body-permission", R"(
         local P=reskate.world.physics
-        for _,name in {"create","read","submit","receipt","acknowledge","release"} do
+        for _,name in {"create","read","submit","receipt","acknowledge","release","probe_batch"} do
             local ok,why=pcall(P[name],{})
             assert(not ok and string.find(why,"world.physics"),name)
         end
@@ -1052,12 +1116,221 @@ void native_body_permission_and_client_boundary_are_enforced() {
     running(host, "no-body-permission", environment);
     check(environment.fake.body_creates == 0 && environment.fake.body_submissions == 0, "missing permission reached Game");
     TestEnvironment server_environment; Host server(server_environment, Side::server);
-    auto server_plugin = package("server-body", {{manifest_file, manifest(R"("world.physics")", "server")}, {"plugin/main.lua", R"(
+    auto server_plugin = package("server-body", {{manifest_file, manifest(R"("world.physics","world.raycast")", "server")}, {"plugin/main.lua", R"(
         local ok,why=pcall(reskate.world.physics.create,{})
+        assert(not ok and string.find(why,"client phase only"))
+        ok,why=pcall(reskate.world.physics.probe_batch,{},{},{})
         assert(not ok and string.find(why,"client phase only"))
     )"}});
     server.apply({server_plugin}); running(server, "server-body", server_environment);
     check(server_environment.fake.body_creates == 0, "server reached native body creation");
+}
+
+std::string batch_main(std::string body) {
+    return R"(
+        local P,v=reskate.world.physics,vector.create
+        local d={mass=12,inertia=v(2,3,4),position=v(0,2,0),rotation={0,0,0,1},capsules={{a=v(0,0,0),b=v(0,.5,0),radius=.1}}}
+        local h,other=assert(P.create(d)),assert(P.create(d))
+        local sample=assert(P.read(h))
+        local epoch=sample.epoch
+        local ray={from=v(0,2,0),to=v(0,-2,0)}
+        local function rays(n) local out={} for i=1,n do out[i]=ray end return out end
+        local function unavailable(out,reason)
+            assert(out.status=="unavailable" and out.reason==reason,tostring(out.reason))
+            for _,r in out.rays do assert(r.status=="unavailable" and not r.position and not r.fraction and not r.body and not r.motion) end
+        end
+    )" + body;
+}
+void owned_body_batches_are_permissioned_opaque_and_transactional() {
+    TestEnvironment environment; Host host(environment, Side::client);
+    host.apply({script("batch-no-ray", R"(
+        local ok,why=pcall(reskate.world.physics.probe_batch,{},{},{})
+        assert(not ok and why:find("world.raycast"))
+    )", R"("world.physics")"), script("batch-no-body", R"(
+        local ok,why=pcall(reskate.world.physics.probe_batch,{},{},{})
+        assert(not ok and why:find("world.physics"))
+    )", R"("world.raycast")"), script("body-batch", batch_main(R"(
+        local out=P.probe_batch(h,epoch,rays(2),{exclude_bodies={other,h},exclude_local_actor=true})
+        assert(out.status=="available" and out.native_casts==2 and #out.rays==2 and not out.reason)
+        local a,b=out.rays[1],out.rays[2]
+        assert(a.status=="hit" and a.position==v(0,0,0) and a.fraction==.5 and a.motion=="unknown")
+        assert(type(a.body)=="userdata" and getmetatable(a.body)=="locked" and a.body==b.body)
+        assert(not a.normal and not a.velocity and not a.surface_velocity and not a.feature and not a.world)
+        assert(not pcall(P.read,a.body) and not pcall(P.probe_batch,a.body,epoch,rays(1)),"hit identity is not an owned handle")
+        assert(not pcall(P.probe_batch,h,{},rays(1)) and not pcall(P.probe_batch,other,epoch,rays(1)),"epoch transplant")
+        local next=P.probe_batch(h,epoch,rays(1))
+        assert(next.status=="available" and a.body~=next.rays[1].body,"body equality has only batch scope")
+        assert(not pcall(P.probe_batch,h,epoch,{}) and not pcall(P.probe_batch,h,epoch,rays(33)),"batch bound")
+        assert(not pcall(P.probe_batch,h,epoch,{ray,raw_pointer=123}),"array keys")
+        assert(not pcall(P.probe_batch,h,epoch,{{from=ray.from,to=ray.to,normal=v(0,1,0)}}),"geometry policy input")
+        assert(not pcall(P.probe_batch,h,epoch,{{from=ray.from,to=ray.from}}),"zero ray")
+        assert(not pcall(P.probe_batch,h,epoch,{{from=ray.from,to=v(0/0,0,0)}}),"nonfinite ray")
+        assert(not pcall(P.probe_batch,h,epoch,rays(1),{exclude_bodies={123}}),"raw native exclusion")
+        assert(not pcall(P.probe_batch,h,epoch,rays(1),{exclude_bodies={[2]=other}}),"sparse exclusion")
+        assert(not pcall(P.probe_batch,h,epoch,rays(1),{exclude_local_actor=1}),"boolean actor switch")
+        assert(not pcall(P.probe_batch,h,epoch,rays(1),{native_world=1}),"no native world option")
+        assert(not pcall(P.probe_batch,h,epoch,rays(1),{["exclude_bodies"..string.char(0).."raw"]={}}),"NUL option name")
+        assert(not pcall(P.probe_batch,h,epoch,rays(1),{},{}),"extra arguments")
+        assert(P.submit(h,epoch,{force=v(0,20,0)}),"query did not consume command epoch")
+        local first=assert(P.receipt(h))
+        assert(P.probe_batch(h,epoch,rays(1)).status=="available")
+        local after=assert(P.receipt(h))
+        assert(after.sequence==first.sequence and after.outcome=="queued" and not after.successor,"query consumed pending packet")
+        reskate.console.command("batch-pending","",function()
+            assert(P.probe_batch(h,epoch,rays(1)).status=="available")
+        end)
+        reskate.console.command("batch-excluded","",function()
+            unavailable(P.probe_batch(h,epoch,rays(1),{exclude_bodies={other}}),"body_epoch_or_observation_changed")
+            assert(P.receipt(h).sequence==first.sequence and P.receipt(h).outcome=="queued")
+        end)
+        reskate.log("owned batch API verified")
+    )"), R"("world.physics","world.raycast","console")")});
+    running(host, "batch-no-ray", environment); running(host, "batch-no-body", environment); running(host, "body-batch", environment);
+    check(environment.logged("owned batch API verified") && environment.fake.batch_calls == 3, environment.all());
+    auto& game = environment.fake; const auto mailbox = game.owned.at(1).mailbox;
+    check(host.run_console("batch-pending"), "query while a packet is pending");
+    const auto& after = game.owned.at(1).mailbox;
+    check(after.pending && after.count == mailbox.count && after.sequence == mailbox.sequence && after.last_submitted == mailbox.last_submitted &&
+        after.command.epoch == mailbox.command.epoch && after.oldest().outcome == mailbox.oldest().outcome && !after.oldest().successor_available,
+        "read-only query changed command/receipt state");
+    game.owned.at(2).sample.epoch.world = 78;
+    const auto casts = game.native_casts; check(host.run_console("batch-excluded") && game.native_casts == casts, "foreign-world exclusion reached native query");
+    auto request = game.last_batch;
+    const auto owner = game.owned.at(1).owner;
+    auto refused = game.body_probe_batch(owner + 1, {1,0}, request, 64);
+    check(!refused.available && !refused.native_casts && game.native_casts == casts, "another VM adopted an owned exclusion/anchor");
+    refused = game.body_probe_batch(owner, {1,7}, request, 64);
+    check(!refused.available && !refused.native_casts && game.native_casts == casts, "stale handle generation/slot reached query");
+    Game portable;
+    check(!portable.body_probe_batch(1, {1,0}, {}, 64).available && !portable.world_probe_bounded({}, {}, 64).probe.available &&
+        !portable.world_probe_bounded({}, {}, 64).native_casts && !portable.world_pick_bounded({}, {}, 64).native_casts,
+        "portable backend fabricated collision or native calls");
+}
+void owned_body_batches_share_actual_and_logical_query_limits() {
+    TestEnvironment environment; Host host(environment, Side::client); auto& game = environment.fake;
+    game.body_list = {{9, {{1, {1, 0, 0}, {1, 2, 0}, .16f}}}};
+    game.probe_result = {true, false}; game.query_cast_cost = environment.ray_cast_cost = 2;
+    host.apply({script("batch-budget", batch_main(R"(
+        local from,to=v(0,1,0),v(10,1,0)
+        reskate.console.command("batch-mixed","",function()
+            for i=1,4 do assert(reskate.world.probe(from,to).status=="clear") end
+            for i=1,4 do assert(reskate.world.pick(from,to)) end
+            for i=1,4 do assert(not reskate.world.raycast(from,to)) end
+            assert(reskate.session.raycast(from,to))
+            local batch=P.probe_batch(h,epoch,rays(19))
+            assert(batch.status=="available" and batch.native_casts==38)
+            unavailable(P.probe_batch(h,epoch,rays(1)),"native_cast_budget_exhausted")
+            assert(reskate.world.probe(from,to).status=="unavailable" and not reskate.world.pick(from,to) and not reskate.world.raycast(from,to))
+            assert(not reskate.session.raycast(from,to),"unavailable wall query cannot admit a player hit")
+        end)
+        reskate.console.command("batch-zero","",function()
+            unavailable(P.probe_batch(h,epoch,rays(32)),"query_unavailable")
+            unavailable(P.probe_batch(h,epoch,rays(32)),"query_unavailable")
+            local ok,why=pcall(P.probe_batch,h,epoch,rays(1))
+            assert(not ok and why:find("more than 64 raycasts"),"each input ray spends logical budget")
+            assert(not pcall(reskate.world.probe,from,to) and not pcall(reskate.session.raycast,from,to,{world=false}))
+        end)
+        reskate.console.command("batch-partial","",function()
+            for i=1,30 do reskate.world.probe(from,to) end
+            reskate.world.raycast(from,to)
+            local batch=P.probe_batch(h,epoch,rays(2))
+            unavailable(batch,"native_cast_budget_exhausted")
+            assert(batch.native_casts==3 and batch.budget_exhausted,"last allowed cast is counted")
+        end)
+        reskate.console.command("batch-once","",function(args)
+            local batch=P.probe_batch(h,epoch,rays(2))
+            unavailable(batch,args[1])
+            if args[1]=="invalid_query_backend_result" then
+                assert(not batch.native_casts,"invalid backend count is not a measured count")
+                unavailable(P.probe_batch(h,epoch,rays(1)),"native_cast_budget_exhausted")
+            else assert(batch.native_casts==tonumber(args[2])) end
+        end)
+        reskate.console.command("batch-clear","",function()
+            local batch=P.probe_batch(h,epoch,rays(32))
+            assert(batch.status=="available" and batch.native_casts==64)
+            for _,r in batch.rays do assert(r.status=="clear" and not r.position and not r.body and not r.motion) end
+        end)
+        reskate.console.command("batch-unknown","",function()
+            local batch=P.probe_batch(h,epoch,rays(1))
+            assert(batch.status=="available" and batch.rays[1].status=="hit" and batch.rays[1].motion=="unknown" and not batch.rays[1].body)
+        end)
+        reskate.console.command("batch-expired","",function()
+            unavailable(P.probe_batch(h,epoch,rays(1)),"body_epoch_or_observation_changed")
+            assert(not P.submit(h,epoch,{}),"query must not relabel an expired epoch")
+        end)
+        reskate.console.command("batch-latest","",function(args)
+            local pending
+            if args[1]=="read" then
+                assert(P.read(h).serial==sample.serial,"fixture keeps listener epoch")
+            else
+                pending=assert(P.receipt(h))
+                assert(pending.outcome=="applied" and not pending.successor and pending.produced_serial==sample.serial,
+                    "receipt refresh occurs while waiting for a later successor")
+            end
+            local out=P.probe_batch(h,epoch,rays(2))
+            unavailable(out,"body_epoch_or_observation_changed")
+            assert(out.native_casts==0,"new latest cannot rebind the immutable old sample")
+            if pending then
+                local after=assert(P.receipt(h,pending.sequence))
+                assert(after.outcome=="applied" and not after.successor and after.produced_serial==pending.produced_serial)
+            end
+        end)
+    )"), R"("world.physics","world.raycast","session.skaters","console")")});
+    running(host, "batch-budget", environment);
+    check(host.run_console("batch-mixed") && game.native_casts + environment.native_ray_casts == 64 && game.batch_calls == 1,
+        "mixed existing APIs, session occlusion and batch escaped actual 64 calls\n" + environment.all());
+    ticks(host, environment, 1); game.query_cast_cost = 0;
+    auto before = game.batch_calls; auto casts = game.native_casts;
+    check(host.run_console("batch-zero") && game.batch_calls == before + 2 && game.native_casts == casts, "zero-call unavailable batches escaped logical cap\n" + environment.all());
+    ticks(host, environment, 1); game.query_cast_cost = 2; environment.ray_cast_cost = 1;
+    casts = game.native_casts + environment.native_ray_casts;
+    check(host.run_console("batch-partial") && game.native_casts + environment.native_ray_casts == casts + 64, "partial batch retry overspent cap\n" + environment.all());
+    ticks(host, environment, 1); game.batch_change_after = true;
+    check(host.run_console("batch-once body_epoch_or_observation_changed 4"), "post-query fence did not discard whole batch\n" + environment.all());
+    ticks(host, environment, 1); game.batch_change_after = false; game.batch_failure_ray = 1;
+    check(host.run_console("batch-once query_unavailable 4"), "partial unavailable geometry escaped\n" + environment.all());
+    ticks(host, environment, 1); game.batch_failure_ray = std::numeric_limits<unsigned>::max(); game.query_cast_cost = 3;
+    check(host.run_console("batch-once ray_cast_limit_exhausted 2"), "per-ray two-cast bound waived\n" + environment.all());
+    ticks(host, environment, 1); game.query_cast_cost = 2; game.batch_bad_count = true;
+    before = game.batch_calls;
+    check(host.run_console("batch-once invalid_query_backend_result 0") && game.batch_calls == before + 1, "malformed backend accounting did not close tick\n" + environment.all());
+    ticks(host, environment, 1); game.batch_bad_count = false; game.batch_clear = true;
+    check(host.run_console("batch-clear"), "all-clear full batch failed\n" + environment.all());
+    ticks(host, environment, 1); game.batch_clear = false; game.batch_unqualified = true;
+    check(host.run_console("batch-unknown"), "unknown BODY identity was fabricated\n" + environment.all());
+    const auto canonical = game.last_batch.observation;
+    auto& selected = game.owned.at(1);
+    const auto sequence = game.body_command_sequence;
+    for (unsigned field = 1; field <= 4; ++field) {
+        ticks(host, environment, 1); selected.sample = selected.latest = canonical; game.batch_drift_field = field;
+        check(host.run_console("batch-once body_epoch_or_observation_changed 4") && body_query::same_sample(selected.latest, canonical) &&
+            selected.sample.epoch == canonical.epoch && !selected.mailbox.pending && !selected.mailbox.count && game.body_command_sequence == sequence,
+            "same-epoch native pose/velocity drift escaped or query published its read-only observation\n" + environment.all());
+    }
+    game.batch_drift_field = 0;
+    ticks(host, environment, 1); selected.sample = selected.latest = canonical; selected.sample.velocity[0] = .001f; casts = game.native_casts;
+    check(host.run_console("batch-once body_epoch_or_observation_changed 0") && game.native_casts == casts && body_query::same_sample(selected.latest, canonical),
+        "pre-query native drift was relabeled as a canonical same-epoch sample\n" + environment.all());
+    for (const char* route : {"batch-latest read", "batch-latest receipt"}) {
+        ticks(host, environment, 1); selected.sample = selected.latest = canonical; selected.sample.position[2] += .001f; casts = game.native_casts;
+        const bool receipt = std::string_view(route).ends_with("receipt");
+        if (receipt) {
+            // Requested99 -> produced100 is applied but cannot be confirmed by another
+            // serial100 observation. Receipt must still reread native pose and replace latest.
+            owned_body::Command prior; prior.epoch = canonical.epoch; --prior.epoch.serial; prior.epoch.time -= prior.epoch.seconds;
+            owned_body::Command applied;
+            check(selected.mailbox.submit(prior, prior.epoch, 0, 1) && selected.mailbox.consume(canonical.epoch, 1, applied) &&
+                selected.mailbox.finish(true, true, true) && selected.mailbox.needs_successor(), "applied/unmeasured receipt setup");
+        }
+        check(host.run_console(route) && game.native_casts == casts && body_query::same_sample(selected.latest, selected.sample) &&
+            !body_query::same_sample(selected.latest, canonical) && selected.latest.epoch == canonical.epoch && selected.mailbox.count == (receipt ? 1u : 0u) &&
+            (!receipt || (selected.mailbox.oldest().outcome == owned_body::Outcome::applied && !selected.mailbox.oldest().successor_available)),
+            "same-epoch read/receipt latest replacement rebound an older immutable query token\n" + environment.all());
+    }
+    selected.sample = selected.latest = canonical;
+    ticks(host, environment, 1); game.body_producer_step(); casts = game.native_casts;
+    check(host.run_console("batch-expired") && game.native_casts == casts && game.body_submissions == 0, "expired query mutated command admission\n" + environment.all());
+    running(host, "batch-budget", environment);
 }
 
 void a_plugin_loads_ticks_runs_its_commands_and_unloads() {
@@ -4527,6 +4800,8 @@ int main() {
         run(plugins_pipeline_native_steps_and_select_owned_receipts);
         run(plugins_can_inspect_later_partial_failure_without_acknowledging_unmeasured_head);
         run(native_body_permission_and_client_boundary_are_enforced);
+        run(owned_body_batches_are_permissioned_opaque_and_transactional);
+        run(owned_body_batches_share_actual_and_logical_query_limits);
         run(a_plugin_loads_ticks_runs_its_commands_and_unloads);
         run(a_permission_must_be_declared);
         run(command_names_are_checked);

@@ -1,7 +1,7 @@
 #pragma once
 #include "plugin_wave.h"
 #include "Engine/Core/Json/json.h"
-#include "Engine/Game/World/owned_body.h"
+#include "Engine/Game/World/body_query.h"
 #include "Extension/AnimationStudio/anim_core.h"
 #include "Extension/Throwdowns/throwdown_kit.h"
 #include <array>
@@ -263,6 +263,7 @@ public:
     // only; typed handles/epochs are wrapped in opaque userdata by the permissioned API.
     virtual std::string body_create(std::uint64_t, const owned_body::Definition&, owned_body::Handle&) { return unavailable; }
     virtual std::string body_read(std::uint64_t, const owned_body::Handle&, owned_body::Sample&) { return unavailable; }
+    virtual body_query::Result body_probe_batch(std::uint64_t, const owned_body::Handle&, const body_query::Request&, unsigned) { return {}; }
     virtual std::string body_submit(std::uint64_t, const owned_body::Handle&, const owned_body::Command&, std::uint64_t&) { return unavailable; }
     virtual std::string body_receipt(std::uint64_t, const owned_body::Handle&, std::uint64_t, owned_body::Receipt&) { return unavailable; }
     virtual std::string body_acknowledge(std::uint64_t, const owned_body::Handle&, std::uint64_t) { return unavailable; }
@@ -319,6 +320,9 @@ public:
         float fraction{};
     };
     virtual WorldProbe world_probe(const Vec3& /*from*/, const Vec3& /*to*/) { return {}; }
+    struct CountedProbe { WorldProbe probe{}; unsigned native_casts{}; };
+    // No fallback to an uncounted adapter: an unavailable backend consumes zero native casts.
+    virtual CountedProbe world_probe_bounded(const Vec3&, const Vec3&, unsigned) { return {}; }
     // The world raycast and the object it meets (Extension/Objects/ParkEditor/park_editor_runtime.h,
     // local_world_pick): where; and the object's transform (rows right, up, forward with their
     // scale, then position) and blueprint, when known.
@@ -329,6 +333,8 @@ public:
         std::string blueprint;
     };
     virtual std::optional<WorldPick> world_pick(const Vec3& /*from*/, const Vec3& /*to*/) { return std::nullopt; }
+    struct CountedPick { std::optional<WorldPick> pick; unsigned native_casts{}; };
+    virtual CountedPick world_pick_bounded(const Vec3&, const Vec3&, unsigned) { return {}; }
     // kind "tod" (key: morning, noon, afternoon, evening, night, weatherday, weathernight, default),
     // "control" (key: fog, fog_distance, sky_brightness, clouds, wind_strength, wind_direction,
     // traffic, pedestrians; value a number, -1 the default) or "park" (key: a lot, value a layout).

@@ -44,7 +44,8 @@ struct WorldPick {
     std::optional<std::array<float, 12>> pose;
     std::string blueprint;
 };
-std::optional<WorldPick> local_world_pick(const std::array<float, 3> &from, const std::array<float, 3> &to);
+std::optional<WorldPick> local_world_pick(const std::array<float, 3> &from, const std::array<float, 3> &to,
+                                         unsigned maximum_casts = 2, unsigned* native_casts = nullptr);
 // Gives world_entities the physics world (its objects made not solid, and those standing on the floor).
 void register_world_physics() noexcept;
 struct WorldRayHit {

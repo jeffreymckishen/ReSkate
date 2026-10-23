@@ -146,6 +146,8 @@ public:
     virtual Teleport teleport(std::string_view plugin, const Vec3& position, float heading) = 0;
     // Where the line first meets the world's collision, or empty when it is clear (or not loaded).
     virtual std::optional<Vec3> raycast(const Vec3& from, const Vec3& to) = 0;
+    // Count includes failed native calls and exclusion retries. The allowance is a hard bound.
+    virtual Game::CountedProbe raycast_bounded(const Vec3&, const Vec3&, unsigned) { return {}; }
     // The score HUD now, or empty without one.
     virtual std::optional<ScoreState> score() = 0;
     virtual void toast(std::string_view plugin, LogLevel level, std::string_view text) = 0;
@@ -329,6 +331,8 @@ private:
     double log_second_{};
     int log_lines_{};
     int raycasts_{};                    // since the last tick
+    body_query::Budget native_casts_{}; // shared by every Lua world query, including retries
+    std::uint64_t body_query_sequence_{};
     std::optional<float> touch_reach_;
     std::map<std::uint64_t, Contact> contacts_;
     double teleport_second_{};

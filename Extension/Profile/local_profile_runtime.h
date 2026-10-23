@@ -120,6 +120,9 @@ struct BoundedLocalSurfaceProbe {
 };
 BoundedLocalSurfaceProbe probe_local_surface_bounded(const std::array<float,3>& from,const std::array<float,3>& to,
     unsigned maximum_casts,std::span<const std::array<std::uint64_t,2>> ignored_bodies={},std::uint64_t ignore_local_entity=0);
+// Internal only: resolve an independently qualified local actor through the picking root
+// contract. Callers must requalify their actor and compare this root after their query window.
+std::uint64_t local_surface_actor_root(std::uint64_t entity);
 // Small allowlisted progression commands, executed on the game update thread.
 bool set_local_progression(const std::vector<std::string>& arguments);
 // Small ReSkate-owned booleans saved beside the profile under a "ReSkate."

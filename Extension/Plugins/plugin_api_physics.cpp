@@ -4,6 +4,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <new>
 
 namespace dingosdk::plugins {
@@ -11,8 +12,17 @@ namespace {
 using namespace owned_body;
 constexpr char handle_type[] = "reskate.world.physics.body";
 constexpr char epoch_type[] = "reskate.world.physics.epoch";
+constexpr char hit_body_type[] = "reskate.world.physics.hit_body";
 struct BodyValue { std::uint64_t owner{}; Handle handle{}; };
-struct EpochValue { std::uint64_t owner{}; Handle handle{}; Epoch epoch{}; };
+struct EpochValue { std::uint64_t owner{}; Handle handle{}; Sample sample{}; };
+// Equality only inside one returned batch. This is not a usable owned-body handle,
+// native identity, feature identity, or claim about the body's motion.
+struct HitBodyValue { std::uint64_t owner{}, batch{}; std::uint32_t ordinal{}; };
+int hit_body_equal(lua_State* L) {
+    const auto& a = *static_cast<const HitBodyValue*>(luaL_checkudata(L, 1, hit_body_type));
+    const auto& b = *static_cast<const HitBodyValue*>(luaL_checkudata(L, 2, hit_body_type));
+    lua_pushboolean(L, a.owner == b.owner && a.batch == b.batch && a.ordinal == b.ordinal); return 1;
+}
 int fail(lua_State* L, const std::string& why) { lua_pushnil(L); lua_pushlstring(L, why.data(), why.size()); return 2; }
 int result(lua_State* L, const std::string& why) {
     lua_pushboolean(L, why.empty()); if (why.empty()) return 1;
@@ -21,9 +31,20 @@ int result(lua_State* L, const std::string& why) {
 void fields(lua_State* L, int at, std::initializer_list<const char*> names) {
     luaL_checktype(L, at, LUA_TTABLE); at = lua_absindex(L, at); lua_pushnil(L);
     while (lua_next(L, at)) {
-        const char* key = lua_type(L, -2) == LUA_TSTRING ? lua_tostring(L, -2) : nullptr;
-        bool found{}; if (key) for (const char* expected : names) found = found || std::strcmp(key, expected) == 0;
+        std::size_t size{};
+        const char* key = lua_type(L, -2) == LUA_TSTRING ? lua_tolstring(L, -2, &size) : nullptr;
+        bool found{}; if (key) for (const char* expected : names) found = found || std::string_view(key, size) == expected;
         if (!found) luaL_error(L, "unknown native body field");
+        lua_pop(L, 1);
+    }
+}
+void array_fields(lua_State* L, int at, std::size_t count) {
+    at = lua_absindex(L, at); lua_pushnil(L);
+    while (lua_next(L, at)) {
+        if (lua_type(L, -2) != LUA_TNUMBER) luaL_error(L, "ray batch lists have only sequential integer keys");
+        const double key = lua_tonumber(L, -2);
+        if (!std::isfinite(key) || key < 1 || key > static_cast<double>(count) || std::floor(key) != key)
+            luaL_error(L, "ray batch lists have only sequential integer keys");
         lua_pop(L, 1);
     }
 }
@@ -59,7 +80,7 @@ std::uint64_t sequence(lua_State* L, int at) {
 }
 void push_sample(lua_State* L, const BodyValue& b, const Sample& sample) {
     lua_createtable(L, 0, 9);
-    opaque(L, EpochValue{b.owner, b.handle, sample.epoch}, epoch_type); lua_setfield(L, -2, "epoch");
+    opaque(L, EpochValue{b.owner, b.handle, sample}, epoch_type); lua_setfield(L, -2, "epoch");
     text_number(L, sample.epoch.serial); lua_setfield(L, -2, "serial");
     lua_pushnumber(L, sample.epoch.time); lua_setfield(L, -2, "time");
     lua_pushnumber(L, sample.epoch.seconds); lua_setfield(L, -2, "seconds");
@@ -112,7 +133,7 @@ struct PhysicsApi {
         const auto& epoch = *static_cast<const EpochValue*>(luaL_checkudata(L, 2, epoch_type));
         if (epoch.owner != p.instance() || epoch.handle != b.handle) luaL_error(L, "body epoch belongs to another body or plugin instance");
         fields(L, 3, {"force", "torque", "impulse", "impulse_id"});
-        Command command; command.epoch = epoch.epoch; command.force = vec_field(L, 3, "force", true);
+        Command command; command.epoch = epoch.sample.epoch; command.force = vec_field(L, 3, "force", true);
         command.torque = vec_field(L, 3, "torque", true); command.impulse = vec_field(L, 3, "impulse", true);
         lua_getfield(L, 3, "impulse_id");
         if (!lua_isnil(L, -1)) {
@@ -126,6 +147,75 @@ struct PhysicsApi {
         if (!why.empty()) return result(L, why);
         if (!assigned) return result(L, "native body did not return a command sequence");
         lua_pushboolean(L, true); lua_pushnil(L); text_number(L, assigned); return 3;
+    }
+    static int probe_batch(lua_State* L) {
+        auto& p = plugin(L); need(L, p, "world.raycast", "reskate.world.physics.probe_batch");
+        if (lua_gettop(L) < 3 || lua_gettop(L) > 4) luaL_error(L, "probe_batch takes body, measured epoch, rays and optional exclusions");
+        const auto b = body(L, p, 1);
+        const auto& epoch = *static_cast<const EpochValue*>(luaL_checkudata(L, 2, epoch_type));
+        if (epoch.owner != p.instance() || epoch.handle != b.handle) luaL_error(L, "body epoch belongs to another body or plugin instance");
+        body_query::Request request; request.observation = epoch.sample;
+        luaL_checktype(L, 3, LUA_TTABLE); request.count = lua_objlen(L, 3);
+        if (!request.count || request.count > body_query::maximum_rays) luaL_error(L, "a ray batch has 1 to 32 rays");
+        array_fields(L, 3, request.count);
+        for (std::size_t i = 0; i < request.count; ++i) {
+            lua_rawgeti(L, 3, static_cast<int>(i + 1)); fields(L, -1, {"from", "to"});
+            const auto at = lua_absindex(L, -1); request.rays[i] = {vec_field(L, at, "from"), vec_field(L, at, "to")}; lua_pop(L, 1);
+        }
+        if (!lua_isnoneornil(L, 4)) {
+            fields(L, 4, {"exclude_bodies", "exclude_local_actor"});
+            lua_getfield(L, 4, "exclude_local_actor");
+            if (!lua_isnil(L, -1)) { luaL_checktype(L, -1, LUA_TBOOLEAN); request.exclude_local_actor = lua_toboolean(L, -1) != 0; }
+            lua_pop(L, 1); lua_getfield(L, 4, "exclude_bodies");
+            if (!lua_isnil(L, -1)) {
+                luaL_checktype(L, -1, LUA_TTABLE); request.exclusions = lua_objlen(L, -1);
+                if (request.exclusions > body_query::maximum_exclusions) luaL_error(L, "a ray batch excludes at most 8 additional owned bodies");
+                array_fields(L, -1, request.exclusions);
+                for (std::size_t i = 0; i < request.exclusions; ++i) {
+                    lua_rawgeti(L, -1, static_cast<int>(i + 1)); request.excluded[i] = body(L, p, -1).handle; lua_pop(L, 1);
+                }
+            }
+            lua_pop(L, 1);
+        }
+        const float distance_limit = p.limits_.raycast_metres < 1000 ? p.limits_.raycast_metres : 1000;
+        if (!body_query::valid(request, distance_limit)) luaL_error(L, "invalid ray batch: finite nonzero rays within the configured distance");
+        if (static_cast<std::int64_t>(p.raycasts_) + static_cast<std::int64_t>(request.count) > p.limits_.raycasts_per_tick)
+            luaL_error(L, "more than %d raycasts in one tick", p.limits_.raycasts_per_tick);
+        p.raycasts_ += static_cast<int>(request.count);
+        const auto allowed = p.native_casts_.remaining();
+        body_query::Result out;
+        if (!allowed) { out.failure = body_query::Failure::budget; out.budget_exhausted = true; }
+        else out = p.services_.game().body_probe_batch(p.instance(), b.handle, request, allowed);
+        const bool accounted = out.accounting_valid && p.native_casts_.consume(out.native_casts, allowed);
+        if (!accounted) {
+            p.native_casts_.poison(); out.available = false; out.failure = body_query::Failure::backend;
+        }
+        if (out.available) {
+            bool valid = out.count == request.count && out.failure == body_query::Failure::none &&
+                out.native_casts >= request.count && out.native_casts <= request.count * body_query::casts_per_ray;
+            for (std::size_t i = 0; i < request.count && valid; ++i) valid = body_query::consistent(request.rays[i], out.rays[i]) &&
+                out.rays[i].body <= request.count;
+            if (!valid) { out.available = false; out.failure = body_query::Failure::backend; }
+        }
+        if (p.body_query_sequence_ == std::numeric_limits<std::uint64_t>::max()) return fail(L, "ray batch identity sequence exhausted");
+        const auto batch = ++p.body_query_sequence_;
+        lua_createtable(L, 0, 5);
+        lua_pushstring(L, out.available ? "available" : "unavailable"); lua_setfield(L, -2, "status");
+        if (!out.available) { lua_pushstring(L, body_query::name(out.failure == body_query::Failure::none ? body_query::Failure::unavailable : out.failure)); lua_setfield(L, -2, "reason"); }
+        if (accounted) { lua_pushinteger(L, static_cast<int>(out.native_casts)); lua_setfield(L, -2, "native_casts"); }
+        lua_pushboolean(L, out.budget_exhausted); lua_setfield(L, -2, "budget_exhausted");
+        lua_createtable(L, static_cast<int>(request.count), 0);
+        for (std::size_t i = 0; i < request.count; ++i) {
+            const auto& hit = out.rays[i]; const bool present = out.available && hit.status == body_query::Status::hit;
+            lua_createtable(L, 0, 5); lua_pushstring(L, !out.available ? "unavailable" : present ? "hit" : "clear"); lua_setfield(L, -2, "status");
+            if (present) {
+                push_position(L, hit.position); lua_setfield(L, -2, "position"); lua_pushnumber(L, hit.fraction); lua_setfield(L, -2, "fraction");
+                lua_pushstring(L, "unknown"); lua_setfield(L, -2, "motion");
+                if (hit.body) { opaque(L, HitBodyValue{p.instance(), batch, hit.body}, hit_body_type); lua_setfield(L, -2, "body"); }
+            }
+            lua_rawseti(L, -2, static_cast<int>(i + 1));
+        }
+        lua_setfield(L, -2, "rays"); return 1;
     }
     static int receipt(lua_State* L) {
         auto& p = plugin(L); const auto b = body(L, p, 1); Receipt receipt;
@@ -155,9 +245,11 @@ struct PhysicsApi {
 };
 void install_physics_api(Plugin&, lua_State* L) {
     metatable(L, handle_type); metatable(L, epoch_type);
+    luaL_newmetatable(L, hit_body_type); lua_pushstring(L, "locked"); lua_setfield(L, -2, "__metatable");
+    lua_pushcfunction(L, hit_body_equal, "hit body equality"); lua_setfield(L, -2, "__eq"); lua_setreadonly(L, -1, true); lua_pop(L, 1);
     lua_getfield(L, -1, "world"); lua_setreadonly(L, -1, false);
     add_functions(L, "physics", {{"create", PhysicsApi::create}, {"read", PhysicsApi::read}, {"submit", PhysicsApi::submit},
-        {"receipt", PhysicsApi::receipt}, {"acknowledge", PhysicsApi::acknowledge}, {"release", PhysicsApi::release}});
+        {"receipt", PhysicsApi::receipt}, {"acknowledge", PhysicsApi::acknowledge}, {"release", PhysicsApi::release}, {"probe_batch", PhysicsApi::probe_batch}});
     lua_setreadonly(L, -1, true); lua_pop(L, 1);
 }
 } // namespace dingosdk::plugins

@@ -174,6 +174,9 @@ public:
     std::string body_receipt(std::uint64_t owner, const owned_body::Handle& h, std::uint64_t selected, owned_body::Receipt& r) override { return owned_bodies::receipt(owner, h, selected, r); }
     std::string body_acknowledge(std::uint64_t owner, const owned_body::Handle& h, std::uint64_t sequence) override { return owned_bodies::acknowledge(owner, h, sequence); }
     std::string body_release(std::uint64_t owner, const owned_body::Handle& h) override { return owned_bodies::release(owner, h); }
+    body_query::Result body_probe_batch(std::uint64_t owner, const owned_body::Handle& h, const body_query::Request& request, unsigned allowed) override {
+        return owned_bodies::probe_batch(owner, h, request, allowed);
+    }
     void body_release_all(std::uint64_t owner) override { owned_bodies::release_all(owner); }
 
     // ---- the local skater ----------------------------------------------------------------------
@@ -288,8 +291,24 @@ public:
         const auto probe = probe_local_surface(from, to);
         return {probe.available, probe.hit, probe.position, probe.fraction};
     }
+    CountedProbe world_probe_bounded(const Vec3& from, const Vec3& to, unsigned allowed) override {
+        if (!allowed) return {};
+        const auto counted = probe_local_surface_bounded(from, to, std::min(allowed, body_query::casts_per_ray));
+        const auto& p = counted.surface;
+        return {{p.available, p.hit, p.position, p.fraction}, counted.native_casts};
+    }
     std::optional<WorldPick> world_pick(const Vec3& from, const Vec3& to) override {
-        const auto pick = local_world_pick(from, to);
+        return convert_pick(local_world_pick(from, to));
+    }
+    CountedPick world_pick_bounded(const Vec3& from, const Vec3& to, unsigned allowed) override {
+        CountedPick out;
+        // Metadata may allocate after the cast. Even a failed conversion must return its calls.
+        try {
+            if (allowed) out.pick = convert_pick(local_world_pick(from, to, std::min(allowed, body_query::casts_per_ray), &out.native_casts));
+        } catch (...) { out.pick.reset(); }
+        return out;
+    }
+    static std::optional<WorldPick> convert_pick(const std::optional<dingosdk::WorldPick>& pick) {
         if (!pick) return std::nullopt;
         WorldPick out{pick->at, pick->entity != 0 || !pick->blueprint.empty(), std::nullopt, pick->blueprint};
         if (pick->pose) {

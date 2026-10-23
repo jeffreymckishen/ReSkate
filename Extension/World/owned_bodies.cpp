@@ -10,6 +10,7 @@
 #include "Engine/Game/Build/20260929/skater_state.h"
 #include "Extension/Multiplayer/Session/session.h"
 #include "Extension/Skater/no_bail.h"
+#include "Extension/Profile/local_profile_runtime.h"
 #include <Windows.h>
 #include <intrin.h>
 #include <algorithm>
@@ -429,7 +430,8 @@ bool ring(const Slot& s, std::uintptr_t offset, Ring& header, V4& value) noexcep
     for (float v : value) if (!std::isfinite(v) || std::abs(v) > 1000000) return false;
     return true;
 }
-bool sample(Slot& s, Sample& out) noexcept {
+// Native reads only. Queries use this path without publishing latest or observing receipts.
+bool observe(const Slot& s, Sample& out) noexcept {
     Epoch before{}; before.world = service.world_generation; before.body = s.handle.generation;
     if (!fresh(s) || !clock(s.anchor, before)) return false;
     const std::array<std::uintptr_t, 4> offsets{r::position_ring, r::rotation_ring, r::velocity_ring, r::spin_ring};
@@ -463,6 +465,10 @@ bool sample(Slot& s, Sample& out) noexcept {
     out.rotation = {values[1][1], values[1][2], values[1][3], values[1][0]};
     out.mass = 1.f / inverse;
     for (std::size_t i = 0; i < 3; ++i) out.inertia[i] = 1.f / (inverse * ratio[i]);
+    return true;
+}
+bool sample(Slot& s, Sample& out) noexcept {
+    if (!observe(s, out)) return false;
     s.latest = out;
     (void)s.mailbox.observe_successor(out);
     return true;
@@ -572,6 +578,83 @@ std::string read(std::uint64_t owner, const Handle& handle, Sample& out) noexcep
         if (!sample(*s, out)) return "body snapshot or native epoch changed; no sample published";
         return {};
     } catch (...) { return "native body observation failed closed"; }
+}
+body_query::Result probe_batch(std::uint64_t owner, const Handle& handle, const body_query::Request& request, unsigned allowance) noexcept {
+    LastError error;
+    body_query::Result failed; failed.count = request.count <= body_query::maximum_rays ? request.count : 0;
+    unsigned performed{};
+    try {
+        if (!body_query::valid(request, 1000)) { failed.failure = body_query::Failure::invalid; return failed; }
+        if (!eligible()) return failed;
+        Locked lock(service.lock);
+        const auto* selected = lookup(owner, handle);
+        const auto& canonical = request.observation; const auto& requested_epoch = canonical.epoch;
+        if (!selected || !selected->active || selected->retained || selected->quarantined || !fresh(*selected) ||
+            !body_query::same_sample(canonical, selected->latest) || requested_epoch.world != service.world_generation ||
+            requested_epoch.body != selected->handle.generation) {
+            failed.failure = body_query::Failure::observation_changed; return failed;
+        }
+        const auto& anchor = selected->anchor;
+        const auto generation = service.world_generation;
+        std::array<const Slot*, body_query::maximum_exclusions + 1> owners{};
+        std::array<std::array<std::uint64_t, 2>, body_query::maximum_exclusions + 1> excluded{};
+        std::size_t excluded_count = 1;
+        owners[0] = selected; std::memcpy(excluded[0].data(), &selected->body, sizeof(NativeHandle));
+        for (std::size_t i = 0; i < request.exclusions; ++i) {
+            const auto* other = lookup(owner, request.excluded[i]);
+            if (!other || !other->active || other->retained || other->quarantined || !fresh(*other) ||
+                !anchor.same(other->anchor)) { failed.failure = body_query::Failure::observation_changed; return failed; }
+            if (std::find(owners.begin(), owners.begin() + excluded_count, other) != owners.begin() + excluded_count) continue;
+            owners[excluded_count] = other; std::memcpy(excluded[excluded_count].data(), &other->body, sizeof(NativeHandle)); ++excluded_count;
+        }
+        const auto actor = request.exclude_local_actor ? local_surface_actor_root(anchor.entity) : 0;
+        if (request.exclude_local_actor && !actor) return failed;
+        std::array<NativeHandle, body_query::maximum_rays> identities{};
+        std::size_t identity_count{};
+        const auto qualified_body = [&](const NativeHandle& body) {
+            return body.world == anchor.world && allocated(anchor.state, body.index) &&
+                valid_handle(service.api.body_valid, body) && allocated(anchor.state, body.index);
+        };
+        const auto fence = [&] {
+            Anchor current; Epoch epoch{};
+            if (!eligible() || service.world_generation != generation || !capture(current) || !anchor.same(current) ||
+                !watched(anchor) || !watched(current) || !clock(current, epoch)) return false;
+            epoch.world = generation; epoch.body = selected->handle.generation;
+            if (epoch != requested_epoch || !body_query::same_sample(canonical, selected->latest)) return false;
+            for (std::size_t i = 0; i < excluded_count; ++i)
+                if (!owners[i]->active || owners[i]->retained || owners[i]->quarantined || !fresh(*owners[i])) return false;
+            if (request.exclude_local_actor && local_surface_actor_root(current.entity) != actor) return false;
+            for (std::size_t i = 0; i < identity_count; ++i) if (!qualified_body(identities[i])) return false;
+            Sample measured;
+            if (!observe(*selected, measured) || !body_query::same_sample(canonical, measured)) return false;
+            // This is the same listener observation window, not a mutex over native world motion.
+            Epoch after{}; after.world = generation; after.body = selected->handle.generation;
+            return anchor_current(anchor) && clock(anchor, after) && after == requested_epoch &&
+                body_query::same_sample(canonical, selected->latest);
+        };
+        const auto query = [&](const body_query::Ray& ray, unsigned permitted) {
+            body_query::Probe out;
+            const auto counted = probe_local_surface_bounded(ray.from, ray.to, permitted,
+                std::span<const std::array<std::uint64_t, 2>>(excluded.data(), excluded_count), actor);
+            performed += counted.native_casts; out.native_casts = counted.native_casts; out.budget_exhausted = counted.budget_exhausted;
+            const auto& hit = counted.surface;
+            if (!hit.available || hit.context != anchor.context || hit.world != anchor.world) return out;
+            out.hit.status = hit.hit ? body_query::Status::hit : body_query::Status::clear;
+            if (!hit.hit) return out;
+            out.hit.position = hit.position; out.hit.fraction = hit.fraction;
+            NativeHandle body; std::memcpy(&body, hit.hit_body.data(), sizeof(body));
+            if (qualified_body(body)) {
+                auto found = std::find(identities.begin(), identities.begin() + identity_count, body);
+                if (found == identities.begin() + identity_count && identity_count < identities.size()) identities[identity_count++] = body;
+                found = std::find(identities.begin(), identities.begin() + identity_count, body);
+                if (found != identities.begin() + identity_count) out.hit.body = static_cast<std::uint32_t>(found - identities.begin() + 1);
+            }
+            return out;
+        };
+        // observe() repeats native pose/velocity/mass reads; it never publishes latest,
+        // observes a successor, or consumes a mailbox/command operation.
+        return body_query::execute(request, allowance, 1000, query, fence);
+    } catch (...) { failed.native_casts = performed; return failed; }
 }
 std::string submit(std::uint64_t owner, const Handle& handle, const Command& command, std::uint64_t& sequence) noexcept {
     LastError error; sequence = 0;

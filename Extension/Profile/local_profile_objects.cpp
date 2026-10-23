@@ -193,6 +193,13 @@ LocalSurfaceProbe probe_local_surface(const std::array<float, 3>& from, const st
     result.excluded_bodies = cast.excluded_bodies;
     return result;
 }
+std::uint64_t local_surface_actor_root(std::uint64_t entity) {
+    std::lock_guard lock(local_runtime().native_mutex);
+    auto& r = placements_runtime();
+    if (!entity || !local_runtime().active || !r.resolve || !r.valid) return 0;
+    alignas(16) std::array<std::uint64_t, 2> root{};
+    return r.resolve(root.data(), entity, false) == root.data() && r.valid(root.data()) ? root[0] : 0;
+}
 BoundedLocalSurfaceProbe probe_local_surface_bounded(const std::array<float, 3>& from, const std::array<float, 3>& to,
     unsigned maximum_casts, std::span<const std::array<std::uint64_t, 2>> ignored_bodies, std::uint64_t ignore_local_entity) {
     BoundedLocalSurfaceProbe result;const auto began=std::chrono::steady_clock::now();

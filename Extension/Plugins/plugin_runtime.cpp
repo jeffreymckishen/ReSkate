@@ -19,6 +19,7 @@
 #include "Extension/Throwdowns/throwdown_kit.h"
 #include <Windows.h>
 #include <ShlObj.h>
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -91,6 +92,12 @@ public:
         return teleport_local_skater_heading(position, heading) ? Teleport::sent : Teleport::unavailable;
     }
     std::optional<Vec3> raycast(const Vec3& from, const Vec3& to) override { return local_surface_hit(from, to); }
+    Game::CountedProbe raycast_bounded(const Vec3& from, const Vec3& to, unsigned allowed) override {
+        if (!allowed) return {};
+        const auto counted = probe_local_surface_bounded(from, to, std::min(allowed, body_query::casts_per_ray));
+        const auto& p = counted.surface;
+        return {{p.available, p.hit, p.position, p.fraction}, counted.native_casts};
+    }
     std::optional<ScoreState> score() override { return score_now; }
     std::optional<ScoreState> score_now; // read each tick while a plugin wants tricks
     // ReSkate's notices in the top left, titled with the plugin's folder name.

@@ -69,12 +69,21 @@ replace the physical prototype; implemented contracts still require native proof
    now proves one 12kg capsule and one48Ns impulse/application/successor/park
    sequence after explicit clock warmup. A [second native diagnostic](native-pipeline-trial/README.md)
    completed 120 consecutive constant-force commands and measured acknowledgements.
+   A [varying-force diagnostic](native-phase-trial/README.md) independently
+   identified N+2 measured velocity visibility for commands requested at N and
+   applied at N+1; its internal consumption/publication cause remains unknown.
    Other compounds, whole-session control and cleanup of an active body during
    unload, world changes or partial failures remain unqualified in the game.
 2. **Contacts.** Return the actual hit point, normal, surface velocity when
    available, feature, ignored-owned-body status and world/step provenance.
    Existing raycasts do not expose enough information to implement wheel forces;
    a missing normal or velocity cannot be silently replaced by an invented one.
+   [Owned-body batches](../plugin-body-query.md) now implement complete-sample
+   fences, same-VM owned exclusions and shared actual-cast accounting. Their
+   first native query-plus-force attempt refused its first query with zero
+   reported casts and zero published packets, then accepted release. Native
+   query composition remains unqualified; the refusal category must be resolved
+   without removing actor exclusion or weakening observation checks.
 3. **Commands and receipts.** Queue finite bounded force, torque and one-shot
    impulse against an exact observed body epoch. Commit once in the supported
    native phase, then expose applied/rejected/expired and the actual successor.

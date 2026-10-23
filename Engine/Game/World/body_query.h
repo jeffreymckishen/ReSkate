@@ -11,7 +11,11 @@ inline constexpr unsigned native_cast_limit = 64, casts_per_ray = 2;
 inline constexpr std::size_t maximum_rays = 32, maximum_exclusions = owned_body::retained_capacity;
 struct Ray { Vec from{}, to{}; };
 enum class Status { unavailable, clear, hit };
-enum class Failure { none, invalid, unavailable, observation_changed, budget, ray_limit, backend };
+enum class Failure {
+    none, invalid, unavailable, observation_changed, budget, ray_limit, backend,
+    client_phase_unavailable, local_actor_exclusion_unavailable,
+    query_preconditions_unavailable, query_backend_exception
+};
 inline const char* name(Failure value) noexcept {
     switch (value) {
     case Failure::none: return "";
@@ -21,6 +25,10 @@ inline const char* name(Failure value) noexcept {
     case Failure::budget: return "native_cast_budget_exhausted";
     case Failure::ray_limit: return "ray_cast_limit_exhausted";
     case Failure::backend: return "invalid_query_backend_result";
+    case Failure::client_phase_unavailable: return "client_phase_unavailable";
+    case Failure::local_actor_exclusion_unavailable: return "local_actor_exclusion_unavailable";
+    case Failure::query_preconditions_unavailable: return "query_preconditions_unavailable";
+    case Failure::query_backend_exception: return "query_backend_exception";
     }
     return "query_unavailable";
 }
@@ -117,7 +125,8 @@ Result execute(const Request& request, unsigned allowance, float maximum_distanc
         }
         out.native_casts += probe.native_casts;
         if (probe.hit.status == Status::unavailable)
-            return finish_failure(probe.budget_exhausted ? (out.native_casts == allowance ? Failure::budget : Failure::ray_limit) : Failure::unavailable);
+            return finish_failure(probe.budget_exhausted ? (out.native_casts == allowance ? Failure::budget : Failure::ray_limit) :
+                out.native_casts ? Failure::unavailable : Failure::query_preconditions_unavailable);
         if (!probe.native_casts || !consistent(request.rays[i], probe.hit)) return finish_failure(Failure::backend);
         out.rays[i] = probe.hit;
     }

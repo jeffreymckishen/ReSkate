@@ -585,7 +585,7 @@ body_query::Result probe_batch(std::uint64_t owner, const Handle& handle, const 
     unsigned performed{};
     try {
         if (!body_query::valid(request, 1000)) { failed.failure = body_query::Failure::invalid; return failed; }
-        if (!eligible()) return failed;
+        if (!eligible()) { failed.failure = body_query::Failure::client_phase_unavailable; return failed; }
         Locked lock(service.lock);
         const auto* selected = lookup(owner, handle);
         const auto& canonical = request.observation; const auto& requested_epoch = canonical.epoch;
@@ -608,7 +608,7 @@ body_query::Result probe_batch(std::uint64_t owner, const Handle& handle, const 
             owners[excluded_count] = other; std::memcpy(excluded[excluded_count].data(), &other->body, sizeof(NativeHandle)); ++excluded_count;
         }
         const auto actor = request.exclude_local_actor ? local_surface_actor_root(anchor.entity) : 0;
-        if (request.exclude_local_actor && !actor) return failed;
+        if (request.exclude_local_actor && !actor) { failed.failure = body_query::Failure::local_actor_exclusion_unavailable; return failed; }
         std::array<NativeHandle, body_query::maximum_rays> identities{};
         std::size_t identity_count{};
         const auto qualified_body = [&](const NativeHandle& body) {
@@ -654,7 +654,10 @@ body_query::Result probe_batch(std::uint64_t owner, const Handle& handle, const 
         // observe() repeats native pose/velocity/mass reads; it never publishes latest,
         // observes a successor, or consumes a mailbox/command operation.
         return body_query::execute(request, allowance, 1000, query, fence);
-    } catch (...) { failed.native_casts = performed; return failed; }
+    } catch (...) {
+        failed.native_casts = performed; failed.accounting_valid = false;
+        failed.failure = body_query::Failure::query_backend_exception; return failed;
+    }
 }
 std::string submit(std::uint64_t owner, const Handle& handle, const Command& command, std::uint64_t& sequence) noexcept {
     LastError error; sequence = 0;

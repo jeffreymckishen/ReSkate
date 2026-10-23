@@ -106,12 +106,20 @@ and parked the allocation on release after explicit clock warmup. A
 acknowledgements. Whole-session 60 Hz operation, the BMX controller, other body
 compounds and cleanup of an active body during unload, world changes or partial
 failures remain unqualified.
+A [varying-force diagnostic](../native-phase-trial/README.md) also measured
+N+2 velocity visibility for commands requested at N and applied at N+1. The
+adapter must reconcile that phase before pairing modeled history with measured
+body state; applied setters do not prove an integrated N+1 response.
 
 The following generic SDK pieces are still missing for real riding:
 
-- Contact normals, surface velocity and owned body/world/epoch provenance.
-  The generic `world.probe` now distinguishes unavailable, clear and hit and
-  returns hit position/fraction; it does not yet supply those contact properties.
+- Contact normals and qualified surface velocity. The generic `world.probe`
+  distinguishes unavailable, clear and hit, with hit position/fraction.
+  [Owned-body batches](../../plugin-body-query.md) additionally bind complete
+  body/world/epoch observations and bounded exclusions. Their first native
+  composition trial refused its first batch before any reported cast or force
+  publication, then released the capsule. The native query path remains
+  unqualified; portable/Host passes do not supply the missing contact proof.
 - Input ownership independent of owning a camera, with original-device epochs
   and atomic local-actor motion/pose/input handoff and observed native actions.
 - Native-phase bindings of plugin entities and the local actor to an owned body,

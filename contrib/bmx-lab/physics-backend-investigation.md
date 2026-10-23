@@ -1,5 +1,11 @@
 # BMX physics backend investigation
 
+This is a historical C++ prototype record. The later
+[all-Luau migration](luau-migration.md) supersedes its implementation and launch
+recommendations: the legacy BMX dispatcher and console commands are retired.
+Descriptions of a "current" run or automatic `-Ride` selection below refer to
+that earlier prototype, not the current runtime or a playable Lua replacement.
+
 Investigation and implementation record, 2026-10-17. Native calibration, independent
 chassis riding, switching, pause/resume and the caught/landed air-trick rehearsal now pass.
 Run 62 is the current physical build; the isolated -Ride launcher selects it automatically.

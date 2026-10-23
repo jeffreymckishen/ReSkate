@@ -53,6 +53,9 @@ struct FakeGame final : Game {
     bool batch_available{true}, batch_clear{}, batch_unqualified{}, batch_change_after{}, batch_bad_count{};
     unsigned batch_drift_field{};
     unsigned batch_failure_ray{std::numeric_limits<unsigned>::max()};
+    body_query::Failure batch_refusal{body_query::Failure::none};
+    unsigned batch_refusal_casts{};
+    bool batch_refusal_accounting_valid{true};
     body_query::Request last_batch;
     std::string body_create(std::uint64_t owner, const owned_body::Definition& definition, owned_body::Handle& handle) override {
         if (!owned_body::valid(definition) || owned.size() >= owned_body::retained_capacity) return "definition or capacity";
@@ -79,6 +82,11 @@ struct FakeGame final : Game {
     }
     body_query::Result body_probe_batch(std::uint64_t owner, const owned_body::Handle& h, const body_query::Request& request, unsigned allowed) override {
         ++batch_calls; last_batch = request;
+        if (batch_refusal != body_query::Failure::none) {
+            body_query::Result out; out.count = request.count; out.failure = batch_refusal;
+            out.native_casts = batch_refusal_casts; out.accounting_valid = batch_refusal_accounting_valid;
+            native_casts += out.native_casts; return out;
+        }
         auto* selected = body_of(owner, h);
         unsigned fences{}, rays{};
         const auto fence = [&] {
@@ -1224,8 +1232,8 @@ void owned_body_batches_share_actual_and_logical_query_limits() {
             assert(not reskate.session.raycast(from,to),"unavailable wall query cannot admit a player hit")
         end)
         reskate.console.command("batch-zero","",function()
-            unavailable(P.probe_batch(h,epoch,rays(32)),"query_unavailable")
-            unavailable(P.probe_batch(h,epoch,rays(32)),"query_unavailable")
+            unavailable(P.probe_batch(h,epoch,rays(32)),"query_preconditions_unavailable")
+            unavailable(P.probe_batch(h,epoch,rays(32)),"query_preconditions_unavailable")
             local ok,why=pcall(P.probe_batch,h,epoch,rays(1))
             assert(not ok and why:find("more than 64 raycasts"),"each input ray spends logical budget")
             assert(not pcall(reskate.world.probe,from,to) and not pcall(reskate.session.raycast,from,to,{world=false}))
@@ -1240,7 +1248,7 @@ void owned_body_batches_share_actual_and_logical_query_limits() {
         reskate.console.command("batch-once","",function(args)
             local batch=P.probe_batch(h,epoch,rays(2))
             unavailable(batch,args[1])
-            if args[1]=="invalid_query_backend_result" then
+            if args[1]=="invalid_query_backend_result" or args[1]=="query_backend_exception" then
                 assert(not batch.native_casts,"invalid backend count is not a measured count")
                 unavailable(P.probe_batch(h,epoch,rays(1)),"native_cast_budget_exhausted")
             else assert(batch.native_casts==tonumber(args[2])) end
@@ -1282,6 +1290,29 @@ void owned_body_batches_share_actual_and_logical_query_limits() {
     ticks(host, environment, 1); game.query_cast_cost = 0;
     auto before = game.batch_calls; auto casts = game.native_casts;
     check(host.run_console("batch-zero") && game.batch_calls == before + 2 && game.native_casts == casts, "zero-call unavailable batches escaped logical cap\n" + environment.all());
+    ticks(host, environment, 1); game.batch_change_after = true;
+    check(host.run_console("batch-once body_epoch_or_observation_changed 0") && game.native_casts == casts,
+        "zero-cast precondition reason overrode the post-query observation fence\n" + environment.all());
+    game.batch_change_after = false;
+    for (const auto reason : {body_query::Failure::client_phase_unavailable, body_query::Failure::local_actor_exclusion_unavailable}) {
+        ticks(host, environment, 1); game.batch_refusal = reason;
+        casts = game.native_casts;
+        check(host.run_console(std::string("batch-once ") + body_query::name(reason) + " " + std::to_string(game.batch_refusal_casts)) &&
+            game.native_casts == casts + game.batch_refusal_casts && !game.owned.at(1).mailbox.pending &&
+            !game.owned.at(1).mailbox.count && !game.owned.at(1).mailbox.failed && !game.body_submissions,
+            "typed backend refusal was lost, invented geometry or mutated command state\n" + environment.all());
+    }
+    for (const auto reason : {body_query::Failure::query_backend_exception, body_query::Failure::unavailable}) {
+        ticks(host, environment, 1); game.batch_refusal = reason;
+        game.batch_refusal_casts = 2; game.batch_refusal_accounting_valid = false;
+        before = game.batch_calls; casts = game.native_casts;
+        const auto expected = reason == body_query::Failure::query_backend_exception ? "query_backend_exception" : "invalid_query_backend_result";
+        check(host.run_console(std::string("batch-once ") + expected + " 0") && game.batch_calls == before + 1 &&
+            game.native_casts == casts + 2 && !game.owned.at(1).mailbox.pending && !game.owned.at(1).mailbox.count &&
+            !game.owned.at(1).mailbox.failed && !game.body_submissions,
+            "unknown catch accounting lost its reason, exposed a count or failed to close the remaining budget\n" + environment.all());
+    }
+    game.batch_refusal = body_query::Failure::none; game.batch_refusal_casts = 0; game.batch_refusal_accounting_valid = true;
     ticks(host, environment, 1); game.query_cast_cost = 2; environment.ray_cast_cost = 1;
     casts = game.native_casts + environment.native_ray_casts;
     check(host.run_console("batch-partial") && game.native_casts + environment.native_ray_casts == casts + 64, "partial batch retry overspent cap\n" + environment.all());

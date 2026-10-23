@@ -82,6 +82,26 @@ Other reasons are `query_unavailable`, `body_epoch_or_observation_changed`,
 accounting result closes the remaining tick budget and omits `native_casts`
 rather than inventing an actual count.
 
+Pre-cast refusals distinguish `client_phase_unavailable` (initial client gate),
+`local_actor_exclusion_unavailable` (the requested actor root could not be qualified),
+and `query_preconditions_unavailable` (the backend was unavailable before any batch
+ray cast). `query_backend_exception` marks the native adapter's caught exception;
+its incomplete cast accounting closes the remaining budget and omits `native_casts`.
+An unavailable batch after any accounted cast
+remains `query_unavailable`; observation changes and budget failures retain their
+existing precedence. These categories do not identify an individual failed native
+contract or relax any guard.
+
 This source change requires runtime build, portable and plugin contract checks,
 then native query validation. It does not itself activate a vehicle or establish
 in-game contact accuracy, motion qualification or performance.
+
+The first native query-plus-force trial used source `716f2ddd` and runtime
+`06E9CEA1755B156034575327A20474A1E84FD27A5CF5E7763BFEAD2BDA43858C`.
+Two explicit Start actions covered clock warmup and the trial; one 12 kg capsule
+was created. Its first batch returned `query_unavailable`, zero reported native casts and
+zero submitted force packets, then release was accepted. The archived ledger is
+`build/bmx/lua-owned-query-phase-trial-v1/native-storage.json`. Query composition
+is unqualified, and that result does not identify the refusal's actual cause.
+The typed-reason source changes above add diagnosis; they do not establish a
+runtime repair or a successful query.

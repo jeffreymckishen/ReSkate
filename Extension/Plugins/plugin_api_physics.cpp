@@ -188,7 +188,9 @@ struct PhysicsApi {
         else out = p.services_.game().body_probe_batch(p.instance(), b.handle, request, allowed);
         const bool accounted = out.accounting_valid && p.native_casts_.consume(out.native_casts, allowed);
         if (!accounted) {
-            p.native_casts_.poison(); out.available = false; out.failure = body_query::Failure::backend;
+            p.native_casts_.poison(); out.available = false;
+            if (out.accounting_valid || out.failure != body_query::Failure::query_backend_exception)
+                out.failure = body_query::Failure::backend;
         }
         if (out.available) {
             bool valid = out.count == request.count && out.failure == body_query::Failure::none &&

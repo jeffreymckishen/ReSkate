@@ -2,9 +2,11 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <string_view>
 
 using namespace dingosdk::body_query;
 namespace {
+static_assert(static_cast<unsigned>(Failure::none) == 0 && static_cast<unsigned>(Failure::backend) == 6);
 unsigned checks{};
 void check(bool value, const char* why) { ++checks; if (!value) throw std::runtime_error(why); }
 Request request(std::size_t count = 1) {
@@ -54,7 +56,14 @@ void counts_and_discard_are_bounded() {
     check(out.native_casts == 1 && out.failure == Failure::budget, "shared exhaustion mislabeled"); empty(out);
     calls = fences = 0;
     out = execute(r, 64, 1000, [&](const Ray&, unsigned) { ++calls; return Probe{}; }, fence);
-    check(!out.native_casts && calls == 1 && fences == 2 && out.failure == Failure::unavailable, "unavailable request fabricated casts"); empty(out);
+    check(!out.native_casts && calls == 1 && fences == 2 && out.failure == Failure::query_preconditions_unavailable, "zero-cast preconditions were not distinguished"); empty(out);
+    out = execute(request(), 64, 1000, [](const Ray&, unsigned) { return Probe{{}, 1}; }, fence);
+    check(out.native_casts == 1 && out.failure == Failure::unavailable, "after-cast unavailable was called a precondition refusal"); empty(out);
+    calls = 0;
+    out = execute(request(2), 64, 1000, [&](const Ray&, unsigned) {
+        return ++calls == 1 ? Probe{{Status::clear}, 1} : Probe{};
+    }, fence);
+    check(out.native_casts == 1 && calls == 2 && out.failure == Failure::unavailable, "later zero-cast refusal hid earlier native calls"); empty(out);
     calls = 0;
     out = execute(r, 0, 1000, clear, fence);
     check(!calls && !out.native_casts && out.failure == Failure::budget, "zero budget called backend");
@@ -62,6 +71,14 @@ void counts_and_discard_are_bounded() {
     check(!out.accounting_valid && out.failure == Failure::backend && !out.native_casts, "malformed count invented a valid actual count"); empty(out);
     out = execute(request(), 64, 1000, [](const Ray&, unsigned) { return Probe{{Status::clear}, 0}; }, fence);
     check(out.failure == Failure::backend, "zero-cast clear admitted"); empty(out);
+    out = execute(request(), 64, 1000, [](const Ray&, unsigned) { return Probe{{}, 0, true}; }, fence);
+    check(out.failure == Failure::ray_limit && out.budget_exhausted, "precondition detail overrode exhausted retry allowance"); empty(out);
+}
+void typed_refusal_names_are_stable() {
+    check(std::string_view(name(Failure::client_phase_unavailable)) == "client_phase_unavailable", "client phase reason");
+    check(std::string_view(name(Failure::local_actor_exclusion_unavailable)) == "local_actor_exclusion_unavailable", "actor exclusion reason");
+    check(std::string_view(name(Failure::query_preconditions_unavailable)) == "query_preconditions_unavailable", "query preconditions reason");
+    check(std::string_view(name(Failure::query_backend_exception)) == "query_backend_exception", "query exception reason");
 }
 void every_observation_fence_invalidates_the_whole_batch() {
     // Each field represents a native adapter fence: context, world generation/state, actor,
@@ -127,7 +144,7 @@ void a_listener_epoch_does_not_freeze_canonical_body_state() {
 }
 int main() {
     try { bounds_and_backend_geometry(); counts_and_discard_are_bounded(); every_observation_fence_invalidates_the_whole_batch(); one_budget_charges_actual_retries();
-        a_listener_epoch_does_not_freeze_canonical_body_state();
+        a_listener_epoch_does_not_freeze_canonical_body_state(); typed_refusal_names_are_stable();
         std::cout << "body query tests passed: " << checks << " checks\n"; return 0;
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }

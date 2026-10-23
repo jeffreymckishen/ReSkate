@@ -9,6 +9,8 @@
 #include "Extension/UI/Overlay/overlay.h"
 #include "Extension/UI/NativeMenu/throwdown_menu.h"
 #include "Extension/Profile/local_profile_runtime.h"
+#include "Extension/Profile/local_teleport_observation.h"
+#include "Engine/Game/Skater/teleport_observation.h"
 #include "Extension/Skater/skater_events.h"
 #include "Engine/Game/Input/controller_bindings.h"
 #include "Engine/Core/Hooks/hooks.h"
@@ -358,12 +360,16 @@ constexpr actor_observation::Phase profile_observation_phase(LocalTeleportObserv
     case LocalTeleportObservation::manager_null: return actor_observation::Phase::controls_profile_manager_null;
     case LocalTeleportObservation::phase_read_failed: return actor_observation::Phase::controls_profile_phase_read;
     case LocalTeleportObservation::exception: return actor_observation::Phase::controls_profile_exception;
+    case LocalTeleportObservation::queue_changed:
+    case LocalTeleportObservation::queue_exhausted:
     case LocalTeleportObservation::not_attempted:
     case LocalTeleportObservation::known: break;
     }
     return actor_observation::Phase::controls_profile;
 }
-skater_action::Reason action_controls(actor_control_native::Observation* observation = nullptr) noexcept {
+skater_action::Reason action_controls(actor_control_native::Observation* observation = nullptr,
+    teleport_observation::Result* teleport_view = nullptr) noexcept {
+    if (teleport_view) *teleport_view = {};
     DWORD process{};
     const auto window = GetForegroundWindow();
     if (!window || !GetWindowThreadProcessId(window, &process) || process != GetCurrentProcessId() ||
@@ -371,7 +377,9 @@ skater_action::Reason action_controls(actor_control_native::Observation* observa
         return action_check(observation, actor_observation::Phase::controls_focus, skater_action::Reason::focus_changed);
     bool teleporting{};
     LocalTeleportObservation profile_observation;
-    if (!try_local_skater_teleport_pending(teleporting, profile_observation))
+    teleport_observation::Result local_teleport;
+    auto& teleport_result = teleport_view ? *teleport_view : local_teleport;
+    if (!profile_runtime::observe_local_skater_teleport(teleporting, profile_observation, teleport_result))
         return action_check(observation, profile_observation_phase(profile_observation), skater_action::Reason::unavailable);
     if (teleporting)
         return action_check(observation, actor_observation::Phase::controls_teleport, skater_action::Reason::teleporting);
@@ -425,7 +433,8 @@ skater_action::Reason action_validate(const ActionBinding& expected, ActionBindi
                                      bool nonblocking = false,
                                      actor_control_native::Observation* observation = nullptr,
                                      actor_context::Continuity continuity = actor_context::Continuity::native_lifetime) noexcept {
-    if (const auto issue = action_controls(observation); issue != skater_action::Reason::none) return issue;
+    teleport_observation::Result opening_teleport;
+    if (const auto issue = action_controls(observation, &opening_teleport); issue != skater_action::Reason::none) return issue;
     auto& p = protection();
     if (nonblocking) {
         if (!TryAcquireSRWLockShared(&p.lock))
@@ -465,9 +474,18 @@ skater_action::Reason action_validate(const ActionBinding& expected, ActionBindi
         return action_check(observation, actor_observation::Phase::context, skater_action::Reason::context_changed);
     if (continuity == actor_context::Continuity::observed_context && !observed_actor_fence(expected))
         return action_check(observation, actor_observation::Phase::lifetime, skater_action::Reason::native_lifetime_changed);
+    if (!first_state.state.known) {
+        state = first_state.state;
+        return action_check(observation, actor_observation::Phase::state, skater_action::Reason::unsupported_state);
+    }
+    // Close the current controls/teleport observation after full owner/world
+    // recapture. This witness is local to this call, never an actor/clock key.
+    teleport_observation::Result closing_teleport;
+    if (const auto issue = action_controls(observation, &closing_teleport); issue != skater_action::Reason::none) return issue;
+    if (!teleport_observation::same_idle(opening_teleport, closing_teleport))
+        return action_check(observation, actor_observation::Phase::controls_profile, skater_action::Reason::unavailable);
     state = first_state.state;
-    return state.known ? action_check(observation, actor_observation::Phase::qualified, skater_action::Reason::none) :
-        action_check(observation, actor_observation::Phase::state, skater_action::Reason::unsupported_state);
+    return action_check(observation, actor_observation::Phase::qualified, skater_action::Reason::none);
 }
 void action_observe(std::uintptr_t selector) noexcept {
     auto& p = protection();

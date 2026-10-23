@@ -168,6 +168,21 @@ Observed clock publication and reads also require the exact claim to remain publ
 claim can retain cleanup ownership without retaining clock authority. Candidate clock changes are
 staged and discarded if their closing observation or claim check fails.
 
+Teleport readiness uses a separate guard owning the actual queued teleport data.
+Native observers Try-lock that guard, without taking the broad profile mutex used
+by catalog updates and saves. They freshly read the native manager and phase at
+both ends of each idle observation. Position requests and both native teleport
+dispatch paths remain pending through transition destruction, including recursive
+callbacks. Merely queued placement tokens retain their previous omitted-pending
+semantics. Queue changes and profile activation/invalidation advance a nonwrapping
+revision. Actor validation brackets its full ownership recapture with current
+idle views of the same revision, base and native manager. No idle native state is
+cached. These endpoint observations do not pin native lifetime or exclude same-value
+native ABA or a change after the closing read. All other assertion guards remain.
+The historical profile-lock refusal identifies no actual holder or duration; this
+source change still needs its own in-game validation. Post-press unavailability
+continues to stop assertion immediately, without deferral or automatic retry.
+
 This is sampled local-context continuity for process input publication. An unchanged watched-root
 counter does not identify which other entity was destroyed, or prove that every child component or
 world object could not have been retired and reused at the same address between observations.

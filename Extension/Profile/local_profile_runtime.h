@@ -98,7 +98,7 @@ bool try_local_skater_teleport_pending(bool& pending) noexcept;
 // native transition. It does not establish why the mutex was unavailable.
 enum class LocalTeleportObservation : std::uint8_t {
     not_attempted, known, lock_refused, inactive, manager_read_failed,
-    manager_null, phase_read_failed, exception
+    manager_null, phase_read_failed, exception, queue_changed, queue_exhausted
 };
 bool try_local_skater_teleport_pending(bool& pending, LocalTeleportObservation& observation) noexcept;
 // The highest collision surface straight down at (x, z) between world heights `top` and

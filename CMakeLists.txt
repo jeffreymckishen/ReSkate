@@ -494,6 +494,11 @@ if(DINGOSDK_BUILD_PLUGIN_TESTS)
     add_test(NAME input_pulse COMMAND dingosdk_input_pulse_tests)
     set_tests_properties(input_pulse PROPERTIES TIMEOUT 15)
     if(WIN32)
+        add_executable(dingosdk_teleport_observation_tests
+            Engine/Game/Skater/Test/teleport_observation_tests.cpp)
+        target_include_directories(dingosdk_teleport_observation_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+        add_test(NAME teleport_observation COMMAND dingosdk_teleport_observation_tests)
+        set_tests_properties(teleport_observation PROPERTIES TIMEOUT 15)
         # The test includes owned_bodies.cpp once, with a private synthetic
         # Service/native-memory/TLS seed. Do not add a second cpp object here.
         add_executable(dingosdk_owned_body_source_tests Extension/World/Test/owned_body_source_tests.cpp)

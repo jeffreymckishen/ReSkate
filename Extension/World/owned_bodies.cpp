@@ -607,8 +607,10 @@ body_query::Result probe_batch(std::uint64_t owner, const Handle& handle, const 
             if (std::find(owners.begin(), owners.begin() + excluded_count, other) != owners.begin() + excluded_count) continue;
             owners[excluded_count] = other; std::memcpy(excluded[excluded_count].data(), &other->body, sizeof(NativeHandle)); ++excluded_count;
         }
-        const auto actor = request.exclude_local_actor ? local_surface_actor_root(anchor.entity) : 0;
-        if (request.exclude_local_actor && !actor) { failed.failure = body_query::Failure::local_actor_exclusion_unavailable; return failed; }
+        // The placement root resolver takes a packed entity key, not the raw
+        // SkaterEntity pointer held by Anchor. Actor conversion and the root
+        // descriptor's actor support are unqualified; never submit that pointer.
+        if (request.exclude_local_actor) { failed.failure = body_query::Failure::local_actor_exclusion_unavailable; return failed; }
         std::array<NativeHandle, body_query::maximum_rays> identities{};
         std::size_t identity_count{};
         const auto qualified_body = [&](const NativeHandle& body) {
@@ -623,7 +625,6 @@ body_query::Result probe_batch(std::uint64_t owner, const Handle& handle, const 
             if (epoch != requested_epoch || !body_query::same_sample(canonical, selected->latest)) return false;
             for (std::size_t i = 0; i < excluded_count; ++i)
                 if (!owners[i]->active || owners[i]->retained || owners[i]->quarantined || !fresh(*owners[i])) return false;
-            if (request.exclude_local_actor && local_surface_actor_root(current.entity) != actor) return false;
             for (std::size_t i = 0; i < identity_count; ++i) if (!qualified_body(identities[i])) return false;
             Sample measured;
             if (!observe(*selected, measured) || !body_query::same_sample(canonical, measured)) return false;
@@ -635,7 +636,7 @@ body_query::Result probe_batch(std::uint64_t owner, const Handle& handle, const 
         const auto query = [&](const body_query::Ray& ray, unsigned permitted) {
             body_query::Probe out;
             const auto counted = probe_local_surface_bounded(ray.from, ray.to, permitted,
-                std::span<const std::array<std::uint64_t, 2>>(excluded.data(), excluded_count), actor);
+                std::span<const std::array<std::uint64_t, 2>>(excluded.data(), excluded_count));
             performed += counted.native_casts; out.native_casts = counted.native_casts; out.budget_exhausted = counted.budget_exhausted;
             const auto& hit = counted.surface;
             if (!hit.available || hit.context != anchor.context || hit.world != anchor.world) return out;

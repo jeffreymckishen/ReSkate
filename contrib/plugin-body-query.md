@@ -17,6 +17,8 @@ if batch.status == "available" then
     -- Contact fitting and vehicle decisions belong to the plugin.
 elseif batch.reason == "body_epoch_or_observation_changed" then
     -- Defer this decision. The SDK does not relabel or replay the query or a command.
+elseif batch.reason == "local_actor_exclusion_unavailable" then
+    -- The current native adapter cannot qualify this exclusion. Keep the vehicle inactive.
 end
 ```
 
@@ -31,9 +33,12 @@ Options are `exclude_bodies = {other_owned_body, ...}` and
 are accepted. Every exclusion must still belong to this VM, its current native
 world and a fresh owned generation. The anchoring body is always excluded. Native
 body references are resolved internally; plugins cannot supply addresses, native
-body indices or actor IDs. The optional actor exclusion resolves and rechecks the
-current canonical local actor root through the existing picking contract. If that
-cannot be qualified, the batch is unavailable.
+body indices or actor IDs. `exclude_local_actor` defaults to false. Setting it to
+true currently returns `local_actor_exclusion_unavailable` before any native cast.
+The placement root resolver accepts a packed entity key; the current local actor
+anchor is a raw SkaterEntity pointer. Passing that pointer as a key is invalid.
+A verified actor conversion and a compatible exclusion domain are still required.
+Omitting actor exclusion does not establish rider-safe vehicle contact queries.
 
 The result has `status = "available"|"unavailable"`, `native_casts`,
 `budget_exhausted`, and a dense `rays` list of the requested length. An unavailable
@@ -51,7 +56,7 @@ feature, and carries no proof of static or moving contact. Unqualified identitie
 are omitted while valid hit geometry may still be returned.
 
 Before and after the batch, the adapter rechecks the owned anchor, context,
-native world/state, SDK world and body generations, actor root, exclusions, and
+native world/state, SDK world and body generations, owned exclusions, and
 the exact listener sample epoch. Both fences also require the latest published
 sample and a fresh read-only native body observation to match every numeric lane
 of the token's canonical sample exactly. Even a read or receipt that replaces
@@ -105,3 +110,13 @@ zero submitted force packets, then release was accepted. The archived ledger is
 is unqualified, and that result does not identify the refusal's actual cause.
 The typed-reason source changes above add diagnosis; they do not establish a
 runtime repair or a successful query.
+
+A second trial used source `f395757d` and runtime
+`21BABF8D4E6B18BC4C3ED45A2B3AA74AF86A08140623B25A5961B94793E2AC21`.
+The unchanged Lua fixture again requested actor exclusion. Its first batch returned
+the precise reason `local_actor_exclusion_unavailable`, with zero native casts,
+zero published commands and an accepted release to a retained parked slot.
+The ledger is `build/bmx/lua-owned-query-phase-refusal-native-trial-v2/native-storage.json`.
+This identifies the refused stage, not a successful query. The unqualified
+pointer-to-key lookup has now been removed; requested actor exclusion remains
+unavailable until the native conversion and exclusion contract are established.

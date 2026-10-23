@@ -82,8 +82,12 @@ replace the physical prototype; implemented contracts still require native proof
    fences, same-VM owned exclusions and shared actual-cast accounting. Their
    first native query-plus-force attempt refused its first query with zero
    reported casts and zero published packets, then accepted release. Native
-   query composition remains unqualified; the refusal category must be resolved
-   without removing actor exclusion or weakening observation checks.
+   query composition remains unqualified. A second native trial localized the
+   refusal to `local_actor_exclusion_unavailable`. Static inspection also proved
+   the placement resolver expects a packed entity key, while the actor anchor
+   holds a raw pointer. That invalid lookup is removed; requested actor exclusion
+   remains unavailable pending a verified conversion and exclusion domain.
+   Vehicle queries must retain actor exclusion and the observation checks.
 3. **Commands and receipts.** Queue finite bounded force, torque and one-shot
    impulse against an exact observed body epoch. Commit once in the supported
    native phase, then expose applied/rejected/expired and the actual successor.

@@ -36,6 +36,16 @@ function tests.run()
         for k,v in changes or {} do r[k]=v end
         return r
     end
+    local function actor_diagnostics(known,changes)
+        local d={first_actor_observation_known=known,first_actor_owner_present=known,first_actor_call_active=false,
+            first_actor_inspect_attempted=false,first_actor_inspect_succeeded=false,first_actor_equal=false,
+            first_actor_clock_attempted=false,first_actor_clock_known=false,
+            first_actor_enter_phase=known and "enter_claim" or "not_attempted",
+            first_actor_enter_reason=known and "busy" or "none",
+            first_actor_inspect_phase="not_attempted",first_actor_inspect_reason="none"}
+        for k,v in changes or {} do d[k]=v end
+        return d
+    end
     local function start(initial)
         local p=Transition.new();initial=initial or 100
         check(not p:update(frame(0,{observation={state=initial}})).intents.request,"neutral only arms")
@@ -102,6 +112,94 @@ function tests.run()
             and o.terminal_receipt.first_rejection_mask==1280,"settled target never rewrites SDK rejection evidence")
         check(o.terminal_receipt.consumption=="unobserved" and o.terminal_receipt.semantic_completion=="unobserved",
             "sampled completion does not invent native semantic consumption")
+        cases+=1
+    end
+    do
+        for _,known in {false,true} do
+            local p=accepted();local d=actor_diagnostics(known);local r=receipt("revoked",d)
+            local o=read(p,603,r)
+            check(o.intents.store and not o.intents.acknowledge,"complete actor diagnostics preserve store-before-ack")
+            for k,v in d do
+                check(o.receipt[k]==v and o.terminal_receipt[k]==v and o.intents.store.receipt[k]==v,
+                    "complete actor fields, including unattempted inspect/clock, survive every retained snapshot: "..k)
+            end
+            r.first_actor_enter_reason="corrupt"
+            o.receipt.first_actor_enter_phase="corrupt";o.intents.store.receipt.first_actor_clock_known=true
+            o=p:update(frame(604,{store_result={attempt=1,handle="pulse-a",sequence=sequence,accepted=true}}))
+            check(o.intents.acknowledge and o.receipt.first_actor_enter_phase==d.first_actor_enter_phase
+                and o.terminal_receipt.first_actor_enter_reason==d.first_actor_enter_reason
+                and not o.terminal_receipt.first_actor_clock_known,"caller mutation cannot alter the retained diagnostic witness")
+            p:update(frame(605,{ack_result={attempt=1,handle="pulse-a",sequence=sequence,accepted=true}}))
+            o=settle(p,504)
+            check(o.terminal_receipt.status=="revoked" and o.terminal_receipt.first_rejection_mask==1280
+                and o.terminal_receipt.first_actor_observation_known==known and o.qualified_transition,
+                "known or unobserved diagnostics do not change existing sampled transition qualification")
+        end
+        cases+=1
+    end
+    do
+        local p=accepted();local d=actor_diagnostics(false)
+        local o=read(p,603,receipt("warming",d))
+        check(o.receipt and not o.receipt.first_actor_observation_known,"complete not-yet-observed group is valid")
+        p:update(frame(803));d=actor_diagnostics(true)
+        o=read(p,804,receipt("revoked",d),2)
+        check(o.intents.store and o.receipt.first_actor_observation_known and not o.receipt.first_actor_inspect_attempted
+            and not o.receipt.first_actor_clock_attempted,"first known entry refusal retains truthful short-circuited observation flags")
+        check(o.reason=="none" and o.terminal_receipt.first_actor_enter_reason=="busy",
+            "diagnostic native reason does not replace the semantic model reason")
+        cases+=1
+    end
+    do
+        local d=actor_diagnostics(true)
+        for field,value in d do
+            local p=accepted();read(p,603,receipt("warming",d));p:update(frame(803))
+            local changed=copy(d)
+            if type(value)=="boolean" then changed[field]=not value
+            elseif field:match("_phase$") then changed[field]="qualified"
+            else changed[field]="actor_changed" end
+            local o=read(p,804,receipt("revoked",changed),2)
+            check(o.outcome=="unresolved" and o.retained and o.intents.cancel and not o.intents.store
+                and not o.intents.acknowledge,"each first-known actor field is immutable across reads: "..field)
+            for k,v in d do check(o.receipt[k]==v,"invalid replacement retains the first complete diagnostic witness: "..k) end
+            check(not p:update(frame(805)).intents.cancel,"changed diagnostics do not repeat cancellation")
+        end
+        local p=accepted();read(p,603,receipt("warming",d));p:update(frame(803))
+        local o=read(p,804,receipt("revoked"),2)
+        check(o.outcome=="unresolved" and not o.intents.store and o.receipt.first_actor_observation_known,
+            "legacy omission cannot erase an already-known actor witness")
+        cases+=1
+    end
+    do
+        local d=actor_diagnostics(true)
+        local malformed={}
+        for field,value in d do
+            local partial=copy(d);partial[field]=nil;table.insert(malformed,partial)
+            local wrong=copy(d);wrong[field]=type(value)=="boolean" and 0 or false;table.insert(malformed,wrong)
+            if type(value)=="string" then
+                for _,bad in {"invalid","future_phase","none\0suffix","",math.huge,0/0,{}} do
+                    wrong=copy(d);wrong[field]=bad;table.insert(malformed,wrong)
+                end
+            end
+        end
+        for _,bad in malformed do
+            local p=accepted();local o=read(p,603,receipt("released",bad))
+            check(o.reason=="receipt_invalid" and o.outcome=="unresolved" and o.retained and o.intents.cancel
+                and not o.intents.store and not o.intents.acknowledge,"partial, bad-type or unknown-enum diagnostics cannot authorize acknowledgement")
+            check(o.receipt==nil and not p:update(frame(604)).intents.cancel,"malformed first witness is neither retained as valid nor retried")
+        end
+        local p=accepted();local o=read(p,603,receipt("released"))
+        check(o.intents.store and o.receipt.first_actor_observation_known==nil,"all12 omitted remains compatible with old constructed receipts")
+        cases+=1
+    end
+    do
+        local p=accepted();local d=actor_diagnostics(false)
+        d.report_debt,d.claim_released,d.quarantined=true,false,true
+        local o=read(p,603,receipt("revoked",d))
+        check(o.receipt and o.receipt.terminal and not o.intents.store,"quarantined terminal keeps diagnostic group without authorizing cleanup")
+        p:update(frame(803));local changed=copy(d);changed.first_actor_owner_present=true
+        o=read(p,804,receipt("revoked",changed),2)
+        check(o.outcome=="unresolved" and o.intents.cancel and not o.intents.acknowledge
+            and not o.receipt.first_actor_owner_present,"terminal actor fields stay immutable even before observation-known becomes true")
         cases+=1
     end
     do

@@ -1632,6 +1632,11 @@ void input_pulse_api_keeps_report_receipts_opaque_and_owner_bound() {
         assert(r.observed_ms==r.requested_ms and r.source_epoch=="9007199254741009")
         assert(r.user==2 and r.button==0x8000 and r.status=="queued" and not r.terminal)
         assert(r.first_rejection_mask==0 and r.first_rejection_stage=="none")
+        assert(not r.first_actor_observation_known and not r.first_actor_owner_present and not r.first_actor_call_active)
+        assert(not r.first_actor_inspect_attempted and not r.first_actor_inspect_succeeded and not r.first_actor_equal)
+        assert(not r.first_actor_clock_attempted and not r.first_actor_clock_known)
+        assert(r.first_actor_enter_phase=="not_attempted" and r.first_actor_enter_reason=="none")
+        assert(r.first_actor_inspect_phase=="not_attempted" and r.first_actor_inspect_reason=="none")
         assert(r.transport=="xinput" and r.source_identity=="observed_stream" and r.publication_scope=="process_outer_xinput_buffer")
         assert(r.consumption=="unobserved" and r.semantic_completion=="unobserved" and r.native_consumed==nil)
         assert(r.address==nil and r.actor_ticket==nil and r.device_guid==nil and r.original_result==nil)
@@ -1646,6 +1651,11 @@ void input_pulse_api_keeps_report_receipts_opaque_and_owner_bound() {
                 assert(v.neutral_publications=="1" and v.contentions=="9007199254741013")
                 assert(v.original_result_known and v.original_result==1167)
                 assert(v.first_rejection_mask==33024 and v.first_rejection_stage=="core_plan")
+                assert(v.first_actor_observation_known and v.first_actor_owner_present and v.first_actor_call_active)
+                assert(v.first_actor_inspect_attempted and v.first_actor_inspect_succeeded and v.first_actor_equal)
+                assert(v.first_actor_clock_attempted and not v.first_actor_clock_known)
+                assert(v.first_actor_enter_phase=="qualified" and v.first_actor_enter_reason=="none")
+                assert(v.first_actor_inspect_phase=="qualified" and v.first_actor_inspect_reason=="none")
                 if v.report_debt or not v.claim_released or v.quarantined then
                     assert(not P.pulse_acknowledge(h));reskate.log("pulse debt retained")
                 else
@@ -1661,13 +1671,21 @@ void input_pulse_api_keeps_report_receipts_opaque_and_owner_bound() {
     const auto owner=row.owner; const auto handle=row.receipt.handle;
     auto& receipt=row.receipt; const auto valid=receipt;
     const auto malformed=[&](const char* why) {
-        environment.lines.clear(); ticks(host,environment,1); running(host,"input-pulse",environment);
+        environment.lines.clear(); environment.logs.clear(); ticks(host,environment,1); running(host,"input-pulse",environment);
         check(environment.logged("pulse malformed rejected"),why); receipt=valid;
     };
     receipt.status=static_cast<p::Status>(999); malformed("unknown pulse status was serialized");
     receipt.reason=static_cast<p::Reason>(999); malformed("unknown pulse reason was serialized");
     receipt.first_rejection_stage=static_cast<p::RejectionStage>(999); malformed("unknown pulse rejection stage was serialized");
     receipt.first_rejection_mask=1u<<31; malformed("unknown pulse failed-check bits were serialized");
+    receipt.first_actor_observation.enter.phase=static_cast<dingosdk::actor_observation::Phase>(255);
+    malformed("unknown actor entry phase was serialized");
+    receipt.first_actor_observation.inspect.phase=static_cast<dingosdk::actor_observation::Phase>(255);
+    malformed("unknown actor inspection phase was serialized");
+    receipt.first_actor_observation.enter.reason=static_cast<dingosdk::skater_action::Reason>(255);
+    malformed("unknown actor entry reason was serialized");
+    receipt.first_actor_observation.inspect.reason=static_cast<dingosdk::skater_action::Reason>(255);
+    malformed("unknown actor inspection reason was serialized");
     ++receipt.handle.sequence; malformed("pulse receipt changed its opaque sequence");
     receipt.user=1; malformed("pulse receipt changed the requested slot");
     receipt.button=0x1000; malformed("pulse receipt changed the requested button");
@@ -1681,6 +1699,10 @@ void input_pulse_api_keeps_report_receipts_opaque_and_owner_bound() {
     receipt.first_rejection_mask=dingosdk::input_pulse::failure_bit(dingosdk::input_pulse::FailedCheck::native_clock) |
         dingosdk::input_pulse::failure_bit(dingosdk::input_pulse::FailedCheck::poll_gap);
     receipt.first_rejection_stage=p::RejectionStage::core_plan;
+    auto& first_actor=receipt.first_actor_observation;
+    first_actor.known=first_actor.owner_present=first_actor.call_active=first_actor.inspect_attempted=true;
+    first_actor.inspect_succeeded=first_actor.actor_equal=first_actor.clock_attempted=true;
+    first_actor.enter=first_actor.inspect={dingosdk::actor_observation::Phase::qualified, dingosdk::skater_action::Reason::none};
     ticks(host,environment,1); running(host,"input-pulse",environment);
     check(environment.logged("pulse debt retained") && environment.fake.input_pulses.size()==1,
         "terminal pulse status alone discarded unresolved publication duty");

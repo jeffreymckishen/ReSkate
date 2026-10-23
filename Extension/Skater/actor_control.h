@@ -2,11 +2,14 @@
 #include "Engine/Game/Skater/actor_control_policy.h"
 #include "Engine/Game/Skater/actor_clock.h"
 #include "Engine/Game/Skater/native_action_policy.h"
+#include "Engine/Game/Skater/actor_observation.h"
 #include <cstdint>
 
 namespace dingosdk::actor_control_native {
 using State = skater_action::State;
 using Reason = skater_action::Reason;
+
+using Observation = actor_observation::Trace;
 
 // Internal native identity only. Plugins never receive these addresses. The
 // shared owner service repeats the complete local chain at each use edge.
@@ -25,8 +28,12 @@ bool acquire(std::uint64_t owner, std::uint64_t sequence, Admission admission,
     Actor& actor, Reason& reason) noexcept;
 bool inspect(std::uint64_t owner, std::uint64_t sequence, const Actor& expected,
     Actor& actor, State& state, Reason& reason, bool cleanup = false) noexcept;
+bool inspect(std::uint64_t owner, std::uint64_t sequence, const Actor& expected,
+    Actor& actor, State& state, Reason& reason, Observation& observation, bool cleanup = false) noexcept;
 bool enter(std::uint64_t owner, std::uint64_t sequence,
     const Actor& actor, actor_control::Call& call) noexcept;
+bool enter(std::uint64_t owner, std::uint64_t sequence,
+    const Actor& actor, actor_control::Call& call, Observation& observation) noexcept;
 // The service supplies resolved cleanup duty. Otherwise only independently
 // observed exact-actor retirement can retire the shared claim.
 bool retire(std::uint64_t owner, std::uint64_t sequence,

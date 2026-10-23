@@ -25,10 +25,12 @@ void check(bool value, const char* why) {
 struct Environment {
     std::uint64_t wall{100}, last_step{}, clock_sequence{}, owner{};
     bool focus{true}, gameplay{true}, menu{true}, interference{true};
-    bool acquire_ok{true}, inspect_ok{true}, enable_ok{true}, retire_ok{true}, clock_enabled{};
+    bool acquire_ok{true}, inspect_ok{true}, enter_ok{true}, enable_ok{true}, retire_ok{true}, clock_enabled{};
     actor::Reason acquire_reason{actor::Reason::unavailable};
+    actor::Observation inspect_failure{dingosdk::actor_observation::Phase::capture, actor::Reason::unavailable};
+    actor::Observation enter_failure{dingosdk::actor_observation::Phase::enter_owner_lock, actor::Reason::unavailable};
     DWORD thread_override{};
-    unsigned acquire_calls{}, enable_calls{}, inspect_calls{}, retire_calls{}, disable_calls{};
+    unsigned acquire_calls{}, enable_calls{}, inspect_calls{}, retire_calls{}, disable_calls{}, clock_reads{};
     unsigned reads_before_jump{};
     std::uint64_t jump_to{};
     actor::Actor current;
@@ -139,12 +141,23 @@ bool acquire(std::uint64_t owner, std::uint64_t sequence, Admission admission, A
 }
 bool inspect(std::uint64_t owner, std::uint64_t sequence, const Actor& expected,
     Actor& out, State& state, Reason& reason, bool) noexcept {
-    ++fixture::env.inspect_calls; out = {}; state = {}; reason = Reason::unavailable;
+    ++fixture::env.inspect_calls; out = {}; state = {}; reason = fixture::env.inspect_failure.reason;
     if (!fixture::env.inspect_ok || !fixture::owns(owner, sequence, expected)) return false;
     out = expected; state.known = true; state.value = 42; reason = Reason::none; return true;
 }
 bool enter(std::uint64_t owner, std::uint64_t sequence, const Actor& value, control::Call& call) noexcept {
-    return fixture::owns(owner, sequence, value) && fixture::env.arbiter.enter(owner, value.ticket, call);
+    return fixture::env.enter_ok && fixture::owns(owner, sequence, value) && fixture::env.arbiter.enter(owner, value.ticket, call);
+}
+bool inspect(std::uint64_t owner, std::uint64_t sequence, const Actor& expected,
+    Actor& out, State& state, Reason& reason, Observation& observation, bool cleanup) noexcept {
+    const bool result = inspect(owner, sequence, expected, out, state, reason, cleanup);
+    observation = result ? Observation{dingosdk::actor_observation::Phase::qualified, Reason::none} : fixture::env.inspect_failure;
+    return result;
+}
+bool enter(std::uint64_t owner, std::uint64_t sequence, const Actor& value, control::Call& call, Observation& observation) noexcept {
+    const bool result = enter(owner, sequence, value, call);
+    observation = result ? Observation{dingosdk::actor_observation::Phase::qualified, Reason::none} : fixture::env.enter_failure;
+    return result;
 }
 bool retire(std::uint64_t owner, std::uint64_t sequence, const Actor& value, bool duty_resolved) noexcept {
     auto& f = fixture::env; ++f.retire_calls;
@@ -160,7 +173,7 @@ bool enable_clock(std::uint64_t owner, std::uint64_t sequence, const Actor& valu
     f.last_step = 0; f.clock_enabled = true; reason = Reason::none; return true;
 }
 bool read_clock(std::uint64_t owner, std::uint64_t sequence, const Actor& value, Clock& out) noexcept {
-    out = {};
+    ++fixture::env.clock_reads; out = {};
     return fixture::env.clock_enabled && fixture::owns(owner, sequence, value) &&
         fixture::env.clock.read(fixture::env.clock_key, fixture::env.wall, out);
 }
@@ -388,12 +401,17 @@ void physical_conflict() {
     (void)frame(280); retire(281);
 }
 void actor_clock_lost() {
+    namespace observed = dingosdk::actor_observation;
     const auto h = press(); env.inspect_ok = false;
     check(frame(250).value.Gamepad.wButtons == 0 && !read(h).report_debt, "same-source raw neutral cleanup does not write or require an old actor's clock");
     const auto rejected = read(h);
     check((rejected.first_rejection_mask & pulse_policy::failure_bit(pulse_policy::FailedCheck::actor)) != 0 &&
         rejected.first_rejection_stage == model::RejectionStage::core_plan,
         "failed actor qualification is recorded at the actual service core plan");
+    const auto& first = rejected.first_actor_observation;
+    check(first.known && first.owner_present && first.call_active && first.inspect_attempted && !first.inspect_succeeded &&
+        !first.actor_equal && !first.clock_attempted && !first.clock_known && first.inspect == env.inspect_failure,
+        "failed inspection retains its real phase and records that the clock was never probed");
     retire(251); check(read(h).status == model::Status::revoked, "lost actor qualification cannot continue assertions");
     check(service::acknowledge(1, h), "retired actor-loss receipt can be explicitly acknowledged");
     env.inspect_ok = true;
@@ -404,7 +422,43 @@ void actor_clock_lost() {
     check((clock_rejected.first_rejection_mask & pulse_policy::failure_bit(pulse_policy::FailedCheck::native_clock)) != 0 &&
         (clock_rejected.first_rejection_mask & pulse_policy::failure_bit(pulse_policy::FailedCheck::actor)) == 0,
         "missing clock is distinguished from actor inspection failure");
+    const auto& clock_observation = clock_rejected.first_actor_observation;
+    check(clock_observation.known && clock_observation.call_active && clock_observation.inspect_attempted &&
+        clock_observation.inspect_succeeded && clock_observation.actor_equal && clock_observation.clock_attempted &&
+        !clock_observation.clock_known && clock_observation.enter.phase == observed::Phase::qualified &&
+        clock_observation.inspect.phase == observed::Phase::qualified,
+        "an actually attempted unavailable clock remains distinct from its short-circuited absence");
     retire(1351);
+    check(service::acknowledge(1, clock_handle), "resolved clock-loss receipt can be acknowledged");
+    for (unsigned fault = 0; fault < 4; ++fault) {
+        const auto base = 2300 + static_cast<std::uint64_t>(fault) * 1100;
+        prime(base); const auto handle = request();
+        for (const auto offset : {0u, 34u, 67u}) (void)frame(base + offset);
+        constexpr observed::Phase phases[]{observed::Phase::inspect_owner_lock, observed::Phase::controls_profile, observed::Phase::context};
+        if (fault == 0) env.enter_ok = false;
+        else {
+            env.inspect_ok = false;
+            env.inspect_failure = {phases[fault - 1], fault == 3 ? actor::Reason::context_changed : actor::Reason::unavailable};
+        }
+        const auto reads = env.clock_reads, inspections = env.inspect_calls;
+        check(frame(base + 100).value.Gamepad.wButtons == 0, "diagnostic observations do not bypass a failed warmup guard");
+        const auto receipt = read(handle); const auto witness = receipt.first_actor_observation;
+        check(receipt.first_rejection_mask == (pulse_policy::failure_bit(pulse_policy::FailedCheck::actor) |
+            pulse_policy::failure_bit(pulse_policy::FailedCheck::native_clock)) && !receipt.press_candidates &&
+            !receipt.press_publications && !receipt.neutral_publications && env.clock_reads == reads,
+            "warmup rejection preserves the existing mask and zero publications without probing the clock");
+        if (fault == 0) check(witness.known && !witness.call_active && !witness.inspect_attempted &&
+            env.inspect_calls == inspections && witness.enter == env.enter_failure &&
+            witness.inspect.phase == observed::Phase::not_attempted, "failed call admission cannot be presented as an inspection failure");
+        else check(witness.known && witness.call_active && witness.inspect_attempted && !witness.inspect_succeeded &&
+            witness.inspect == env.inspect_failure, "first inspection phase and native reason survive at the real service boundary");
+        env.enter_ok = env.inspect_ok = true;
+        (void)frame(base + 101); retire(base + 102);
+        const auto terminal = read(handle);
+        check(terminal.first_actor_observation == witness && terminal.status == model::Status::revoked &&
+            terminal.claim_released && !terminal.report_debt && service::acknowledge(1, handle),
+            "later positive facts and cleanup do not rewrite the first actor witness or revive the same pulse");
+    }
 }
 void environment_guards() {
     for (unsigned guard = 0; guard < 5; ++guard) {

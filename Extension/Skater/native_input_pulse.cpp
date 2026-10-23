@@ -88,11 +88,13 @@ bool copy(XINPUT_STATE* output, XINPUT_STATE& value) noexcept {
     __try { value = *output; return true; }
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
-void remember_rejection(Entry& entry, std::uint32_t mask, model::RejectionStage stage) noexcept {
+void remember_rejection(Entry& entry, std::uint32_t mask, model::RejectionStage stage,
+    const model::ActorObservation* observation = nullptr) noexcept {
     if (entry.rejection_recorded) return;
     entry.rejection_recorded = true;
     entry.receipt.first_rejection_mask = mask;
     entry.receipt.first_rejection_stage = stage;
+    if (observation) entry.receipt.first_actor_observation = *observation;
 }
 model::Reason policy_reason(std::uint32_t mask) noexcept {
     using Check = policy::FailedCheck;
@@ -109,9 +111,9 @@ model::Reason policy_reason(std::uint32_t mask) noexcept {
     if (mask == policy::failure_bit(Check::deadline)) return model::Reason::deadline;
     return model::Reason::unavailable;
 }
-void remember_policy_rejection(Entry& entry, model::RejectionStage stage) noexcept {
+void remember_policy_rejection(Entry& entry, model::RejectionStage stage, const model::ActorObservation& observation) noexcept {
     const auto mask = shared.pulse.first_rejection_mask();
-    if (mask) remember_rejection(entry, mask, stage);
+    if (mask) remember_rejection(entry, mask, stage, &observation);
 }
 void revoke(Entry& entry, model::Status ending, model::Reason reason) noexcept {
     if (model::terminal(entry.receipt.status)) return;
@@ -235,7 +237,7 @@ void begin(bool outer, std::uint32_t user, Poll& poll) noexcept {
         poll.sequence = entry.receipt.handle.sequence; poll.ticket = shared.pulse.ticket();
         actor = entry.actor; owner = entry.owner;
     }
-    (void)actor_control_native::enter(owner, poll.sequence, actor, poll.call);
+    (void)actor_control_native::enter(owner, poll.sequence, actor, poll.call, poll.enter_observation);
 }
 
 void finish(Poll& poll, bool outer, std::uint32_t user, DWORD original_result,
@@ -252,10 +254,18 @@ void finish(Poll& poll, bool outer, std::uint32_t user, DWORD original_result,
         }
     }
     Actor live; actor_control_native::State state; actor_control_native::Reason issue{};
-    const bool actor_current = owner && poll.call.active() &&
-        actor_control_native::inspect(owner, poll.sequence, actor, live, state, issue) && live == actor;
+    model::ActorObservation observation;
+    observation.known = true; observation.owner_present = owner != 0;
+    observation.call_active = poll.call.active(); observation.enter = poll.enter_observation;
+    observation.inspect_attempted = observation.owner_present && observation.call_active;
+    observation.inspect_succeeded = observation.inspect_attempted &&
+        actor_control_native::inspect(owner, poll.sequence, actor, live, state, issue, observation.inspect);
+    observation.actor_equal = observation.inspect_succeeded && live == actor;
+    const bool actor_current = observation.actor_equal;
     actor_control_native::Clock clock;
+    observation.clock_attempted = actor_current;
     const bool clock_known = actor_current && actor_control_native::read_clock(owner, poll.sequence, actor, clock);
+    observation.clock_known = clock_known;
     XINPUT_STATE returned{};
     const bool has_output = output && returned_result == ERROR_SUCCESS && copy(output, returned);
     Lock lock(shared.lock);
@@ -283,11 +293,11 @@ void finish(Poll& poll, bool outer, std::uint32_t user, DWORD original_result,
             if (returned_result != original_result) mask |= policy::failure_bit(policy::FailedCheck::transport_result);
             if (!original_ms || now < original_ms || now - original_ms > policy::Pulse::maximum_gap_ms)
                 mask |= policy::failure_bit(policy::FailedCheck::source_clock);
-            remember_rejection(*entry, mask, model::RejectionStage::service_plan);
+            remember_rejection(*entry, mask, model::RejectionStage::service_plan, &observation);
             revoke(*entry, model::Status::revoked, model::Reason::source_changed);
         }
         if (now >= r.expires_ms) {
-            remember_rejection(*entry, policy::failure_bit(policy::FailedCheck::deadline), model::RejectionStage::service_plan);
+            remember_rejection(*entry, policy::failure_bit(policy::FailedCheck::deadline), model::RejectionStage::service_plan, &observation);
             revoke(*entry, model::Status::expired, model::Reason::deadline);
         }
         if (!entry->started && entry->ending == model::Status::released && actor_current && clock_known && same_source) {
@@ -307,7 +317,7 @@ void finish(Poll& poll, bool outer, std::uint32_t user, DWORD original_result,
             input.menu_closed = environment::menu_closed();
             input.interference_clear = interference_clear && environment::interference_clear();
             plan = shared.pulse.poll(poll.ticket, input);
-            remember_policy_rejection(*entry, model::RejectionStage::core_plan);
+            remember_policy_rejection(*entry, model::RejectionStage::core_plan, observation);
             if (plan.press_candidate) increment(r.press_candidates);
             r.report_debt = shared.pulse.release_debt();
         }
@@ -324,7 +334,7 @@ void finish(Poll& poll, bool outer, std::uint32_t user, DWORD original_result,
                 source.epoch && original_ms == source.observed_ms && input.now_ms >= original_ms &&
                 input.now_ms - original_ms <= 100;
             plan = shared.pulse.poll({plan.generation}, input);
-            remember_policy_rejection(*entry, model::RejectionStage::prepublish);
+            remember_policy_rejection(*entry, model::RejectionStage::prepublish, observation);
             stamp(entry->receipt, input.now_ms);
             entry->receipt.report_debt = shared.pulse.release_debt();
         }
@@ -339,7 +349,7 @@ void finish(Poll& poll, bool outer, std::uint32_t user, DWORD original_result,
             if (published && plan.release_candidate) increment(r.neutral_publications);
             r.report_debt = shared.pulse.release_debt();
             if (!published) {
-                remember_rejection(*entry, 0, model::RejectionStage::publication);
+                remember_rejection(*entry, 0, model::RejectionStage::publication, &observation);
                 revoke(*entry, model::Status::revoked, model::Reason::publication_unconfirmed);
             }
         }

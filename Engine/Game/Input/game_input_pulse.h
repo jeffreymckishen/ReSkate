@@ -1,5 +1,6 @@
 #pragma once
 #include "input_pulse.h"
+#include "Engine/Game/Skater/actor_observation.h"
 #include <cstdint>
 
 namespace dingosdk::game_input_pulse {
@@ -83,12 +84,20 @@ constexpr const char* reason_name(Reason reason) noexcept {
 }
 // A publication is an SDK output-buffer witness, not normal wrapper return or
 // native consumption. An observed source epoch is not physical-device identity.
+// Facts captured at the first rejected publication decision. A skipped clock
+// probe is distinct from a failed clock read; no native identity is exposed.
+struct ActorObservation {
+    bool known{}, owner_present{}, call_active{}, inspect_attempted{}, inspect_succeeded{}, actor_equal{}, clock_attempted{}, clock_known{};
+    actor_observation::Trace enter{}, inspect{};
+    bool operator==(const ActorObservation&) const = default;
+};
 struct Receipt {
     Handle handle{};
     Status status{Status::queued};
     Reason reason{Reason::none};
     RejectionStage first_rejection_stage{RejectionStage::none};
     std::uint32_t first_rejection_mask{};
+    ActorObservation first_actor_observation{};
     std::uint32_t user{};
     std::uint16_t button{};
     std::uint64_t requested_ms{}, expires_ms{}, observed_ms{}, source_epoch{};

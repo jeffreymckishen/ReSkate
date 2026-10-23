@@ -48,15 +48,43 @@ for _,v in {"none","invalid_owner","invalid_source","invalid_button","rate_limit
 local stages={none=true,service_plan=true,core_plan=true,prepublish=true,tick_ready=true,tick_deadline=true,publication=true}
 local counts={"press_candidates","press_publications","neutral_publications","original_failures","contentions"}
 local flags={"terminal","report_debt","claim_released","actor_retired","orphaned","quarantined","original_result_known"}
+local actor_flags={"first_actor_observation_known","first_actor_owner_present","first_actor_call_active",
+    "first_actor_inspect_attempted","first_actor_inspect_succeeded","first_actor_equal",
+    "first_actor_clock_attempted","first_actor_clock_known"}
+local actor_phases,actor_reasons={},{}
+for _,v in {"not_attempted","qualified","enter_owner_lock","enter_ownership","enter_claim",
+    "inspect_owner_lock","inspect_ownership","controls_focus","controls_profile","controls_teleport",
+    "controls_motion_active","controls_motion_unavailable","validation_owner_lock","readiness","capture",
+    "actor_epoch","lifetime","world","protection","recapture","context","state","final_owner_lock",
+    "final_lifetime","identity"} do actor_phases[v]=true end
+for _,v in {"none","invalid_owner","invalid_kind","unavailable","busy","receipt_capacity","context_changed",
+    "focus_changed","teleporting","motion_owned","actor_changed","actor_destroyed","world_changed",
+    "unsupported_state","protection_conflict","request_bits_conflict","request_write_failed",
+    "request_restore_failed","native_refused","selector_overridden","cancelled","expired","owner_released",
+    "native_lifetime_changed"} do actor_reasons[v]=true end
+local actor_enums={first_actor_enter_phase=actor_phases,first_actor_enter_reason=actor_reasons,
+    first_actor_inspect_phase=actor_phases,first_actor_inspect_reason=actor_reasons}
+local actor_fields={}
+for _,v in actor_flags do actor_fields[v]=true end
+for v in actor_enums do actor_fields[v]=true end
 local fields={status=true,reason=true,sequence=true,requested_ms=true,expires_ms=true,observed_ms=true,source_epoch=true,
     user=true,button=true,transport=true,source_identity=true,publication_scope=true,consumption=true,semantic_completion=true,
     first_rejection_mask=true,first_rejection_stage=true,original_result=true}
 for _,v in counts do fields[v]=true end
 for _,v in flags do fields[v]=true end
+for v in actor_fields do fields[v]=true end
 
 local function receipt_valid(r,previous,slot)
     if type(r)~="table" or getmetatable(r)~=nil then return false end
     for k in r do if not fields[k] then return false end end
+    -- Older constructed receipts may omit this entire diagnostic group. It is
+    -- otherwise complete and typed, never evidence for a transition decision.
+    local actor_present=false
+    for v in actor_fields do if r[v]~=nil then actor_present=true;break end end
+    if actor_present then
+        for _,v in actor_flags do if type(r[v])~="boolean" then return false end end
+        for v,values in actor_enums do if type(r[v])~="string" or not values[r[v]] then return false end end
+    end
     if not statuses[r.status] or not reasons[r.reason] or r.terminal~=(terminal[r.status]==true)
         or r.user~=slot or r.button~=0x8000 or r.transport~="xinput" or r.source_identity~="observed_stream"
         or r.publication_scope~="process_outer_xinput_buffer" or r.consumption~="unobserved"
@@ -77,6 +105,9 @@ local function receipt_valid(r,previous,slot)
         for _,v in counts do if less(r[v],previous[v]) then return false end end
         if previous.first_rejection_stage~="none" and (r.first_rejection_stage~=previous.first_rejection_stage
             or r.first_rejection_mask~=previous.first_rejection_mask) then return false end
+        if previous.first_actor_observation_known==true then
+            for v in actor_fields do if r[v]~=previous[v] then return false end end
+        end
         if previous.terminal then for v in fields do if r[v]~=previous[v] then return false end end end
     end
     return true

@@ -83,6 +83,28 @@ The first mask and stage remain unchanged through later cleanup, retirement and 
 The core also preserves its mask across acknowledgement until a fresh accepted request resets it;
 the service's acknowledged record is removed. This adds no retry, weaker guard, raw data or address.
 
+The same first decision now retains bounded actor-observation diagnostics. The eight Boolean
+fields are `first_actor_observation_known`, `first_actor_owner_present`, `first_actor_call_active`,
+`first_actor_inspect_attempted`, `first_actor_inspect_succeeded`, `first_actor_equal`,
+`first_actor_clock_attempted` and `first_actor_clock_known`. Four enum strings retain
+`first_actor_enter_phase`, `first_actor_enter_reason`, `first_actor_inspect_phase` and
+`first_actor_inspect_reason`. No native actor address, identity tuple or handle is included.
+
+`first_actor_observation_known=false` means no poll observation was captured at that first
+decision, such as an explicit cancellation or client-tick stop. Before a rejection, phases are
+`not_attempted` and reasons are `none`. A failed call admission skips inspection; failed
+inspection or actor equality skips the clock probe. In particular, `clock_attempted=false`
+with `clock_known=false` does not show that a clock provider failed. Later positive observations,
+cleanup and retirement never replace these first-decision facts.
+
+Phases name existing refusal edges: entry/inspection owner Try-locks, ownership/claim checks,
+controls, validation, capture, actor/world/lifetime fences and final identity. The strings
+`qualified` and `not_attempted` distinguish successful and skipped probes. Grouped edges such
+as `controls_profile`, `capture`, `context` and `final_lifetime` do not identify which constituent
+condition failed. `enter_claim` means arbiter entry refused; its `busy` reason does not prove
+lock contention. This is classification only: provider calls, guard order, lock modes,
+warmup, revocation, deadlines and report publication behavior are unchanged.
+
 The publication scope is `process_outer_xinput_buffer`. SDK output-buffer publication does not
 prove the wrapper subsequently returned normally. Both `consumption` and `semantic_completion`
 remain `"unobserved"`, including after `released`. No receipt grants raw memory or an actor ticket.

@@ -20,6 +20,7 @@ struct Poll {
     std::uint64_t sequence{};
     input_pulse::Ticket ticket{};
     actor_control::Call call;
+    actor_observation::Trace enter_observation;
 };
 void begin(bool outer, std::uint32_t user, Poll& poll) noexcept;
 void finish(Poll& poll, bool outer, std::uint32_t user, DWORD original_result,

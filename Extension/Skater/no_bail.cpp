@@ -317,17 +317,30 @@ ActionStateWitness action_state(const Owner& owner) noexcept {
     }
     return result;
 }
-skater_action::Reason action_controls() noexcept {
+skater_action::Reason action_check(actor_control_native::Observation* observation,
+    actor_observation::Phase phase, skater_action::Reason reason) noexcept {
+    if (observation) *observation = {phase, reason};
+    return reason;
+}
+skater_action::Reason action_controls(actor_control_native::Observation* observation = nullptr) noexcept {
     DWORD process{};
     const auto window = GetForegroundWindow();
     if (!window || !GetWindowThreadProcessId(window, &process) || process != GetCurrentProcessId() ||
         overlay::interface_open() || !multiplayer::native_throwdown_gameplay_input_allowed())
-        return skater_action::Reason::focus_changed;
+        return action_check(observation, actor_observation::Phase::controls_focus, skater_action::Reason::focus_changed);
     bool teleporting{};
-    if (!try_local_skater_teleport_pending(teleporting)) return skater_action::Reason::unavailable;
-    if (teleporting) return skater_action::Reason::teleporting;
+    if (!try_local_skater_teleport_pending(teleporting))
+        return action_check(observation, actor_observation::Phase::controls_profile, skater_action::Reason::unavailable);
+    if (teleporting)
+        return action_check(observation, actor_observation::Phase::controls_teleport, skater_action::Reason::teleporting);
     const auto guard = protection().actions.motion_guard.load(std::memory_order_acquire);
-    if (guard && guard() != skater_action::MotionGuardStatus::idle) return skater_action::Reason::motion_owned;
+    if (guard) {
+        const auto status = guard();
+        if (status != skater_action::MotionGuardStatus::idle)
+            return action_check(observation, status == skater_action::MotionGuardStatus::active ?
+                actor_observation::Phase::controls_motion_active : actor_observation::Phase::controls_motion_unavailable,
+                skater_action::Reason::motion_owned);
+    }
     return skater_action::Reason::none;
 }
 bool action_protection_locked(const Owner& owner, std::uint64_t now) noexcept {
@@ -367,38 +380,45 @@ void action_destroyed(std::uintptr_t entity) noexcept {
 // shared destruction epoch. These endpoint fences are not an engine mutex.
 skater_action::Reason action_validate(const ActionBinding& expected, ActionBinding& live,
                                      skater_action::State& state, std::uint64_t& epoch,
-                                     bool nonblocking = false) noexcept {
-    if (const auto issue = action_controls(); issue != skater_action::Reason::none) return issue;
+                                     bool nonblocking = false,
+                                     actor_control_native::Observation* observation = nullptr) noexcept {
+    if (const auto issue = action_controls(observation); issue != skater_action::Reason::none) return issue;
     auto& p = protection();
     if (nonblocking) {
-        if (!TryAcquireSRWLockShared(&p.lock)) return skater_action::Reason::unavailable;
+        if (!TryAcquireSRWLockShared(&p.lock))
+            return action_check(observation, actor_observation::Phase::validation_owner_lock, skater_action::Reason::unavailable);
     } else AcquireSRWLockShared(&p.lock);
     const auto ready = p.actions.ready && p.actions.world_contract &&
         GetTickCount64() - p.actions.tick_at < skater_action::offer_timeout_ms;
     const auto generation = p.actions.world_generation;
     const auto lease = p.lease; const auto board = p.board; const auto bmx = p.bmx;
     ReleaseSRWLockShared(&p.lock);
-    if (!ready) return skater_action::Reason::unavailable;
-    if (!action_capture(expected.owner, live, epoch)) return skater_action::Reason::actor_changed;
+    if (!ready) return action_check(observation, actor_observation::Phase::readiness, skater_action::Reason::unavailable);
+    if (!action_capture(expected.owner, live, epoch))
+        return action_check(observation, actor_observation::Phase::capture, skater_action::Reason::actor_changed);
     live.world_generation = generation;
-    if (live.actor_epoch != expected.actor_epoch) return skater_action::Reason::actor_destroyed;
+    if (live.actor_epoch != expected.actor_epoch)
+        return action_check(observation, actor_observation::Phase::actor_epoch, skater_action::Reason::actor_destroyed);
     if (const auto fence = skater_action::lifetime_fence(expected.lifetime_epoch, live.lifetime_epoch,
-        expected.world_generation, live.world_generation); fence != skater_action::Reason::none) return fence;
+        expected.world_generation, live.world_generation); fence != skater_action::Reason::none)
+        return action_check(observation, actor_observation::Phase::lifetime, fence);
     if (live.game_context != expected.game_context || live.world != expected.world ||
         live.world_state != expected.world_state || live.world_generation != expected.world_generation)
-        return skater_action::Reason::world_changed;
+        return action_check(observation, actor_observation::Phase::world, skater_action::Reason::world_changed);
     const auto now = GetTickCount64();
     if (dark_pop_protecting(now) || (lease.owner == expected.owner && lease.active(now)) ||
         (board.owner == expected.owner && now < board.until) || (bmx.owner == expected.owner && now < bmx.until))
-        return skater_action::Reason::protection_conflict;
+        return action_check(observation, actor_observation::Phase::protection, skater_action::Reason::protection_conflict);
     const auto first_state = action_state(live.owner);
     ActionBinding after; std::uint64_t after_epoch{};
-    if (!action_capture(expected.owner, after, after_epoch)) return skater_action::Reason::actor_changed;
+    if (!action_capture(expected.owner, after, after_epoch))
+        return action_check(observation, actor_observation::Phase::recapture, skater_action::Reason::actor_changed);
     after.world_generation = generation;
     if (after != live || epoch != after_epoch || action_state(after.owner) != first_state)
-        return skater_action::Reason::context_changed;
+        return action_check(observation, actor_observation::Phase::context, skater_action::Reason::context_changed);
     state = first_state.state;
-    return state.known ? skater_action::Reason::none : skater_action::Reason::unsupported_state;
+    return state.known ? action_check(observation, actor_observation::Phase::qualified, skater_action::Reason::none) :
+        action_check(observation, actor_observation::Phase::state, skater_action::Reason::unsupported_state);
 }
 void action_observe(std::uintptr_t selector) noexcept {
     auto& p = protection();
@@ -3459,51 +3479,86 @@ bool acquire(std::uint64_t owner, std::uint64_t sequence, Admission admission,
 
 bool inspect(std::uint64_t owner, std::uint64_t sequence, const Actor& expected,
     Actor& actor, State& state, Reason& reason, bool cleanup) noexcept {
-    LastError error; actor = {}; state = {}; reason = Reason::none;
+    Observation observation;
+    return inspect(owner, sequence, expected, actor, state, reason, observation, cleanup);
+}
+
+bool inspect(std::uint64_t owner, std::uint64_t sequence, const Actor& expected,
+    Actor& actor, State& state, Reason& reason, Observation& observation, bool cleanup) noexcept {
+    LastError error; actor = {}; state = {}; reason = Reason::none; observation = {};
     auto& p = protection(); auto& a = p.actions;
-    if (!TryAcquireSRWLockShared(&p.lock)) { reason = Reason::unavailable; return false; }
+    if (!TryAcquireSRWLockShared(&p.lock)) {
+        reason = action_check(&observation, actor_observation::Phase::inspect_owner_lock, Reason::unavailable); return false;
+    }
     const bool owned = owned_locked(owner, sequence, expected);
     const auto generation = a.world_generation;
     ReleaseSRWLockShared(&p.lock);
-    if (!owned) { reason = Reason::motion_owned; return false; }
+    if (!owned) {
+        reason = action_check(&observation, actor_observation::Phase::inspect_ownership, Reason::motion_owned); return false;
+    }
     const auto binding = actor_binding(expected);
     ActionBinding first, second; skater_action::State observed; std::uint64_t epoch{}, after{};
     if (!cleanup) {
-        reason = action_validate(binding, first, observed, epoch, true);
+        reason = action_validate(binding, first, observed, epoch, true, &observation);
         if (reason != Reason::none) return false;
     } else {
         // Cancellation, an open menu, lost focus or a new protection lease
         // cannot cancel the service's outstanding cleanup obligation. The
         // exact actor and world still have to survive both fresh captures.
-        if (!action_capture(binding.owner, first, epoch)) { reason = Reason::actor_changed; return false; }
+        if (!action_capture(binding.owner, first, epoch)) {
+            reason = action_check(&observation, actor_observation::Phase::capture, Reason::actor_changed); return false;
+        }
         first.world_generation = generation;
-        if (first != binding) { reason = Reason::native_lifetime_changed; return false; }
+        if (first != binding) {
+            reason = action_check(&observation, actor_observation::Phase::lifetime, Reason::native_lifetime_changed); return false;
+        }
         const auto before = action_state(first.owner);
-        if (!action_capture(binding.owner, second, after)) { reason = Reason::actor_changed; return false; }
+        if (!action_capture(binding.owner, second, after)) {
+            reason = action_check(&observation, actor_observation::Phase::recapture, Reason::actor_changed); return false;
+        }
         second.world_generation = generation;
         if (first != second || epoch != after || action_state(second.owner) != before) {
-            reason = Reason::context_changed; return false;
+            reason = action_check(&observation, actor_observation::Phase::context, Reason::context_changed); return false;
         }
         observed = before.state;
     }
-    if (!TryAcquireSRWLockShared(&p.lock)) { reason = Reason::unavailable; return false; }
+    if (!TryAcquireSRWLockShared(&p.lock)) {
+        reason = action_check(&observation, actor_observation::Phase::final_owner_lock, Reason::unavailable); return false;
+    }
     const bool unchanged = owned_locked(owner, sequence, expected) &&
         a.world_generation == generation && multiplayer::entity_destruction_epoch(p.base, after) && after == epoch;
     ReleaseSRWLockShared(&p.lock);
-    if (!unchanged) { reason = Reason::native_lifetime_changed; return false; }
+    if (!unchanged) {
+        reason = action_check(&observation, actor_observation::Phase::final_lifetime, Reason::native_lifetime_changed); return false;
+    }
     actor = captured_actor(first, expected.ticket);
-    if (actor != expected) { actor = {}; reason = Reason::actor_changed; return false; }
+    if (actor != expected) {
+        actor = {}; reason = action_check(&observation, actor_observation::Phase::identity, Reason::actor_changed); return false;
+    }
     state = observed;
+    observation = {actor_observation::Phase::qualified, Reason::none};
     return true;
 }
 
 bool enter(std::uint64_t owner, std::uint64_t sequence,
     const Actor& actor, actor_control::Call& call) noexcept {
+    Observation observation;
+    return enter(owner, sequence, actor, call, observation);
+}
+
+bool enter(std::uint64_t owner, std::uint64_t sequence,
+    const Actor& actor, actor_control::Call& call, Observation& observation) noexcept {
+    observation = {};
     auto& p = protection();
-    if (!TryAcquireSRWLockShared(&p.lock)) return false;
-    const bool entered = owned_locked(owner, sequence, actor) &&
-        p.actions.motion_claim.enter(owner, actor.ticket, call);
+    if (!TryAcquireSRWLockShared(&p.lock)) {
+        observation = {actor_observation::Phase::enter_owner_lock, Reason::unavailable}; return false;
+    }
+    const bool owned = owned_locked(owner, sequence, actor);
+    const bool entered = owned && p.actions.motion_claim.enter(owner, actor.ticket, call);
     ReleaseSRWLockShared(&p.lock);
+    observation = !owned ? Observation{actor_observation::Phase::enter_ownership, Reason::motion_owned} :
+        !entered ? Observation{actor_observation::Phase::enter_claim, Reason::busy} :
+        Observation{actor_observation::Phase::qualified, Reason::none};
     return entered;
 }
 

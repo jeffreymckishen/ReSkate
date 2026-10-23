@@ -87,13 +87,30 @@ struct InputPulseApi {
             r.press_publications > r.press_candidates || std::string_view(game_input_pulse::status_name(r.status)) == "invalid" ||
             std::string_view(game_input_pulse::reason_name(r.reason)) == "invalid" ||
             (r.first_rejection_mask & ~input_pulse::failure_bits) ||
-            std::string_view(game_input_pulse::rejection_stage_name(r.first_rejection_stage)) == "invalid")
+            std::string_view(game_input_pulse::rejection_stage_name(r.first_rejection_stage)) == "invalid" ||
+            std::string_view(actor_observation::phase_name(r.first_actor_observation.enter.phase)) == "invalid" ||
+            std::string_view(actor_observation::phase_name(r.first_actor_observation.inspect.phase)) == "invalid" ||
+            std::string_view(skater_action::reason_name(r.first_actor_observation.enter.reason)) == "invalid" ||
+            std::string_view(skater_action::reason_name(r.first_actor_observation.inspect.reason)) == "invalid")
             return failure(L, "input pulse receipt has invalid observations");
-        lua_createtable(L, 0, 32);
+        lua_createtable(L, 0, 48);
         lua_pushstring(L, game_input_pulse::status_name(r.status)); lua_setfield(L, -2, "status");
         lua_pushstring(L, game_input_pulse::reason_name(r.reason)); lua_setfield(L, -2, "reason");
         number(L, "first_rejection_mask", r.first_rejection_mask);
         lua_pushstring(L, game_input_pulse::rejection_stage_name(r.first_rejection_stage)); lua_setfield(L, -2, "first_rejection_stage");
+        const auto& a = r.first_actor_observation;
+        boolean(L, "first_actor_observation_known", a.known);
+        boolean(L, "first_actor_owner_present", a.owner_present);
+        boolean(L, "first_actor_call_active", a.call_active);
+        boolean(L, "first_actor_inspect_attempted", a.inspect_attempted);
+        boolean(L, "first_actor_inspect_succeeded", a.inspect_succeeded);
+        boolean(L, "first_actor_equal", a.actor_equal);
+        boolean(L, "first_actor_clock_attempted", a.clock_attempted);
+        boolean(L, "first_actor_clock_known", a.clock_known);
+        lua_pushstring(L, actor_observation::phase_name(a.enter.phase)); lua_setfield(L, -2, "first_actor_enter_phase");
+        lua_pushstring(L, skater_action::reason_name(a.enter.reason)); lua_setfield(L, -2, "first_actor_enter_reason");
+        lua_pushstring(L, actor_observation::phase_name(a.inspect.phase)); lua_setfield(L, -2, "first_actor_inspect_phase");
+        lua_pushstring(L, skater_action::reason_name(a.inspect.reason)); lua_setfield(L, -2, "first_actor_inspect_reason");
         boolean(L, "terminal", game_input_pulse::terminal(r.status));
         lua_pushstring(L, "xinput"); lua_setfield(L, -2, "transport");
         lua_pushstring(L, "observed_stream"); lua_setfield(L, -2, "source_identity");

@@ -14,6 +14,7 @@
 #include "Engine/Game/Input/owned_menu_input.h"
 #include <hidsdi.h>
 #include <atomic>
+#include <cmath>
 #include <format>
 #include <array>
 #include <cstring>
@@ -735,6 +736,7 @@ void filter_pad(bool outer, DWORD user, XINPUT_STATE* output) noexcept {
 // holds the game's input does not hold its controller. That hook's own function is hooked
 // then, so the capture is in front of it again.
 void game_pad_read(DWORD user, XINPUT_STATE* output) noexcept;
+void note_xinput(DWORD user, const XINPUT_STATE& state) noexcept;
 bool bmx_private_pad_reserved() noexcept {
     return bmx_input_capture_active() || bmx_interaction_capture_active() ||
         private_bmx_native_input_handoff_requested() || human_native_handoff_requested() ||
@@ -750,6 +752,7 @@ bool input_pulse_available() noexcept {
 
 template<std::size_t I>
 DWORD WINAPI captured_front(DWORD user, XINPUT_STATE* output) {
+    const auto entry_error = GetLastError();
     const auto capture = polled_capture();
     const auto hidden = overlay_input_access ? std::uint16_t{} : static_cast<std::uint16_t>(
         mode_hidden_buttons.load(std::memory_order_relaxed) |
@@ -761,39 +764,38 @@ DWORD WINAPI captured_front(DWORD user, XINPUT_STATE* output) {
     DWORD result;
     { // It may go on to XInput's own entry point, which is hooked as well.
         OverlayInputAccess access;
+        SetLastError(entry_error);
         result = original<DWORD(WINAPI*)(DWORD, XINPUT_STATE*)>(input_hooks().xinput_front[I])(user, output);
     }
+    const auto original_error = GetLastError();
     const auto original_ms = GetTickCount64();
     const auto raw_pad=result==ERROR_SUCCESS&&output?output->Gamepad:XINPUT_GAMEPAD{};
     const auto raw_packet=result==ERROR_SUCCESS&&output?output->dwPacketNumber:0;
+    if (result == ERROR_SUCCESS && output) note_xinput(user, *output);
     note_private_bmx_original_xinput(user,result,output);
     note_human_native_original(outer,user,result,output);
     // Character-room scripts cannot replace the physical source of an owned BMX/handoff poll.
-    if (outer && output && !bmx_private_pad_reserved() && scripted_pad(user,*output)) {
-        native_input_pulse::finish(pulse_poll, outer, user, result, original_ms, raw_packet, raw_pad,
-            ERROR_SUCCESS, output, false);
-        return ERROR_SUCCESS;
-    }
-    if (result == ERROR_SUCCESS && output && capture!=input::BmxNativeCapture::none) {
-        if(capture==input::BmxNativeCapture::interaction)filter_pad(outer,user,output);
-        input::bmx_filter_native_pad(output->Gamepad,capture);
-    } else if (result == ERROR_SUCCESS && output) {
-        if(outer)game_pad_read(user,output);
-    }
-    if(result==ERROR_SUCCESS&&output) {
+    const bool scripted = outer && output && !bmx_private_pad_reserved() && scripted_pad(user, *output);
+    const auto returned_result = scripted ? ERROR_SUCCESS : result;
+    if (!scripted && result == ERROR_SUCCESS && output) {
+        if (capture != input::BmxNativeCapture::none) {
+            if(capture==input::BmxNativeCapture::interaction)filter_pad(outer,user,output);
+            input::bmx_filter_native_pad(output->Gamepad,capture);
+        } else if (outer) game_pad_read(user,output);
         if(hidden)output->Gamepad.wButtons &= static_cast<WORD>(~hidden);
         // The hidden-button tag is independent, so switching BMX ownership
         // still changes the packet while a plugin keeps buttons hidden.
         output->dwPacketNumber ^= input::bmx_native_packet_tag(capture,hidden);
-    }
-    if(result==ERROR_SUCCESS&&output) {
         apply_private_native_board_input(outer,user,raw_pad,output);
         apply_private_bmx_native_input_handoff(outer,user,raw_packet,raw_pad,output);
         apply_human_native_handoff(outer,user,raw_packet,raw_pad,output);
     }
+    // A scripted success is still distinct from the original source result.
+    // Every path joins the same persistent packet/publication finalizer.
     native_input_pulse::finish(pulse_poll, outer, user, result, original_ms, raw_packet, raw_pad,
-        result, output, input_pulse_available());
-    return result;
+        returned_result, output, !scripted && input_pulse_available());
+    SetLastError(original_error);
+    return returned_result;
 }
 void keep_xinput_capture_first() {
     auto& h = input_hooks();
@@ -891,9 +893,43 @@ struct LastInput {
     std::atomic<std::uint32_t> message{}, message_key{}; // the game window's last input message
 };
 LastInput& last_input() { static auto* value = new LastInput; return *value; }
+std::atomic<ULONGLONG> controls_at{};
+namespace {
+struct PadSeen {
+    bool known{};
+    std::uint32_t buttons{};
+    std::array<float, 6> axes{};
+};
+}
+void note_controls() noexcept { controls_at.store(GetTickCount64(), std::memory_order_relaxed); }
+// A controller counts as worked when a button changes, or a stick or trigger moves an eighth of
+// its travel from where it was last worked: one left resting off centre, or a little noise, does not.
+void note_pad(std::size_t slot, std::uint32_t buttons, const std::array<float, 6>& axes) noexcept {
+    static std::mutex mutex;
+    static std::array<PadSeen, 6> seen{};
+    if (slot >= seen.size()) return;
+    bool moved{};
+    {
+        // Activity observation is best-effort; a native input read must not wait for it.
+        std::unique_lock lock(mutex, std::try_to_lock);
+        if (!lock.owns_lock()) return;
+        auto& was = seen[slot];
+        moved = was.known && was.buttons != buttons;
+        for (std::size_t i = 0; i < axes.size() && was.known; ++i) moved = moved || std::abs(axes[i] - was.axes[i]) > 0.125f;
+        if (!was.known || moved) was = {true, buttons, axes};
+    }
+    if (moved) note_controls();
+}
+void note_xinput(DWORD user, const XINPUT_STATE& state) noexcept {
+    const auto& g = state.Gamepad;
+    const auto stick = [](SHORT v) { return static_cast<float>(v) / 32768.0f; };
+    note_pad(user, g.wButtons, {stick(g.sThumbLX), stick(g.sThumbLY), stick(g.sThumbRX), stick(g.sThumbRY),
+                                g.bLeftTrigger / 255.0f, g.bRightTrigger / 255.0f});
+}
 void note_input_record(const RAWINPUT& record) noexcept {
     auto& last = last_input();
     if (record.header.dwType == RIM_TYPEKEYBOARD) {
+        note_controls();
         last.key.store(record.data.keyboard.VKey | (std::uint32_t{record.data.keyboard.MakeCode} << 16),
                        std::memory_order_relaxed);
         last.key_device.store(record.header.hDevice, std::memory_order_relaxed);
@@ -905,6 +941,7 @@ void note_input_record(const RAWINPUT& record) noexcept {
         last.mouse_buttons.store(record.data.mouse.usButtonFlags, std::memory_order_relaxed);
         last.mouse_device.store(record.header.hDevice, std::memory_order_relaxed);
         last.mouse_at.store(GetTickCount64(), std::memory_order_relaxed);
+        note_controls();
         if ((record.data.mouse.usButtonFlags & RI_MOUSE_WHEEL) &&
             GetTickCount64() < mode_input_paused_until.load(std::memory_order_relaxed))
             mode_mouse_wheel.fetch_add(static_cast<SHORT>(record.data.mouse.usButtonData) / WHEEL_DELTA, std::memory_order_relaxed);
@@ -924,6 +961,8 @@ void note_input_message(UINT message, WPARAM wp) noexcept {
     last.message.store(message, std::memory_order_relaxed);
     last.message_key.store(static_cast<std::uint32_t>(wp), std::memory_order_relaxed);
     last.message_at.store(GetTickCount64(), std::memory_order_relaxed);
+    // (Windows sends a mouse move message without the mouse moving, as a window comes or goes under it.)
+    if (message != WM_MOUSEMOVE) note_controls();
 }
 // What the game last read from the keyboard and mouse, within the 3 s before now.
 std::string recent_input() {
@@ -1219,6 +1258,7 @@ void game_pad_read(DWORD user, XINPUT_STATE* output) noexcept {
 }
 template<std::size_t I, bool Extended = false>
 DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
+    const auto entry_error = GetLastError();
     const auto& hook = Extended ? input_hooks().xinput_extended[I] : input_hooks().xinput_state[I];
     const auto capture = polled_capture();
     const bool outer = overlay_input_access == 0;
@@ -1231,40 +1271,38 @@ DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
     DWORD result;
     { // XInput exports can forward through another hooked XInput export.
         OverlayInputAccess access;
+        SetLastError(entry_error);
         result = original<DWORD(WINAPI*)(DWORD, XINPUT_STATE*)>(hook)(user, output);
     }
+    const auto original_error = GetLastError();
     const auto original_ms = GetTickCount64();
     const auto raw_pad=result==ERROR_SUCCESS&&output?output->Gamepad:XINPUT_GAMEPAD{};
     const auto raw_packet=result==ERROR_SUCCESS&&output?output->dwPacketNumber:0;
+    if (result == ERROR_SUCCESS && output) note_xinput(user, *output);
     note_private_bmx_original_xinput(user,result,output);
     note_human_native_original(outer,user,result,output);
     // Character-room scripts cannot replace the physical source of an owned BMX/handoff poll.
-    if (outer && output && !bmx_private_pad_reserved() && scripted_pad(user,*output)) {
-        native_input_pulse::finish(pulse_poll, outer, user, result, original_ms, raw_packet, raw_pad,
-            ERROR_SUCCESS, output, false);
-        return ERROR_SUCCESS;
-    }
-    if (result == ERROR_SUCCESS && output && capture!=input::BmxNativeCapture::none) {
-        if(capture==input::BmxNativeCapture::interaction)filter_pad(outer,user,output);
-        input::bmx_filter_native_pad(output->Gamepad,capture);
-        // The game must notice the owned neutral state even for an unchanged physical packet.
-    } else if (result == ERROR_SUCCESS && output) {
-        if(outer)game_pad_read(user,output);
-    }
-    if(result==ERROR_SUCCESS&&output) {
+    const bool scripted = outer && output && !bmx_private_pad_reserved() && scripted_pad(user, *output);
+    const auto returned_result = scripted ? ERROR_SUCCESS : result;
+    if (!scripted && result == ERROR_SUCCESS && output) {
+        if (capture != input::BmxNativeCapture::none) {
+            if(capture==input::BmxNativeCapture::interaction)filter_pad(outer,user,output);
+            input::bmx_filter_native_pad(output->Gamepad,capture);
+            // The game must notice the owned neutral state even for an unchanged physical packet.
+        } else if (outer) game_pad_read(user,output);
         if(hidden)output->Gamepad.wButtons &= static_cast<WORD>(~hidden);
         // The hidden-button tag is independent, so switching BMX ownership
         // still changes the packet while a plugin keeps buttons hidden.
         output->dwPacketNumber ^= input::bmx_native_packet_tag(capture,hidden);
-    }
-    if(result==ERROR_SUCCESS&&output) {
         apply_private_native_board_input(outer,user,raw_pad,output);
         apply_private_bmx_native_input_handoff(outer,user,raw_packet,raw_pad,output);
         apply_human_native_handoff(outer,user,raw_packet,raw_pad,output);
     }
+    // Preserve original failures even when a separate script supplies success.
     native_input_pulse::finish(pulse_poll, outer, user, result, original_ms, raw_packet, raw_pad,
-        result, output, input_pulse_available());
-    return result;
+        returned_result, output, !scripted && input_pulse_available());
+    SetLastError(original_error);
+    return returned_result;
 }
 template<std::size_t I>
 DWORD WINAPI captured_keystroke(DWORD user, DWORD reserved, PXINPUT_KEYSTROKE output) {

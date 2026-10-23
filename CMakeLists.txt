@@ -494,6 +494,15 @@ if(DINGOSDK_BUILD_PLUGIN_TESTS)
     add_test(NAME input_pulse COMMAND dingosdk_input_pulse_tests)
     set_tests_properties(input_pulse PROPERTIES TIMEOUT 15)
     if(WIN32)
+        # The test includes owned_bodies.cpp once, with a private synthetic
+        # Service/native-memory/TLS seed. Do not add a second cpp object here.
+        add_executable(dingosdk_owned_body_source_tests Extension/World/Test/owned_body_source_tests.cpp)
+        target_include_directories(dingosdk_owned_body_source_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+        target_compile_definitions(dingosdk_owned_body_source_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+        target_compile_options(dingosdk_owned_body_source_tests PRIVATE /W4 /WX /Gy /Gw)
+        target_link_options(dingosdk_owned_body_source_tests PRIVATE /OPT:REF)
+        add_test(NAME owned_body_source COMMAND dingosdk_owned_body_source_tests)
+        set_tests_properties(owned_body_source PROPERTIES TIMEOUT 15)
         # Link the actual report service against private constructed providers,
         # without the game, overlay, controller driver or production environment.
         add_executable(dingosdk_game_input_pulse_tests

@@ -243,14 +243,18 @@ void physics_step(const NoBailSkater& owner, float seconds, bool) noexcept {
     f.game_context = context; f.world = world; f.state = state;
     ReleaseSRWLockExclusive(&f.lock);
 }
-bool clock(const Anchor& a, Epoch& epoch) noexcept {
+bool clock(const Anchor& a, Epoch& epoch, std::uint64_t* observed = nullptr) noexcept {
+    if (observed) *observed = 0;
     if (!TryAcquireSRWLockShared(&clock_feed.lock)) return false;
     const auto& f = clock_feed;
     const bool ok = f.owner.base == service.base && f.owner.entity == a.entity && f.owner.core == a.core &&
         f.owner.context == a.skater_context && f.owner.rig == a.rig && f.game_context == a.context && f.world == a.world && f.state == a.state &&
         f.serial && f.serial == f.sequence.load(std::memory_order_acquire) && GetTickCount64() - f.observed < 250 &&
         calibrated(f.seconds) && std::isfinite(f.time);
-    if (ok) { epoch.serial = f.serial; epoch.time = f.time; epoch.seconds = f.seconds; }
+    if (ok) {
+        epoch.serial = f.serial; epoch.time = f.time; epoch.seconds = f.seconds;
+        if (observed) *observed = f.observed;
+    }
     ReleaseSRWLockShared(&clock_feed.lock);
     float h{}; return ok && peek(a.skater_context + r::context_seconds, h) && calibrated(h);
 }
@@ -576,6 +580,87 @@ std::string read(std::uint64_t owner, const Handle& handle, Sample& out) noexcep
         return {};
     } catch (...) { return "native body observation failed closed"; }
 }
+
+bool capture_source(std::uint64_t owner, const Handle& handle, MeasuredSource& out) noexcept {
+    LastError error; out = {};
+    try {
+        if (!eligible()) return false;
+        Locked lock(service.lock);
+        auto* s = lookup(owner, handle);
+        if (!s || !s->active || s->retained || s->quarantined || !producer_owner(*s, s->body)) return false;
+        Epoch before{}; before.world = service.world_generation; before.body = handle.generation;
+        std::uint64_t observed{};
+        if (!clock(s->anchor, before, &observed)) return false;
+        Sample measured{};
+        // observe() does not publish latest or observe a mailbox successor.
+        if (!observe(*s, measured) || measured.epoch != before) return false;
+        Epoch after{}; after.world = service.world_generation; after.body = handle.generation;
+        std::uint64_t observed_after{};
+        if (!producer_owner(*s, s->body) || !clock(s->anchor, after, &observed_after) ||
+            after != before || observed_after != observed) return false;
+        const auto now = GetTickCount64();
+        if (!observed || now < observed || now - observed >= command_lifetime_ms) return false;
+        MeasuredSource value;
+        value.owner_ = owner; value.handle_ = handle; value.world_generation_ = service.world_generation;
+        value.sample_ = measured; value.clock_observed_ms_ = observed; value.captured_ms_ = now;
+        value.base_ = service.base; value.world_ = s->anchor.world; value.state_ = s->anchor.state;
+        value.body_index_ = s->body.index; value.body_generation_ = s->body.generation;
+        out = value;
+        return true;
+    } catch (...) { return false; }
+}
+SourceBorrow::~SourceBorrow() {
+    LastError error;
+    if (held_) ReleaseSRWLockShared(&service.lock);
+}
+const MeasuredSource* SourceBorrow::get() const noexcept {
+    LastError error;
+    if (!held_ || thread_ != GetCurrentThreadId()) return nullptr;
+    const auto& source = source_;
+    const auto now = GetTickCount64();
+    // The client tick's cached readiness is read under service.lock. It does
+    // not grant gameplay or native-write authority to the eventual consumer.
+    if (!service.hooked.load(std::memory_order_acquire) || !service.eligible ||
+        !source.owner_ || !source.clock_observed_ms_ || !source.captured_ms_ ||
+        now < service.tick_at || now - service.tick_at >= 250 ||
+        now < source.captured_ms_ || source.captured_ms_ < source.clock_observed_ms_ ||
+        now - source.clock_observed_ms_ >= command_lifetime_ms ||
+        service.base != source.base_ || service.world != source.world_ || service.state != source.state_ ||
+        service.world_generation != source.world_generation_) return nullptr;
+    const auto* s = lookup(source.owner_, source.handle_);
+    if (!s || !s->active || s->retained || s->quarantined ||
+        s->body.world != source.world_ || s->anchor.world != source.world_ || s->anchor.state != source.state_ ||
+        s->body.index != source.body_index_ || s->body.generation != source.body_generation_ ||
+        source.sample_.epoch.world != source.world_generation_ ||
+        source.sample_.epoch.body != source.handle_.generation || !producer_owner(*s, s->body)) return nullptr;
+    Epoch before{}; before.world = service.world_generation; before.body = s->handle.generation;
+    std::uint64_t observed{};
+    if (!clock(s->anchor, before, &observed) || observed < source.clock_observed_ms_ ||
+        before.serial < source.sample_.epoch.serial ||
+        (before.serial == source.sample_.epoch.serial ? before.time != source.sample_.epoch.time :
+            before.time <= source.sample_.epoch.time)) return nullptr;
+    // A moving body may have a newer current clock. Never replace the retained
+    // sample's epoch, pose or original wall age with that clock or a new read.
+    Epoch after{}; after.world = service.world_generation; after.body = s->handle.generation;
+    std::uint64_t observed_after{};
+    if (!producer_owner(*s, s->body) || !clock(s->anchor, after, &observed_after) ||
+        after != before || observed_after != observed) return nullptr;
+    const auto finished = GetTickCount64();
+    if (finished < now || finished - source.clock_observed_ms_ >= command_lifetime_ms ||
+        finished - service.tick_at >= 250) return nullptr;
+    return &source;
+}
+bool try_borrow_source(std::uint64_t owner, const MeasuredSource& source, SourceBorrow& out) noexcept {
+    LastError error;
+    if (out.held_) return false;
+    if (!owner || owner != source.owner_ || !TryAcquireSRWLockShared(&service.lock)) return false;
+    out.source_ = source; out.thread_ = GetCurrentThreadId(); out.held_ = true;
+    if (out.get()) return true;
+    out.held_ = false; out.source_ = {}; out.thread_ = 0;
+    ReleaseSRWLockShared(&service.lock);
+    return false;
+}
+
 body_query::Result probe_batch(std::uint64_t owner, const Handle& handle, const body_query::Request& request, unsigned allowance) noexcept {
     LastError error;
     body_query::Result failed; failed.count = request.count <= body_query::maximum_rays ? request.count : 0;

@@ -53,6 +53,16 @@ against other native writers, and a concrete pending-write retirement witness.
 Repeated attach/detach also needs a distinct body park/resume contract. None of
 these native capabilities is supplied or demonstrated by this policy checkpoint.
 
+The private `owned_bodies` measured-source bridge now copies an observed body
+sample without updating `latest` or the command mailbox. Its short Try-only
+borrow rechecks the original source age and current native identities while
+serializing SDK slot retirement. It does not reread or refresh the saved pose,
+pin a native allocation, acquire an actor claim or supply either release barrier.
+Seven actual-service test groups cover 158 checks over constructed native memory,
+read-only native ABI stand-ins, real TLS/SRW locks and a deterministic wall clock.
+The intended retail callback's TLS context and native lifetime remain unqualified;
+this internal bridge has no follow consumer, actuator or Lua API.
+
 With `DINGOSDK_BUILD_PLUGIN_TESTS=ON`, `dingosdk_body_follow_tests` checks the
 model's shared-domain exclusion, stale and regressing samples, publication
 revisions, in-flight release, separate cleanup witnesses, VM unload, lost

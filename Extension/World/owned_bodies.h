@@ -14,4 +14,56 @@ std::string receipt(std::uint64_t owner, const owned_body::Handle&, std::uint64_
 std::string acknowledge(std::uint64_t owner, const owned_body::Handle&, std::uint64_t sequence) noexcept;
 std::string release(std::uint64_t owner, const owned_body::Handle&) noexcept;
 void release_all(std::uint64_t owner) noexcept;
+
+// Private native-service bridge. These values never cross the Lua API.
+// The source owns a copy of the original measured sample, not a live pose.
+class SourceBorrow;
+class MeasuredSource {
+public:
+    const owned_body::Sample& sample() const noexcept { return sample_; }
+    std::uint64_t clock_observed_ms() const noexcept { return clock_observed_ms_; }
+    std::uint64_t captured_ms() const noexcept { return captured_ms_; }
+    // Compare the actual native identities with a separately qualified actor.
+    // The two services' SDK world-generation counters are not interchangeable.
+    std::uintptr_t native_world() const noexcept { return world_; }
+    std::uintptr_t native_state() const noexcept { return state_; }
+private:
+    friend class SourceBorrow;
+    friend bool capture_source(std::uint64_t, const owned_body::Handle&, MeasuredSource&) noexcept;
+    friend bool try_borrow_source(std::uint64_t, const MeasuredSource&, SourceBorrow&) noexcept;
+    std::uint64_t owner_{}, world_generation_{}, clock_observed_ms_{}, captured_ms_{};
+    owned_body::Handle handle_{};
+    owned_body::Sample sample_{};
+    std::uintptr_t base_{}, world_{}, state_{};
+    std::uint32_t body_index_{}, body_generation_{};
+};
+// Client only. Uses observe(), not sample(): latest and the command mailbox
+// remain unchanged. Failure publishes no source.
+bool capture_source(std::uint64_t owner, const owned_body::Handle&, MeasuredSource&) noexcept;
+
+// Stack scope on the acquiring thread only; never keep this object across an
+// original native call or an SDK call that can acquire the body-service lock.
+// This serializes SDK slot changes. It DOES NOT pin a native allocation, keep a
+// world alive, acquire an actor claim or establish a native consumer boundary.
+class SourceBorrow {
+public:
+    SourceBorrow() noexcept = default;
+    ~SourceBorrow();
+    SourceBorrow(const SourceBorrow&) = delete;
+    SourceBorrow& operator=(const SourceBorrow&) = delete;
+    // Repeats the endpoint checks and returns the original sample unchanged.
+    // A non-null result is sampled identity evidence, not an atomic native lease.
+    const MeasuredSource* get() const noexcept;
+private:
+    friend bool try_borrow_source(std::uint64_t, const MeasuredSource&, SourceBorrow&) noexcept;
+    MeasuredSource source_{};
+    std::uint32_t thread_{};
+    bool held_{};
+};
+// Native callback path: one Try shared acquisition, fixed storage, no model,
+// provider or profile query, allocation, Lua, logging, hooks or native writes.
+// Pass an empty output. Refusal preserves an already-held output borrow;
+// it never implicitly releases one. No retry is performed.
+bool try_borrow_source(std::uint64_t owner, const MeasuredSource&, SourceBorrow&) noexcept;
+
 } // namespace dingosdk::owned_bodies

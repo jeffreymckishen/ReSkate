@@ -97,7 +97,8 @@ After `762f4da`, one fresh v2 interruption probe reached its intended window.
 The [archived trial](../../../../build/bmx/lua-equipment-interruption-postterminal-v2/)
 used the reviewed runtime, exact production Lua modules, one explicit Arm and
 one accepted sequence-1 pulse. Its terminal receipt was `released / none`, mask
-`0`, with 50 press publications and one neutral publication over 329 ms. The
+`0`, with 50 press publications and one neutral publication. The request-to-terminal
+observation interval was 329 ms. The
 claim was released, debt was clear, and request/read/store/ack counts were
 `1/3/1/1`, with no retained handle.
 

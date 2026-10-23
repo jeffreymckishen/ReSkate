@@ -129,9 +129,10 @@ remains `query_unavailable`; observation changes and budget failures retain thei
 existing precedence. These categories do not identify an individual failed native
 contract or relax any guard.
 
-This replacement requires a clean runtime build, focused contracts and in-game
-validation. It does not activate a vehicle or establish
-in-game contact accuracy, motion qualification or performance.
+This replacement passed a clean Release runtime build and six focused CTest
+suites. The bounded in-game result below qualifies one positive geometry batch.
+It does not activate a vehicle or establish complete contact accuracy, motion
+qualification or performance.
 
 The first native query-plus-force trial used source `716f2ddd` and runtime
 `06E9CEA1755B156034575327A20474A1E84FD27A5CF5E7763BFEAD2BDA43858C`.
@@ -164,4 +165,22 @@ native path. The replacement uses zero native ignored IDs and a conservative
 post-hit current-body check. A retail query consumer confirms the actual
 ray-result-to-shape-reader interface; the native association getter independently
 confirms the shape-to-body index table. This static evidence supports the source
-implementation, not native success, actor coverage, normals or surface velocity.
+implementation; actor coverage, normals and surface velocity remain unqualified.
+
+On 2026-10-23, the [inert geometry diagnostic](bmx-lab/native-geometry-trial/README.md)
+created one 12 kg capsule and checked two actual world-surface hits in one batch.
+With actor exclusion requested, it first returned the expected
+`local_actor_exclusion_unavailable` and zero native casts. With that option
+explicitly false, it returned two hits from two actual casts, matching their
+four-metre segments and leaving the full published body sample unchanged.
+It published no force command and accepted release to a retained parked slot.
+The runtime SHA256 was
+`EB601CF97A0719FCC1F6159E5C9E50083AFB254D807BFFED34BA1C4474C63798`;
+the tested source patch was committed as `25913f2`.
+
+The two rays did not intersect the small owned capsule, so this does not exercise
+native self-hit rejection. It also does not qualify requested actor exclusion,
+contact-query/force composition, normals, surface velocity, active-body unload,
+wheel support, rider control or vehicle behavior. Both hit motions remain
+`unknown`. The diagnostic manifest was withdrawn after release, its watcher
+unloaded the VM, and the isolated game then exited normally.

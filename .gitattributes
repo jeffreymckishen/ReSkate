@@ -24,5 +24,8 @@ contrib/bmx-lab/native-phase-trial/plugin/main.lua text eol=lf
 contrib/bmx-lab/native-phase-trial/reskate-plugin.json text eol=lf
 contrib/bmx-lab/native-phase-trial/analyze_phase.py text eol=lf
 contrib/bmx-lab/native-phase-trial/test_analysis.py text eol=lf
+# Preserve the byte-identical source used by the native geometry trial.
+contrib/bmx-lab/native-geometry-trial/plugin/main.lua text eol=lf
+contrib/bmx-lab/native-geometry-trial/reskate-plugin.json text eol=lf
 External/luau/** -text
 External/luau/** whitespace=-blank-at-eol

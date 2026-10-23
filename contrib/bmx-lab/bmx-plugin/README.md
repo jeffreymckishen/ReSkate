@@ -118,8 +118,11 @@ The following generic SDK pieces are still missing for real riding:
   [Owned-body batches](../../plugin-body-query.md) additionally bind complete
   body/world/epoch observations and bounded exclusions. Their first native
   composition trial refused its first batch before any reported cast or force
-  publication, then released the capsule. The native query path remains
-  unqualified; portable/Host passes do not supply the missing contact proof.
+  publication, then released the capsule. A separate
+  [native geometry diagnostic](../native-geometry-trial/README.md) now returned
+  two actual hits from two casts with actor exclusion explicitly false and no
+  force commands. Native actor/self-hit exclusion, normals, surface motion and
+  contact/force composition still need verification.
 - Input ownership independent of owning a camera, with original-device epochs
   and atomic local-actor motion/pose/input handoff and observed native actions.
 - Native-phase bindings of plugin entities and the local actor to an owned body,

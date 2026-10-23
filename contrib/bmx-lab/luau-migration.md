@@ -94,7 +94,10 @@ replace the physical prototype; implemented contracts still require native proof
    queries with no native ignored IDs or owner lookup, qualifies the actual
    nearest hit's current shape-to-body association, and refuses the whole batch
    for excluded or unknown identity. Every returned pair is rechecked. Native
-   validation is still required; actor exclusion remains unavailable.
+   validation now includes one [two-hit native geometry batch](native-geometry-trial/README.md)
+   with actor exclusion explicitly false, no submitted force commands and an
+   unchanged full body sample. Native self-hit rejection and contact/force
+   composition remain unqualified; actor exclusion remains unavailable.
    Vehicle queries must retain actor exclusion and the observation checks.
 3. **Commands and receipts.** Queue finite bounded force, torque and one-shot
    impulse against an exact observed body epoch. Commit once in the supported

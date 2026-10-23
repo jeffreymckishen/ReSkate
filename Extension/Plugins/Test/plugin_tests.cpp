@@ -10,6 +10,8 @@
 #include "Extension/Throwdowns/throwdown_kit.h"
 #include "Engine/Vfs/mod_list.h"
 #include "Engine/Game/BMX/bmx_chassis_control.h"
+#include "Engine/Game/BMX/bmx_interaction.h"
+#include "Engine/Game/BMX/equipment_switch.h"
 #include <algorithm>
 #include <chrono>
 #include <format>
@@ -2279,6 +2281,78 @@ void bmx_lua_policy_runs_as_modules_and_the_inspector_starts_inert() {
           "Actual package modules run through the vendored Luau Host with expected coverage and actual input API fields\n" + portable.all());
 }
 
+void bmx_lua_equipment_requests_match_the_retained_gesture_rules() {
+    namespace bmx = dingosdk::bmx;
+    using dingosdk::Json;
+    const auto directory = std::filesystem::path(RESKATE_SOURCE_DIR) / "contrib" / "bmx-lab" / "bmx-plugin";
+    std::map<std::string, std::string> files{{manifest_file, R"({"api":1,"entry":"plugin/main.lua","permissions":[]})"}};
+    for (const auto* name : {"equipment.lua", "equipment_tests.lua"}) {
+        std::ifstream file(directory / "plugin" / name, std::ios::binary);
+        check(file.good(), std::string("BMX Lua equipment source is available: ") + name);
+        files[std::string("plugin/") + name] = std::string(std::istreambuf_iterator<char>(file), {});
+    }
+    Json reference = Json::array();
+    // The retained policy is an offline oracle only; the Lua package gets no
+    // permission, native pointer, equipment action or old runtime entry point.
+    for (unsigned scenario = 0; scenario < 8; ++scenario) {
+        bmx::BikeQuickSwitchButton quick;
+        bmx::BikeInteractionButton ordinary;
+        bmx::EquipmentToggleKey toggle;
+        unsigned device = 1;
+        std::uint64_t clock = 100, wall = 100;
+        bool allowed = true;
+        unsigned owner_id = 1;
+        for (unsigned row = 0; row < 20; ++row) {
+            const bool reset = row == 0;
+            bool quick_reset = false;
+            const bool north = row == 1 || row == 2 || row == 6 || row == 7 || row == 8 ||
+                row == 11 || row == 12 || row == 15 || row == 16 || row == 17;
+            const bool shoulder = row == 2 || row == 5 || row == 6 || row == 7 ||
+                row == 11 || row == 12 || row == 15 || row == 16 || row == 17;
+            if (row == 2 || row == 7) { clock += 600; wall += 600; }
+            if (row == 11) {
+                if (scenario == 0) owner_id = 2;
+                if (scenario == 1) owner_id = 0;
+                if (scenario == 2) clock = 1;
+                if (scenario == 3) { quick.reset(); quick_reset = true; }
+                if (scenario == 4) device = 2;
+                if (scenario == 5) allowed = false;
+                if (scenario == 6) device = 0;
+            }
+            if (row == 12) { allowed = true; if (scenario == 1) owner_id = 1; if (scenario == 6) device = 1; }
+            if (row == 15) device = 3;
+            if (row == 16) allowed = false;
+            if (row == 17) allowed = true;
+            const bool observed = quick.owner_sample_needed(north, shoulder);
+            const auto owner = owner_id == 0 ? bmx::BikeQuickSwitchOwner{} : bmx::BikeQuickSwitchOwner{1, 2, 3, 4, owner_id};
+            const auto event = quick.update(north, shoulder, allowed, device, observed, owner, clock);
+            // The original composition requires a valid source for both latches.
+            const auto interaction = ordinary.update(north, allowed && device != 0 && !event.suppress_north, wall);
+            const bool toggled = toggle.update(north, allowed && device != 0);
+            const char* action = interaction == bmx::BikeInteraction::tap ? "tap" : interaction == bmx::BikeInteraction::hold ? "hold" : "none";
+            reference.push_back(Json{{"reset", reset}, {"quick_reset", quick_reset}, {"north", north}, {"shoulder", shoulder},
+                {"allowed", allowed}, {"device", device}, {"owner", owner_id == 0 ? "" : owner_id == 1 ? "rider-a" : "rider-b"},
+                {"clock", clock}, {"wall", wall}, {"observed", observed}, {"pressed", event.pressed},
+                {"suppress", event.suppress_north}, {"capture", event.capture_north}, {"interaction", action}, {"toggle", toggled}});
+            ++clock; ++wall;
+        }
+    }
+    files["plugin/main.lua"] = "local reference = reskate.json.decode([=[" + reference.dump() + R"(]=])
+        local result = require("./equipment_tests").run(reference)
+        assert(result.cases == 8 and result.assertions > 1000 and result.comparisons == 160 and result.native_actions == 0,
+            string.format("unexpected equipment coverage: %s/%s/%s", tostring(result.cases), tostring(result.assertions), tostring(result.comparisons)))
+        reskate.log(string.format("BMX Lua equipment: %d cases, %d assertions, %d C++ comparisons, 0 native actions", result.cases, result.assertions, result.comparisons))
+    )";
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({package("bmx-lua-equipment-tests", files)});
+    running(host, "bmx-lua-equipment-tests", environment);
+    check(environment.logged("BMX Lua equipment: 8 cases") && environment.fake.calls.empty() && environment.fake.binds.empty() &&
+              environment.fake.body_creates == 0 && environment.fake.body_submissions == 0 && environment.teleports.empty() && environment.rays == 0,
+          "Actual equipment modules agree with retained gesture rules without native services or gameplay permissions\n" + environment.all());
+    std::cout << environment.all();
+}
+
 void bmx_lua_trick_policy_uses_actual_package_modules() {
     const auto directory = std::filesystem::path(RESKATE_SOURCE_DIR) / "contrib" / "bmx-lab" / "bmx-plugin";
     const auto contents = [](const std::filesystem::path& path) {
@@ -4405,6 +4479,7 @@ int main() {
         run(plugins_have_menu_panels);
         run(camera_inspector_prepares_then_explicitly_requests_a_view);
         run(bmx_lua_policy_runs_as_modules_and_the_inspector_starts_inert);
+        run(bmx_lua_equipment_requests_match_the_retained_gesture_rules);
         run(bmx_lua_trick_policy_uses_actual_package_modules);
         run(bmx_lua_forces_use_actual_modules_and_match_the_portable_kernel);
         run(plugins_have_pages);

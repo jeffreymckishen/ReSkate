@@ -24,6 +24,16 @@ A separate actual-Host performance check currently fails the normal 2ms average
 budget under strong braking. Gameplay stays inactive pending optimization and
 the same performance check with adequate headroom.
 
+`plugin/equipment.lua` ports the neutral-rearmed toggle, North tap/hold and
+LB/L1+North shortcut into pure Lua request policy. It consumes invalidated
+shortcuts without leaking a tap, hold or deferred switch to another source or
+owner. Its separate Host case loads the actual modules without permissions and
+compares typed traces against the retained C++ gesture rules. See
+[EQUIPMENT.md](EQUIPMENT.md) for composition and ownership requirements.
+Release Host execution passed **8 groups, 1,269 assertions and 160 C++
+comparisons**, with zero native actions, under the normal VM limits.
+Native equipment execution and observed completion still need generic SDK work.
+
 Create it with `require("./tricks").new(settings)` and call
 `controller:update(native_seconds, Tricks.input(observation))`. The adapter must
 supply measured heading/orientation, actual support and qualified native elapsed

@@ -8,6 +8,30 @@ pitch, modifier priority, neutral rearming and all trick-selector sectors.
 `plugin/catalog.lua` preserves all58 named IDs and the six empty cells in the
 eight-by-eight authored selector. These are requests, not executed or landed tricks.
 
+`plugin/tricks.lua` ports the trick controller into Lua. It tracks neutral-rearmed
+bar/whip channels, all catalog movements, timed catches and recovery, limb release,
+measured body-local quaternion turns, canceled attempts and its own landing tally.
+`plugin/motions.lua` contains our bounded retargeting targets and timings for all
+58 IDs; it contains no extracted clips or source asset IDs. These targets do not
+rotate a native body. The inspector does not activate this controller for riding.
+
+Create it with `require("./tricks").new(settings)` and call
+`controller:update(native_seconds, Tricks.input(observation))`. The adapter must
+supply measured heading/orientation, actual support and qualified native elapsed
+time. Ground must be observed before a flight; first contact freezes channels and
+cannot complete a trick or manufacture a catch. Enable landing quality on clear
+frames as well as contacts. A settle-hold flag requires fresh adapter proof and
+is capped at 200ms; it never counts as actual support. Those observations still
+need the generic native transport below before gameplay activation.
+
+The Lua owner token is a stable nonempty string (up to 128 bytes), or a positive
+integer up to 2^53-1. Do not cast a native uint64 pointer or generation to a Lua
+number. Device epochs remain uint32. Tallies saturate at 2^53-1, the last exactly
+represented integer, rather than C++'s uint64 maximum. Failure IDs are enum names
+such as `under_rotated` and `invalid_sample`. Lua also rejects malformed boolean,
+direction/device fields and nonfinite heading differences. State/settings readback
+is detached; caller-owned quaternion tables are copied when retained.
+
 The current entry is deliberately a **temporary read-only migration inspector**.
 It asks for only `input` and `menu`. Nothing loads or calls the old BMX console,
 C++ controller, physics backend or private environment modes. It acquires no
@@ -42,16 +66,21 @@ focus/source/timing resets and sanitized settings. The Release build and actual
 Host execution passed on 2026-10-23: **12 cases, 1,216 assertions, zero native
 actions**. Unfiltered CTest reported 192 passes and one explicit rootless
 trainer-tuning skip; other optional contributed-plugin fixtures and game-resource
-branches also reported missing inputs. The two new BMX and Camera Inspector Host
-cases run unconditionally. This validates the Lua model and sandbox integration;
+branches also reported missing inputs. The BMX and Camera Inspector Host cases
+run unconditionally. The separate `plugin/trick_tests.lua` suite also passed
+actual Host execution: **16 groups and over 300 assertions**, including all 58
+movement identities, catches, recovery, frozen landing settlement, interrupted
+attempts, body-local quaternion turns, busy-request consumption and tally bounds.
+This validates Lua model and sandbox integration;
 this package has not yet been installed or tested for real riding in the game.
 
 The following generic SDK pieces are still missing for real riding:
 
 - Plugin-owned generation-fenced dynamic bodies, actual pose/velocity/mass/
   inertia observations, bounded forces/impulses and exact native-step receipts.
-- Collision queries with clear/unavailable/hit separation, normals and owned
-  body/world/epoch provenance; current raycast gives only a position or nil.
+- Contact normals, surface velocity and owned body/world/epoch provenance.
+  The generic `world.probe` now distinguishes unavailable, clear and hit and
+  returns hit position/fraction; it does not yet supply those contact properties.
 - Input ownership independent of owning a camera, with original-device epochs
   and atomic local-actor motion/pose/input handoff and observed native actions.
 - Native-phase bindings of plugin entities and the local actor to an owned body,

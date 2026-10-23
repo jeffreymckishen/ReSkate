@@ -2044,6 +2044,31 @@ void bmx_lua_policy_runs_as_modules_and_the_inspector_starts_inert() {
           "Actual package modules run through the vendored Luau Host with expected coverage and actual input API fields\n" + portable.all());
 }
 
+void bmx_lua_trick_policy_uses_actual_package_modules() {
+    const auto directory = std::filesystem::path(RESKATE_SOURCE_DIR) / "contrib" / "bmx-lab" / "bmx-plugin";
+    const auto contents = [](const std::filesystem::path& path) {
+        std::ifstream file(path, std::ios::binary);
+        check(file.good(), "BMX Lua trick source is available: " + path.string());
+        return std::string(std::istreambuf_iterator<char>(file), {});
+    };
+    std::map<std::string, std::string> files{{manifest_file, R"({"api":1,"entry":"plugin/main.lua","permissions":[]})"}};
+    for (const auto* name : {"catalog.lua", "motions.lua", "tricks.lua", "trick_tests.lua"})
+        files[std::string("plugin/") + name] = contents(directory / "plugin" / name);
+    files["plugin/main.lua"] = R"(
+        local result = require("./trick_tests").run()
+        assert(result.cases == 16 and result.assertions > 300 and result.native_actions == 0,
+            string.format("unexpected trick coverage: %s/%s", tostring(result.cases), tostring(result.assertions)))
+        reskate.log(string.format("BMX Lua tricks: %d cases, %d assertions, 0 native actions", result.cases, result.assertions))
+    )";
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({package("bmx-lua-trick-tests", files)});
+    running(host, "bmx-lua-trick-tests", environment);
+    check(environment.logged("BMX Lua tricks: 16 cases") && environment.fake.calls.empty() && environment.fake.binds.empty() &&
+              environment.teleports.empty() && environment.rays == 0,
+          "Actual Lua trick modules run without native services or gameplay permissions\n" + environment.all());
+}
+
 // A plugin's own page in the menu's PLUGINS section: named in the section, built only while the menu
 // shows it, page first and its panels after, with cards, tabs, info lines and help.
 void plugins_have_pages() {
@@ -4078,6 +4103,7 @@ int main() {
         run(plugins_have_menu_panels);
         run(camera_inspector_prepares_then_explicitly_requests_a_view);
         run(bmx_lua_policy_runs_as_modules_and_the_inspector_starts_inert);
+        run(bmx_lua_trick_policy_uses_actual_package_modules);
         run(plugins_have_pages);
         run(plugins_play_sounds_and_read_the_mods);
         run(plugins_follow_the_session_and_message_each_other);

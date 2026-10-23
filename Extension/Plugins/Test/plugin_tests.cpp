@@ -23,6 +23,7 @@
 
 using namespace dingosdk::plugins;
 namespace plugin_ui = dingosdk::plugin_ui;
+namespace owned_body = dingosdk::owned_body;
 namespace {
 void check(bool value, const std::string& message) { if (!value) throw std::runtime_error(message); }
 
@@ -31,6 +32,62 @@ std::filesystem::path scratch;
 
 // The wider set's game, faked: it records what plugins asked of it and answers as told.
 struct FakeGame final : Game {
+    struct OwnedBody {
+        std::uint64_t owner{};
+        owned_body::Handle handle{};
+        owned_body::Definition definition{};
+        owned_body::Sample sample{};
+        owned_body::Mailbox mailbox{};
+        bool released{};
+    };
+    std::map<std::uint64_t, OwnedBody> owned;
+    std::vector<std::uint64_t> body_releases;
+    unsigned body_creates{}, body_submissions{};
+    std::string body_create(std::uint64_t owner, const owned_body::Definition& definition, owned_body::Handle& handle) override {
+        if (!owned_body::valid(definition) || owned.size() >= owned_body::retained_capacity) return "definition or capacity";
+        ++body_creates; handle = {body_creates, body_creates - 1};
+        auto& b = owned[handle.generation]; b.owner = owner; b.handle = handle; b.definition = definition;
+        b.sample.epoch = {77, handle.generation, 100, 3, static_cast<float>(owned_body::native_seconds)};
+        b.sample.position = definition.position; b.sample.rotation = definition.rotation; b.sample.mass = definition.mass; b.sample.inertia = definition.inertia;
+        return {};
+    }
+    OwnedBody* body_of(std::uint64_t owner, const owned_body::Handle& h) {
+        const auto at = owned.find(h.generation);
+        return at != owned.end() && at->second.owner == owner && at->second.handle == h ? &at->second : nullptr;
+    }
+    std::string body_read(std::uint64_t owner, const owned_body::Handle& h, owned_body::Sample& sample) override {
+        const auto* b = body_of(owner, h); if (!b || b->released) return "owner or generation";
+        sample = b->sample; return {};
+    }
+    std::string body_submit(std::uint64_t owner, const owned_body::Handle& h, const owned_body::Command& command) override {
+        auto* b = body_of(owner, h);
+        if (!b || b->released || !b->mailbox.submit(command, b->sample.epoch, 0)) return "owner, generation or packet";
+        ++body_submissions; return {};
+    }
+    std::string body_receipt(std::uint64_t owner, const owned_body::Handle& h, owned_body::Receipt& receipt) override {
+        const auto* b = body_of(owner, h); if (!b) return "owner or generation";
+        receipt = b->mailbox.receipt; receipt.retained = b->released; return {};
+    }
+    std::string body_acknowledge(std::uint64_t owner, const owned_body::Handle& h, std::uint64_t sequence) override {
+        auto* b = body_of(owner, h); return b && b->mailbox.acknowledge(sequence) ? std::string{} : "not ready to acknowledge";
+    }
+    std::string body_release(std::uint64_t owner, const owned_body::Handle& h) override {
+        auto* b = body_of(owner, h); if (!b) return "owner or generation";
+        b->released = true; b->mailbox.cancel(); return {};
+    }
+    void body_release_all(std::uint64_t owner) override {
+        body_releases.push_back(owner);
+        for (auto& [id, b] : owned) { (void)id; if (b.owner == owner) { b.released = true; b.mailbox.cancel(); } }
+    }
+    void body_producer_step() {
+        for (auto& [id, b] : owned) {
+            (void)id; if (b.released) continue;
+            ++b.sample.epoch.serial; b.sample.epoch.time += b.sample.epoch.seconds;
+            owned_body::Command out;
+            if (b.mailbox.consume(b.sample.epoch, 1, out)) b.mailbox.finish(true, true, true);
+            (void)b.mailbox.observe_successor(b.sample);
+        }
+    }
     std::optional<std::uint32_t> state;
     std::uint64_t wipe{};
     std::vector<std::string> calls;
@@ -821,6 +878,90 @@ void a_manifest_says_what_a_plugin_is() {
     check(safe_relative_path("a/b.lua") == "a/b.lua", "A path inside the package is kept");
     for (const auto* bad : {"", "/a", "a//b", "./a", "a/../b", "..", "a\\b", "c:a", "a.", "a /b", "a\nb"})
         check(safe_relative_path(bad).empty(), std::string("A path that could leave the package is refused: ") + bad);
+}
+
+void plugins_own_typed_bodies_and_acknowledge_measured_results() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    const auto candidate = script("owned-body", R"(
+        local P, v = reskate.world.physics, vector.create
+        local definition = {mass=12, inertia=v(2,3,4), position=v(1,2,3), rotation={0,0,0,1}, capsules={{a=v(0,0,0),b=v(0,.5,0),radius=.1}}}
+        local h = assert(P.create(definition))
+        assert(type(h)=="userdata" and getmetatable(h)=="locked")
+        local s = assert(P.read(h))
+        assert(type(s.epoch)=="userdata" and s.position==v(1,2,3) and s.mass==12 and s.rotation[4]==1 and type(s.serial)=="string")
+        local other = assert(P.create(definition))
+        assert(not pcall(P.read, {}), "forged body")
+        assert(not pcall(P.submit,h,{},{}), "forged epoch")
+        assert(not pcall(P.submit,other,s.epoch,{}), "epoch transplanted to another body")
+        assert(not pcall(P.submit,h,s.epoch,{impulse=v(0,2,0)}), "anonymous impulse")
+        assert(not pcall(P.submit,h,s.epoch,{force=v(40000,40000,0)}), "vector norm")
+        assert(not pcall(P.submit,h,s.epoch,{torque=v(0/0,0,0)}), "NaN")
+        assert(not pcall(P.submit,h,s.epoch,{impulse_id=1.5}), "fractional event")
+        assert(not pcall(P.submit,h,s.epoch,{native_handle=42}), "raw handle field")
+        definition.mask=0xffffffff
+        assert(not pcall(P.create,definition), "arbitrary collision mask")
+        definition.mask=nil
+        assert(P.submit(h,s.epoch,{impulse=v(0,2,0),impulse_id=1}))
+        assert(not P.submit(h,s.epoch,{}), "immutable pending packet")
+        local queued=assert(P.receipt(h))
+        assert(queued.outcome=="queued" and not queued.successor and not P.acknowledge(h,queued.sequence))
+        assert(not pcall(P.acknowledge,h,1), "sequence string cannot be a coerced number")
+        assert(not pcall(P.acknowledge,h,queued.sequence..string.char(0).."junk"), "sequence cannot hide trailing bytes")
+        local done=false
+        reskate.on("tick",function()
+            if done then return end
+            local r=assert(P.receipt(h))
+            if r.outcome=="queued" then return end
+            assert(r.outcome=="applied" and r.force_attempted and r.torque_attempted)
+            if not r.successor then
+                assert(not P.acknowledge(h,r.sequence), "no fictitious successor")
+                return
+            end
+            assert(tonumber(r.produced_serial)==tonumber(s.serial)+1)
+            assert(tonumber(r.successor.serial)>tonumber(r.produced_serial))
+            assert(P.acknowledge(h,r.sequence))
+            assert(not P.acknowledge(h,r.sequence), "ack twice")
+            assert(not P.submit(h,s.epoch,{}), "old observed serial")
+            assert(P.release(h) and P.release(other))
+            assert(not P.read(h))
+            assert(P.receipt(h).retained)
+            done=true
+            reskate.log("owned body acknowledged its measured successor")
+        end)
+    )", R"("world.physics")");
+    host.apply({candidate}); running(host, "owned-body", environment);
+    check(environment.fake.body_creates == 2 && environment.fake.body_submissions == 1, "API forwarded only bounded accepted definitions and one packet");
+    environment.fake.body_producer_step(); ticks(host, environment, 1); running(host, "owned-body", environment);
+    check(!environment.logged("acknowledged its measured"), "setter completion was not treated as an integrated successor");
+    environment.fake.body_producer_step(); ticks(host, environment, 1); running(host, "owned-body", environment);
+    check(environment.logged("owned body acknowledged its measured successor"), environment.all());
+    const auto old_owner = environment.fake.owned.begin()->second.owner;
+    host.apply({}); check(std::find(environment.fake.body_releases.begin(), environment.fake.body_releases.end(), old_owner) != environment.fake.body_releases.end(), "VM close releases its instance");
+    host.apply({candidate}); running(host, "owned-body", environment);
+    check(environment.fake.owned.at(3).owner != old_owner, "reloaded VM reused its old native owner epoch");
+    owned_body::Sample sample;
+    check(!environment.fake.body_read(environment.fake.owned.at(3).owner, {1,0}, sample).empty(), "another VM instance adopted a retained body");
+}
+
+void native_body_permission_and_client_boundary_are_enforced() {
+    TestEnvironment environment; Host host(environment, Side::client);
+    host.apply({script("no-body-permission", R"(
+        local P=reskate.world.physics
+        for _,name in {"create","read","submit","receipt","acknowledge","release"} do
+            local ok,why=pcall(P[name],{})
+            assert(not ok and string.find(why,"world.physics"),name)
+        end
+    )")});
+    running(host, "no-body-permission", environment);
+    check(environment.fake.body_creates == 0 && environment.fake.body_submissions == 0, "missing permission reached Game");
+    TestEnvironment server_environment; Host server(server_environment, Side::server);
+    auto server_plugin = package("server-body", {{manifest_file, manifest(R"("world.physics")", "server")}, {"plugin/main.lua", R"(
+        local ok,why=pcall(reskate.world.physics.create,{})
+        assert(not ok and string.find(why,"client phase only"))
+    )"}});
+    server.apply({server_plugin}); running(server, "server-body", server_environment);
+    check(server_environment.fake.body_creates == 0, "server reached native body creation");
 }
 
 void a_plugin_loads_ticks_runs_its_commands_and_unloads() {
@@ -4072,6 +4213,8 @@ int main() {
         scratch = std::filesystem::temp_directory_path() / "reskate-plugin-tests";
         std::filesystem::remove_all(scratch);
         run(a_manifest_says_what_a_plugin_is);
+        run(plugins_own_typed_bodies_and_acknowledge_measured_results);
+        run(native_body_permission_and_client_boundary_are_enforced);
         run(a_plugin_loads_ticks_runs_its_commands_and_unloads);
         run(a_permission_must_be_declared);
         run(command_names_are_checked);

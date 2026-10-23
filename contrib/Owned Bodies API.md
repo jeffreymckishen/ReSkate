@@ -1,0 +1,126 @@
+# Owned native bodies
+
+`world.physics` lets a client plugin create and control its own physical capsule compound.
+It grants no access to the skater's bodies, native pointers, collision masks, console,
+progression or paid content. This is a generic SDK building block. Vehicle policy,
+contacts, controls, hop strength and steering belong in a Luau mod.
+
+This initial implementation still needs a real one-body native trial. Portable and Host
+tests qualify the contracts and sandbox, not native integration or a playable vehicle.
+There is no actor motion, pose or render binding in this slice.
+
+## API
+
+Declare `"world.physics"` in `reskate-plugin.json`. All calls are client phase only and
+refuse multiplayer or an unavailable/changed native owner. Nothing activates on load.
+The plugin must explicitly call `reskate.world.physics.create`:
+
+```lua
+local P, v = reskate.world.physics, vector.create
+local body, why = P.create({
+    mass = 12,
+    inertia = v(2, 3, 4), -- principal moments, kg m^2
+    position = v(0, 2, 0),
+    rotation = {0, 0, 0, 1}, -- unit Hamilton XYZW
+    capsules = {{a = v(0, 0, 0), b = v(0, .5, 0), radius = .1}},
+})
+```
+
+The values are examples, not SDK defaults. The body has zero local COM and an identity
+local frame; all capsule endpoints are in that frame. Bounds: 1..8 capsules, endpoints
+within +/-10 m, radius .01..2 m, mass 1..1000 kg, principal inertia .01..10000 kg m^2,
+world position within +/-100 km and a unit quaternion. Collision filtering is a fixed
+SDK world-only policy inherited from the qualified native path; a mod cannot supply masks.
+
+`create` returns opaque userdata or `nil, why`. Its first call may install the guarded
+producer hook and return `waiting for a fresh qualified 60 Hz physics step` before any
+allocation. A later explicit create request can use the now-observed clock. Allocation
+itself has no automatic retry.
+
+`P.read(body)` returns a measured sample or `nil, why`:
+
+```
+{epoch=<opaque>, serial=<decimal string>, time=<accumulated callback seconds>, seconds=<step h>,
+ position=<vector>, rotation={x,y,z,w}, velocity=<vector>, angular_velocity=<vector>,
+ mass=<kg>, inertia=<vector>}
+```
+
+The opaque epoch binds the VM instance, body generation and world generation. It cannot
+be constructed from numbers, transplanted to another body or adopted after plugin reload.
+The native snapshot repeats ring headers, contents, direct arrays and complete ownership
+checks. A raced or changed read publishes no sample. These repeated reads are not an
+engine-wide atomic snapshot guarantee.
+
+`P.submit(body, sample.epoch, command)` returns `true` or `false, why`. `command` has
+optional `force`, `torque` and `impulse` vectors (zero when omitted), plus a positive uint32
+`impulse_id` for a nonzero one-shot impulse. Bounds are 40000 N force norm, 4000 Nm torque
+norm, 600 Ns impulse norm and 40000 N for the combined `force + impulse / h`. These are
+safety limits, not vehicle tuning. There is one immutable pending command per body.
+
+The command computed from sample epoch **N** targets only listener epoch **N+1**, with
+the same calibrated h and time `sample.time + h`. A same-N producer invocation waits;
+a missed N+1 or 100 ms wall deadline expires the packet. Listener serials advance even
+when a nonblocking listener copy is dropped, so a later native step cannot be relabelled
+as the missing target. One matching native wrapper consumes the packet before attempting
+either setter. Duplicate wrappers and partial native calls can never replay its impulse.
+This clock is the guarded local participant listener's monotonic serial and accumulated
+callback seconds since its current owner, not a sampled global world clock.
+Each accepted clock copy is independently bound to that callback's current game
+context, native world and world-state pointer, as well as its local participant.
+
+`P.receipt(body)` returns:
+
+```
+{outcome="none"|"queued"|"applied"|"partial"|"rejected"|"expired",
+ sequence=<decimal string>, requested_serial=<string>, produced_serial=<string>,
+ force_attempted=<bool>, torque_attempted=<bool>, retained=<bool>, quarantined=<bool>,
+ successor=<measured sample, only when available>}
+```
+
+`applied` means both guarded native setters returned and their owner/clock checks held.
+It does not assert that integration completed. `successor` is a later independently copied
+sample in the same body/world generation, with serial and time strictly beyond the
+producer epoch. The plugin can inspect the actual resulting motion. Neither the API nor
+the tests fabricate an integrated result from the command.
+
+`P.acknowledge(body, receipt.sequence)` acknowledges an exact terminal receipt once;
+an applied command additionally needs its measured successor. Another command cannot
+overwrite an unacknowledged receipt or reuse a submitted serial. A partial/uncertain
+native call permanently fails that body for further commands, even after acknowledgement.
+Use the returned sequence string directly; no Lua-number uint64 conversion is needed.
+The single unacknowledged mailbox permits the next write no earlier than N+3 after a
+write at N+1 and successor/ack at N+2: at most 30 Hz at the qualified 60 Hz step. It is
+suitable for the first one-shot native test, not final every-step vehicle force transport.
+A later fixed command/receipt pipeline needs separate design and native qualification.
+
+`P.release(body)` revokes its commands and attempts to clear pending force, torque and
+velocities, zero and read back all shape masks, then park the exact owned body keyframed.
+VM close also releases all bodies of that instance. Successful release means **retained
+and parked**, not destroyed. If fresh ownership is unavailable, no old native handle is
+dereferenced and the retained allocation is quarantined. Such a body is not claimed to be
+stopped. A rejected/partial producer is also retired on the next qualified client tick.
+
+## Native boundary
+
+The service supports the repository's one pinned game build. All native operation bytes
+and layouts are in `Engine/Game/Build/20260929/rigid_bodies.h` or the existing build headers.
+The hook calls the native original exactly once, then tries the bounded mailbox consumer
+and preserves the original's LastError. It installs with Detours/HookBatch and refuses an
+already patched or registered synchronizer. The legacy experimental producer and this
+service have mutually exclusive admission; this service never calls that backend.
+
+Creation and parking execute in the qualified local client/TLS phase, as the existing
+known allocation path does. That qualification and repeated ownership checks do not prove
+a native physics-world mutex or universal mutation barrier. The consumer is qualified by
+the exact local participant wrappers, current world/state, allocated/dynamic bitsets,
+body/shape generations, configuration, watched canonical owner chain and 60 Hz listener
+clock. It is not a world-wide phase guarantee. Native experimentation must retain that
+limit until the actual single-capsule trial qualifies the path.
+
+Native callbacks use fixed process-lifetime storage and try-locks only. They do no Lua,
+JSON, allocation, formatting, logging or blocking SDK lock acquisition. Eight allocation
+attempts are retained for the process lifetime, including failed or partially observed
+attempts. No slot or old-world handle is recycled. A native destructor is unproven; pool
+exhaustion is explicit and never triggers another hidden allocation or a fake deletion.
+An uncertain constructor result keeps quarantine even when the confirmed subset can be
+parked. A partial creation also prohibits another allocation attempt in that same world.

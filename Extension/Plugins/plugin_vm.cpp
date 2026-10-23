@@ -8,9 +8,11 @@
 #include <cstdlib>
 #include <format>
 #include <fstream>
+#include <atomic>
 
 namespace dingosdk::plugins {
 namespace {
+std::atomic<std::uint64_t> next_instance{1};
 double elapsed_ms(std::chrono::steady_clock::time_point since) {
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - since).count();
 }
@@ -85,6 +87,7 @@ void Plugin::interrupt(lua_State* L, int gc) {
 
 bool Plugin::load(std::string entry) {
     if (L_) return state_ == State::running;
+    instance_ = next_instance.fetch_add(1, std::memory_order_relaxed);
     state_ = State::loading;
     reason_.clear();
     halt_ = Halt::none;
@@ -259,6 +262,7 @@ void Plugin::close_if_stopped() {
 }
 
 void Plugin::close() {
+    services_.game().body_release_all(instance_);
     save_storage();
     shapes_.clear();
     panels_.clear();

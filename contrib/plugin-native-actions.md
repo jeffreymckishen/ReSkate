@@ -88,3 +88,21 @@ request. This observation fence is not a lock on the native world's lifetime.
 This API is a building block for Lua equipment policy. Native action transport,
 repeatable equipment switching and full movement/input/pose handoff need separate
 in-game evidence. No BMX riding or BMX Streets likeness is established here.
+
+Two isolated native diagnostics on 2026-10-23 used the tested source committed as
+`6eeddc8` and runtime SHA256
+`CED4DA76C307F8785FDE3C2D626362D50C85255C8B695A85D0505570EA25B160`.
+Each completed an already-on-foot baseline and one actual board/on-foot pair;
+neither completed the required three pairs. The first stopped at the next board
+request's `unsupported_state` refusal. The second waited for fresh grounded
+physics flags, then its second mount selected 200 but entered ragdoll before
+terminal invalidation with `request_bits_conflict`. That reason does not identify
+the fall's cause; the adapter uses it for either an unreadable request word or
+nonclear request bits. Its retained physics observations also show that cleared
+airborne/ragdoll flags alone do not establish a physically settled body.
+
+Both diagnostics stopped without retry, stored their terminal receipts before
+acknowledgement, withdrew their manifests and unloaded before normal game exit.
+The private evidence is in `build/bmx/lua-native-equipment-actions-trial-v1/` and
+`build/bmx/lua-native-equipment-actions-trial-v2/`. These results qualify a narrow
+transport path and failure handling; repeated switching remains unqualified.

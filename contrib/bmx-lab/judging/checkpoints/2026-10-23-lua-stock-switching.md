@@ -109,9 +109,12 @@ and an increased wipeout count. The adapter ended `failed / fall_observed` and
 retained neither historical nor currently qualified transition success. Cleanup
 resolved, and the fixture recorded `COVERED` under its sampled criterion.
 These state/counter facts share the physics-watch route; they are not independent
-visual or body-dynamics evidence. The first fall sample reported known ragdoll
-false. The later endpoint image shows an upright rider on the board; no recovery
-API was called or qualified by this trial.
+visual or body-dynamics evidence. The watch records the selector's chosen return
+state before the caller commits it. Its `telemetry.physics_state` is the same
+watch copy, not an independent committed-state read. The first fall sample's
+known ragdoll false is the watch's shortcut for selected states other than
+`504`, not a native ragdoll flag read. The later endpoint image shows an upright
+rider on the board; no recovery API was called or qualified by this trial.
 
 The receipt recorded `warmup_deferrals = "0"`, so the new lock-deferral path
 was not exercised in game. Its source and offline regressions passed; native
@@ -124,6 +127,44 @@ The independent [coverage and closure audit](../../../../build/bmx/lua-equipment
 has SHA-256 `F502A6146B01BC7E80B881333A2FEDB020879B9BA00113E95D29E5BC082A697D`.
 Fall before dispatch remains untested. This checkpoint demonstrates receipt
 composition and a latched sampled fall boundary, not rideable BMX or likeness.
+
+## First mount after the upstream merge
+
+The [fresh merged-build session](../../../../build/bmx/lua-stock-switching-upstream-7fa-v1/)
+ran only its admitted forward leg. Source merge `d6f1497` includes upstream
+`7fa407a`. The exact runtime was
+`D7671D3EA5569AB561124DAE5E7ED9F84C47DB45C4B91CD8A6BE93DFF078B246`,
+and its matched launcher was
+`238B44ED98D4EB6F79602A316849C00D0A836CA0E00F845AD93E5BEB84054AAC`.
+Both were built from the frozen merge tree before creating the merge commit;
+their compiled Git stamp alone does not identify that later commit.
+
+The production Lua adapter recorded `done / target_observed`: board `100`
+remained sampled for 2.515 seconds, with 152 qualified samples out of 176.
+Separate baseline/final images show the rider carrying the board and standing
+on it. The raw sequence-1 receipt nevertheless ended `revoked / unavailable`,
+mask `1280`, after 27 press publications and one neutral publication. Its first
+failed inspection was `controls_profile_lock / unavailable`; the native clock
+was not queried for that rejected assertion. The 250 ms request-to-terminal
+interval is not a measurement of press duration. No lock holder or contention
+duration was established.
+
+This is an observed target endpoint with an interrupted input transaction,
+not another clean roundtrip or proof of broad switching reliability. Native
+consumption and semantic causality remain unobserved. Claim release, cleared
+report debt, terminal storage and acknowledgement succeeded; no handle was
+retained or quarantined. Request/read/store/ack counts were `1/3/1/1`.
+`warmup_deferrals` remained `"0"`, and a post-press lock refusal still correctly
+stops assertion immediately.
+
+The unchanged guarded driver completed 301 neutral reports, final neutral
+release and disconnect. The full terminal storage was archived before Go
+within the original gate deadline. No reverse, retry, wipeout, recovery or
+follow action was run. After normal Alt+F4, the first process check still saw
+shutdown in progress, so the manifest stayed active. A subsequent check found
+zero Skate processes before manifest withdrawal. Final storage, runtime log
+and the zero-process/zero-active-manifest closure are retained in the session
+folder. The profile-lock failure remains an engineering blocker.
 
 ## Remaining checks
 

@@ -20,17 +20,32 @@ proof and optional 128 iterations remain unqualified. Gameplay stays inactive.
 
 ## Latest upstream inspected
 
-Official `Dingo-Shenanigans/ReSkate` main is
-`35824f4d1c1380a7e36f8dbedcaeba9866f32cc6`, eight commits after `45346b1`.
-Commit `118c489f` adds generic carried-object posing, pose/reach visibility and a
-plugin entry in the camera-height-button cycle. It also extends board visibility.
-The camera cycle is an enter/exit event, not a callback at the render handoff.
-Other changes include dedicated-server park APIs and launcher changes.
+Official `Dingo-Shenanigans/ReSkate` main was fetched at
+`7fa407ac36490cd33503e73101a2eb981b5433bd` on October 23. Its 17 commits after
+`e35e33d` were integrated on the existing `BMX` branch in the two-parent merge
+`d6f1497aab359a92715b75a6b2051078dfa07537`, preserving both histories. A clean
+Release build and all 39 focused CTests passed against the merged source.
+The runtime and launcher were rebuilt together, including protocol 54.
 
-These additions help with carrying, rider presentation and camera policy. They
-do not provide an owned dynamic-body/force API. Inspection of the current API
-must precede implementation; older recovered method offsets are not contracts
-for the currently installed Streets build.
+These changes add shared plugin content, world-to-screen bounds validation,
+server roles/cards/polls and other server/launcher improvements. They do not
+add a rider-to-owned-body follow API. Earlier carried-object posing and camera
+cycle APIs remain useful presentation tools; the camera cycle is an enter/exit
+event, not a callback at the render handoff.
+
+The first merged-build stock mount reached the board, but its input receipt
+was revoked after publication when the profile Try-lock was unavailable. That
+is a remaining switching reliability failure, not a clean transport success;
+the [checkpoint](judging/checkpoints/2026-10-23-lua-stock-switching.md) separates
+the observed endpoint from the raw receipt.
+
+During ongoing work, refresh both `origin` and `upstream` at least hourly and
+before another Lua API expansion. Fetch and inspect first, then integrate at a
+clean focused checkpoint on `BMX`. Preserve local work and both histories; do
+not reset, discard, automatically stash, push or merge into an active game/build.
+Rebuild affected binaries and tests, and reconcile their identity before using
+new game evidence. Inspection of the current API must precede implementation;
+older recovered method offsets are not contracts for the installed Streets build.
 
 ## Where the implementation belongs
 

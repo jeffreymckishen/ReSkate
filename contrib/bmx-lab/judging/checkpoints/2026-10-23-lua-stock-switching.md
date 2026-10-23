@@ -91,7 +91,40 @@ has SHA-256 `B12DBA1519084CDED4C848EF23CE2C0D5943567D7C3B4F313CEADACC1CC6E239`.
 This identifies one lock-acquisition failure, not its holder, duration or every
 earlier grouped refusal. The two successful roundtrips do not erase it.
 
-## Minimal next checks
+## Post-terminal sampled fall boundary
+
+After `762f4da`, one fresh v2 interruption probe reached its intended window.
+The [archived trial](../../../../build/bmx/lua-equipment-interruption-postterminal-v2/)
+used the reviewed runtime, exact production Lua modules, one explicit Arm and
+one accepted sequence-1 pulse. Its terminal receipt was `released / none`, mask
+`0`, with 50 press publications and one neutral publication over 329 ms. The
+claim was released, debt was clear, and request/read/store/ack counts were
+`1/3/1/1`, with no retained handle.
+
+The fixture queued one `wipeout(0.5)` only after terminal storage and
+acknowledgement, while the adapter was settling on board `100`. Nineteen
+milliseconds later, the same sampled-level watch reported selected state `300`
+and an increased wipeout count. The adapter ended `failed / fall_observed` and
+retained neither historical nor currently qualified transition success. Cleanup
+resolved, and the fixture recorded `COVERED` under its sampled criterion.
+These state/counter facts share the physics-watch route; they are not independent
+visual or body-dynamics evidence. The first fall sample reported known ragdoll
+false. The later endpoint image shows an upright rider on the board; no recovery
+API was called or qualified by this trial.
+
+The receipt recorded `warmup_deferrals = "0"`, so the new lock-deferral path
+was not exercised in game. Its source and offline regressions passed; native
+effectiveness remains unverified. The unchanged driver completed 301 neutral
+reports, final neutral release and disconnect. Full storage was archived before
+Go, within the original gate deadline. Normal shutdown, process absence and
+subsequent manifest withdrawal left zero active Lua manifests.
+
+The independent [coverage and closure audit](../../../../build/bmx/lua-equipment-interruption-postterminal-v2/independent-covered-window-closure-audit-v1.json)
+has SHA-256 `F502A6146B01BC7E80B881333A2FEDB020879B9BA00113E95D29E5BC082A697D`.
+Fall before dispatch remains untested. This checkpoint demonstrates receipt
+composition and a latched sampled fall boundary, not rideable BMX or likeness.
+
+## Remaining checks
 
 These are proposed bounded tests, not completed coverage or new native admission.
 Stop on an unexpected refusal, unresolved duty, readiness loss or fall; preserve
@@ -100,7 +133,7 @@ the full receipt and require an explicit new Arm for every later experiment.
 | Check | Required result |
 | --- | --- |
 | Fall before SDK dispatch | No SDK request; the armed/baseline attempt stops without retry or qualified transition. |
-| Fall after terminal acknowledgement but before the target suffix completes | Preserve the transport receipt, latch the fall/readiness boundary and refuse a qualified transition even if the rider later stands. |
+| Independent visual/body-dynamics fall evidence | Supplement the covered watch-based boundary with an observed physical fall; do not treat the shared watch's state and counter as independent witnesses. |
 
 A fall outside the intended window leaves that interruption case untested.
 No automatic GetUp, body following or BMX activation is part of this matrix.

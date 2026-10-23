@@ -14,7 +14,8 @@ enum class Status { unavailable, clear, hit };
 enum class Failure {
     none, invalid, unavailable, observation_changed, budget, ray_limit, backend,
     client_phase_unavailable, local_actor_exclusion_unavailable,
-    query_preconditions_unavailable, query_backend_exception
+    query_preconditions_unavailable, query_backend_exception,
+    body_exclusions_unavailable
 };
 inline const char* name(Failure value) noexcept {
     switch (value) {
@@ -29,6 +30,7 @@ inline const char* name(Failure value) noexcept {
     case Failure::local_actor_exclusion_unavailable: return "local_actor_exclusion_unavailable";
     case Failure::query_preconditions_unavailable: return "query_preconditions_unavailable";
     case Failure::query_backend_exception: return "query_backend_exception";
+    case Failure::body_exclusions_unavailable: return "body_exclusions_unavailable";
     }
     return "query_unavailable";
 }

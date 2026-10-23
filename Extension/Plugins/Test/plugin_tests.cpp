@@ -1268,6 +1268,13 @@ void owned_body_batches_share_actual_and_logical_query_limits() {
                 unavailable(P.probe_batch(h,epoch,rays(1)),"native_cast_budget_exhausted")
             else assert(batch.native_casts==tonumber(args[2])) end
         end)
+        reskate.console.command("batch-refusal-budget","",function()
+            local batch=P.probe_batch(h,epoch,rays(2))
+            unavailable(batch,"body_exclusions_unavailable")
+            assert(batch.native_casts==0 and not batch.budget_exhausted)
+            for i=1,32 do assert(reskate.world.probe(from,to).status=="clear") end
+            assert(reskate.world.probe(from,to).status=="unavailable","zero-cast refusal must leave all 64 native casts")
+        end)
         reskate.console.command("batch-clear","",function()
             local batch=P.probe_batch(h,epoch,rays(32))
             assert(batch.status=="available" and batch.native_casts==64)
@@ -1309,7 +1316,8 @@ void owned_body_batches_share_actual_and_logical_query_limits() {
     check(host.run_console("batch-once body_epoch_or_observation_changed 0") && game.native_casts == casts,
         "zero-cast precondition reason overrode the post-query observation fence\n" + environment.all());
     game.batch_change_after = false;
-    for (const auto reason : {body_query::Failure::client_phase_unavailable, body_query::Failure::local_actor_exclusion_unavailable}) {
+    for (const auto reason : {body_query::Failure::client_phase_unavailable, body_query::Failure::local_actor_exclusion_unavailable,
+        body_query::Failure::body_exclusions_unavailable}) {
         ticks(host, environment, 1); game.batch_refusal = reason;
         casts = game.native_casts;
         check(host.run_console(std::string("batch-once ") + body_query::name(reason) + " " + std::to_string(game.batch_refusal_casts)) &&
@@ -1317,6 +1325,11 @@ void owned_body_batches_share_actual_and_logical_query_limits() {
             !game.owned.at(1).mailbox.count && !game.owned.at(1).mailbox.failed && !game.body_submissions,
             "typed backend refusal was lost, invented geometry or mutated command state\n" + environment.all());
     }
+    ticks(host, environment, 1); game.batch_refusal = body_query::Failure::body_exclusions_unavailable;
+    game.query_cast_cost = 2; casts = game.native_casts;
+    const bool refusal_budget_command = host.run_console("batch-refusal-budget");
+    check(refusal_budget_command && game.native_casts == casts + 64 && !game.body_submissions,
+        "known zero-cast exclusion refusal poisoned or spent the shared native allowance\n" + environment.all());
     for (const auto reason : {body_query::Failure::query_backend_exception, body_query::Failure::unavailable}) {
         ticks(host, environment, 1); game.batch_refusal = reason;
         game.batch_refusal_casts = 2; game.batch_refusal_accounting_valid = false;

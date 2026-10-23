@@ -79,6 +79,7 @@ void typed_refusal_names_are_stable() {
     check(std::string_view(name(Failure::local_actor_exclusion_unavailable)) == "local_actor_exclusion_unavailable", "actor exclusion reason");
     check(std::string_view(name(Failure::query_preconditions_unavailable)) == "query_preconditions_unavailable", "query preconditions reason");
     check(std::string_view(name(Failure::query_backend_exception)) == "query_backend_exception", "query exception reason");
+    check(std::string_view(name(Failure::body_exclusions_unavailable)) == "body_exclusions_unavailable", "owned exclusion reason");
 }
 void every_observation_fence_invalidates_the_whole_batch() {
     // Each field represents a native adapter fence: context, world generation/state, actor,

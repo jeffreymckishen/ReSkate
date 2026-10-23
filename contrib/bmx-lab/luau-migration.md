@@ -78,8 +78,8 @@ replace the physical prototype; implemented contracts still require native proof
    available, feature, ignored-owned-body status and world/step provenance.
    Existing raycasts do not expose enough information to implement wheel forces;
    a missing normal or velocity cannot be silently replaced by an invented one.
-   [Owned-body batches](../plugin-body-query.md) now implement complete-sample
-   fences, same-VM owned exclusions and shared actual-cast accounting. Their
+   [Owned-body batch contracts](../plugin-body-query.md) have portable tests for
+   complete-sample fences, same-VM owned exclusions and shared actual-cast accounting. Their
    first native query-plus-force attempt refused its first query with zero
    reported casts and zero published packets, then accepted release. Native
    query composition remains unqualified. A second native trial localized the
@@ -87,6 +87,12 @@ replace the physical prototype; implemented contracts still require native proof
    the placement resolver expects a packed entity key, while the actor anchor
    holds a raw pointer. That invalid lookup is removed; requested actor exclusion
    remains unavailable pending a verified conversion and exclusion domain.
+   Native ray hits were also confirmed to be shape handles, not rigid-body
+   handles, and the ignored-ID list compares native owner indices. Owned capsules
+   have no native owner; body or shape IDs cannot implement that exclusion.
+   The incorrect native batch path is removed. Requests without actor exclusion
+   now return `body_exclusions_unavailable`, with zero casts and no geometry,
+   until a correct exclusion method is qualified.
    Vehicle queries must retain actor exclusion and the observation checks.
 3. **Commands and receipts.** Queue finite bounded force, torque and one-shot
    impulse against an exact observed body epoch. Commit once in the supported

@@ -7,6 +7,14 @@ body's `physics.read` sample. It retains that immutable complete sample internal
 including position, rotation, linear/angular velocity, mass and inertia. A query
 grants no force, motion, pose or ownership authority.
 
+The current native adapter refuses every batch before casting: owned-body
+exclusion is not yet qualified. With actor exclusion requested the reason is
+`local_actor_exclusion_unavailable`; otherwise it is
+`body_exclusions_unavailable`, after the initial owner and observation checks.
+Both report zero native casts and publish no geometry. The result and fence
+contracts below are exercised by the portable executor and plugin host tests;
+they do not establish an available native query backend.
+
 ```lua
 local sample = assert(reskate.world.physics.read(body))
 local batch = reskate.world.physics.probe_batch(body, sample.epoch, {
@@ -19,6 +27,8 @@ elseif batch.reason == "body_epoch_or_observation_changed" then
     -- Defer this decision. The SDK does not relabel or replay the query or a command.
 elseif batch.reason == "local_actor_exclusion_unavailable" then
     -- The current native adapter cannot qualify this exclusion. Keep the vehicle inactive.
+elseif batch.reason == "body_exclusions_unavailable" then
+    -- The mandatory anchoring-body exclusion is also unavailable.
 end
 ```
 
@@ -31,8 +41,11 @@ error. Lists must be dense arrays; extra fields are refused.
 Options are `exclude_bodies = {other_owned_body, ...}` and
 `exclude_local_actor = true|false`. At most eight additional opaque body handles
 are accepted. Every exclusion must still belong to this VM, its current native
-world and a fresh owned generation. The anchoring body is always excluded. Native
-body references are resolved internally; plugins cannot supply addresses, native
+world and a fresh owned generation. The anchoring body must always be excluded.
+The native ray filter consumes owner indices, not body or shape handles, and the
+SDK-owned capsules have no native owner. Until a correct exclusion method is
+qualified, the adapter refuses the batch rather than forwarding those handles.
+Native body references are resolved internally; plugins cannot supply addresses, native
 body indices or actor IDs. `exclude_local_actor` defaults to false. Setting it to
 true currently returns `local_actor_exclusion_unavailable` before any native cast.
 The placement root resolver accepts a packed entity key; the current local actor
@@ -54,14 +67,18 @@ same. A token cannot be submitted, read, released or used as an exclusion handle
 It represents a qualified body observation, not a collider, face or surface
 feature, and carries no proof of static or moving contact. Unqualified identities
 are omitted while valid hit geometry may still be returned.
+The current native adapter omits this optional token: the picking reader returns
+a shape handle, and its conversion to a rigid body is not yet qualified. Matching
+shape and body index/generation numbers cannot establish that conversion. The
+portable binding's token tests do not prove a native body association.
 
-Before and after the batch, the adapter rechecks the owned anchor, context,
-native world/state, SDK world and body generations, owned exclusions, and
+Before and after any executed batch, the backend contract requires rechecking
+the owned anchor, context, native world/state, SDK world and body generations, owned exclusions, and
 the exact listener sample epoch. Both fences also require the latest published
 sample and a fresh read-only native body observation to match every numeric lane
 of the token's canonical sample exactly. Even a read or receipt that replaces
-`latest` in the same listener epoch cannot rebind an older token. Qualified foreign hit generations are checked
-again before publication. A changed observation discards **every** ray; no partial
+`latest` in the same listener epoch cannot rebind an older token. A changed
+observation discards **every** ray; no partial
 contact set escapes. These checks qualify one local observation window. They do
 not lock the native physics world or freeze native position, rotation or velocity
 arrays between those reads, and do not prove globally atomic collision geometry.
@@ -69,7 +86,7 @@ The Lua vehicle adapter must still qualify how it pairs its body/contact
 observations and uses them for a later command.
 A clear result does not prove that an entire surrounding region is streamed.
 
-The query repeats the existing native observation reads through a pure read-only
+The batch contract repeats the existing native observation reads through a pure read-only
 path. It does not publish `latest`, observe a successor, consume a pending command,
 acknowledge a receipt or advance the command epoch. The native clock may naturally advance
 during the query. Any subsequent same-epoch command must still pass the existing
@@ -88,17 +105,20 @@ accounting result closes the remaining tick budget and omits `native_casts`
 rather than inventing an actual count.
 
 Pre-cast refusals distinguish `client_phase_unavailable` (initial client gate),
-`local_actor_exclusion_unavailable` (the requested actor root could not be qualified),
+`local_actor_exclusion_unavailable` (the requested actor exclusion is unqualified),
+`body_exclusions_unavailable` (the mandatory owned-body exclusion is unqualified),
 and `query_preconditions_unavailable` (the backend was unavailable before any batch
-ray cast). `query_backend_exception` marks the native adapter's caught exception;
-its incomplete cast accounting closes the remaining budget and omits `native_casts`.
+ray cast). A ray-executing backend reports `query_backend_exception` when a caught
+exception leaves its cast accounting incomplete; this closes the remaining budget
+and omits `native_casts`. The current metadata-only native adapter attempts no ray:
+its catch reports `query_preconditions_unavailable` with known zero casts instead.
 An unavailable batch after any accounted cast
 remains `query_unavailable`; observation changes and budget failures retain their
 existing precedence. These categories do not identify an individual failed native
 contract or relax any guard.
 
-This source change requires runtime build, portable and plugin contract checks,
-then native query validation. It does not itself activate a vehicle or establish
+Native execution remains unavailable pending the correct exclusion implementation
+and in-game validation. This does not activate a vehicle or establish
 in-game contact accuracy, motion qualification or performance.
 
 The first native query-plus-force trial used source `716f2ddd` and runtime
@@ -120,3 +140,14 @@ The ledger is `build/bmx/lua-owned-query-phase-refusal-native-trial-v2/native-st
 This identifies the refused stage, not a successful query. The unqualified
 pointer-to-key lookup has now been removed; requested actor exclusion remains
 unavailable until the native conversion and exclusion contract are established.
+
+Static inspection of the supported build also identified a separate handle-domain
+error: the hit reader and its validator use the shape pool and byte generations.
+The adapter previously tested those bits against the distinct rigid-body pool
+before creating a body token. That interpretation is removed. A second inspection
+proved that the ignored-ID list is compared with a shape's owner index, not its
+shape or rigid-body index. Owned capsules require an unassigned owner, which
+bypasses that list's membership loop. The native batch path is therefore withdrawn;
+it cannot honestly promise the mandatory owned-body exclusion. Shape-to-body
+conversion and an actual owned/actor exclusion method remain required before
+vehicle contact queries can be admitted in the game.

@@ -9,6 +9,7 @@
 
 namespace service = dingosdk::native_input_pulse;
 namespace model = dingosdk::game_input_pulse;
+namespace pulse_policy = dingosdk::input_pulse;
 namespace actor = dingosdk::actor_control_native;
 namespace control = dingosdk::actor_control;
 namespace clock_policy = dingosdk::actor_clock;
@@ -159,7 +160,8 @@ bool enable_clock(std::uint64_t owner, std::uint64_t sequence, const Actor& valu
 }
 bool read_clock(std::uint64_t owner, std::uint64_t sequence, const Actor& value, Clock& out) noexcept {
     out = {};
-    return fixture::owns(owner, sequence, value) && fixture::env.clock.read(fixture::env.clock_key, fixture::env.wall, out);
+    return fixture::env.clock_enabled && fixture::owns(owner, sequence, value) &&
+        fixture::env.clock.read(fixture::env.clock_key, fixture::env.wall, out);
 }
 bool disable_clock(std::uint64_t owner, std::uint64_t sequence, const Actor& value) noexcept {
     auto& f = fixture::env; ++f.disable_calls;
@@ -209,6 +211,8 @@ void lifecycle() {
     retire(401); const auto result = read(h);
     check(result.status == model::Status::released && result.press_publications == 2 && result.neutral_publications == 1 &&
         result.claim_released && !result.report_debt, "normal lifecycle records buffer witnesses and a retired claim");
+    check(result.first_rejection_mask == 0 && result.first_rejection_stage == model::RejectionStage::none,
+        "successful lifecycle does not invent a rejection witness");
     const auto frozen = result.observed_ms; time(500); service::tick(1, 2, true);
     check(read(h).observed_ms == frozen, "terminal read remains a historical witness");
     check(service::acknowledge(1, h) && !service::read(1, h, ignored), "only explicit safe acknowledgement removes retained record");
@@ -259,6 +263,9 @@ void original_failure(DWORD error) {
         "failed original preserves every supplied output field");
     auto r = read(h); check(r.original_result_known && r.original_result == error &&
         r.original_failures == 1 && r.report_debt && r.quarantined, "disconnect keeps debt with the original error witness");
+    check((r.first_rejection_mask & pulse_policy::failure_bit(pulse_policy::FailedCheck::source_fresh)) != 0 &&
+        r.first_rejection_stage == model::RejectionStage::service_plan,
+        "observed disconnect retains the service source rejection before core ticket invalidation");
     check(frame(280).value.Gamepad.wButtons == 0, "reconnected stream is never forced pressed");
     r = read(h); check(r.report_debt && r.quarantined && !r.claim_released, "new source epoch cannot impersonate old release");
     service::release_all(1); time(1200); service::tick(1, 2, true);
@@ -270,8 +277,15 @@ void filter_equal_bytes() {
     const auto h = press(); Frame filtered; filtered.clean = false;
     check(frame(250, filtered).value.Gamepad.wButtons == 0, "known competing filter returns its unchanged neutral bytes");
     check(read(h).report_debt && read(h).neutral_publications == 0, "equal bytes do not turn a known filter into source cleanup");
+    const auto rejected = read(h);
+    check(rejected.first_rejection_mask == pulse_policy::failure_bit(pulse_policy::FailedCheck::interference) &&
+        rejected.first_rejection_stage == model::RejectionStage::core_plan,
+        "equal-byte filter rejection names the actual failed clean-transport check");
     (void)frame(280); check(!read(h).report_debt && read(h).neutral_publications == 1, "unfiltered same-source neutral resolves duty");
     retire(281); check(read(h).status == model::Status::revoked, "interference revocation is not normal successful completion");
+    check(read(h).first_rejection_mask == rejected.first_rejection_mask &&
+        read(h).first_rejection_stage == rejected.first_rejection_stage,
+        "raw cleanup and retirement cannot overwrite the first failure witness");
 }
 void source_stale() {
     const auto h = press(); Frame old; old.original_ms = 149;
@@ -343,21 +357,48 @@ void physical_conflict() {
 void actor_clock_lost() {
     const auto h = press(); env.inspect_ok = false;
     check(frame(250).value.Gamepad.wButtons == 0 && !read(h).report_debt, "same-source raw neutral cleanup does not write or require an old actor's clock");
+    const auto rejected = read(h);
+    check((rejected.first_rejection_mask & pulse_policy::failure_bit(pulse_policy::FailedCheck::actor)) != 0 &&
+        rejected.first_rejection_stage == model::RejectionStage::core_plan,
+        "failed actor qualification is recorded at the actual service core plan");
     retire(251); check(read(h).status == model::Status::revoked, "lost actor qualification cannot continue assertions");
+    check(service::acknowledge(1, h), "retired actor-loss receipt can be explicitly acknowledged");
+    env.inspect_ok = true;
+    const auto clock_handle = press(1, 1200); env.clock_enabled = false;
+    check(frame(1350).value.Gamepad.wButtons == 0 && !read(clock_handle).report_debt,
+        "independent clock loss still permits fresh raw neutral cleanup");
+    const auto clock_rejected = read(clock_handle);
+    check((clock_rejected.first_rejection_mask & pulse_policy::failure_bit(pulse_policy::FailedCheck::native_clock)) != 0 &&
+        (clock_rejected.first_rejection_mask & pulse_policy::failure_bit(pulse_policy::FailedCheck::actor)) == 0,
+        "missing clock is distinguished from actor inspection failure");
+    retire(1351);
 }
 void environment_guards() {
-    for (unsigned guard = 0; guard < 4; ++guard) {
+    for (unsigned guard = 0; guard < 5; ++guard) {
         const auto base = 100 + static_cast<std::uint64_t>(guard) * 1100;
         const auto h = press(1, base);
         if (guard == 0) env.focus = false;
         if (guard == 1) env.gameplay = false;
         if (guard == 2) env.menu = false;
         if (guard == 3) env.interference = false;
+        if (guard == 4) { time(base + 150); service::tick(1, 2, false); }
         check(frame(base + 150).value.Gamepad.wButtons == 0 && read(h).press_publications == 1,
             "each actual environment predicate stops further assertions");
         if (guard == 3) check(read(h).report_debt, "environment interference cannot masquerade as qualified cleanup");
+        const auto rejected = read(h);
+        if (guard < 4) {
+            constexpr std::array guard_checks{pulse_policy::FailedCheck::focus, pulse_policy::FailedCheck::gameplay,
+                pulse_policy::FailedCheck::menu, pulse_policy::FailedCheck::interference};
+            check(rejected.first_rejection_mask == pulse_policy::failure_bit(guard_checks[guard]) &&
+                rejected.first_rejection_stage == model::RejectionStage::core_plan,
+                "actual failed environment check is precisely retained");
+        } else check(rejected.first_rejection_mask == 0 && rejected.first_rejection_stage == model::RejectionStage::tick_ready,
+            "client tick unavailability is distinct from a failed report-plan predicate");
         env.focus = env.gameplay = env.menu = env.interference = true;
         (void)frame(base + 180); retire(base + 181);
+        check(read(h).first_rejection_mask == rejected.first_rejection_mask &&
+            read(h).first_rejection_stage == rejected.first_rejection_stage,
+            "later cleanup leaves the immutable initial rejection intact");
         check(read(h).status == model::Status::revoked && service::acknowledge(1, h),
             "guard stop remains revoked after genuine raw cleanup and claim release");
     }

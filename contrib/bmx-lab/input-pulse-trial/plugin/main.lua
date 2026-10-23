@@ -1,6 +1,6 @@
 -- Explicit stock-input diagnostic. Equipment expectations below are Lua policy.
-local ID="LuaInputPulse_20261023_v1"
-local RUN="2678470e-9c99-4a1d-ae58-e2d7549a837b"
+local ID="LuaInputPulse_20261023_v2"
+local RUN="e39e9852-11b0-44b9-b374-e4f019cff258"
 local KEY="game_input_pulse_v1"
 local P,S=reskate.input,reskate.skater
 local ARM_MS,WATCH_MS,POST_MS,DWELL_MS,SAMPLE_MS=30000,8000,2500,600,200
@@ -85,6 +85,7 @@ local function sample(c,t)
     local row=copy(c);row.arm=used
     local r=trial.last_receipt
     if r then row.pulse={sequence=r.sequence,status=r.status,reason=r.reason,report_debt=r.report_debt,
+        first_rejection_mask=r.first_rejection_mask,first_rejection_stage=r.first_rejection_stage,
         claim_released=r.claim_released,press_publications=r.press_publications,
         neutral_publications=r.neutral_publications,original_failures=r.original_failures,contentions=r.contentions} end
     table.insert(ledger.samples,row)
@@ -109,7 +110,9 @@ local function receipt_valid(r)
         r.publication_scope~="process_outer_xinput_buffer" or r.consumption~="unobserved" or
         r.semantic_completion~="unobserved" or type(r.status)~="string" or type(r.reason)~="string" or
         type(r.terminal)~="boolean" or type(r.report_debt)~="boolean" or type(r.claim_released)~="boolean" or
-        type(r.quarantined)~="boolean" then return false end
+        type(r.quarantined)~="boolean" or type(r.first_rejection_mask)~="number" or
+        r.first_rejection_mask<0 or r.first_rejection_mask>4294967295 or
+        r.first_rejection_mask%1~=0 or type(r.first_rejection_stage)~="string" then return false end
     for _,key in {"requested_ms","expires_ms","observed_ms","source_epoch","press_candidates",
         "press_publications","neutral_publications","original_failures","contentions"} do
         if not decimal(r[key],false) then return false end
@@ -143,7 +146,7 @@ local function arm(slot)
     if used>=4 or handle or phase~="idle" and phase~="stopped" then return end
     local t=now();if not t then phase,detail="refused","Invalid fresh clock" return end
     used+=1
-    ledger={schema=1,plugin=ID,run_id=RUN,fixture="explicit-input-pulse-v1",arm=used,samples={},
+    ledger={schema=1,plugin=ID,run_id=RUN,fixture="explicit-input-pulse-v2",arm=used,samples={},
         limits={arms=4,arm_ms=ARM_MS,request_watch_ms=WATCH_MS,post_observe_ms=POST_MS,
             ready_dwell_ms=DWELL_MS,sample_interval_ms=SAMPLE_MS,samples=48,json_bytes=62000},
         scope="SDK report publications and sampled Lua equipment expectations; no native consumption, global-step, physical-device, or semantic-transition proof."}
@@ -194,7 +197,8 @@ reskate.on("tick",function()
         detail="One request; watching report receipt and sampled stock state"
         if not persist() then return end
         local ok,h,why=pcall(P.pulse,trial.slot,"y")
-        trial.request={accepted=ok and h~=nil,detail=short(ok and why or h)}
+        local accepted=ok and h~=nil
+        trial.request={accepted=accepted,detail=accepted and "accepted" or short(ok and why or h)}
         if not ok or not h then finish(ok and "Pulse request refused; no retry" or "Pulse request raised; no retry",t) return end
         handle=h;trial.handle_retained=true;sample(c,t);persist();return
     end

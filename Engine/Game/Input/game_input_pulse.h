@@ -1,4 +1,5 @@
 #pragma once
+#include "input_pulse.h"
 #include <cstdint>
 
 namespace dingosdk::game_input_pulse {
@@ -9,6 +10,19 @@ struct Handle {
     bool operator==(const Handle&) const = default;
 };
 enum class Status { queued, warming, pressing, releasing, released, cancelled, expired, revoked };
+enum class RejectionStage { none, service_plan, core_plan, prepublish, tick_ready, tick_deadline, publication };
+constexpr const char* rejection_stage_name(RejectionStage stage) noexcept {
+    switch (stage) {
+    case RejectionStage::none: return "none";
+    case RejectionStage::service_plan: return "service_plan";
+    case RejectionStage::core_plan: return "core_plan";
+    case RejectionStage::prepublish: return "prepublish";
+    case RejectionStage::tick_ready: return "tick_ready";
+    case RejectionStage::tick_deadline: return "tick_deadline";
+    case RejectionStage::publication: return "publication";
+    }
+    return "invalid";
+}
 enum class Reason {
     none, invalid_owner, invalid_source, invalid_button, rate_limited, busy, capacity, unavailable,
     unsupported_transport, source_unavailable, source_changed, actor_changed, focus_lost, menu_open,
@@ -68,6 +82,8 @@ struct Receipt {
     Handle handle{};
     Status status{Status::queued};
     Reason reason{Reason::none};
+    RejectionStage first_rejection_stage{RejectionStage::none};
+    std::uint32_t first_rejection_mask{};
     std::uint32_t user{};
     std::uint16_t button{};
     std::uint64_t requested_ms{}, expires_ms{}, observed_ms{}, source_epoch{};

@@ -41,6 +41,48 @@ sequence, source epoch, times and 64-bit counters. It exposes `press_candidates`
 `actor_retired`, `orphaned` and `quarantined`. A known original error code is optional. Epochs label
 SDK observations, not GUIDs. Terminal status alone does not authorize acknowledgement.
 
+`first_rejection_mask` is an exact integer bitmask of failed checks at the first rejected owned
+decision. `first_rejection_stage` identifies that decision: `service_plan` for the service's
+source/deadline checks, `core_plan` for the initial policy decision, `prepublish` for its repeated
+publication-boundary checks, `tick_ready` or `tick_deadline` for client-tick revocation, and
+`publication` for an uncertain output write. Before rejection it is `0`/`none`. Explicit cancellation
+also retains `0`/`none`; tick readiness loss retains `0`/`tick_ready` with reason `unavailable`,
+and an uncertain write can retain `0`/`publication`. Zero is not proof that providers stayed available.
+
+| Bit | Failed check |
+| --- | --- |
+| 0 | Original return code was not success. |
+| 1 | No readable successful returned output was available. |
+| 2 | The bound source observation was not fresh/current. |
+| 3 | Returned and original transport result codes differed. |
+| 4 | The broker reported competing capture/filter interference. |
+| 5 | The full supplied owner/sequence/source/actor key differed. |
+| 6 | Full raw and returned pads differed. |
+| 7 | Source timestamp was absent, future, stale, or decision wall time rewound. |
+| 8 | Native sample was absent, nonfinite, negative, future, stale, or decision wall time rewound. |
+| 9 | A usable native sample did not preserve serial/time progression. |
+| 10 | The actor claim was not current. |
+| 11 | Focus was not qualified. |
+| 12 | Gameplay was not active. |
+| 13 | The menu was not closed. |
+| 14 | A usable native sample exceeded the .25-second native gap. |
+| 15 | Owned decision gap exceeded 100 ms. |
+| 16 | Request age reached its one-second deadline. |
+| 17 | Physical input became nonneutral during the press phase. |
+
+Bits 9 and 14 require a usable native sample; an absent clock records bit 8 rather than invented
+continuity facts. Unrelated slots, inner calls and stale generation tickets bypass evaluation and
+cannot replace the witness. Service source rejection records its decisive source check plus
+original/output/transport/source-timestamp failures already known there; it does not infer native
+clock or actor failures that it has not evaluated. Several failed checks may coexist. A singleton
+focus/menu/gameplay/interference/actor/native-clock/continuity failure maps to the corresponding
+typed reason; combined masks can retain the generic `unavailable` reason. These are sampled facts,
+not proof of which failure caused another or why a native provider refused.
+
+The first mask and stage remain unchanged through later cleanup, retirement and retained reads.
+The core also preserves its mask across acknowledgement until a fresh accepted request resets it;
+the service's acknowledged record is removed. This adds no retry, weaker guard, raw data or address.
+
 The publication scope is `process_outer_xinput_buffer`. SDK output-buffer publication does not
 prove the wrapper subsequently returned normally. Both `consumption` and `semantic_completion`
 remain `"unobserved"`, including after `released`. No receipt grants raw memory or an actor ticket.
@@ -133,6 +175,8 @@ With `DINGOSDK_BUILD_PLUGIN_TESTS=ON`, build `dingosdk_input_pulse_tests` and ru
 The portable suite covers readiness failures, duplicate-clock warmup, the 200 ms boundary,
 deadline revocation, physical-field preservation, stale in-flight generations, uncertain
 publication, release debt, counter exhaustion and a complete same-packet report lifecycle.
+It also isolates every failed-check bit, combined failures, and first-witness retention across
+cleanup/acknowledgement and fresh-request reset.
 It neither invokes the game nor establishes that any report is consumed there. The actual Host
 suite also checks permission/side denial, strict arguments, opaque owner-bound handles, receipt
 validation and large integer serialization, shared request limits, and unload debt semantics.

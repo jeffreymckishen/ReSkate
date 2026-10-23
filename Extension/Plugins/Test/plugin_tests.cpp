@@ -1630,6 +1630,7 @@ void input_pulse_api_keeps_report_receipts_opaque_and_owner_bound() {
         assert(r.sequence=="9007199254740995" and r.requested_ms=="9007199254740997" and r.expires_ms=="9007199254741997")
         assert(r.observed_ms==r.requested_ms and r.source_epoch=="9007199254741009")
         assert(r.user==2 and r.button==0x8000 and r.status=="queued" and not r.terminal)
+        assert(r.first_rejection_mask==0 and r.first_rejection_stage=="none")
         assert(r.transport=="xinput" and r.source_identity=="observed_stream" and r.publication_scope=="process_outer_xinput_buffer")
         assert(r.consumption=="unobserved" and r.semantic_completion=="unobserved" and r.native_consumed==nil)
         assert(r.address==nil and r.actor_ticket==nil and r.device_guid==nil and r.original_result==nil)
@@ -1643,6 +1644,7 @@ void input_pulse_api_keeps_report_receipts_opaque_and_owner_bound() {
                 assert(v.press_candidates=="9007199254741012" and v.press_publications=="9007199254741011")
                 assert(v.neutral_publications=="1" and v.contentions=="9007199254741013")
                 assert(v.original_result_known and v.original_result==1167)
+                assert(v.first_rejection_mask==33024 and v.first_rejection_stage=="core_plan")
                 if v.report_debt or not v.claim_released or v.quarantined then
                     assert(not P.pulse_acknowledge(h));reskate.log("pulse debt retained")
                 else
@@ -1663,6 +1665,8 @@ void input_pulse_api_keeps_report_receipts_opaque_and_owner_bound() {
     };
     receipt.status=static_cast<p::Status>(999); malformed("unknown pulse status was serialized");
     receipt.reason=static_cast<p::Reason>(999); malformed("unknown pulse reason was serialized");
+    receipt.first_rejection_stage=static_cast<p::RejectionStage>(999); malformed("unknown pulse rejection stage was serialized");
+    receipt.first_rejection_mask=1u<<31; malformed("unknown pulse failed-check bits were serialized");
     ++receipt.handle.sequence; malformed("pulse receipt changed its opaque sequence");
     receipt.user=1; malformed("pulse receipt changed the requested slot");
     receipt.button=0x1000; malformed("pulse receipt changed the requested button");
@@ -1673,6 +1677,9 @@ void input_pulse_api_keeps_report_receipts_opaque_and_owner_bound() {
     receipt.press_candidates=9007199254741012ULL; receipt.press_publications=9007199254741011ULL;
     receipt.neutral_publications=1; receipt.contentions=9007199254741013ULL;
     receipt.original_result_known=true; receipt.original_result=1167;
+    receipt.first_rejection_mask=dingosdk::input_pulse::failure_bit(dingosdk::input_pulse::FailedCheck::native_clock) |
+        dingosdk::input_pulse::failure_bit(dingosdk::input_pulse::FailedCheck::poll_gap);
+    receipt.first_rejection_stage=p::RejectionStage::core_plan;
     ticks(host,environment,1); running(host,"input-pulse",environment);
     check(environment.logged("pulse debt retained") && environment.fake.input_pulses.size()==1,
         "terminal pulse status alone discarded unresolved publication duty");
@@ -4367,7 +4374,7 @@ void the_tracked_input_pulse_fixture_loads_and_ticks_inert() {
     check(std::filesystem::is_regular_file(directory / manifest_file) &&
         std::filesystem::is_regular_file(directory / "plugin" / "main.lua"), "tracked input pulse fixture files are required");
     check(check_package_files(directory).empty(), "input pulse fixture is a source-only sandbox package");
-    constexpr const char* id = "LuaInputPulse_20261023_v1";
+    constexpr const char* id = "LuaInputPulse_20261023_v2";
     TestEnvironment environment;
     const auto storage = environment.storage_root() / id / "storage.json";
     check(!std::filesystem::exists(storage), "input pulse fixture starts with fresh test storage");
@@ -4381,7 +4388,7 @@ void the_tracked_input_pulse_fixture_loads_and_ticks_inert() {
     environment.fake.telemetry->watch.state = 100;
     environment.fake.telemetry->watch.ragdoll_known = true;
     Host host(environment, Side::client);
-    host.apply({{id, directory, "tracked-input-pulse-inert-v1", {}}}); running(host, id, environment);
+    host.apply({{id, directory, "tracked-input-pulse-inert-v2", {}}}); running(host, id, environment);
     environment.panels_open = true; environment.shown = id;
     ticks(host, environment, 60); running(host, id, environment);
     const auto page = std::find_if(environment.panels.begin(), environment.panels.end(), [&](const auto& panel) {

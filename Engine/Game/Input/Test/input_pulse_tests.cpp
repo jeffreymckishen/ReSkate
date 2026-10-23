@@ -348,6 +348,90 @@ void publication_confirmation_and_counter_exhaustion() {
     CHECK(revision_reserved.acknowledge(key));
     CHECK(!revision_reserved.request(next, 0x1000, 401));
 }
+
+void first_rejection_records_checks_once() {
+    using Check = t::FailedCheck;
+    constexpr Check facts[] = {
+        Check::original_result, Check::output, Check::source_fresh, Check::transport_result,
+        Check::interference, Check::key, Check::raw_equality, Check::source_clock,
+        Check::native_clock, Check::native_continuity, Check::actor, Check::focus,
+        Check::gameplay, Check::menu, Check::native_gap, Check::poll_gap, Check::physical_activity
+    };
+    for (const auto fact : facts) {
+        t::Pulse pulse;
+        begin_press(pulse);
+        CHECK(pulse.first_rejection_mask() == 0);
+        auto in = input(250);
+        switch (fact) {
+        case Check::original_result: in.original_result = 1167; break;
+        case Check::output: in.has_output = false; break;
+        case Check::source_fresh: in.source_fresh = false; break;
+        case Check::transport_result: in.transport_matches = false; break;
+        case Check::interference: in.interference_clear = false; break;
+        case Check::key: ++in.key.owner; break;
+        case Check::raw_equality: in.returned.buttons = 2; break;
+        case Check::source_clock: in.source_observed_ms = 149; break;
+        case Check::native_clock: in.serial = 0; break;
+        case Check::native_continuity: in.serial = 199; break;
+        case Check::actor: in.actor_current = false; break;
+        case Check::focus: in.focused = false; break;
+        case Check::gameplay: in.gameplay = false; break;
+        case Check::menu: in.menu_closed = false; break;
+        case Check::native_gap: in.seconds = .5; break;
+        case Check::poll_gap: in = input(351); break;
+        case Check::physical_activity: in.raw.left_x = 1; in.returned = in.raw; break;
+        case Check::deadline: break; // Its full lifetime is exercised separately below.
+        }
+        CHECK(!apply(pulse, in).press_candidate);
+        CHECK(pulse.first_rejection_mask() == t::failure_bit(fact));
+        // Cleanup failures and successful raw neutral publication cannot rewrite
+        // the first fact set, nor can acknowledgement erase its historical value.
+        auto later = input(in.now_ms + 1);
+        later.focused = later.gameplay = false;
+        (void)apply(pulse, later);
+        CHECK(pulse.first_rejection_mask() == t::failure_bit(fact));
+        if (pulse.release_debt()) CHECK(poll(pulse, in.now_ms + 2).release_candidate);
+        CHECK(pulse.acknowledge(key));
+        CHECK(pulse.first_rejection_mask() == t::failure_bit(fact));
+        auto next = key; ++next.sequence;
+        CHECK(pulse.request(next, 0x1000, in.now_ms + 3));
+        CHECK(pulse.first_rejection_mask() == 0);
+    }
+
+    t::Pulse combined;
+    begin_press(combined);
+    auto bad = input(250);
+    bad.focused = bad.menu_closed = bad.actor_current = false;
+    (void)apply(combined, bad);
+    const auto expected = t::failure_bit(Check::focus) | t::failure_bit(Check::menu) | t::failure_bit(Check::actor);
+    CHECK(combined.first_rejection_mask() == expected);
+    CHECK(poll(combined, 280).press_candidate == false && combined.first_rejection_mask() == expected);
+
+    t::Pulse absent;
+    begin_press(absent);
+    bad = input(250); bad.serial = bad.clock_observed_ms = 0;
+    bad.seconds = std::numeric_limits<double>::quiet_NaN();
+    (void)apply(absent, bad);
+    CHECK(absent.first_rejection_mask() == t::failure_bit(Check::native_clock));
+
+    t::Pulse cancelled;
+    begin_press(cancelled);
+    const auto stale = cancelled.ticket();
+    CHECK(cancelled.revoke(key));
+    bad = input(250); bad.focused = false;
+    CHECK(!cancelled.poll(stale, bad).press_candidate && cancelled.first_rejection_mask() == 0);
+    (void)apply(cancelled, bad);
+    CHECK(cancelled.first_rejection_mask() == 0);
+
+    t::Pulse deadline;
+    CHECK(deadline.request(key, 0x1000, 100));
+    for (unsigned ms = 100; ms <= 1050; ms += 50) {
+        auto waiting = input(ms); waiting.raw.left_x = 1; waiting.returned = waiting.raw;
+        CHECK(!apply(deadline, waiting).press_candidate && deadline.first_rejection_mask() == 0);
+    }
+    (void)poll(deadline, 1100);
+    CHECK(deadline.first_rejection_mask() == t::failure_bit(Check::deadline));
+}
 }
 
 int main() {
@@ -358,5 +442,6 @@ int main() {
     neutral_cleanup_does_not_reuse_native_actor_authority();
     packet_domain_survives_full_lifecycle();
     publication_confirmation_and_counter_exhaustion();
+    first_rejection_records_checks_once();
     std::cout << "input_pulse checks=" << checks << " native_actions=0\n";
 }

@@ -85,11 +85,15 @@ struct InputPulseApi {
             !game_input_pulse::valid_button(r.button) || r.expires_ms < r.requested_ms ||
             r.expires_ms - r.requested_ms != game_input_pulse::lifetime_ms || r.observed_ms < r.requested_ms ||
             r.press_publications > r.press_candidates || std::string_view(game_input_pulse::status_name(r.status)) == "invalid" ||
-            std::string_view(game_input_pulse::reason_name(r.reason)) == "invalid")
+            std::string_view(game_input_pulse::reason_name(r.reason)) == "invalid" ||
+            (r.first_rejection_mask & ~input_pulse::failure_bits) ||
+            std::string_view(game_input_pulse::rejection_stage_name(r.first_rejection_stage)) == "invalid")
             return failure(L, "input pulse receipt has invalid observations");
-        lua_createtable(L, 0, 30);
+        lua_createtable(L, 0, 32);
         lua_pushstring(L, game_input_pulse::status_name(r.status)); lua_setfield(L, -2, "status");
         lua_pushstring(L, game_input_pulse::reason_name(r.reason)); lua_setfield(L, -2, "reason");
+        number(L, "first_rejection_mask", r.first_rejection_mask);
+        lua_pushstring(L, game_input_pulse::rejection_stage_name(r.first_rejection_stage)); lua_setfield(L, -2, "first_rejection_stage");
         boolean(L, "terminal", game_input_pulse::terminal(r.status));
         lua_pushstring(L, "xinput"); lua_setfield(L, -2, "transport");
         lua_pushstring(L, "observed_stream"); lua_setfield(L, -2, "source_identity");

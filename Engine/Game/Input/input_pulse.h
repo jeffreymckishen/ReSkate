@@ -22,9 +22,22 @@ struct Input {
     std::uint32_t original_result{}, original_packet{};
     Pad raw{}, returned{};
     bool has_output{}, outer_game_poll{}, source_fresh{}, actor_current{};
+    bool transport_matches{true};
     bool focused{}, gameplay{}, menu_closed{}, interference_clear{};
 };
 enum class Phase { idle, warming, press, releasing, complete, revoked };
+// Facts that failed at the first rejected owned decision, not a causal diagnosis.
+// Unrelated routes and stale tickets are bypassed before evaluating these facts.
+enum class FailedCheck : std::uint32_t {
+    original_result = 1u << 0, output = 1u << 1, source_fresh = 1u << 2,
+    transport_result = 1u << 3, interference = 1u << 4, key = 1u << 5,
+    raw_equality = 1u << 6, source_clock = 1u << 7, native_clock = 1u << 8,
+    native_continuity = 1u << 9, actor = 1u << 10, focus = 1u << 11,
+    gameplay = 1u << 12, menu = 1u << 13, native_gap = 1u << 14,
+    poll_gap = 1u << 15, deadline = 1u << 16, physical_activity = 1u << 17
+};
+constexpr std::uint32_t failure_bit(FailedCheck check) noexcept { return static_cast<std::uint32_t>(check); }
+inline constexpr std::uint32_t failure_bits = (1u << 18) - 1;
 struct Ticket { std::uint64_t generation{}; };
 struct Output {
     std::uint32_t result{}, packet{};
@@ -59,6 +72,8 @@ public:
         warm_started_ = press_started_ = 0;
         samples_ = 0;
         debt_ = failed_ = false;
+        first_rejection_mask_ = 0;
+        rejection_recorded_ = false;
         last_sequence_ = key.sequence;
         phase_ = Phase::warming;
         ++generation_;
@@ -72,6 +87,7 @@ public:
         if (key != key_ || phase_ == Phase::idle || terminal()) return false;
         // Idempotence bounds one request to three generation and six revision advances.
         if (failed_) return true;
+        remember_rejection(0); // External cancellation/revocation has no invented failed facts.
         failed_ = true;
         phase_ = debt_ ? Phase::releasing : Phase::revoked;
         ++generation_;
@@ -86,19 +102,39 @@ public:
 
         const bool source_clock = in.now_ms >= last_now_ && in.source_observed_ms &&
             in.source_observed_ms <= in.now_ms && in.now_ms - in.source_observed_ms <= maximum_gap_ms;
-        const bool clock = in.now_ms >= last_now_ && in.serial && std::isfinite(in.seconds) && in.seconds >= 0 &&
+        const bool native_clock = in.now_ms >= last_now_ && in.serial && std::isfinite(in.seconds) && in.seconds >= 0 &&
             in.clock_observed_ms && in.clock_observed_ms <= in.now_ms &&
-            in.now_ms - in.clock_observed_ms <= maximum_gap_ms &&
-            (!serial_ || (in.serial >= serial_ && in.seconds >= seconds_ &&
+            in.now_ms - in.clock_observed_ms <= maximum_gap_ms;
+        const bool continuity = !serial_ || (in.serial >= serial_ && in.seconds >= seconds_ &&
                 (in.serial != serial_ || in.seconds == seconds_) &&
-                (in.serial == serial_ || in.seconds > seconds_)));
+                (in.serial == serial_ || in.seconds > seconds_));
+        const bool clock = native_clock && continuity;
         const bool raw_path = in.original_result == 0 && in.has_output && in.outer_game_poll &&
-            in.source_fresh && in.interference_clear && in.key == key_ && in.returned == in.raw;
+            in.source_fresh && in.interference_clear && in.key == key_ && in.returned == in.raw && in.transport_matches;
+        const bool native_gap = !serial_ || in.seconds - seconds_ <= 0.25;
+        const bool poll_gap = !last_poll_ || in.now_ms - last_poll_ <= maximum_gap_ms;
+        const bool deadline = in.now_ms - started_ < lifetime_ms;
         const bool ready = raw_path && source_clock && clock && in.actor_current &&
             in.focused && in.gameplay && in.menu_closed && in.interference_clear &&
-            (!serial_ || in.seconds - seconds_ <= 0.25) &&
-            (!last_poll_ || in.now_ms - last_poll_ <= maximum_gap_ms) && in.now_ms - started_ < lifetime_ms;
-        if (!ready && phase_ != Phase::releasing) (void)revoke(key_);
+            native_gap && poll_gap && deadline;
+        if (!ready && phase_ != Phase::releasing) {
+            std::uint32_t mask{};
+            const auto add = [&](bool passed, FailedCheck check) { if (!passed) mask |= failure_bit(check); };
+            add(in.original_result == 0, FailedCheck::original_result); add(in.has_output, FailedCheck::output);
+            add(in.source_fresh, FailedCheck::source_fresh); add(in.transport_matches, FailedCheck::transport_result);
+            add(in.interference_clear, FailedCheck::interference); add(in.key == key_, FailedCheck::key);
+            add(in.returned == in.raw, FailedCheck::raw_equality); add(source_clock, FailedCheck::source_clock);
+            add(native_clock, FailedCheck::native_clock);
+            // Continuity and native-gap comparisons need a usable native sample.
+            // An absent/nonfinite clock reports native_clock rather than made-up drift.
+            add(!native_clock || continuity, FailedCheck::native_continuity);
+            add(!native_clock || native_gap, FailedCheck::native_gap);
+            add(in.actor_current, FailedCheck::actor); add(in.focused, FailedCheck::focus);
+            add(in.gameplay, FailedCheck::gameplay); add(in.menu_closed, FailedCheck::menu);
+            add(poll_gap, FailedCheck::poll_gap); add(deadline, FailedCheck::deadline);
+            remember_rejection(mask);
+            (void)revoke(key_);
+        }
 
         if (raw_path && source_clock) {
             const bool advanced = in.serial != serial_;
@@ -124,6 +160,7 @@ public:
             if (phase_ == Phase::press) {
                 if (in.raw != Pad{}) {
                     // Preserve physical input rather than creating a chord or clearing a press.
+                    remember_rejection(failure_bit(FailedCheck::physical_activity));
                     (void)revoke(key_);
                 } else if (in.now_ms - press_started_ >= maximum_press_ms) {
                     phase_ = Phase::releasing;
@@ -170,8 +207,12 @@ public:
     Phase phase() const noexcept { return phase_; }
     bool release_debt() const noexcept { return debt_; }
     std::uint64_t revision() const noexcept { return revision_; }
+    std::uint32_t first_rejection_mask() const noexcept { return first_rejection_mask_; }
 
 private:
+    void remember_rejection(std::uint32_t mask) noexcept {
+        if (!rejection_recorded_) { first_rejection_mask_ = mask; rejection_recorded_ = true; }
+    }
     bool terminal() const noexcept { return phase_ == Phase::complete || phase_ == Phase::revoked; }
     static constexpr auto maximum = std::numeric_limits<std::uint64_t>::max();
     Key key_{};
@@ -181,7 +222,8 @@ private:
     std::uint64_t warm_started_{}, press_started_{};
     double seconds_{};
     unsigned samples_{};
-    bool debt_{}, failed_{};
+    std::uint32_t first_rejection_mask_{};
+    bool debt_{}, failed_{}, rejection_recorded_{};
 };
 
 // One persistent per-slot domain across every outer wrapper, never per request.

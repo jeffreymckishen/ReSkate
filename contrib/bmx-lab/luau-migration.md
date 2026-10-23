@@ -12,9 +12,11 @@ commands. This retirement requires a fresh process; it is not a live stop of an
 already mounted bike. Preserved older DLLs remain historical comparison builds.
 The current Lua package is still a migration in progress and cannot yet ride a
 bike. New native trials must use the generic API.
-The ordinary force policy now passes portable regression comparisons, but an
-actual-Host benchmark exposes a normal 2ms budget failure under strong braking.
-Optimization and repeat performance evidence are required before activation.
+The ordinary force policy passes portable regression comparisons. A reviewed
+Lua optimization reduced offline actual-Host braking from about 17.2ms to 0.82ms;
+default slope cases average about 1.79ms. The selected fixed-input windows passed
+the normal rolling watchdog, but complete-adapter/native performance still needs
+proof and optional 128 iterations remain unqualified. Gameplay stays inactive.
 
 ## Latest upstream inspected
 

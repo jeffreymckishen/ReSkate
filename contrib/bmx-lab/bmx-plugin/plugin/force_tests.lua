@@ -2,8 +2,9 @@ local F=require("./forces")
 local M=require("./force_math")
 local Tire=require("./tire")
 local Pump=require("./pump")
+local Brake=require("./brake")
 local tests={}
-function tests.run(reference)
+function tests.run(reference,projections)
     local cases,assertions=0,0
     local function check(value,why) assertions+=1 assert(value,why) end
     local function near(a,b,error) return math.abs(a-b)<=(error or 1e-7) end
@@ -170,12 +171,12 @@ function tests.run(reference)
     if reference then
         cases+=1
         for index,item in reference do
-            local b,w,s=fixture(item.speed)
-            for _,sample in s do sample.contact.status=item.status sample.separation=item.separation end
-            local r=F.new():step(item.h,b,w,s,item.controls)
+            local controller=F.new(item.tuning)
+            local r=controller:step(item.h,item.body,item.wheels,item.samples,item.controls)
             local expected=item.result
             check(r.valid==expected.valid and r.grounded==expected.grounded and r.hop_applied==expected.hop_applied,
                 "C++ kernel qualification parity "..index)
+            check(r.issue==expected.issue and controller:consumed_hop_event_id()==expected.consumed_hop,"C++ rejection/event history parity "..index)
             for _,key in {"force","torque","hop_impulse","normal_load","normal_impulse","longitudinal_impulse","lateral_impulse","brake_impulse"} do
                 for i,value in expected[key] do
                     check(near(r[key][i],value,1e-6*math.max(1,math.abs(value))),"C++ kernel "..index.." "..key.."/"..i)
@@ -188,6 +189,39 @@ function tests.run(reference)
             comparisons+=1
         end
     end
-    return {cases=cases,assertions=assertions,comparisons=comparisons,native_actions=0}
+    local projection_count=0
+    if projections then
+        cases+=1
+        for index,item in projections do
+            local impulse=Brake.constrained(item.k,item.g,item.limits)
+            check((impulse~=nil)==item.valid,"C++ projection rejection parity "..index)
+            if impulse then for i=1,3 do check(near(impulse[i],item.impulse[i],1e-9*math.max(1,math.abs(item.impulse[i]))),"C++ projection impulse parity "..index.."/"..i) end end
+            local k={} for i=1,3 do for j=1,3 do k[(i-1)*3+j]=item.k[i][j] end end
+            local x,y,z=Brake.project(k,item.g[1],item.g[2],item.g[3],item.limits[1],item.limits[2],item.limits[3],true)
+            check((x~=nil)==item.valid,"private accelerated projection rejection parity "..index)
+            if x~=nil then local fast={x,y,z} for i=1,3 do check(near(fast[i],item.impulse[i],1e-9*math.max(1,math.abs(item.impulse[i]))),"private projection impulse parity "..index.."/"..i) end end
+            projection_count+=1
+        end
+        local id={{1,0,0},{0,1,0},{0,0,1}}
+        check(Brake.constrained(id,{0/0,0,0},{1,1,1})==nil,"nonfinite projection velocity rejected")
+        check(Brake.constrained({{math.huge,0,0},{0,1,0},{0,0,1}},{0,0,0},{1,1,1})==nil,"nonfinite matrix rejected")
+        check(Brake.constrained(id,{0,0,0},{1,-1,1})==nil,"negative projection limit rejected")
+        local flat={1,0,0,0,1,0,0,0,1}
+        local x,y,z,h1,h2,h3=Brake.project(flat,3,4,0,2,2,0,true)
+        check(near(x,-1.2,1e-9) and near(y,-1.6,1e-9) and near(z,0,1e-9),"known circle optimum seeds measured roots")
+        check(h1>0 and h1<1 and h2>0 and h2<1 and h3>0 and h3<1,"successful project returns three measured normalized roots")
+        x,y,z=Brake.project(flat,6,8,0,1,1,0,true,h1,h2,h3)
+        check(near(x,-.6,1e-9) and near(y,-.8,1e-9) and near(z,0,1e-9),"warm roots reclassified after velocity and limits change")
+        x,y,z=Brake.project(flat,6,8,0,1,1,0,true,0/0,1,math.huge)
+        check(near(x,-.6,1e-9) and near(y,-.8,1e-9) and near(z,0,1e-9),"NaN endpoint and infinite hints fall back safely")
+        x,y,z=Brake.project(flat,6,8,0,1,1,0,true,0,-1,2)
+        check(near(x,-.6,1e-9) and near(y,-.8,1e-9) and near(z,0,1e-9),"noninterior hints cannot bypass classification")
+        for argument=1,6 do for _,bad in {{},{"1"},{false},{0/0},{math.huge}} do
+            local args={0,0,0,1,1,1} args[argument]=bad[1]
+            check(Brake.project(flat,args[1],args[2],args[3],args[4],args[5],args[6],true)==nil,
+                "projection arguments reject nonnumbers and nonfinite values without coercion")
+        end end
+    end
+    return {cases=cases,assertions=assertions,comparisons=comparisons,projections=projection_count,native_actions=0}
 end
 return tests

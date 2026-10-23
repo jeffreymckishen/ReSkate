@@ -1,8 +1,8 @@
 -- Ordinary bmx_chassis_control.h kernel. Outputs impulses/forces only; never integrates pose.
 local M=require("./force_math")
 local Tire=require("./tire")
-local Brake=require("./brake")
 local Pump=require("./pump")
+local Solver=require("./force_solver")
 local F={native_seconds=.01666666567325592}
 local Controller={} Controller.__index=Controller
 local scale=.7737670588235294
@@ -232,31 +232,9 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     end
     local actuated,actuated_wheels=M.copy(prediction),M.copy(out.wheels)
     out.pre_contact_prediction=M.copy(actuated) out.pre_contact_prediction_available=true
-    local effects={} for i=1,2 do effects[i]={linear={0,0,0},angular={0,0,0},spin=0,brake=0,normal_linear={0,0,0},normal_angular={0,0,0}} end
-    for iteration=0,(braking and t.brake_iterations or t.contact_iterations)-1 do for order=0,1 do
-        local i=(iteration+order)%2+1 local contact=contacts[i] local effect=effects[i]
-        local normal_linear,normal_angular,normal_j={0,0,0},{0,0,0},0
-        if braking then
-            prediction.linear_velocity=M.sub(prediction.linear_velocity,effect.normal_linear) prediction.angular_velocity=M.sub(prediction.angular_velocity,effect.normal_angular)
-            local before=M.copy(prediction)
-            if contact.status=="hit" then
-                local basis=M.basis(contact.normal,contact.forward) if not basis then return result() end
-                local arm=M.sub(contact.point,prediction.center_of_mass) local inverse=M.dot(basis.normal,M.response(prediction,arm,basis.normal))
-                if not M.finite(inverse) or inverse<=0 then return result() end
-                local relative=M.sub(M.point_velocity(prediction,contact.point),contact.surface_velocity) normal_j=math.max(0,-M.dot(relative,basis.normal)/inverse)
-                if not M.finite(normal_j) then return result() end prediction=M.apply_impulse(prediction,contact.point,M.mul(basis.normal,normal_j)) if not prediction then return result() end
-            end
-            normal_linear=M.sub(prediction.linear_velocity,before.linear_velocity) normal_angular=M.sub(prediction.angular_velocity,before.angular_velocity)
-        end
-        prediction.linear_velocity=M.sub(prediction.linear_velocity,effect.linear) prediction.angular_velocity=M.sub(prediction.angular_velocity,effect.angular)
-        out.wheels[i].angular_speed-=effect.spin
-        local before,before_spin=M.copy(prediction),out.wheels[i].angular_speed local solved,b,w,brake_j
-        if braking then solved,b,w,brake_j=Brake.solve_tangent(h,prediction,out.wheels[i],contact,normal_j,brake*(i==1 and t.front_brake_torque or t.rear_brake_torque),t.friction)
-        else solved,b,w=Tire.solve(h,prediction,out.wheels[i],contact,nil,t.friction) brake_j=0 end
-        if not solved.valid then return result() end prediction=b out.wheels[i]=w
-        effects[i]={linear=M.sub(prediction.linear_velocity,before.linear_velocity),angular=M.sub(prediction.angular_velocity,before.angular_velocity),spin=w.angular_speed-before_spin,
-            brake=brake_j,solved=solved,normal_linear=normal_linear,normal_angular=normal_angular}
-    end end
+    local effects
+    prediction,out.wheels,effects=Solver.solve(h,prediction,out.wheels,contacts,t,brake)
+    if not prediction then return result() end
     local base_linear=M.sub(M.mul(M.sub(M.sub(actuated.linear_velocity,measured.linear_velocity),gravity_delta),measured.mass),out.hop_impulse)
     local base_angular=M.tensor(measured,M.sub(actuated.angular_velocity,measured.angular_velocity),false)
     local contact_linear=M.mul(M.sub(prediction.linear_velocity,actuated.linear_velocity),measured.mass)

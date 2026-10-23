@@ -16,13 +16,16 @@ measured body-local quaternion turns, canceled attempts and its own landing tall
 rotate a native body. The inspector does not activate this controller for riding.
 
 `plugin/forces.lua` and its math, tire, brake and pump modules now port our ordinary
-single-body riding policy. The actual Host tests passed 16 groups, 654 assertions
-and 19 representative comparisons against our retained C++ model. This preserves
-our proposed laws; it is not recovered Streets physics or verified riding feel.
+single-body riding policy. The actual Host tests passed 17 groups, 2,565 assertions,
+83 force comparisons and 18 projection comparisons against our retained C++
+model. This preserves our proposed laws; it is not recovered Streets physics or
+verified riding feel.
 See [FORCES.md](FORCES.md) for inputs, candidate history and remaining limits.
-A separate actual-Host performance check currently fails the normal 2ms average
-budget under strong braking. Gameplay stays inactive pending optimization and
-the same performance check with adequate headroom.
+The reviewed optimization reduced offline actual-Host braking from about 17.2ms
+to 0.82ms, with default slope cases around 1.79ms. The selected fixed-input runs
+passed the normal rolling watchdog, but whole-plugin/native performance and
+optional 128 iterations remain unqualified. Gameplay stays inactive pending
+correct native contacts and complete-adapter performance evidence.
 
 `plugin/equipment.lua` ports the neutral-rearmed toggle, North tap/hold and
 LB/L1+North shortcut into pure Lua request policy. It consumes invalidated

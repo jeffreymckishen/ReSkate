@@ -3,6 +3,7 @@
 #include "Engine/Game/Skater/actor_clock.h"
 #include "Engine/Game/Skater/native_action_policy.h"
 #include "Engine/Game/Skater/actor_observation.h"
+#include "Engine/Game/Skater/actor_context.h"
 #include <cstdint>
 
 namespace dingosdk::actor_control_native {
@@ -10,6 +11,7 @@ using State = skater_action::State;
 using Reason = skater_action::Reason;
 
 using Observation = actor_observation::Trace;
+using Continuity = actor_context::Continuity;
 
 // Internal native identity only. Plugins never receive these addresses. The
 // shared owner service repeats the complete local chain at each use edge.
@@ -18,6 +20,7 @@ struct Actor {
         selector{}, causes{}, rig{}, game_context{}, world{}, world_state{};
     std::uint64_t world_generation{}, lifetime_epoch{}, actor_epoch{};
     actor_control::Ticket ticket{};
+    Continuity continuity{Continuity::native_lifetime};
     bool operator==(const Actor&) const = default;
 };
 
@@ -25,7 +28,7 @@ struct Actor {
 // is refused, and the predicate runs outside the shared publication lock.
 using Admission = bool (*)(const State&) noexcept;
 bool acquire(std::uint64_t owner, std::uint64_t sequence, Admission admission,
-    Actor& actor, Reason& reason) noexcept;
+    Actor& actor, Reason& reason, Continuity continuity = Continuity::native_lifetime) noexcept;
 bool inspect(std::uint64_t owner, std::uint64_t sequence, const Actor& expected,
     Actor& actor, State& state, Reason& reason, bool cleanup = false) noexcept;
 bool inspect(std::uint64_t owner, std::uint64_t sequence, const Actor& expected,

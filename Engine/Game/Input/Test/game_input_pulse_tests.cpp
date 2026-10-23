@@ -123,8 +123,11 @@ bool interference_clear() noexcept { return fixture::env.interference; }
 }
 
 namespace dingosdk::actor_control_native {
-bool acquire(std::uint64_t owner, std::uint64_t sequence, Admission admission, Actor& out, Reason& reason) noexcept {
+bool acquire(std::uint64_t owner, std::uint64_t sequence, Admission admission, Actor& out, Reason& reason,
+    Continuity continuity) noexcept {
     auto& f = fixture::env; ++f.acquire_calls; out = {}; reason = f.acquire_reason;
+    fixture::check(continuity == Continuity::observed_context,
+        "report publication explicitly requests sampled context continuity, not native write lifetime");
     State state; state.known = true; state.value = 42;
     if (!f.acquire_ok || !admission || !admission(state)) return false;
     control::Ticket ticket;
@@ -134,6 +137,7 @@ bool acquire(std::uint64_t owner, std::uint64_t sequence, Admission admission, A
     value.component = 6; value.core = 7; value.context = 8; value.selector = 9; value.causes = 10;
     value.rig = 11; value.game_context = 12; value.world = 13; value.world_state = 14;
     value.world_generation = value.lifetime_epoch = value.actor_epoch = 1; value.ticket = ticket;
+    value.continuity = continuity;
     if (!f.arbiter.publish(owner, ticket)) { (void)f.arbiter.abandon(owner, ticket); return false; }
     f.owner = owner; f.clock_sequence = sequence; f.current = value; out = value; reason = Reason::none;
     SetLastError(0x7654); // The real service must preserve its caller's error across providers.

@@ -175,7 +175,8 @@ bool request(std::uint64_t owner, std::uint32_t user, std::uint16_t button,
         for (auto& started : shared.starts) if (!started || (now >= started && now - started >= 1000)) { started = now; break; }
     }
     Actor actor; actor_control_native::Reason native_reason{};
-    const bool acquired = actor_control_native::acquire(owner, sequence, &eligible_state, actor, native_reason);
+    const bool acquired = actor_control_native::acquire(owner, sequence, &eligible_state, actor, native_reason,
+        actor_control_native::Continuity::observed_context);
     const bool clock = acquired && actor_control_native::enable_clock(owner, sequence, actor, native_reason);
     const bool abandoned = acquired && !clock && actor_control_native::retire(owner, sequence, actor, true);
     {

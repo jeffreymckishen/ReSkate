@@ -128,10 +128,28 @@ These phase labels do not establish which native condition caused a refusal or a
 One-time clock enabling on the client thread waits for the SDK's owner/clock bookkeeping locks,
 as actor acquisition already does. The owner lock is released before the clock lock is acquired,
 and the clock lock is released before final owner checks; they are never held together. Full
-thread, owner, world, generation and lifetime checks remain on both sides of initialization.
+thread, owner, world, generation and scope-specific native checks remain on both sides of initialization.
 Native feed, clock reads and disable paths retain their existing nonblocking Try-lock behavior.
-Waiting is not a bounded-latency guarantee or permission to use an obsolete identity; no native
-physics, focus or input guard is relaxed.
+Waiting is not a bounded-latency guarantee or permission to use an obsolete identity.
+
+Input-buffer pulses explicitly use the shared actor service's `observed_context` continuity scope.
+It retains the original owner, sequence, ticket, full local ownership chain, watched-actor destruction
+counter and local context generation. Each assertion and claim-clock observation freshly qualifies
+that context and brackets its work with the same current idle global destruction epoch. A completed
+destruction between operations does not by itself change the local context; a destruction during an
+operation, watched-actor destruction, changed ownership/world, unavailable context or stale clock
+still refuses. The original claim key, deadline and accumulated clock are never rebound or restarted.
+Observed clock publication and reads also require the exact claim to remain published; a revoking
+claim can retain cleanup ownership without retaining clock authority. Candidate clock changes are
+staged and discarded if their closing observation or claim check fails.
+
+This is sampled local-context continuity for process input publication. An unchanged watched-root
+counter does not identify which other entity was destroyed, or prove that every child component or
+world object could not have been retired and reused at the same address between observations.
+It is not permission for a typed native setter to reuse such a context. Native action writes and
+recovery retain the default `native_lifetime` scope and its admission-global-epoch requirement.
+The explicit scope is internal; a plugin cannot choose it, receive an actor identity or use it to
+access memory. Report publication, consumption and semantic-completion claims remain separate.
 
 ## Caller contract
 

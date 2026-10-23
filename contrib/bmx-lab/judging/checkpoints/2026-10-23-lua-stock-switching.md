@@ -76,6 +76,21 @@ recorded; zero Lua manifests remained active. The independent
 passed, SHA-256
 `3EEB9E0674529F6BA67AEC180FA76D19E875D9661BF81A94E7449AC7E406A0EC`.
 
+## Later profile lock refusal
+
+The subsequent post-terminal fall probe did not reach its intended window.
+One accepted pulse was revoked after 16 ms with `controls_profile_lock / unavailable`:
+the profile Try-lock was refused, actor inspection did not complete and the
+native clock was not queried. There were zero candidates or publications, no
+report debt, and one accepted acknowledgement after storing the terminal receipt.
+The diagnostic recorded `NOT_COVERED` and made zero wipeout calls. The endpoint
+remained upright on foot; there was no retry. Normal shutdown and manifest
+withdrawal are retained with the [failed probe](../../../../build/bmx/lua-equipment-interruption-postterminal-v1/).
+The independent [refusal and closure audit](../../../../build/bmx/lua-equipment-interruption-postterminal-v1/independent-refused-probe-closure-audit-v1.json)
+has SHA-256 `B12DBA1519084CDED4C848EF23CE2C0D5943567D7C3B4F313CEADACC1CC6E239`.
+This identifies one lock-acquisition failure, not its holder, duration or every
+earlier grouped refusal. The two successful roundtrips do not erase it.
+
 ## Minimal next checks
 
 These are proposed bounded tests, not completed coverage or new native admission.

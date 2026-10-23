@@ -3571,6 +3571,74 @@ void bmx_lua_equipment_runtime_uses_typed_services_without_native_permissions() 
     std::cout << environment.all();
 }
 
+void equipment_interruption_fixture_keeps_effects_one_shot() {
+    const auto root = std::filesystem::path(RESKATE_SOURCE_DIR) / "contrib" / "bmx-lab";
+    std::map<std::string, std::string> files{{manifest_file, R"({"api":1,"entry":"plugin/main.lua","permissions":[]})"}};
+    const auto source = [&](const std::filesystem::path& directory, const char* name) {
+        std::ifstream file(directory / "plugin" / name, std::ios::binary);
+        check(file.good(), std::string("Interruption test source is required: ") + name);
+        files[std::string("plugin/") + name] = std::string(std::istreambuf_iterator<char>(file), {});
+    };
+    for (const auto* name : {"fixture.lua", "fixture_tests.lua"}) source(root / "equipment-interruption-trial", name);
+    for (const auto* name : {"equipment_runtime.lua", "equipment_transition.lua"}) source(root / "bmx-plugin", name);
+    files["plugin/main.lua"] = R"(
+        local result = require("./fixture_tests").run()
+        assert(result.cases == 13 and result.assertions >= 50 and result.native_actions == 0)
+        reskate.log(string.format("Equipment interruption: %d cases, %d assertions, 0 native actions", result.cases, result.assertions))
+    )";
+    TestEnvironment environment;
+    Limits policy_limits; policy_limits.call_ms = 2000; // Many constructed timelines run in one test-only load.
+    Host host(environment, Side::client, policy_limits);
+    host.apply({package("equipment-interruption-tests", files)});
+    running(host, "equipment-interruption-tests", environment);
+    check(environment.logged("Equipment interruption:") && environment.fake.calls.empty() && environment.fake.binds.empty() &&
+        !environment.fake.input_pulse_requests && !environment.fake.input_pulse_reads && !environment.fake.input_pulse_cancels &&
+        !environment.fake.input_pulse_acks && !environment.fake.native_action_requests && !environment.fake.native_recovery_requests &&
+        !environment.fake.body_creates && !environment.fake.body_submissions && environment.teleports.empty() && !environment.rays,
+        "Actual fixture/factory and production modules run with constructed services and no native permissions\n" + environment.all());
+    std::cout << environment.all();
+    // The broad skater-control tests cover permitted wipeouts and their rate.
+    // This exact denial checks the new diagnostic's sole added control boundary.
+    TestEnvironment denied_environment;
+    Host denied(denied_environment, Side::client);
+    denied.apply({script("interruption-wipeout-denied", R"(
+        local ok,why=pcall(reskate.skater.wipeout,0.5)
+        assert(not ok and why:find("skater.control",1,true))
+    )")});
+    running(denied, "interruption-wipeout-denied", denied_environment);
+    check(denied_environment.fake.calls.empty(), "A denied wipeout must not reach Game::wipeout");
+    auto actual_files = files;
+    for (const auto& name : {std::string(manifest_file), std::string("plugin/main.lua")}) {
+        std::ifstream file(root / "equipment-interruption-trial" / name, std::ios::binary);
+        check(file.good(), "The exact interruption entry/manifest is required: " + name);
+        actual_files[name] = std::string(std::istreambuf_iterator<char>(file), {});
+    }
+    constexpr const char* fixture_id = "LuaEquipmentInterruption_20261023_v1";
+    TestEnvironment inert_environment;
+    inert_environment.local_skater = SkaterState{};
+    inert_environment.fake.focus_now = {true, true, true};
+    inert_environment.fake.telemetry = SkaterTelemetry{};
+    auto& inert_watch = inert_environment.fake.telemetry->watch;
+    inert_environment.fake.telemetry->skater = true;
+    inert_watch.valid = inert_watch.ragdoll_known = true; inert_watch.state = 100;
+    const auto inert_storage = inert_environment.storage_root() / fixture_id / "storage.json";
+    check(!std::filesystem::exists(inert_storage), "The exact interruption entry starts without stored evidence");
+    Host inert(inert_environment, Side::client);
+    inert.apply({package(fixture_id, actual_files)}); running(inert, fixture_id, inert_environment);
+    inert_environment.panels_open = true; inert_environment.shown = fixture_id;
+    ticks(inert, inert_environment, 60); running(inert, fixture_id, inert_environment);
+    check(std::find(inert_environment.pages.begin(), inert_environment.pages.end(),
+        plugin_ui::PageEntry{fixture_id, "Equipment interruption"}) != inert_environment.pages.end(),
+        "The exact interruption page loads within the Host title bound");
+    check(!inert_environment.fake.input_pulse_requests && !inert_environment.fake.input_pulse_reads &&
+        !inert_environment.fake.input_pulse_cancels && !inert_environment.fake.input_pulse_acks &&
+        !inert_environment.fake.native_action_requests && !inert_environment.fake.native_recovery_requests &&
+        !inert_environment.fake.body_creates && !inert_environment.fake.body_submissions &&
+        inert_environment.fake.calls.empty() && inert_environment.teleports.empty() && !inert_environment.rays &&
+        !std::filesystem::exists(inert_storage),
+        "Actual entry/menu ticks stay inert despite a usable constructed board baseline");
+}
+
 void bmx_lua_menu_switches_explicit_slots_and_retains_cleanup_duty() {
     using dingosdk::Json;
     namespace p = game_input_pulse;
@@ -6133,6 +6201,7 @@ int main() {
         run(bmx_lua_equipment_requests_match_the_retained_gesture_rules);
         run(bmx_lua_equipment_transitions_keep_cleanup_and_target_observation_separate);
         run(bmx_lua_equipment_runtime_uses_typed_services_without_native_permissions);
+        run(equipment_interruption_fixture_keeps_effects_one_shot);
         run(bmx_lua_menu_switches_explicit_slots_and_retains_cleanup_duty);
         run(bmx_lua_recovery_policy_keeps_native_cleanup_separate);
         run(bmx_lua_trick_policy_uses_actual_package_modules);

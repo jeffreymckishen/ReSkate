@@ -9,6 +9,7 @@
 #include "Extension/Throwdowns/custom_modes.h"
 #include "Extension/Throwdowns/throwdown_kit.h"
 #include "Engine/Vfs/mod_list.h"
+#include "Engine/Game/BMX/bmx_chassis_control.h"
 #include <algorithm>
 #include <chrono>
 #include <format>
@@ -2210,6 +2211,69 @@ void bmx_lua_trick_policy_uses_actual_package_modules() {
           "Actual Lua trick modules run without native services or gameplay permissions\n" + environment.all());
 }
 
+void bmx_lua_forces_use_actual_modules_and_match_the_portable_kernel() {
+    namespace chassis = dingosdk::bmx::chassis_control;
+    using dingosdk::Json;
+    const auto directory = std::filesystem::path(RESKATE_SOURCE_DIR) / "contrib" / "bmx-lab" / "bmx-plugin";
+    std::map<std::string, std::string> files{{manifest_file, R"({"api":1,"entry":"plugin/main.lua","permissions":[]})"}};
+    for (const auto* name : {"force_math.lua", "tire.lua", "brake.lua", "pump.lua", "forces.lua", "force_tests.lua"}) {
+        std::ifstream file(directory / "plugin" / name, std::ios::binary);
+        check(file.good(), std::string("BMX Lua force source is available: ") + name);
+        files[std::string("plugin/") + name] = std::string(std::istreambuf_iterator<char>(file), {});
+    }
+    Json reference = Json::array();
+    const auto append = [&](double speed, chassis::Controls controls, const char* status = "hit", double separation = 0,
+                            double h = chassis::verified_native_seconds) {
+        auto body = chassis::proposed_body(); body.center_of_mass = {0, .9, -.05}; body.linear_velocity = {0, 0, speed};
+        auto wheels = chassis::proposed_wheels(); for (auto& wheel : wheels) wheel.angular_speed = speed / wheel.radius;
+        std::array<chassis::ContactSample, 2> samples{};
+        for (unsigned i = 0; i < 2; ++i) {
+            auto& sample = samples[i]; sample.separation = separation;
+            sample.contact.status = std::string_view(status) == "hit" ? dingosdk::bmx::tire::ContactStatus::hit :
+                std::string_view(status) == "clear" ? dingosdk::bmx::tire::ContactStatus::clear : dingosdk::bmx::tire::ContactStatus::unavailable;
+            sample.contact.point = {0, 0, i == 0 ? .525 : -.525};
+        }
+        const auto out = chassis::Controller{}.step(h, body, wheels, samples, controls);
+        Json expected{{"valid", out.valid}, {"grounded", out.grounded}, {"hop_applied", out.hop_applied},
+            {"force", out.force}, {"torque", out.torque}, {"hop_impulse", out.hop_impulse},
+            {"normal_load", out.normal_load}, {"normal_impulse", out.normal_impulse}, {"longitudinal_impulse", out.longitudinal_impulse},
+            {"lateral_impulse", out.lateral_impulse}, {"brake_impulse", out.brake_impulse}, {"front_steer_angle", out.front_steer_angle},
+            {"requested_front_steer_angle", out.requested_front_steer_angle}, {"turning_lean_angle", out.turning_lean_angle},
+            {"contact_scale", out.contact_scale}, {"spin", Json::array({out.wheels[0].angular_speed, out.wheels[1].angular_speed})}};
+        Json input{{"enabled", controls.enabled}, {"pedal", controls.pedal}, {"brake", controls.brake}, {"steer", controls.steer},
+            {"manual", controls.manual}, {"nose_manual", controls.nose_manual}, {"air_yaw", controls.air_yaw},
+            {"hop_strength", controls.hop_strength}, {"hop_event_id", controls.hop_event_id}};
+        reference.push_back(Json{{"speed", speed}, {"status", status}, {"separation", separation}, {"h", h}, {"controls", input}, {"result", expected}});
+    };
+    append(0, {});
+    append(5, chassis::Controls{.pedal = 1});
+    for (double speed : {-8., 2., 8.}) for (double steer : {-1., 1.}) append(speed, chassis::Controls{.steer = steer});
+    append(5, chassis::Controls{.brake = 1}); append(-5, chassis::Controls{.brake = 1});
+    append(0, chassis::Controls{.manual = 1}); append(0, chassis::Controls{.nose_manual = 1});
+    append(0, chassis::Controls{.hop_strength = 1, .hop_event_id = 1});
+    append(0, chassis::Controls{.hop_strength = .25, .hop_event_id = 1});
+    append(0, chassis::Controls{.air_yaw = 1}, "clear"); append(0, chassis::Controls{.manual = 1}, "clear");
+    append(0, {}, "unavailable"); append(0, {}, "hit", 0, chassis::verified_native_seconds * 2);
+    append(0, chassis::Controls{.hop_strength = 1, .hop_event_id = 1}, "hit", .01);
+    files["plugin/main.lua"] = "local reference = reskate.json.decode([=[" + reference.dump() + R"(]=])
+        local result = require("./force_tests").run(reference)
+        assert(result.cases == 16 and result.assertions > 500 and result.comparisons == 19 and result.native_actions == 0,
+            string.format("unexpected force coverage: %s/%s/%s", tostring(result.cases), tostring(result.assertions), tostring(result.comparisons)))
+        reskate.log(string.format("BMX Lua forces: %d cases, %d assertions, %d C++ comparisons, 0 native actions", result.cases, result.assertions, result.comparisons))
+    )";
+    TestEnvironment environment;
+    // This exhaustive offline regression performs many steps in one load call.
+    // Raising only this test's ceiling does not qualify a real-time controller.
+    Limits limits; limits.call_ms = 2000;
+    Host host(environment, Side::client, limits);
+    host.apply({package("bmx-lua-force-tests", files)});
+    running(host, "bmx-lua-force-tests", environment);
+    check(environment.logged("BMX Lua forces: 16 cases") && environment.fake.calls.empty() && environment.fake.binds.empty() &&
+              environment.fake.body_creates == 0 && environment.fake.body_submissions == 0 && environment.teleports.empty() && environment.rays == 0,
+          "Pure force modules and actual C++ arithmetic agree without native services or permissions\n" + environment.all());
+    std::cout << environment.all();
+}
+
 // A plugin's own page in the menu's PLUGINS section: named in the section, built only while the menu
 // shows it, page first and its panels after, with cards, tabs, info lines and help.
 void plugins_have_pages() {
@@ -4247,6 +4311,7 @@ int main() {
         run(camera_inspector_prepares_then_explicitly_requests_a_view);
         run(bmx_lua_policy_runs_as_modules_and_the_inspector_starts_inert);
         run(bmx_lua_trick_policy_uses_actual_package_modules);
+        run(bmx_lua_forces_use_actual_modules_and_match_the_portable_kernel);
         run(plugins_have_pages);
         run(plugins_play_sounds_and_read_the_mods);
         run(plugins_follow_the_session_and_message_each_other);

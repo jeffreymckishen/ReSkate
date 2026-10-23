@@ -106,3 +106,27 @@ acknowledgement, withdrew their manifests and unloaded before normal game exit.
 The private evidence is in `build/bmx/lua-native-equipment-actions-trial-v1/` and
 `build/bmx/lua-native-equipment-actions-trial-v2/`. These results qualify a narrow
 transport path and failure handling; repeated switching remains unqualified.
+
+A third diagnostic additionally required fresh finite physics velocity throughout
+its readiness window. Its first mount still selected 200, passed through 201,
+and entered known ragdoll before the later `request_bits_conflict` invalidation;
+it completed none of the six requested transitions. Quiet velocity alone did
+not prevent the failure. Its evidence is in
+`build/bmx/lua-native-equipment-actions-trial-v3/`.
+
+Two subsequent read-only captures in that same process observed ordinary Y input
+from the guarded virtual controller. Each controller sequence completed all 181
+reports. The first capture observed a Y press/release and watched states
+504, 103 and 100, with a visible mounted rider. The second observed a Y
+press/release and watched states 100 and 504, with a visible upright rider
+carrying the board. Neither retained physics stream recorded a new wipeout or
+known ragdoll. Both captures stopped when the controller disconnected, before
+their twelve-second limits; the interval between captures was not recorded.
+These observations establish a useful route-level contrast with the failed SDK
+mount, not its cause: the starting conditions were different, and the observer
+has no native producer or animation-state identity. The evidence is in
+`build/bmx/lua-native-equipment-hid-observer-v2/` and
+`build/bmx/lua-native-equipment-hid-observer-v3/`. All three diagnostic manifests
+were withdrawn and unloaded before normal process exit; their saved ledgers
+were unchanged after exit. This is an ordinary-input baseline, not a switching
+fix, a repeatability result or BMX likeness evidence.

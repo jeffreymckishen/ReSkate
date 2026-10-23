@@ -68,11 +68,57 @@ The tire and brake helpers return a result plus new body/wheel tables; rejection
 keeps the original body/wheel identities instead of partially mutating inputs.
 
 The ordinary kernel preserves the same twelve contact iterations, 96 braking
-iterations, 64-iteration brake projection, forty-step steering envelope search
-and shared force/torque/rotor budget. It keeps the original reservation rule:
+iterations, forty-step steering envelope search and shared force/torque/rotor
+budget. It keeps the original reservation rule:
 deliberate air rotation survives release until strict recontact. The adapter must
 continue to reserve raw gestures and pending tricks; this port does not guess a
 new distinction between a held hop stroke and a deliberate rotation.
+
+## Numerical implementation
+
+`force_solver.lua` prepares the fixed-pose contact Jacobians, inverse-inertia
+responses and coupled-brake matrices once per step. Its private scalar velocity
+workspace replaces repeated body copies and tensor reconstruction inside the
+alternating iterations. Each original iteration and normal/tangent replacement
+still runs, with validation before and after the same impulse boundaries.
+Returned body, wheel and history tables remain detached from the inputs.
+A two-entry, step-local cache stores successful projections only for numerically
+equal velocity/limit tuples and the same prepared matrix; it retains no state
+across steps or controllers.
+Three additional scalar root hints belong to each prepared wheel for this step
+only. A previously measured feasible multiplier, normalized by its old search
+high, is merely an initial guess against the current high. It never reuses an
+impulse for different inputs. Invalid or endpoint hints use a finite interior
+Rayleigh estimate or the zero start instead. The first guess spends one of the
+same twelve probes and must pass the current original classifier. Failed whole
+projections leave the previous hints unchanged; no hint survives the model step.
+
+The public `Brake.constrained` helper retains the original 64 disk-search
+iterations. The private solver may accelerate that same constrained objective.
+Original zero-multiplier and high-end finite/SPD/rejection checks run first,
+including the original early return when the zero-multiplier solution is inside
+the disk. Inlined endpoint arithmetic keeps that evaluation order and checks the
+determinant before division. Each public projection argument still has its own
+type guard before numeric comparisons, rejecting nonnumbers, NaN and infinity.
+A strictly diagonal, one-coordinate problem then has a direct interval
+solution. Other moderately conditioned problems may spend at most twelve
+Newton/adjacent-number probes inside an outside-low, feasible-high bracket.
+Every probe uses the original square-root feasibility classification. A Newton
+result returns directly only when the bracket midpoint rounds to an endpoint;
+the retained high solution is feasible under that original test. Twelve valid
+probes or a finite proposal exactly at an endpoint retain the proven bracket for
+up to 64 ordinary bisections, with early return only at representable adjacency.
+Nonfinite derivatives, uncertain conditioning or a genuinely out-of-bracket
+probe instead fall back to the original 64 searches from the original endpoints.
+This bounds a fallback at 76 search probes plus two original endpoint
+evaluations, not 76 total point evaluations. Extreme and ill-conditioned inputs
+bypass acceleration.
+
+This changes private arithmetic order and the numerical root-finding algorithm,
+not friction, braking, steering or hop laws. It does not promise universal
+bit-identical output to the legacy finite search. Differential tests retain
+their existing tolerances and exact qualification, rejection and event-history
+checks.
 
 ## Scope and validation
 
@@ -87,30 +133,75 @@ heading servo or native backend call is present.
 one-shot and preview hops, left/right turn symmetry and moving ground,
 steer/lean limits and actuator slew, coupled braking and energy, manual/nose,
 neutral versus held-turn flight, unavailable contacts, skin/penetration limits,
-clock gaps and pump windows. An unconditional Host test additionally generates
-nineteen representative single-step flat-frame fixtures using the original
-portable C++ kernel and compares the actual Luau outputs. This is not exhaustive
-numerical parity. A separate loaded-pair recovery test mutates the caller's old
-platform-velocity arrays and checks that retained history and admission stay
-unchanged. That C++ code is an offline regression oracle only; it
-is not reachable from the plugin and is not a runtime facade. Test execution is
-verified through the actual vendored Luau Host: **16 groups, 654 assertions,
-nineteen C++ comparisons, zero native actions**. The focused Release plugin
-target built cleanly, and `ctest -R '^plugins$'` passed in 1.70s. Fifteen optional
-contributed-plugin fixtures were absent; this force case ran unconditionally.
-The first run stopped before this case because the existing trick suite exceeded
-its unchanged 50ms load ceiling during concurrent compilation. A quiet rerun
-passed; no runtime or existing test ceiling was widened.
+clock gaps and pump windows. An unconditional Host test generates **83** original
+C++ kernel fixtures, retaining the first nineteen flat-frame cases and adding
+nonidentity orientation, asymmetric inertia, translated COM/contact points,
+unequal wheels, mixed hit/clear, zero friction/brake axes, odd iteration counts
+and rejection/event-history checks. Another **18** direct projection fixtures
+compare the public and private paths to the C++ constrained solver: they include
+nonsymmetric coefficients, invalid reduced matrices, extreme conditioning, the
+early-at0/high-overflow trap and observed narrow slope brackets. Changed-input
+warm starts and invalid hints are checked independently, as are thirty direct
+bad-type/nonfinite argument cases. Existing comparison tolerances are unchanged.
+This is representative coverage, not exhaustive numerical parity.
 
-The regression's enlarged per-call test ceiling accommodates many model steps
-inside one load call. It makes no claim that this table-heavy implementation fits
-the normal 2ms plugin tick budget. Native-phase transport, performance and actual
-feel must be measured before activation.
+A separate loaded-pair recovery test mutates the caller's old platform-velocity
+arrays and checks that retained history and admission stay unchanged. C++ is an
+offline regression oracle only; it is not reachable from the plugin and is not
+a runtime facade. The selected optimization runs through the actual vendored
+Luau Host: **17 groups, 2,565 assertions, 83 force comparisons, 18 direct
+projections, zero native actions**. The focused Release plugin target built
+cleanly, and `ctest -R '^plugins$'` passed in 1.63s. Fifteen optional contributed
+plugin fixtures were absent; this force case ran unconditionally. The test's
+existing enlarged per-call ceiling accommodates many model steps inside one
+load call; the normal runtime limits were not widened. The earlier committed
+port's 16/654/19 result remains a separate historical checkpoint.
 
-The generic owned-body service can transport a bounded native impulse and
-receipts; its initial single mailbox cannot yet carry every 60Hz step. The
-generic probe still lacks qualified contact normals, surface velocity and body/
-world/epoch provenance required here. Input device epochs/atomic actor handoff,
-part rendering, rider pose binding, fall and recovery also remain to be wired
-through generic APIs. This port changes no in-game handling until those bridges
-are implemented and tested.
+## Offline performance evidence
+
+On an i7-9700K (eight cores), Windows 11 Pro 10.0.26200, approximately 32GiB RAM,
+an ignored Release /O2 harness links the actual Host and vendored Luau libraries.
+It performs one actual model call per tick with the unchanged 50ms call, 2ms
+rolling average and 64MiB heap limits. Three repeats per case request sixty
+warmup and 1,200 measured ticks, both `step` and `preview`/adopt. The measured
+body/contact inputs remain fixed while controller/rotor history advances; this
+does not invent native motion. Timings include Host dispatch, with no empty-tick
+cost subtracted. The selected source completed all 27 original and 24 challenge
+windows without watchdog stops.
+
+| Actual workload | Step mean / p95 / max ms | Preview/adopt mean / p95 / max ms |
+|---|---:|---:|
+| Coasting | 0.298 / 0.352 / 2.260 | 0.310 / 0.361 / 0.713 |
+| Held steering | 0.430 / 0.484 / 0.779 | 0.442 / 0.502 / 0.779 |
+| Strong braking | 0.816 / 0.920 / 1.585 | 0.825 / 0.911 / 2.100 |
+| Hop / neutral air | 0.226 / 0.338 / 0.646 | 0.234 / 0.349 / 0.542 |
+| Rotated slope, 96 iterations | 1.790 / 1.925 / 2.618 | 1.790 / 1.899 / 3.887 |
+| Mixed hit / clear | 0.885 / 0.959 / 1.297 | 0.902 / 0.980 / 1.383 |
+| Zero longitudinal friction | 1.025 / 1.103 / 1.616 | 1.047 / 1.140 / 2.086 |
+| Optional 128 iterations | 1.951 / 2.083 / 7.819 | 1.952 / 2.085 / 3.363 |
+
+The retained unoptimized `ce628b9` braking baseline averaged about 17.2ms and
+stopped every repeat. Failed intermediate optimizations and partial runs are
+preserved. A final derivative regrouping gave no meaningful improvement and
+stopped **three of six** optional-128 windows; it was dropped. That difference
+does not isolate a code effect from changing desktop load. The selected simpler
+source has little margin on the default slope case, and **128 iterations are
+not performance-qualified** despite one complete window. Tail maxima exceed 2ms;
+neither these runs nor the rolling-average limit promise every call below 2ms.
+
+Peak observed VM heaps stayed below 1.4MiB. Frequent post-tick heap decreases are
+reclamation lower bounds, not exact allocation bytes, GC cycles or pause times;
+collections within a tick are invisible. No affinity, power profile, clocks or
+other desktop applications were controlled. Recorded busy ranges include this
+benchmark itself. The raw cases, hardware capture, unsuccessful experiments,
+aggregates and manifests remain in ignored `build/bike-forces-perf-v1`, `-v2`,
+`-v3` and `build/bike-forces-optimization-author-v1` evidence folders.
+
+This is solver-only offline improvement, not native frame or whole-plugin budget
+admission. Current queries, input, presentation and competing game work can erase
+the remaining margin. Future performance work must measure the complete adapter
+after correct contacts rather than repeat borderline solver windows. Qualified
+contact normals, surface velocity and body/world/epoch provenance, atomic actor
+handoff, rendering, rider pose, fall and recovery still require generic API
+integration and actual-game tests. This package changes no handling until those
+bridges are connected and tested; its entry point remains inert.

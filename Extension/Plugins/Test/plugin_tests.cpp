@@ -2216,34 +2216,74 @@ void bmx_lua_forces_use_actual_modules_and_match_the_portable_kernel() {
     using dingosdk::Json;
     const auto directory = std::filesystem::path(RESKATE_SOURCE_DIR) / "contrib" / "bmx-lab" / "bmx-plugin";
     std::map<std::string, std::string> files{{manifest_file, R"({"api":1,"entry":"plugin/main.lua","permissions":[]})"}};
-    for (const auto* name : {"force_math.lua", "tire.lua", "brake.lua", "pump.lua", "forces.lua", "force_tests.lua"}) {
+    for (const auto* name : {"force_math.lua", "tire.lua", "brake.lua", "pump.lua", "force_solver.lua", "forces.lua", "force_tests.lua"}) {
         std::ifstream file(directory / "plugin" / name, std::ios::binary);
         check(file.good(), std::string("BMX Lua force source is available: ") + name);
         files[std::string("plugin/") + name] = std::string(std::istreambuf_iterator<char>(file), {});
     }
     Json reference = Json::array();
     const auto append = [&](double speed, chassis::Controls controls, const char* status = "hit", double separation = 0,
-                            double h = chassis::verified_native_seconds) {
+                            double h = chassis::verified_native_seconds, double bank = 0, double tilt = 0,
+                            double longitudinal = 1, double lateral = 1, unsigned variant = 0) {
         auto body = chassis::proposed_body(); body.center_of_mass = {0, .9, -.05}; body.linear_velocity = {0, 0, speed};
+        body.orientation = {std::cos(bank / 2) * std::sin(tilt / 2), std::sin(bank / 2) * std::sin(tilt / 2),
+                            std::sin(bank / 2) * std::cos(tilt / 2), std::cos(bank / 2) * std::cos(tilt / 2)};
+        const auto turn = [&](chassis::Vec v) { return chassis::detail::turn(body.orientation, v); };
+        body.center_of_mass = turn(body.center_of_mass); body.linear_velocity = turn(body.linear_velocity);
+        if (bank != 0 || tilt != 0) body.angular_velocity = turn({.07, -.11, .03});
         auto wheels = chassis::proposed_wheels(); for (auto& wheel : wheels) wheel.angular_speed = speed / wheel.radius;
+        if (variant) {
+            body.inertia_body = variant == 7 ? chassis::Vec{1e9, 1e9, 1e9} : chassis::Vec{11, 37, 5};
+            body.center_of_mass = chassis::detail::add(body.center_of_mass, {3, 1, -2});
+            wheels[0].radius *= .9; wheels[0].inertia *= .7; wheels[1].radius *= 1.1; wheels[1].inertia *= 1.3;
+            for (auto& wheel : wheels) wheel.angular_speed = speed / wheel.radius;
+        }
         std::array<chassis::ContactSample, 2> samples{};
         for (unsigned i = 0; i < 2; ++i) {
             auto& sample = samples[i]; sample.separation = separation;
             sample.contact.status = std::string_view(status) == "hit" ? dingosdk::bmx::tire::ContactStatus::hit :
                 std::string_view(status) == "clear" ? dingosdk::bmx::tire::ContactStatus::clear : dingosdk::bmx::tire::ContactStatus::unavailable;
-            sample.contact.point = {0, 0, i == 0 ? .525 : -.525};
+            sample.contact.point = turn({0, 0, i == 0 ? .525 : -.525});
+            sample.contact.normal = turn({0, 1, 0}); sample.contact.forward = turn({0, 0, 1});
+            if (variant) sample.contact.point = chassis::detail::add(sample.contact.point, {3, 1, -2});
+            if (variant && variant % 3 == i + 1) sample.contact.status = dingosdk::bmx::tire::ContactStatus::clear;
         }
-        const auto out = chassis::Controller{}.step(h, body, wheels, samples, controls);
+        chassis::Tuning tuning; tuning.friction = {longitudinal, lateral};
+        if (variant) {
+            tuning.contact_iterations = variant % 2 ? 1 : 3;
+            tuning.brake_iterations = variant % 3 == 0 ? 96 : variant % 2 ? 1 : 3;
+            if (variant % 4 == 1) tuning.front_brake_torque = 0;
+            if (variant % 4 == 2) tuning.rear_brake_torque = 0;
+            if (variant == 6) tuning.force_limit = 100;
+        }
+        chassis::Controller controller{tuning};
+        const auto out = controller.step(h, body, wheels, samples, controls);
         Json expected{{"valid", out.valid}, {"grounded", out.grounded}, {"hop_applied", out.hop_applied},
             {"force", out.force}, {"torque", out.torque}, {"hop_impulse", out.hop_impulse},
             {"normal_load", out.normal_load}, {"normal_impulse", out.normal_impulse}, {"longitudinal_impulse", out.longitudinal_impulse},
             {"lateral_impulse", out.lateral_impulse}, {"brake_impulse", out.brake_impulse}, {"front_steer_angle", out.front_steer_angle},
             {"requested_front_steer_angle", out.requested_front_steer_angle}, {"turning_lean_angle", out.turning_lean_angle},
             {"contact_scale", out.contact_scale}, {"spin", Json::array({out.wheels[0].angular_speed, out.wheels[1].angular_speed})}};
+        constexpr const char* issues[]{"none", "unsupported_step", "invalid_sample", "unavailable_contact", "penetration_limit", "output_limit"};
+        expected["issue"] = issues[static_cast<unsigned>(out.issue)]; expected["consumed_hop"] = controller.consumed_hop_event_id();
         Json input{{"enabled", controls.enabled}, {"pedal", controls.pedal}, {"brake", controls.brake}, {"steer", controls.steer},
             {"manual", controls.manual}, {"nose_manual", controls.nose_manual}, {"air_yaw", controls.air_yaw},
             {"hop_strength", controls.hop_strength}, {"hop_event_id", controls.hop_event_id}};
-        reference.push_back(Json{{"speed", speed}, {"status", status}, {"separation", separation}, {"h", h}, {"controls", input}, {"result", expected}});
+        Json input_body{{"mass", body.mass}, {"inertia_body", body.inertia_body}, {"orientation", body.orientation},
+            {"center_of_mass", body.center_of_mass}, {"linear_velocity", body.linear_velocity}, {"angular_velocity", body.angular_velocity}};
+        Json input_wheels = Json::array(), input_samples = Json::array();
+        for (unsigned i = 0; i < 2; ++i) {
+            input_wheels.push_back(Json{{"radius", wheels[i].radius}, {"inertia", wheels[i].inertia}, {"angular_speed", wheels[i].angular_speed}});
+            const auto& s = samples[i];
+            const char* actual_status = s.contact.status == dingosdk::bmx::tire::ContactStatus::hit ? "hit" :
+                s.contact.status == dingosdk::bmx::tire::ContactStatus::clear ? "clear" : "unavailable";
+            input_samples.push_back(Json{{"contact", Json{{"status", actual_status}, {"point", s.contact.point}, {"normal", s.contact.normal},
+                {"forward", s.contact.forward}, {"surface_velocity", s.contact.surface_velocity}}}, {"separation", separation}});
+        }
+        reference.push_back(Json{{"body", input_body}, {"wheels", input_wheels}, {"samples", input_samples}, {"h", h},
+            {"tuning", Json{{"friction", Json{{"longitudinal_friction", longitudinal}, {"lateral_friction", lateral}}},
+                {"contact_iterations", tuning.contact_iterations}, {"brake_iterations", tuning.brake_iterations}, {"front_brake_torque", tuning.front_brake_torque},
+                {"rear_brake_torque", tuning.rear_brake_torque}, {"force_limit", tuning.force_limit}}}, {"controls", input}, {"result", expected}});
     };
     append(0, {});
     append(5, chassis::Controls{.pedal = 1});
@@ -2255,11 +2295,50 @@ void bmx_lua_forces_use_actual_modules_and_match_the_portable_kernel() {
     append(0, chassis::Controls{.air_yaw = 1}, "clear"); append(0, chassis::Controls{.manual = 1}, "clear");
     append(0, {}, "unavailable"); append(0, {}, "hit", 0, chassis::verified_native_seconds * 2);
     append(0, chassis::Controls{.hop_strength = 1, .hop_event_id = 1}, "hit", .01);
-    files["plugin/main.lua"] = "local reference = reskate.json.decode([=[" + reference.dump() + R"(]=])
-        local result = require("./force_tests").run(reference)
-        assert(result.cases == 16 and result.assertions > 500 and result.comparisons == 19 and result.native_actions == 0,
+    for (double bank : {-.2, .2}) for (double tilt : {-.15, .15}) for (double speed : {-4., 4.})
+        for (const auto friction : {std::array<double, 2>{0, 1}, std::array<double, 2>{1, 0}, std::array<double, 2>{.3, .8}}) {
+            append(speed, chassis::Controls{.brake = 1, .steer = .5}, "hit", -.002, chassis::verified_native_seconds, bank, tilt, friction[0], friction[1]);
+            append(speed, chassis::Controls{.steer = -.7, .manual = .2}, "hit", 0, chassis::verified_native_seconds, bank, tilt, friction[0], friction[1]);
+        }
+    for (unsigned variant = 1; variant <= 7; ++variant) {
+        append(3, chassis::Controls{.brake = 1, .steer = -.4}, "hit", -.001, chassis::verified_native_seconds, .2, -.15, .7, .3, variant);
+        append(-3, chassis::Controls{.steer = .4}, "hit", 0, chassis::verified_native_seconds, -.2, .15, .3, .7, variant);
+    }
+    append(0, chassis::Controls{.hop_strength = 1, .hop_event_id = 7}, "clear");
+    append(0, chassis::Controls{.enabled = false, .hop_strength = 1, .hop_event_id = 7});
+    Json projections = Json::array();
+    const auto projection = [&](chassis::coupled_brake::Matrix k, std::array<double, 3> g, std::array<double, 3> limits) {
+        std::array<double, 3> impulse{};
+        const bool valid = chassis::coupled_brake::detail::constrained(k, g, limits, impulse);
+        projections.push_back(Json{{"k", k}, {"g", g}, {"limits", limits}, {"valid", valid}, {"impulse", impulse}});
+    };
+    const chassis::coupled_brake::Matrix identity{{{{1, 0, 0}}, {{0, 1, 0}}, {{0, 0, 1}}}};
+    const chassis::coupled_brake::Matrix nonsymmetric{{{{2, .25, -.5}}, {{.3, 1, -.2}}, {{-.4, -.3, 2}}}};
+    projection(identity, {.2, .1, 100}, {1, 1, 1}); projection(identity, {.2, .1, -100}, {1, 1, 1});
+    projection(nonsymmetric, {2, 1, 100}, {1, 1, 1}); projection(nonsymmetric, {2, 1, -100}, {1, 1, 1});
+    projection(identity, {.2, -.3, .1}, {1, 1, 1});
+    projection(identity, {.2, .1, 1 + 1e-13}, {1, 1, 1}); projection(identity, {.2, .1, -1 - 1e-13}, {1, 1, 1});
+    projection({{{{1, 0, 2}}, {{0, 1, 0}}, {{2, 0, 1}}}}, {0, 0, 100}, {1, 1, 1});
+    projection(identity, {10, 3, 100}, {0, 1, 1}); projection(identity, {3, 10, 100}, {1, 0, 1});
+    projection(identity, {10, 3, 100}, {1, 1, 0});
+    projection({{{{1e200, 0, 0}}, {{0, 1e-200, 0}}, {{0, 0, 1}}}}, {1e199, 0, 0}, {1, 1, 1});
+    projection({{{{1e-200, 0, 0}}, {{0, 1e-200, 0}}, {{0, 0, 1}}}}, {1, 1, 0}, {1, 1, 1});
+    projection({{{{1, 0, 0}}, {{0, 1e-14, 0}}, {{0, 0, 1}}}}, {3, 1e-10, .5}, {1, 1, 1});
+    projection(identity, {2, 1, -10}, {0, 0, 1});
+    projection({{{{1, 2, 0}}, {{2, 1, 0}}, {{0, 0, 1}}}}, {0, 0, 100}, {1, 1, 1});
+    // Actual slope solves reached these valid brackets only two to nine ULPs
+    // wide. Endpoint stagnation or twelve valid probes must retain refinement.
+    projection({{{{1.225284966024359, -3.683471955280575e-17, 0}},
+                  {{-3.683471955280575e-17, .4929425291155018, 0}}, {{0, 0, 1}}}},
+               {17.01065392498224, 2.800646359863398, 0}, {1, 1, 1});
+    projection({{{{2.3255356081490772, -.02506090728327499, 0}},
+                  {{-.02506090728327499, .18581329903843272, 0}}, {{0, 0, 1}}}},
+               {3.2303603001549694, 2.4246027387432054, 0}, {1, 1, 1});
+    files["plugin/main.lua"] = "local reference = reskate.json.decode([=[" + reference.dump() + "]=])\nlocal projections = reskate.json.decode([=[" + projections.dump() + R"(]=])
+        local result = require("./force_tests").run(reference, projections)
+        assert(result.cases == 17 and result.assertions > 1800 and result.comparisons == 83 and result.projections == 18 and result.native_actions == 0,
             string.format("unexpected force coverage: %s/%s/%s", tostring(result.cases), tostring(result.assertions), tostring(result.comparisons)))
-        reskate.log(string.format("BMX Lua forces: %d cases, %d assertions, %d C++ comparisons, 0 native actions", result.cases, result.assertions, result.comparisons))
+        reskate.log(string.format("BMX Lua forces: %d cases, %d assertions, %d C++ comparisons, %d direct projections, 0 native actions", result.cases, result.assertions, result.comparisons, result.projections))
     )";
     TestEnvironment environment;
     // This exhaustive offline regression performs many steps in one load call.
@@ -2268,7 +2347,7 @@ void bmx_lua_forces_use_actual_modules_and_match_the_portable_kernel() {
     Host host(environment, Side::client, limits);
     host.apply({package("bmx-lua-force-tests", files)});
     running(host, "bmx-lua-force-tests", environment);
-    check(environment.logged("BMX Lua forces: 16 cases") && environment.fake.calls.empty() && environment.fake.binds.empty() &&
+    check(environment.logged("BMX Lua forces: 17 cases") && environment.fake.calls.empty() && environment.fake.binds.empty() &&
               environment.fake.body_creates == 0 && environment.fake.body_submissions == 0 && environment.teleports.empty() && environment.rays == 0,
           "Pure force modules and actual C++ arithmetic agree without native services or permissions\n" + environment.all());
     std::cout << environment.all();

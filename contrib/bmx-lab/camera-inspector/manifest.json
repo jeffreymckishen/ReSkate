@@ -1,0 +1,7 @@
+{
+  "name": "Camera_Inspector",
+  "version_number": "0.1.0",
+  "website_url": "",
+  "description": "Prepare an exact camera position and look-at target, then explicitly apply or release the view.",
+  "dependencies": []
+}

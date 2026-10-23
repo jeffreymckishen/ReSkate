@@ -1,0 +1,7 @@
+{
+  "name": "BMX_Luau_Migration",
+  "version_number": "0.1.0",
+  "website_url": "",
+  "description": "BMX input policy migrated to Luau, with a temporary read-only controller inspector. Native body APIs are still required for riding.",
+  "dependencies": []
+}

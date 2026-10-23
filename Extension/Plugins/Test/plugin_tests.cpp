@@ -14,6 +14,8 @@
 #include <format>
 #include <fstream>
 #include <iostream>
+#include <iterator>
+#include <limits>
 #include <map>
 #include <set>
 #include <sstream>
@@ -38,6 +40,7 @@ struct FakeGame final : Game {
     std::vector<std::pair<std::string, std::string>> presses;
     std::map<std::string, std::uint32_t> binds;
     std::vector<std::string> released;
+    std::string camera_refusal, camera_hold_error = "waiting for the native camera";
     std::optional<std::uint32_t> physics_state() override { return state; }
     std::uint64_t wipeouts() override { return wipe; }
     std::string outfit_set(std::string_view plugin, std::string_view slot, std::string_view item, std::vector<float> placement, bool covers) override {
@@ -542,11 +545,13 @@ struct FakeGame final : Game {
     }
     std::optional<CameraView> camera_view() override { return CameraView{{1, 2, 3}, {0, 0, 1}, 60}; }
     std::string set_camera(std::string_view plugin, const std::array<float, 16>& pose, float fov) override {
+        if (!camera_refusal.empty()) return camera_refusal;
         calls.push_back(std::format("camera {} {:.1f} {:.1f} {:.1f} back {:.2f} {:.2f} {:.2f} fov {:.0f}", plugin, pose[12], pose[13], pose[14],
                                     pose[8], pose[9], pose[10], fov));
         return {};
     }
     void release_camera(std::string_view plugin) override { calls.push_back("camera release " + std::string(plugin)); }
+    std::string camera_status(std::string_view) override { return camera_hold_error; }
     std::string freeze(std::string_view plugin, bool on) override {
         calls.push_back(std::format("freeze {} {}", plugin, on ? "on" : "off"));
         return {};
@@ -1801,6 +1806,148 @@ void plugins_have_menu_panels() {
     check(environment.logged("state 1 true 10.0 3"), "What the player did reaches it, the slider held in its range\n" + environment.all());
     const auto& widgets = environment.panels[0].widgets;
     check(widgets[4].on && widgets[5].value == 10 && widgets[6].chosen == 3 && widgets[6].choices.size() == 3, "and shows in the next build");
+}
+
+void camera_inspector_prepares_then_explicitly_requests_a_view() {
+    const auto directory = std::filesystem::path(RESKATE_SOURCE_DIR) / "contrib" / "bmx-lab" / "camera-inspector";
+    const auto contents = [](const std::filesystem::path& path) {
+        std::ifstream file(path, std::ios::binary);
+        check(file.good(), "Camera Inspector source is available: " + path.string());
+        return std::string(std::istreambuf_iterator<char>(file), {});
+    };
+    const auto source = contents(directory / "plugin" / "main.lua");
+    const auto declaration = contents(directory / manifest_file);
+    check(parse_manifest(declaration).permissions == std::set<std::string, std::less<>>{"camera", "menu", "skater.read"},
+          "The inspector asks only for the camera, menu and read-only skater state");
+    check(check_package_files(directory).empty(), "The inspector is a sandboxed source-only plugin package");
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({{"camera-inspector", directory, "1", {}}});
+    running(host, "camera-inspector", environment);
+    ticks(host, environment, 3);
+    check(environment.fake.calls.empty(), "Loading and ticking the inspector never requests a camera");
+    environment.panels_open = true;
+    const auto frame = [&](std::vector<plugin_ui::Action> actions = {}) {
+        environment.actions = std::move(actions);
+        ticks(host, environment, 10);
+        running(host, "camera-inspector", environment);
+    };
+    const auto message = [&] {
+        for (const auto& panel : environment.panels)
+            for (const auto& widget : panel.widgets)
+                if (widget.text == "Last action") return widget.help;
+        throw std::runtime_error("The inspector's action status is missing");
+    };
+    const auto camera_calls = [&] {
+        return std::count_if(environment.fake.calls.begin(), environment.fake.calls.end(),
+            [](const auto& call) { return call.starts_with("camera camera-inspector "); });
+    };
+    using A = plugin_ui::Action;
+    const auto press = [](const char* id) { return A{"camera-inspector", "Camera Inspector", id}; };
+    const auto value = [](const char* id, float number) { return A{"camera-inspector", "Camera Inspector", id, false, number}; };
+    frame();
+    check(environment.fake.calls.empty(), "Opening the page never takes the camera");
+    frame({press("left"), press("apply")});
+    check(camera_calls() == 0 && message().find("Get or prepare") != std::string::npos,
+          "No player leaves a visible refusal and no camera request");
+    frame({press("get")});
+    check(camera_calls() == 0 && message().find("Current view copied") != std::string::npos,
+          "Get reads the real sandbox camera API without acquiring it");
+    frame({value("target-X", 1), value("target-Y", 2), value("target-Z", 3), press("apply")});
+    check(camera_calls() == 0 && message().find("1 cm") != std::string::npos,
+          "A coincident eye and target cannot acquire the camera");
+    frame({press("get")});
+    frame({value("eye-X", std::numeric_limits<float>::quiet_NaN()), press("apply")});
+    check(camera_calls() == 0 && message().find("refused edit") != std::string::npos,
+          "A nonfinite edit is refused without poisoning the next panel build");
+    environment.local_skater = SkaterState{{10, 20, 30}, 0, 0, 0, false, 0};
+    frame({press("left")});
+    check(camera_calls() == 0 && message().find("Left player view prepared") != std::string::npos,
+          "A fresh player preset prepares coordinates only");
+    environment.fake.camera_refusal = "another plugin has the camera";
+    frame({press("apply")});
+    check(camera_calls() == 0 && message().find("another plugin") != std::string::npos,
+          "An existing camera owner produces a visible refusal without taking its view");
+    environment.fake.camera_refusal.clear();
+    frame({press("apply")});
+    check(camera_calls() == 1 && environment.fake.called("camera camera-inspector 8.5 21.0 30.0 back -1.00 0.00 0.00 fov 60"),
+          "Apply reaches the existing camera.look API with the prepared side view");
+    frame();
+    check(camera_calls() == 1, "Panel rebuilds never reapply or follow the player");
+    environment.fake.camera_hold_error.clear();
+    frame();
+    bool held = false;
+    for (const auto& panel : environment.panels) for (const auto& widget : panel.widgets)
+        held = held || (widget.text == "Camera" && widget.help == "Held by this plugin");
+    check(held, "Queued and actually held camera states are shown separately");
+    frame({press("release")});
+    check(environment.fake.called("camera release camera-inspector") && message().find("Release requested") != std::string::npos,
+          "Release calls the existing lease release and reports that it is requested");
+    frame({press("right")});
+    frame({value("fov", 400), press("apply")});
+    check(environment.fake.called("camera camera-inspector 11.5 21.0 30.0 back 1.00 0.00 0.00 fov 120"),
+          "The actual menu API clamps an edited FOV to the tool's stated range");
+    host.apply({});
+    check(std::count(environment.fake.calls.begin(), environment.fake.calls.end(), "camera release camera-inspector") >= 2,
+          "Unloading also releases the plugin's camera lease");
+
+    TestEnvironment denied;
+    denied.local_skater = SkaterState{{10, 20, 30}, 0, 0, 0, false, 0};
+    denied.panels_open = true;
+    Host bare(denied, Side::client);
+    bare.apply({script("no-camera", source, R"("menu", "skater.read")")});
+    running(bare, "no-camera", denied);
+    denied.actions = {A{"no-camera", "Camera Inspector", "left"}, A{"no-camera", "Camera Inspector", "apply"}};
+    ticks(bare, denied, 2);
+    running(bare, "no-camera", denied);
+    check(denied.fake.calls.empty(), "Without camera permission the inspector cannot request a native view");
+    bool explained = false;
+    for (const auto& panel : denied.panels) for (const auto& widget : panel.widgets)
+        explained = explained || (widget.text == "Last action" && widget.help.find("camera") != std::string::npos);
+    check(explained, "The permission refusal remains visible on the page");
+}
+
+void bmx_lua_policy_runs_as_modules_and_the_inspector_starts_inert() {
+    const auto directory = std::filesystem::path(RESKATE_SOURCE_DIR) / "contrib" / "bmx-lab" / "bmx-plugin";
+    const auto contents = [](const std::filesystem::path& path) {
+        std::ifstream file(path, std::ios::binary);
+        check(file.good(), "BMX Lua source is available: " + path.string());
+        return std::string(std::istreambuf_iterator<char>(file), {});
+    };
+    const auto declaration = contents(directory / manifest_file);
+    check(parse_manifest(declaration).permissions == std::set<std::string, std::less<>>{"input", "menu"} && check_package_files(directory).empty(),
+          "BMX Lua is an input/menu-only source package, without native control permissions");
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({{"bmx-lua-inspector", directory, "1", {}}});
+    ticks(host, environment, 3);
+    running(host, "bmx-lua-inspector", environment);
+    environment.panels_open = true;
+    ticks(host, environment, 10);
+    running(host, "bmx-lua-inspector", environment);
+    check(environment.panels.size() == 1 && environment.panels[0].title == "BMX Lua migration" && environment.fake.calls.empty() &&
+              environment.fake.binds.empty() && environment.teleports.empty() && environment.rays == 0,
+          "The actual inspector loads, ticks and builds its page without acquiring input/camera/pose or invoking gameplay");
+    std::map<std::string, std::string> files{{manifest_file, declaration}};
+    for (const auto* name : {"input.lua", "catalog.lua", "tests.lua"}) files[std::string("plugin/") + name] = contents(directory / "plugin" / name);
+    files["plugin/main.lua"] = R"(
+        local result = require("./tests").run()
+        assert(result.cases == 12 and result.assertions == 1216 and result.native_actions == 0,
+            string.format("unexpected Lua coverage: %s/%s", tostring(result.cases), tostring(result.assertions)))
+        local pad, focus = reskate.input.gamepad(), reskate.input.focus()
+        assert(type(pad.left_x) == "number" and type(pad.right_y) == "number" and pad.left_trigger > 0 and pad.right_trigger > 0)
+        assert(pad.buttons.a and pad.buttons.b and pad.buttons.y and pad.buttons.right_stick and pad.buttons.lb and pad.buttons.rb)
+        assert(focus.focused and not focus.interface_open and focus.gameplay)
+        reskate.log("BMX Lua: 12 cases, 1216 assertions, 0 native actions")
+    )";
+    TestEnvironment portable;
+    portable.fake.pad = PadInput{0.25f, 0, 0, -1, 0.3f, 0.9f, 0xb380, false};
+    portable.fake.focus_now = {true, false, true};
+    Host unit(portable, Side::client);
+    unit.apply({package("bmx-lua-policy-tests", files)});
+    running(unit, "bmx-lua-policy-tests", portable);
+    check(portable.logged("BMX Lua: 12 cases, 1216 assertions, 0 native actions") && portable.fake.calls.empty(),
+          "Actual package modules run through the vendored Luau Host with expected coverage and actual input API fields\n" + portable.all());
 }
 
 // A plugin's own page in the menu's PLUGINS section: named in the section, built only while the menu
@@ -3834,6 +3981,8 @@ int main() {
         run(plugins_animate_the_skater);
         run(plugins_play_their_own_sounds);
         run(plugins_have_menu_panels);
+        run(camera_inspector_prepares_then_explicitly_requests_a_view);
+        run(bmx_lua_policy_runs_as_modules_and_the_inspector_starts_inert);
         run(plugins_have_pages);
         run(plugins_play_sounds_and_read_the_mods);
         run(plugins_follow_the_session_and_message_each_other);

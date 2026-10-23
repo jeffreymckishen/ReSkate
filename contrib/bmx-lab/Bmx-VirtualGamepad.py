@@ -75,6 +75,7 @@ def scenarios() -> dict[str, tuple[Event, ...]]:
     # animation, controller slot selection and consumption are separate evidence.
     return {
         "native-y": (Event(0, NEUTRAL), Event(240, State(Y)), Event(440, NEUTRAL), Event(3600, NEUTRAL)),
+        "native-b": (Event(0, NEUTRAL), Event(240, State(B)), Event(440, NEUTRAL), Event(1200, NEUTRAL)),
         # Requires a separately verified mounted rider on flat supported ground.
         # Release first, pedal, coast, request one300ms direct pump, then settle.
         "ground-pump": (Event(0, NEUTRAL), Event(240, State(A)), Event(1000, NEUTRAL),

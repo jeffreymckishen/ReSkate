@@ -359,5 +359,5 @@ if ($HumanNativeSwitch) {
 } elseif ($ArtifactDirectory -ne 'build\vs2022-x64\Release') {
     Write-Output 'Comparison build launched without BMX startup commands. Inspect its isolated log for native player creation.'
 } else {
-    Write-Output 'In game: open the console with `, run bmx mount, close the console and center both sticks.'
+    Write-Output 'Ordinary game launch without BMX startup commands. Lua mods are loaded from Mods; use the installed plugin''s own menu page.'
 }

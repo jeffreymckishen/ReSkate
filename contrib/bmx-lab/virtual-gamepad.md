@@ -79,6 +79,7 @@ All scenarios begin/end neutral, finish within6s and leave virtual D-pad/menu bu
 | Scenario | Inputs requested | Required starting state / evidence boundary |
 |---|---|---|
 | `native-y` | Neutral240ms, North/Y200ms, release through3.6s | Fresh isolated NativeOnly session, observer already armed, zero BMX activity. A **virtual North** comparison, not a physical-controller baseline. |
+| `native-b` | Neutral240ms, B200ms, release through1.2s | One ordinary Back/Brake pulse in the observed isolated game state. Menu closure and input consumption require a separate screen observation. |
 | `ground-pump` | Neutral240ms, A to1000ms, coast to1200ms, LS Y=-0.7 for300ms, release and settle to3200ms | Already mounted on clear supported ground. Checks the direct pump channel; reports alone do not establish force submission or handling quality. |
 | `ground-pump-switch` | Same pump, brake1500–2300ms, then one LB+Y chord and release through4000ms | Already mounted; normal parking may retain the pump window in a ride trace. Verify the new trace and actual switch separately. |
 | `equipment-switch` | LB prehold, LB+Y200ms, release, settle to4.4s | Ordinary Ride session with the current equipment-switch path. Excluded from NativeOnly isolation. |

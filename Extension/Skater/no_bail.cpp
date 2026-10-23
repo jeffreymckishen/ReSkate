@@ -3385,10 +3385,8 @@ bool recovery_acquire(std::uint64_t owner, std::uint64_t sequence,
     if (reason == Reason::none && (!state.known || state.value != offboard_physics_state ||
         !state.ragdoll_known || !state.ragdoll || !state.in_air_known || state.in_air))
         reason = Reason::unsupported_state;
-    LONG bits{};
-    if (reason == Reason::none && (!memory::peek(live.owner.context + animation_request_offset, bits) ||
-        !skater_action::request_bits_clear(static_cast<std::uint32_t>(bits), mount_request_mask | dismount_request_mask)))
-        reason = Reason::request_bits_conflict;
+    // GetUp uses its typed intent and native eligibility predicate. Equipment
+    // request bits belong to the game; this path neither inserts nor clears them.
     AcquireSRWLockExclusive(&p.lock);
     const auto now = GetTickCount64();
     if (reason == Reason::none && action_protection_locked(live.owner, now)) reason = Reason::protection_conflict;

@@ -217,3 +217,12 @@ revokes that VM's recovery before releasing its owned bodies, while the native
 service retains any outstanding cleanup obligation. The portable core and Host
 contracts do not by themselves qualify this new adapter in a live game. Native
 delivery, sustained observed recovery and rendered behavior need separate evidence.
+
+The first isolated Lua trial on runtime `51243F65` reached the recovery API from
+a visibly fallen, known-ragdoll504 skater after one SDK-induced lab wipeout. Its
+single request was refused with `request_bits_conflict`, before an intent pulse
+or handle was admitted. That reason did not distinguish an unreadable equipment
+word from nonzero equipment bits. Recovery no longer requires that unrelated
+equipment-insertion preflight: it leaves those words untouched and retains its
+shared actor claim, legacy-request exclusion and fresh native GetUp predicate.
+This correction needs a fresh game trial; the refused trial proves no recovery.

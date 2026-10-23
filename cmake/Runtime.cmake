@@ -1,4 +1,8 @@
+add_library(dingosdk_input_trace_gate OBJECT Extension/Skater/native_input_trace_gate.asm)
 add_library(dingosdk_runtime SHARED
+    $<TARGET_OBJECTS:dingosdk_input_trace_gate>
+    Engine/Game/Input/native_input_trace.cpp
+    Extension/Skater/native_input_trace.cpp
     Runtime/runtime_init.cpp
     Runtime/runtime_state.cpp
     Runtime/client_tick.cpp

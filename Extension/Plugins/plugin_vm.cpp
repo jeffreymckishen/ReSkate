@@ -262,6 +262,7 @@ void Plugin::close_if_stopped() {
 }
 
 void Plugin::close() {
+    services_.game().input_trace_release_all(instance_);
     services_.game().native_recovery_release_all(instance_);
     services_.game().native_action_release_all(instance_);
     services_.game().body_release_all(instance_);

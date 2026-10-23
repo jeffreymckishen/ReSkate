@@ -36,6 +36,40 @@ std::filesystem::path scratch;
 
 // The wider set's game, faked: it records what plugins asked of it and answers as told.
 struct FakeGame final : Game {
+    struct InputTrace { std::uint64_t owner{}; dingosdk::input_trace::Receipt receipt{}; };
+    std::map<std::uint64_t, InputTrace> input_traces;
+    std::vector<std::uint64_t> input_trace_releases;
+    std::uint64_t input_trace_sequence{9007199254740994ULL};
+    unsigned input_trace_requests{}, input_trace_reads{}, input_trace_stops{}, input_trace_acks{};
+    bool input_trace_request(std::uint64_t owner, dingosdk::input_trace::Handle& handle,
+        dingosdk::input_trace::Reason& reason) override {
+        ++input_trace_requests; handle.sequence = ++input_trace_sequence;
+        auto& row = input_traces[handle.sequence]; row.owner = owner; row.receipt.handle = handle;
+        row.receipt.requested_ms = 9007199254740997ULL; row.receipt.expires_ms = row.receipt.requested_ms + 5000;
+        reason = dingosdk::input_trace::Reason::none; return true;
+    }
+    bool input_trace_read(std::uint64_t owner, dingosdk::input_trace::Handle handle, dingosdk::input_trace::Receipt& receipt) override {
+        ++input_trace_reads;
+        const auto at = input_traces.find(handle.sequence);
+        if (at == input_traces.end() || at->second.owner != owner) return false;
+        receipt = at->second.receipt; return true;
+    }
+    bool input_trace_stop(std::uint64_t owner, dingosdk::input_trace::Handle handle) override {
+        ++input_trace_stops;
+        const auto at = input_traces.find(handle.sequence);
+        if (at == input_traces.end() || at->second.owner != owner) return false;
+        at->second.receipt.status = dingosdk::input_trace::Status::stopped; return true;
+    }
+    bool input_trace_acknowledge(std::uint64_t owner, dingosdk::input_trace::Handle handle) override {
+        ++input_trace_acks;
+        const auto at = input_traces.find(handle.sequence);
+        if (at == input_traces.end() || at->second.owner != owner || at->second.receipt.status == dingosdk::input_trace::Status::active) return false;
+        input_traces.erase(at); return true;
+    }
+    void input_trace_release_all(std::uint64_t owner) override {
+        input_trace_releases.push_back(owner);
+        std::erase_if(input_traces, [owner](const auto& p) { return p.second.owner == owner; });
+    }
     std::vector<std::pair<std::uint64_t, std::string>> release_order;
     struct NativeRecovery { std::uint64_t owner{}; dingosdk::skater_recovery::Receipt receipt{}; bool abandoned{}; };
     std::map<std::uint64_t, NativeRecovery> native_recoveries;
@@ -1518,6 +1552,109 @@ void native_recovery_enforces_permission_phase_arguments_and_shared_request_rate
     )"}})}); running(server, "recovery-server", server_environment);
     check(server_environment.fake.native_recovery_requests == 0 && server_environment.fake.native_recovery_reads == 0 &&
         server_environment.fake.native_recovery_cancels == 0 && server_environment.fake.native_recovery_acks == 0, "server reached native recovery");
+}
+
+void input_trace_api_keeps_bounded_observations_opaque_and_vm_owned() {
+    namespace t = dingosdk::input_trace;
+    TestEnvironment environment; Host host(environment, Side::client);
+    host.apply({script("input-trace", R"(
+        local S=reskate.skater
+        assert(not pcall(S.input_trace,nil))
+        local h=assert(S.input_trace())
+        assert(type(h)=="userdata" and getmetatable(h)=="locked")
+        for _,fn in {S.input_trace_state,S.input_trace_stop,S.input_trace_acknowledge} do
+            assert(not pcall(fn,{}) and not pcall(fn,"9007199254740995") and not pcall(fn,h,nil))
+        end
+        assert(not pcall(S.action_state,h))
+        local r=assert(S.input_trace_state(h))
+        assert(r.sequence=="9007199254740995" and r.requested_ms=="9007199254740997" and r.expires_ms=="9007199254745997")
+        assert(r.status=="active" and not r.terminal and #r.records==0)
+        assert(r.seen=="0" and r.duplicates=="0" and r.dropped=="0")
+        assert(not S.input_trace_acknowledge(h))
+        local phase=0
+        reskate.on("tick",function()
+            local v,why=S.input_trace_state(h)
+            if v==nil then assert(why:find("invalid observations"));reskate.log("trace rejected malformed");return end
+            if #v.records==2 then
+                local a,b=v.records[1],v.records[2]
+                assert(a.asset_token==7 and a.thread_id==12 and a.lane=="interpreter" and a.condition_known and a.condition==false)
+                assert(a.local_tuple_known and a.container_matches_local and a.snapshot_stable and a.issue==0)
+                assert(b.asset_token==8 and b.lane=="alternate" and not b.condition_known and b.condition==nil and b.issue==2)
+                assert(a.address==nil and a.asset==nil and a.container==nil)
+                assert(v.seen=="9007199254741004" and v.duplicates=="9007199254740998" and v.dropped=="4")
+                phase+=1;reskate.log("trace rows checked")
+                if phase==2 then
+                    assert(S.input_trace_stop(h));assert(S.input_trace_state(h).terminal)
+                    assert(S.input_trace_acknowledge(h) and S.input_trace_state(h)==nil)
+                    h=nil
+                end
+            end
+        end)
+    )", R"("skater.input_trace")")}); running(host, "input-trace", environment);
+    check(environment.fake.input_trace_requests == 1 && environment.fake.input_traces.size() == 1, "trace invalid args reached backend");
+    auto& row = environment.fake.input_traces.begin()->second;
+    const auto owner = row.owner; const auto handle = row.receipt.handle;
+    auto& r = row.receipt;
+    r.record_count = 129;
+    ticks(host, environment, 1); running(host, "input-trace", environment);
+    check(environment.logged("trace rejected malformed"), "oversized trace was serialized");
+    r.record_count = 2; r.seen = 9007199254741004ULL; r.duplicates = 9007199254740998ULL; r.dropped = 4;
+    auto& a = r.records[0]; a.observed_ms = r.requested_ms + 1; a.thread_id = 12; a.lane = t::Lane::interpreter;
+    a.asset_token = 7; a.condition_known = a.local_tuple_known = a.container_matches_local = a.snapshot_stable = true;
+    auto& b = r.records[1]; b.observed_ms = r.requested_ms + 2; b.lane = t::Lane::alternate; b.asset_token = 8; b.issue = 2;
+    a.asset_token = 65;
+    const auto reads_before = environment.fake.input_trace_reads;
+    ticks(host, environment, 1); running(host, "input-trace", environment);
+    check(environment.fake.input_trace_reads > reads_before && !environment.logged("trace rows checked"), "unbounded token was serialized");
+    a.asset_token = 7;
+    ticks(host, environment, 1); running(host, "input-trace", environment);
+    check(environment.logged("trace rows checked"), environment.all());
+    ticks(host, environment, 1); running(host, "input-trace", environment);
+    check(environment.fake.input_traces.empty(), "stopped trace could not be acknowledged");
+    host.apply({}); // Test packages keep fingerprint "1"; explicitly end this VM before replacing its source.
+    host.apply({script("input-trace", "assert(reskate.skater.input_trace())", R"("skater.input_trace")")});
+    running(host, "input-trace", environment);
+    const auto replacement = environment.fake.input_traces.begin()->second;
+    check(replacement.owner != owner, "trace reload reused prior VM identity");
+    t::Receipt stale_trace_receipt;
+    check(!environment.fake.input_trace_read(replacement.owner, handle, stale_trace_receipt) &&
+        !environment.fake.input_trace_stop(owner, replacement.receipt.handle) &&
+        !environment.fake.input_trace_acknowledge(owner, replacement.receipt.handle), "trace crossed VM owner boundary");
+    host.apply({});
+    check(environment.fake.input_traces.empty() &&
+        std::find(environment.fake.input_trace_releases.begin(), environment.fake.input_trace_releases.end(), replacement.owner) != environment.fake.input_trace_releases.end(),
+        "VM unload retained trace ownership");
+}
+
+void input_trace_api_requires_permission_client_phase_and_start_budget() {
+    TestEnvironment environment; Host host(environment, Side::client);
+    host.apply({script("input-trace-denied", R"(
+        for _,name in {"input_trace","input_trace_state","input_trace_stop","input_trace_acknowledge"} do
+            local ok,why=pcall(reskate.skater[name],{})
+            assert(not ok and why:find("skater.input_trace"),name)
+        end
+    )", R"("skater.read","skater.control","input")")}); running(host, "input-trace-denied", environment);
+    check(environment.fake.input_trace_requests == 0 && environment.fake.input_trace_reads == 0 &&
+        environment.fake.input_trace_stops == 0 && environment.fake.input_trace_acks == 0, "permission denial reached trace backend");
+    host.apply({script("input-trace-budget", R"(
+        local S=reskate.skater
+        for i=1,4 do
+            local h=assert(S.input_trace())
+            for j=1,5 do assert(S.input_trace_state(h).status=="active") end
+            assert(S.input_trace_stop(h) and S.input_trace_acknowledge(h))
+        end
+        local h,why=S.input_trace();assert(h==nil and why:find("4 times"))
+    )", R"("skater.input_trace")")}); running(host, "input-trace-budget", environment);
+    check(environment.fake.input_trace_requests == 4 && environment.fake.input_traces.empty(), "trace budget charged polls or allowed fifth start");
+    TestEnvironment server_environment; Host server(server_environment, Side::server);
+    server.apply({package("input-trace-server", {{manifest_file, manifest(R"("skater.input_trace")", "server")}, {"plugin/main.lua", R"(
+        for _,name in {"input_trace","input_trace_state","input_trace_stop","input_trace_acknowledge"} do
+            local ok,why=pcall(reskate.skater[name],{})
+            assert(not ok and why:find("client phase only"),name)
+        end
+    )"}})}); running(server, "input-trace-server", server_environment);
+    check(server_environment.fake.input_trace_requests == 0 && server_environment.fake.input_trace_reads == 0 &&
+        server_environment.fake.input_trace_stops == 0 && server_environment.fake.input_trace_acks == 0, "server reached trace backend");
 }
 
 void native_recovery_keeps_unresolved_cleanup_quarantined_on_unload() {
@@ -4011,6 +4148,23 @@ Candidate contributed(const std::string& id) {
     const auto directory = contrib_plugin(id);
     return {id, directory, "1", check_package_files(directory)};
 }
+void the_private_input_trace_fixture_loads_inert_when_present() {
+    const auto directory = std::filesystem::path(RESKATE_SOURCE_DIR) / "build" / "bmx" / "native-input-observer-trial-v1" / "fixture";
+    if (!std::filesystem::exists(directory / manifest_file)) return;
+    check(check_package_files(directory).empty(), "private input trace fixture is source only");
+    TestEnvironment environment; Host host(environment, Side::client);
+    constexpr const char* id = "LuaNativeInputTrace_20261023_v1";
+    host.apply({{id, directory, "private-input-trace-inert-v1", {}}}); running(host, id, environment);
+    environment.panels_open = true; environment.shown = id;
+    ticks(host, environment, 10); running(host, id, environment);
+    check(std::find(environment.pages.begin(), environment.pages.end(), plugin_ui::PageEntry{id, "Lua Input Trace"}) != environment.pages.end(),
+        "actual input trace fixture page is registered");
+    check(environment.fake.input_trace_requests == 0 && environment.fake.input_trace_reads == 0 &&
+        environment.fake.input_trace_stops == 0 && environment.fake.input_trace_acks == 0 &&
+        environment.fake.native_action_requests == 0 && environment.fake.native_recovery_requests == 0 &&
+        environment.fake.body_creates == 0 && environment.fake.calls.empty() && environment.teleports.empty(),
+        "input trace fixture is inert before explicit Arm");
+}
 void the_private_native_recovery_fixture_loads_inert_when_present() {
     const auto directory = std::filesystem::path(RESKATE_SOURCE_DIR) / "build" / "bmx" / "lua-native-recovery-v1" / "fixture";
     if (!std::filesystem::exists(directory / manifest_file)) {
@@ -5366,6 +5520,9 @@ int main() {
         run(native_recovery_receipts_separate_pulse_cleanup_and_stability);
         run(native_recovery_enforces_permission_phase_arguments_and_shared_request_rate);
         run(native_recovery_keeps_unresolved_cleanup_quarantined_on_unload);
+        run(input_trace_api_keeps_bounded_observations_opaque_and_vm_owned);
+        run(input_trace_api_requires_permission_client_phase_and_start_budget);
+        run(the_private_input_trace_fixture_loads_inert_when_present);
         run(the_private_native_recovery_fixture_loads_inert_when_present);
         run(owned_body_batches_are_permissioned_opaque_and_transactional);
         run(owned_body_batches_share_actual_and_logical_query_limits);

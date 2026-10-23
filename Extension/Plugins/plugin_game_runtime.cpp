@@ -18,6 +18,7 @@
 #include "Extension/Skater/skater_events.h"
 #include "Extension/Skater/native_actions.h"
 #include "Extension/Skater/native_recovery.h"
+#include "Extension/Skater/native_input_trace.h"
 #include "Extension/Skater/outfit_overlay.h"
 #include "Extension/Skater/board_pose.h"
 #include "Extension/Customization/board_material.h"
@@ -199,6 +200,15 @@ public:
     bool native_recovery_cancel(std::uint64_t owner, skater_recovery::Handle handle) override { return skater_recovery::cancel(owner, handle); }
     bool native_recovery_acknowledge(std::uint64_t owner, skater_recovery::Handle handle) override { return skater_recovery::acknowledge(owner, handle); }
     void native_recovery_release_all(std::uint64_t owner) override { skater_recovery::release_all(owner); }
+    bool input_trace_request(std::uint64_t owner, input_trace::Handle& handle, input_trace::Reason& reason) override {
+        return native_input_trace::request(owner, handle, reason);
+    }
+    bool input_trace_read(std::uint64_t owner, input_trace::Handle handle, input_trace::Receipt& receipt) override {
+        return native_input_trace::read(owner, handle, receipt);
+    }
+    bool input_trace_stop(std::uint64_t owner, input_trace::Handle handle) override { return native_input_trace::stop(owner, handle); }
+    bool input_trace_acknowledge(std::uint64_t owner, input_trace::Handle handle) override { return native_input_trace::acknowledge(owner, handle); }
+    void input_trace_release_all(std::uint64_t owner) override { native_input_trace::release_all(owner); }
 
     // ---- the local skater ----------------------------------------------------------------------
     std::optional<std::uint32_t> physics_state() override {

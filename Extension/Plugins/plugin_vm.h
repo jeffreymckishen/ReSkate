@@ -279,6 +279,7 @@ private:
     friend struct CaptureApi;
     friend struct PhysicsApi;
     friend struct NativeActionsApi;
+    friend struct InputTraceApi;
     std::uint64_t instance_{};
     struct Subcommand { std::string name, args, help; };
     struct Command { std::string help; int function{}; std::vector<Subcommand> subcommands; };
@@ -375,8 +376,8 @@ private:
     std::uint64_t emit_tick_{}, tick_number_{}; // the tick events were emitted in; ticks so far
     std::size_t emitted_{};
     std::map<std::uint64_t, int> http_pending_; // request id: its callback
-    double control_second_{}, edit_second_{}, environment_second_{}, voice_second_{}, music_second_{};
-    int controls_{}, edits_{}, environments_{}, voices_{}, musics_{};
+    double control_second_{}, edit_second_{}, environment_second_{}, voice_second_{}, music_second_{}, input_trace_second_{};
+    int controls_{}, edits_{}, environments_{}, voices_{}, musics_{}, input_traces_{};
     double travel_at_{-1e9}, chat_at_{-1e9}, local_chat_second_{}, server_second_{}, host_at_{-1e9}, wipeout_at_{-1e9};
     int local_chats_{}, server_calls_{};
     double files_second_{}, dialog_second_{}, reveal_second_{};

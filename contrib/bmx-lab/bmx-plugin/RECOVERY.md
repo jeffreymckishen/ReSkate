@@ -112,24 +112,25 @@ remains `request_unknown`; no policy timeout fabricates release.
 ## Validation boundary
 
 `plugin/recovery_tests.lua` exports an inert `run()` model regression suite.
-The actual vendored Luau Host should load these two modules with no permissions
-and execute `require("./recovery_tests").run()`. It returns
+The actual vendored Luau Host loads these two modules with no permissions
+and executes `require("./recovery_tests").run()`. It returns
 `{cases,assertions,native_actions=0}`. Coverage includes barriers, held gestures,
 one request per fall, exact receipt identity, cleanup across context loss,
 pending-only cancel, uncertain returns, terminal failure/retirement, malformed
-proofs and one-result acknowledgement. Host execution is pending for these
-revised files; pure policy results alone establish no native recovery. The first
-Host run passed15 groups and316 assertions, but subsequent source review found
-the omitted negative-terminal timestamp and equal-clock held-edge cases. Their
-direct regressions are now included; that earlier passing run does not validate
-these revised bytes. Private execution evidence is retained in
-`build/bmx/lua-recovery-policy-v1/`.
+proofs and one-result acknowledgement. Negative terminal receipts without an
+observation timestamp and equal-clock button presses have direct regression
+cases. The final policy passed 17 groups and 330 assertions with zero native
+actions. The Release build and all five focused SDK/Host suites passed; total
+CTest time was 2.03 seconds. Independent source and execution review admitted
+this four-file change. The frozen source, logs and admission are retained in
+`build/bmx/lua-recovery-policy-v2/`. This build was not deployed; these policy
+tests establish no native recovery or gameplay integration.
 
 One separate staged native case used source `02473fc` and runtime SHA256
 `CC8F68CA25086A49EFE555AFDF6BB98020A3B2C3C28F3E898505613093E05C11`.
 After one SDK-induced lab wipeout, it accepted one recovery request, recorded
 one true and one false native setter entry, verified reset at the next native
-clock, and retained122 qualified standing samples over2.016666546 seconds
+clock, and counted 122 qualified standing observations over 2.016666546 seconds
 before one acknowledgement. The closed receipt and raw evidence are in
 `build/bmx/lua-native-recovery-native-guard-v1/`. This module did not drive that
 case. It establishes one staged recovery path, not bike parking, actor release,

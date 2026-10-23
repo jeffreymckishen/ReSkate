@@ -1,5 +1,6 @@
 #include "no_bail.h"
 #include "native_actions.h"
+#include "native_recovery.h"
 #include "Engine/Game/Skater/native_action_policy.h"
 #include "Engine/Game/Skater/actor_control_policy.h"
 #include "Engine/Game/Build/20260929/native_actions.h"
@@ -91,6 +92,8 @@ struct Actions {
     actor_control::Arbiter motion_claim;
     actor_control::Ticket equipment_ticket;
     std::uint64_t equipment_owner{}; // protected by the No Bail lock
+    skater_recovery::RecoveryActor recovery_actor;
+    std::uint64_t recovery_owner{}, recovery_sequence{};
     std::atomic<std::uint64_t> destruction_notice{};
     std::atomic<std::uintptr_t> watched_entity{};
     std::atomic<std::uint64_t> actor_destruction{};
@@ -358,10 +361,13 @@ void action_destroyed(std::uintptr_t entity) noexcept {
 // Resolve outside the SDK lock and bracket the complete capture with the
 // shared destruction epoch. These endpoint fences are not an engine mutex.
 skater_action::Reason action_validate(const ActionBinding& expected, ActionBinding& live,
-                                     skater_action::State& state, std::uint64_t& epoch) noexcept {
+                                     skater_action::State& state, std::uint64_t& epoch,
+                                     bool nonblocking = false) noexcept {
     if (const auto issue = action_controls(); issue != skater_action::Reason::none) return issue;
     auto& p = protection();
-    AcquireSRWLockShared(&p.lock);
+    if (nonblocking) {
+        if (!TryAcquireSRWLockShared(&p.lock)) return skater_action::Reason::unavailable;
+    } else AcquireSRWLockShared(&p.lock);
     const auto ready = p.actions.ready && p.actions.world_contract &&
         GetTickCount64() - p.actions.tick_at < skater_action::offer_timeout_ms;
     const auto generation = p.actions.world_generation;
@@ -3330,3 +3336,149 @@ void release_all(std::uint64_t owner) noexcept {
     ReleaseSRWLockExclusive(&p.lock);
 }
 } // namespace dingosdk::skater_action
+
+namespace dingosdk::skater_recovery {
+namespace {
+RecoveryActor recovery_actor(const ActionBinding& binding, actor_control::Ticket ticket) noexcept {
+    const auto& o = binding.owner;
+    return {protection().base, o.client, o.entity, o.player, o.handle, o.component, o.core, o.context,
+        o.selector, o.causes, o.rig, binding.game_context, binding.world, binding.world_state,
+        binding.world_generation, binding.lifetime_epoch, binding.actor_epoch, ticket};
+}
+ActionBinding recovery_binding(const RecoveryActor& actor) noexcept {
+    return {{actor.client, actor.entity, actor.player, actor.player_handle, actor.component, actor.core,
+        actor.context, actor.selector, actor.causes, actor.rig}, actor.game_context, actor.world,
+        actor.world_state, actor.world_generation, actor.lifetime_epoch, actor.actor_epoch};
+}
+bool recovery_owned_locked(std::uint64_t owner, std::uint64_t sequence, const RecoveryActor& actor) noexcept {
+    const auto& a = protection().actions;
+    return owner && sequence && a.recovery_owner == owner && a.recovery_sequence == sequence &&
+        a.recovery_actor == actor && actor.ticket &&
+        a.motion_claim.owns(owner, actor.ticket, actor_control::Domain::equipment);
+}
+void recovery_state(const skater_action::State& source, State& state) noexcept {
+    state.known = source.known; state.value = source.value;
+    state.ragdoll_known = source.ragdoll_known; state.ragdoll = source.ragdoll;
+    state.in_air_known = source.in_air_known; state.in_air = source.in_air;
+}
+}
+
+bool recovery_acquire(std::uint64_t owner, std::uint64_t sequence,
+    RecoveryActor& actor, Reason& reason) noexcept {
+    LastError error; actor = {}; reason = Reason::none;
+    if (!owner || !sequence) { reason = Reason::invalid_owner; return false; }
+    auto& p = protection(); auto& a = p.actions;
+    actor_control::Ticket ticket;
+    // Reserve before provider inspection. A cooperating motion provider sees
+    // the admission and cannot publish while this capture is in progress.
+    if (!a.motion_claim.reserve(owner, actor_control::Domain::equipment, ticket)) {
+        reason = Reason::busy; return false;
+    }
+    ActionBinding expected;
+    AcquireSRWLockShared(&p.lock);
+    const auto ready = a.ready && GetCurrentThreadId() == a.client_thread;
+    expected = a.published;
+    ReleaseSRWLockShared(&p.lock);
+    if (ready) a.watched_entity.store(expected.owner.entity, std::memory_order_release);
+    ActionBinding live; skater_action::State state; std::uint64_t epoch{}, after{};
+    reason = ready ? action_validate(expected, live, state, epoch) : Reason::unavailable;
+    if (reason == Reason::none && (!state.known || state.value != offboard_physics_state ||
+        !state.ragdoll_known || !state.ragdoll || !state.in_air_known || state.in_air))
+        reason = Reason::unsupported_state;
+    LONG bits{};
+    if (reason == Reason::none && (!memory::peek(live.owner.context + animation_request_offset, bits) ||
+        !skater_action::request_bits_clear(static_cast<std::uint32_t>(bits), mount_request_mask | dismount_request_mask)))
+        reason = Reason::request_bits_conflict;
+    AcquireSRWLockExclusive(&p.lock);
+    const auto now = GetTickCount64();
+    if (reason == Reason::none && action_protection_locked(live.owner, now)) reason = Reason::protection_conflict;
+    if (reason == Reason::none && (a.legacy_inflight || (p.dismount.until && now < p.dismount.until) ||
+        (p.board_mount.until && now < p.board_mount.until))) reason = Reason::busy;
+    if (reason == Reason::none && (!a.ready || a.published != expected ||
+        !multiplayer::entity_destruction_epoch(p.base, after) || after != epoch)) reason = Reason::actor_changed;
+    bool accepted{};
+    if (reason == Reason::none) {
+        const auto captured = recovery_actor(live, ticket);
+        if (a.motion_claim.publish(owner, ticket)) {
+            a.recovery_owner = owner; a.recovery_sequence = sequence;
+            a.recovery_actor = captured; actor = captured; accepted = true;
+        } else reason = Reason::motion_owned;
+    }
+    if (!accepted) {
+        (void)a.motion_claim.abandon(owner, ticket);
+        if (!a.ledger.active() && !a.recovery_owner) a.watched_entity.store(0, std::memory_order_release);
+    }
+    ReleaseSRWLockExclusive(&p.lock);
+    return accepted;
+}
+
+bool recovery_inspect(std::uint64_t owner, std::uint64_t sequence, const RecoveryActor& expected,
+    RecoveryActor& actor, State& state, Reason& reason, bool cleanup) noexcept {
+    LastError error; actor = {}; state = {}; reason = Reason::none;
+    auto& p = protection(); auto& a = p.actions;
+    if (!TryAcquireSRWLockShared(&p.lock)) { reason = Reason::unavailable; return false; }
+    const bool owned = recovery_owned_locked(owner, sequence, expected);
+    const auto generation = a.world_generation;
+    ReleaseSRWLockShared(&p.lock);
+    if (!owned) { reason = Reason::motion_owned; return false; }
+    const auto binding = recovery_binding(expected);
+    ActionBinding first, second; skater_action::State observed; std::uint64_t epoch{}, after{};
+    if (!cleanup) {
+        reason = action_validate(binding, first, observed, epoch, true);
+        if (reason != Reason::none) return false;
+    } else {
+        // Cancellation, an open menu, lost focus or a new protection lease
+        // cannot cancel the obligation to reset a possible true intent. The
+        // exact actor and world still have to survive both fresh captures.
+        if (!action_capture(binding.owner, first, epoch)) { reason = Reason::actor_changed; return false; }
+        first.world_generation = generation;
+        if (first != binding) { reason = Reason::native_lifetime_changed; return false; }
+        const auto before = action_state(first.owner);
+        if (!action_capture(binding.owner, second, after)) { reason = Reason::actor_changed; return false; }
+        second.world_generation = generation;
+        if (first != second || epoch != after || action_state(second.owner) != before) {
+            reason = Reason::context_changed; return false;
+        }
+        observed = before.state;
+    }
+    if (!TryAcquireSRWLockShared(&p.lock)) { reason = Reason::unavailable; return false; }
+    const bool unchanged = recovery_owned_locked(owner, sequence, expected) &&
+        a.world_generation == generation && multiplayer::entity_destruction_epoch(p.base, after) && after == epoch;
+    ReleaseSRWLockShared(&p.lock);
+    if (!unchanged) { reason = Reason::native_lifetime_changed; return false; }
+    actor = recovery_actor(first, expected.ticket);
+    if (actor != expected) { actor = {}; reason = Reason::actor_changed; return false; }
+    recovery_state(observed, state);
+    return true;
+}
+
+bool recovery_enter(std::uint64_t owner, std::uint64_t sequence,
+    const RecoveryActor& actor, actor_control::Call& call) noexcept {
+    auto& p = protection();
+    if (!TryAcquireSRWLockShared(&p.lock)) return false;
+    const bool entered = recovery_owned_locked(owner, sequence, actor) &&
+        p.actions.motion_claim.enter(owner, actor.ticket, call);
+    ReleaseSRWLockShared(&p.lock);
+    return entered;
+}
+
+bool recovery_retire(std::uint64_t owner, std::uint64_t sequence,
+    const RecoveryActor& actor, bool duty_resolved) noexcept {
+    LastError error; auto& p = protection(); auto& a = p.actions;
+    std::uint64_t epoch{};
+    const bool exact_retired = !duty_resolved &&
+        a.watched_entity.load(std::memory_order_acquire) == actor.entity &&
+        a.actor_destruction.load(std::memory_order_acquire) != actor.actor_epoch &&
+        multiplayer::entity_destruction_epoch(actor.base, epoch);
+    if (!duty_resolved && !exact_retired) return false;
+    AcquireSRWLockExclusive(&p.lock);
+    const bool retired = recovery_owned_locked(owner, sequence, actor) &&
+        a.motion_claim.revoke(owner, actor.ticket) && a.motion_claim.retire(owner, actor.ticket);
+    if (retired) {
+        a.recovery_actor = {}; a.recovery_owner = a.recovery_sequence = 0;
+        if (!a.ledger.active()) a.watched_entity.store(0, std::memory_order_release);
+    }
+    ReleaseSRWLockExclusive(&p.lock);
+    return retired;
+}
+} // namespace dingosdk::skater_recovery

@@ -17,6 +17,7 @@
 #include "plugin_sound.h"
 #include "Extension/Skater/skater_events.h"
 #include "Extension/Skater/native_actions.h"
+#include "Extension/Skater/native_recovery.h"
 #include "Extension/Skater/outfit_overlay.h"
 #include "Extension/Skater/board_pose.h"
 #include "Extension/Customization/board_material.h"
@@ -189,6 +190,15 @@ public:
     bool native_action_cancel(std::uint64_t owner, skater_action::Handle handle) override { return skater_action::cancel(owner, handle); }
     bool native_action_acknowledge(std::uint64_t owner, skater_action::Handle handle) override { return skater_action::acknowledge(owner, handle); }
     void native_action_release_all(std::uint64_t owner) override { skater_action::release_all(owner); }
+    bool native_recovery_request(std::uint64_t owner, skater_recovery::Handle& handle, skater_recovery::Reason& reason) override {
+        return skater_recovery::request(owner, handle, reason);
+    }
+    bool native_recovery_read(std::uint64_t owner, skater_recovery::Handle handle, skater_recovery::Receipt& receipt) override {
+        return skater_recovery::read(owner, handle, receipt);
+    }
+    bool native_recovery_cancel(std::uint64_t owner, skater_recovery::Handle handle) override { return skater_recovery::cancel(owner, handle); }
+    bool native_recovery_acknowledge(std::uint64_t owner, skater_recovery::Handle handle) override { return skater_recovery::acknowledge(owner, handle); }
+    void native_recovery_release_all(std::uint64_t owner) override { skater_recovery::release_all(owner); }
 
     // ---- the local skater ----------------------------------------------------------------------
     std::optional<std::uint32_t> physics_state() override {

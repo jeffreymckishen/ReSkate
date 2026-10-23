@@ -1,4 +1,4 @@
-# Native board and on-foot requests
+# Native equipment and recovery requests
 
 The client-only `reskate.skater.action` API uses `skater.control` permission.
 It requests one ordinary native equipment transition. It provides no movement,
@@ -131,3 +131,89 @@ has no native producer or animation-state identity. The evidence is in
 were withdrawn and unloaded before normal process exit; their saved ledgers
 were unchanged after exit. This is an ordinary-input baseline, not a switching
 fix, a repeatability result or BMX likeness evidence.
+
+## One native recovery request
+
+`reskate.skater.recover()` requests one native GetUp Boolean intent through its
+qualified typed callback. It is separate from `action("board"/"on_foot")` and
+does not synthesize Y, force a physics state, move the rider or change native
+recovery guards. All four recovery functions require `skater.control` and client
+phase. Only new requests consume the same four-per-second budget used by other
+skater control/equipment requests; receipt polls, cancellation and acknowledgement
+do not consume that request budget.
+
+```lua
+local recovery, reason = reskate.skater.recover()
+if not recovery then
+    reskate.log(reason)
+    return
+end
+-- Inspect this handle on later ticks instead of repeating the request.
+local receipt = reskate.skater.recovery_state(recovery)
+if receipt and receipt.terminal and not receipt.quarantined
+    and (not receipt.unresolved or receipt.actor_retired) then
+    reskate.log(receipt.status .. ": " .. receipt.reason)
+    assert(reskate.skater.recovery_acknowledge(recovery))
+end
+```
+
+Handles are locked userdata allocated before backend admission, tied to the exact
+VM instance and distinct from equipment/body handles. `recover()` takes no
+arguments; each other recovery function takes exactly its recovery handle.
+Sequence numbers, native serials and wall timestamps are exact decimal strings,
+including values above the exact integer range of a Lua number. Native simulation
+times and observation durations are numeric. Fresh receipt tables cannot mutate
+the retained request, and unknown prior/readback/ragdoll/air fields are omitted.
+
+`recovery_state(handle)` distinguishes:
+
+- `pending`: admitted, awaiting a fresh qualified callback within the start window.
+- `entered`: the one true setter may have run; this alone proves no recovery.
+- `reset`: a later native clock verified false; physical state is observed separately.
+- `completed`: after verified reset, a suffix of qualified samples for the same
+  actor/world showed committed504 with known false ragdoll and in_air across at
+  least two simulated seconds and at least30 distinct native clocks, with no
+  observed clock gap over250ms. Unknown/bad observations or a larger gap reset
+  this suffix; it does not establish every intervening native step.
+- `already_true`: the authored intent was already true; it was left untouched.
+- `rejected`, `cancelled`, `expired` or `invalidated`: terminal typed outcomes.
+
+`true_entered`, `true_returned`, optional `true_readback`, `true_serial`/`true_time`
+and `true_ms` describe the core's conservative true attempt. `native_true_calls`
+and `native_reset_calls` are separate bounded numeric counters incremented only
+immediately before actual native setter ABI entry; a core attempt does not prove
+that final native guards allowed entry. `reset_pending`, `reset_entered`,
+`reset_returned`, `reset_readback_known` and `reset_false` describe cleanup;
+`reset_false` means qualified false verification, not a guessed default value.
+`reset_serial`/`reset_time` and `reset_ms` appear only after that verification.
+`cleared_before_reset` means a later getter found false without another setter;
+it does not identify whether native code or an earlier uncertain store cleared it.
+The setter may create a previously absent binding slot. False verification
+restores the value; it does not remove that slot or restore its prior absence.
+`start_attempts` and `cleanup_attempts` disclose bounded callback attempts.
+`committed_state`, optional `ragdoll`/`in_air`, `standing_observed`,
+`standing_samples`, `standing_seconds`, `standing_required_seconds` and
+`stable_observed` describe the separate native predicate observations. Even a
+completed observation suffix is not visual acceptance or a promise against a
+later fall. No riding or general actor/input ownership follows from it.
+
+`recovery_cancel(handle)` succeeds only before the true entry is claimed; it
+cannot roll back an entered native intent. Cancellation, VM unload and expiry do
+not erase a possible true. Cleanup uses the same full entity handle and binding,
+resolves the property again, and requires a strictly later native serial/time.
+It remains independent of the expired start permission and native Allowed value.
+There are at most64 start attempts and64 cleanup attempts, each on a fresh native
+clock; true is entered at most once. Exhaustion, failed qualification or owner
+loss retains `unresolved`/`quarantined` rather than resetting a replacement actor.
+An independently proven exact actor retirement may retire authority, but is not
+false-value verification or recovery. `actor_retired` reports that separate fact.
+
+`recovery_acknowledge(handle)` frees a terminal receipt after cleanup or after
+independent exact actor retirement and release of its claim. The retirement
+exception may retain `unresolved=true` and `reset_false=false`; it does not verify
+the destroyed actor's Boolean or imply recovery. Pending, in-flight, quarantined,
+or unresolved records without that retirement proof refuse acknowledgement. VM shutdown
+revokes that VM's recovery before releasing its owned bodies, while the native
+service retains any outstanding cleanup obligation. The portable core and Host
+contracts do not by themselves qualify this new adapter in a live game. Native
+delivery, sustained observed recovery and rendered behavior need separate evidence.

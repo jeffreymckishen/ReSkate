@@ -36,6 +36,57 @@ std::filesystem::path scratch;
 
 // The wider set's game, faked: it records what plugins asked of it and answers as told.
 struct FakeGame final : Game {
+    std::vector<std::pair<std::uint64_t, std::string>> release_order;
+    struct NativeRecovery { std::uint64_t owner{}; dingosdk::skater_recovery::Receipt receipt{}; bool abandoned{}; };
+    std::map<std::uint64_t, NativeRecovery> native_recoveries;
+    std::vector<std::uint64_t> native_recovery_releases;
+    std::uint64_t native_recovery_sequence{9007199254740994ULL}, native_recovery_requested_ms{1000};
+    unsigned native_recovery_requests{}, native_recovery_reads{}, native_recovery_cancels{}, native_recovery_acks{};
+    bool native_recovery_available{true};
+    bool native_recovery_request(std::uint64_t owner, dingosdk::skater_recovery::Handle& handle,
+        dingosdk::skater_recovery::Reason& reason) override {
+        using namespace dingosdk::skater_recovery;
+        ++native_recovery_requests;
+        if (!native_recovery_available) { reason = Reason::unavailable; return false; }
+        handle.sequence = ++native_recovery_sequence;
+        auto& record = native_recoveries[handle.sequence]; record.owner = owner;
+        record.receipt.handle = handle; record.receipt.requested_ms = native_recovery_requested_ms;
+        reason = Reason::none; return true;
+    }
+    bool native_recovery_read(std::uint64_t owner, dingosdk::skater_recovery::Handle handle, dingosdk::skater_recovery::Receipt& receipt) override {
+        ++native_recovery_reads;
+        const auto at = native_recoveries.find(handle.sequence);
+        if (at == native_recoveries.end() || at->second.abandoned || at->second.owner != owner) return false;
+        receipt = at->second.receipt; return true;
+    }
+    bool native_recovery_cancel(std::uint64_t owner, dingosdk::skater_recovery::Handle handle) override {
+        using namespace dingosdk::skater_recovery;
+        ++native_recovery_cancels;
+        const auto at = native_recoveries.find(handle.sequence);
+        if (at == native_recoveries.end() || at->second.abandoned || at->second.owner != owner ||
+            at->second.receipt.status != dingosdk::skater_recovery::Status::pending || at->second.receipt.true_entered) return false;
+        at->second.receipt.status = dingosdk::skater_recovery::Status::cancelled; at->second.receipt.reason = Reason::cancelled; return true;
+    }
+    bool native_recovery_acknowledge(std::uint64_t owner, dingosdk::skater_recovery::Handle handle) override {
+        using namespace dingosdk::skater_recovery;
+        ++native_recovery_acks;
+        const auto at = native_recoveries.find(handle.sequence);
+        if (at == native_recoveries.end() || at->second.abandoned || at->second.owner != owner ||
+            !terminal(at->second.receipt.status) || at->second.receipt.quarantined ||
+            (at->second.receipt.unresolved && !at->second.receipt.actor_retired)) return false;
+        native_recoveries.erase(at); return true;
+    }
+    void native_recovery_release_all(std::uint64_t owner) override {
+        using namespace dingosdk::skater_recovery;
+        native_recovery_releases.push_back(owner); release_order.emplace_back(owner, "recovery");
+        for (auto at = native_recoveries.begin(); at != native_recoveries.end();) {
+            if (at->second.owner != owner) { ++at; continue; }
+            if (at->second.receipt.unresolved && !at->second.receipt.actor_retired) {
+                at->second.abandoned = true; at->second.receipt.quarantined = true;
+                at->second.receipt.status = dingosdk::skater_recovery::Status::invalidated; at->second.receipt.reason = Reason::owner_released; ++at;
+            } else at = native_recoveries.erase(at);
+        }
+    }
     struct NativeAction { std::uint64_t owner{}; dingosdk::skater_action::Receipt receipt{}; };
     std::map<std::uint64_t, NativeAction> native_actions;
     std::vector<std::uint64_t> native_action_releases;
@@ -74,6 +125,7 @@ struct FakeGame final : Game {
         native_actions.erase(found); return true;
     }
     void native_action_release_all(std::uint64_t owner) override {
+        release_order.emplace_back(owner, "equipment");
         native_action_releases.push_back(owner);
         std::erase_if(native_actions, [owner](const auto& pair) { return pair.second.owner == owner; });
     }
@@ -176,6 +228,7 @@ struct FakeGame final : Game {
         b->released = true; b->mailbox.cancel(); return {};
     }
     void body_release_all(std::uint64_t owner) override {
+        release_order.emplace_back(owner, "body");
         body_releases.push_back(owner);
         for (auto& [id, b] : owned) { (void)id; if (b.owner == owner) { b.released = true; b.mailbox.cancel(); } }
     }
@@ -1331,6 +1384,191 @@ void native_action_quarantine_remains_visible_until_safe_acknowledgement() {
     receipt.quarantined = false;
     ticks(host, environment, 1); running(host, "action-quarantine", environment);
     check(environment.logged("failed native action acknowledged after quarantine cleared") && environment.fake.native_actions.empty(), environment.all());
+}
+
+void native_recovery_receipts_separate_pulse_cleanup_and_stability() {
+    namespace r = dingosdk::skater_recovery;
+    TestEnvironment environment; Host host(environment, Side::client);
+    environment.fake.native_recovery_requested_ms = 9007199254740997ULL;
+    host.apply({script("native-recovery", R"(
+        local S=reskate.skater
+        for _,bad in {false,1,"get_up",{}} do assert(not pcall(S.recover,bad)) end
+        assert(not pcall(S.recover,nil))
+        for _,fn in {S.recovery_state,S.recovery_cancel,S.recovery_acknowledge} do
+            assert(not pcall(fn,{}))
+            assert(not pcall(fn,"9007199254740995"))
+        end
+        local equipment=assert(S.action("board"))
+        assert(not pcall(S.recovery_state,equipment))
+        assert(S.action_cancel(equipment) and S.action_acknowledge(equipment))
+        local h=assert(S.recover())
+        assert(type(h)=="userdata" and getmetatable(h)=="locked")
+        assert(not pcall(S.action_state,h) and not pcall(S.recovery_state,h,nil))
+        local initial=assert(S.recovery_state(h))
+        assert(initial.sequence=="9007199254740995" and initial.requested_ms=="9007199254740997")
+        assert(initial.status=="pending" and initial.kind=="get_up" and not initial.terminal)
+        assert(initial.native_true_calls==0 and initial.native_reset_calls==0)
+        assert(initial.prior_value==nil and initial.true_readback==nil and initial.committed_state==nil)
+        assert(initial.ragdoll==nil and initial.in_air==nil and initial.true_ms==nil and initial.reset_ms==nil)
+        initial.status="completed";initial.true_entered=true
+        assert(S.recovery_state(h).status=="pending" and not S.recovery_state(h).true_entered)
+        assert(not S.recovery_acknowledge(h))
+        local entered,reset=false,false
+        reskate.on("tick",function()
+            if not h then return end
+            local v=assert(S.recovery_state(h))
+            if v.status=="entered" then
+                assert(not v.terminal and v.true_entered and v.true_returned and v.true_readback)
+                assert(v.native_true_calls==1 and v.native_reset_calls==0)
+                assert(v.true_serial=="9007199254740998" and v.true_ms=="9007199254740999" and v.true_time==10)
+                assert(v.reset_pending and v.unresolved and v.reset_ms==nil)
+                assert(not S.recovery_cancel(h) and not S.recovery_acknowledge(h))
+                entered=true
+            elseif v.status=="reset" then
+                assert(entered and not v.terminal and v.reset_false and not v.unresolved)
+                assert(v.native_true_calls==1 and v.native_reset_calls==1)
+                assert(v.reset_serial=="9007199254741000" and v.reset_time==10.125)
+                assert(v.committed_state==504 and v.ragdoll==false and v.in_air==false)
+                assert(v.standing_observed and not v.stable_observed and v.standing_samples==1)
+                assert(v.standing_seconds==0 and v.standing_required_seconds==2)
+                assert(not S.recovery_acknowledge(h))
+                reset=true
+            elseif v.status=="completed" then
+                assert(reset and v.terminal and v.stable_observed and v.standing_samples==121 and v.standing_seconds==2)
+                assert(v.observed_ms=="9007199254741001" and not v.quarantined)
+                assert(S.recovery_acknowledge(h) and S.recovery_state(h)==nil)
+                h=nil;reskate.log("native recovery separately observed stable")
+            end
+        end)
+    )", R"("skater.control")")}); running(host, "native-recovery", environment);
+    check(environment.fake.native_recovery_requests == 1 && environment.fake.native_actions.empty(), "invalid/forged recovery request reached backend");
+    auto& entry = environment.fake.native_recoveries.begin()->second;
+    const auto owner = entry.owner; const auto handle = entry.receipt.handle;
+    auto& receipt = entry.receipt;
+    receipt.status = r::Status::entered; receipt.true_entered = receipt.true_returned = receipt.true_readback_known = receipt.true_readback = true;
+    receipt.true_serial = 9007199254740998ULL; receipt.true_ms = 9007199254740999ULL; receipt.true_time = 10;
+    receipt.native_true_calls = 1;
+    receipt.reset_pending = receipt.unresolved = true;
+    ticks(host, environment, 1); running(host, "native-recovery", environment);
+    check(!environment.logged("native recovery separately observed stable"), "true delivery became physical recovery");
+    receipt.status = r::Status::reset; receipt.reset_pending = receipt.unresolved = false;
+    receipt.reset_false = receipt.reset_entered = receipt.reset_returned = receipt.reset_readback_known = true;
+    receipt.reset_serial = 9007199254741000ULL; receipt.reset_time = 10.125; receipt.reset_ms = 9007199254741000ULL;
+    receipt.native_reset_calls = 1;
+    receipt.state = {true, true, false, true, false, 504}; receipt.standing_observed = true; receipt.standing_samples = 1;
+    ticks(host, environment, 1); running(host, "native-recovery", environment);
+    check(!environment.logged("native recovery separately observed stable"), "single504 false flags became stable recovery");
+    receipt.status = r::Status::completed; receipt.stable_observed = true; receipt.standing_samples = 121; receipt.standing_seconds = 2;
+    receipt.observed_ms = 9007199254741001ULL;
+    ticks(host, environment, 1); running(host, "native-recovery", environment);
+    check(environment.logged("native recovery separately observed stable") && environment.fake.native_recoveries.empty(), environment.all());
+    host.apply({});
+    const auto recovery = std::find(environment.fake.release_order.begin(), environment.fake.release_order.end(), std::pair{owner, std::string("recovery")});
+    const auto body = std::find(environment.fake.release_order.begin(), environment.fake.release_order.end(), std::pair{owner, std::string("body")});
+    check(recovery != environment.fake.release_order.end() && body != environment.fake.release_order.end() && recovery < body,
+        "VM close must revoke recovery before releasing its owned bodies");
+    host.apply({script("native-recovery", "assert(reskate.skater.recover())", R"("skater.control")")});
+    running(host, "native-recovery", environment);
+    const auto& replacement = environment.fake.native_recoveries.begin()->second;
+    check(replacement.owner != owner, "recovery reload inherited prior VM authority");
+    r::Receipt stale;
+    check(!environment.fake.native_recovery_read(replacement.owner, handle, stale), "new VM read an old recovery handle");
+    check(!environment.fake.native_recovery_cancel(owner, replacement.receipt.handle) &&
+        !environment.fake.native_recovery_acknowledge(owner, replacement.receipt.handle), "old VM changed new recovery");
+    host.apply({}); check(environment.fake.native_recoveries.empty(), "pending recovery was not revoked on unload");
+}
+
+void native_recovery_enforces_permission_phase_arguments_and_shared_request_rate() {
+    TestEnvironment environment; Host host(environment, Side::client);
+    host.apply({script("recovery-denied", R"(
+        for _,name in {"recover","recovery_state","recovery_cancel","recovery_acknowledge"} do
+            local ok,why=pcall(reskate.skater[name],{})
+            assert(not ok and why:find("skater.control"),name)
+        end
+    )")}); running(host, "recovery-denied", environment);
+    check(environment.fake.native_recovery_requests == 0 && environment.fake.native_recovery_reads == 0 &&
+        environment.fake.native_recovery_cancels == 0 && environment.fake.native_recovery_acks == 0, "permission denial reached recovery backend");
+    host.apply({script("recovery-rate", R"(
+        local S=reskate.skater
+        for i=1,4 do
+            if i%2==0 then
+                local h=assert(S.action("board"));assert(S.action_cancel(h) and S.action_acknowledge(h))
+            else
+                local h=assert(S.recover())
+                for j=1,6 do assert(S.recovery_state(h).status=="pending") end
+                assert(S.recovery_cancel(h))
+                local r=assert(S.recovery_state(h));assert(r.status=="cancelled" and r.terminal and not r.true_entered)
+                assert(S.recovery_acknowledge(h))
+            end
+        end
+        local h,why=S.recover();assert(h==nil and why:find("4 times"))
+        h,why=S.action("board");assert(h==nil and why:find("4 times"))
+    )", R"("skater.control")")}); running(host, "recovery-rate", environment);
+    check(environment.fake.native_recovery_requests == 2 && environment.fake.native_action_requests == 2 &&
+        environment.fake.native_recoveries.empty(), "equipment/recovery request budget was not shared or polls consumed it");
+    environment.fake.native_recovery_available = false;
+    host.apply({script("recovery-unavailable", "local h,why=reskate.skater.recover();assert(h==nil and why=='unavailable')", R"("skater.control")")});
+    running(host, "recovery-unavailable", environment);
+    TestEnvironment server_environment; Host server(server_environment, Side::server);
+    server.apply({package("recovery-server", {{manifest_file, manifest(R"("skater.control")", "server")}, {"plugin/main.lua", R"(
+        for _,name in {"recover","recovery_state","recovery_cancel","recovery_acknowledge"} do
+            local ok,why=pcall(reskate.skater[name],{})
+            assert(not ok and why:find("client phase only"),name)
+        end
+    )"}})}); running(server, "recovery-server", server_environment);
+    check(server_environment.fake.native_recovery_requests == 0 && server_environment.fake.native_recovery_reads == 0 &&
+        server_environment.fake.native_recovery_cancels == 0 && server_environment.fake.native_recovery_acks == 0, "server reached native recovery");
+}
+
+void native_recovery_keeps_unresolved_cleanup_quarantined_on_unload() {
+    namespace r = dingosdk::skater_recovery;
+    TestEnvironment environment; Host host(environment, Side::client);
+    host.apply({script("recovery-quarantine", R"(
+        local S=reskate.skater;local h=assert(S.recover())
+        reskate.on("tick",function()
+            if not h then return end
+            local v=assert(S.recovery_state(h))
+            if v.status=="invalidated" then
+                assert(v.terminal and v.reason=="native_lifetime_changed" and not v.reset_false)
+                assert(v.unresolved and not S.recovery_cancel(h))
+                if v.actor_retired then
+                    assert(not v.quarantined and S.recovery_acknowledge(h))
+                    h=nil;reskate.log("exact retired recovery authority acknowledged without false proof")
+                else
+                    assert(v.quarantined and not S.recovery_acknowledge(h))
+                    reskate.log("recovery cleanup debt retained")
+                end
+            end
+        end)
+    )", R"("skater.control")")}); running(host, "recovery-quarantine", environment);
+    auto& entry = environment.fake.native_recoveries.begin()->second;
+    const auto owner = entry.owner;
+    entry.receipt.status = r::Status::invalidated; entry.receipt.reason = r::Reason::native_lifetime_changed;
+    entry.receipt.true_entered = true; entry.receipt.true_serial = 600; entry.receipt.true_time = 10;
+    entry.receipt.quarantined = entry.receipt.unresolved = true;
+    ticks(host, environment, 1); running(host, "recovery-quarantine", environment);
+    check(environment.logged("recovery cleanup debt retained") && !environment.fake.native_recoveries.empty(), environment.all());
+    entry.receipt.actor_retired = true; entry.receipt.quarantined = false;
+    ticks(host, environment, 1); running(host, "recovery-quarantine", environment);
+    check(environment.logged("exact retired recovery authority acknowledged without false proof") && environment.fake.native_recoveries.empty(),
+        "exact retired actor exception cannot require false-value verification of a destroyed object");
+    host.apply({});
+    host.apply({script("recovery-orphan", "assert(reskate.skater.recover())", R"("skater.control")")});
+    running(host, "recovery-orphan", environment);
+    auto& orphan = environment.fake.native_recoveries.begin()->second;
+    const auto orphan_owner = orphan.owner; const auto orphan_handle = orphan.receipt.handle;
+    orphan.receipt.true_entered = true; orphan.receipt.unresolved = orphan.receipt.quarantined = true;
+    host.apply({});
+    const auto at = environment.fake.native_recoveries.find(orphan_handle.sequence);
+    check(at != environment.fake.native_recoveries.end() && at->second.abandoned && at->second.receipt.quarantined && at->second.receipt.unresolved,
+        "VM shutdown silently erased a possible native true");
+    r::Receipt stale_recovery_receipt;
+    check(!environment.fake.native_recovery_read(orphan_owner, orphan_handle, stale_recovery_receipt), "unloaded VM retained a readable fake recovery handle");
+    check(std::find(environment.fake.native_recovery_releases.begin(), environment.fake.native_recovery_releases.end(), owner) !=
+        environment.fake.native_recovery_releases.end(), "VM shutdown omitted recovery release_all");
+    at->second.receipt.actor_retired = true; at->second.receipt.quarantined = false;
+    environment.fake.native_recovery_release_all(orphan_owner);
+    check(environment.fake.native_recoveries.empty(), "exact retired orphan cannot permanently consume retained capacity");
 }
 
 std::string batch_main(std::string body) {
@@ -3746,6 +3984,34 @@ Candidate contributed(const std::string& id) {
     const auto directory = contrib_plugin(id);
     return {id, directory, "1", check_package_files(directory)};
 }
+void the_private_native_recovery_fixture_loads_inert_when_present() {
+    const auto directory = std::filesystem::path(RESKATE_SOURCE_DIR) / "build" / "bmx" / "lua-native-recovery-v1" / "fixture";
+    if (!std::filesystem::exists(directory / manifest_file)) {
+        std::cout << "skipped private recovery inert-load fixture: build/bmx/lua-native-recovery-v1/fixture\n";
+        return;
+    }
+    check(std::filesystem::is_regular_file(directory / "plugin" / "main.lua"), "private recovery fixture entry is present");
+    check(check_package_files(directory).empty(), "private recovery fixture must be a source-only sandbox package");
+    TestEnvironment environment; Host host(environment, Side::client);
+    constexpr const char* id = "LuaNativeRecovery_20261023_v1";
+    host.apply({{id, directory, "private-recovery-inert-v1", {}}});
+    running(host, id, environment);
+    ticks(host, environment, 3);
+    environment.panels_open = true; environment.shown = id;
+    ticks(host, environment, 10); running(host, id, environment);
+    check(std::find(environment.pages.begin(), environment.pages.end(), plugin_ui::PageEntry{id, "Lua Recovery V1"}) != environment.pages.end(),
+        "actual private recovery page title must satisfy Host bounds");
+    check(!environment.panels.empty() && environment.panels.front().page && environment.panels.front().title == "Lua Recovery V1",
+        "actual private recovery page callback builds without Arm");
+    check(environment.fake.native_action_requests == 0 && environment.fake.native_action_reads == 0 &&
+        environment.fake.native_action_cancels == 0 && environment.fake.native_action_acks == 0 &&
+        environment.fake.native_recovery_requests == 0 && environment.fake.native_recovery_reads == 0 &&
+        environment.fake.native_recovery_cancels == 0 && environment.fake.native_recovery_acks == 0,
+        "loading/opening/ticking private recovery fixture must not request or inspect an action before Arm");
+    check(environment.fake.calls.empty() && environment.fake.body_creates == 0 && environment.fake.body_submissions == 0 &&
+        environment.teleports.empty() && environment.rays == 0, "inert recovery fixture reached native body/control services");
+    std::cout << "private recovery fixture inert-load passed: exact source/manifest and page, 0 action/recovery calls\n";
+}
 std::string printed_lines(const TestEnvironment& environment) {
     std::string text;
     for (const auto& line : environment.lines) text += line + "\n";
@@ -5070,6 +5336,10 @@ int main() {
         run(native_actions_keep_opaque_requests_and_observed_receipts_distinct);
         run(native_actions_check_permission_side_cancellation_and_rate);
         run(native_action_quarantine_remains_visible_until_safe_acknowledgement);
+        run(native_recovery_receipts_separate_pulse_cleanup_and_stability);
+        run(native_recovery_enforces_permission_phase_arguments_and_shared_request_rate);
+        run(native_recovery_keeps_unresolved_cleanup_quarantined_on_unload);
+        run(the_private_native_recovery_fixture_loads_inert_when_present);
         run(owned_body_batches_are_permissioned_opaque_and_transactional);
         run(owned_body_batches_share_actual_and_logical_query_limits);
         run(a_plugin_loads_ticks_runs_its_commands_and_unloads);

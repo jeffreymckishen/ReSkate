@@ -3,6 +3,7 @@
 #include "Engine/Core/Json/json.h"
 #include "Engine/Game/World/body_query.h"
 #include "Engine/Game/Skater/native_action.h"
+#include "Engine/Game/Skater/native_recovery.h"
 #include "Extension/AnimationStudio/anim_core.h"
 #include "Extension/Throwdowns/throwdown_kit.h"
 #include <array>
@@ -279,6 +280,15 @@ public:
     virtual bool native_action_cancel(std::uint64_t, skater_action::Handle) { return false; }
     virtual bool native_action_acknowledge(std::uint64_t, skater_action::Handle) { return false; }
     virtual void native_action_release_all(std::uint64_t) {}
+    // Recovery requests deliver one qualified native Bool pulse. Pulse cleanup
+    // and an observed stable native state are separate receipt facts.
+    virtual bool native_recovery_request(std::uint64_t, skater_recovery::Handle&, skater_recovery::Reason& reason) {
+        reason = skater_recovery::Reason::unavailable; return false;
+    }
+    virtual bool native_recovery_read(std::uint64_t, skater_recovery::Handle, skater_recovery::Receipt&) { return false; }
+    virtual bool native_recovery_cancel(std::uint64_t, skater_recovery::Handle) { return false; }
+    virtual bool native_recovery_acknowledge(std::uint64_t, skater_recovery::Handle) { return false; }
+    virtual void native_recovery_release_all(std::uint64_t) {}
     // ---- the local skater ----------------------------------------------------------------------
     // Its physics state (100s riding, 200s in the air, 300 a wipeout, 400s grinding, 504 off the
     // board), or empty without a skater; and how many wipeouts it has had this session.

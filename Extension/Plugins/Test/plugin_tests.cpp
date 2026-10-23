@@ -39,11 +39,12 @@ struct FakeGame final : Game {
         owned_body::Definition definition{};
         owned_body::Sample sample{};
         owned_body::Mailbox mailbox{};
-        bool released{};
+        bool released{}, quarantined{};
     };
     std::map<std::uint64_t, OwnedBody> owned;
     std::vector<std::uint64_t> body_releases;
     unsigned body_creates{}, body_submissions{};
+    std::uint64_t body_command_sequence{};
     std::string body_create(std::uint64_t owner, const owned_body::Definition& definition, owned_body::Handle& handle) override {
         if (!owned_body::valid(definition) || owned.size() >= owned_body::retained_capacity) return "definition or capacity";
         ++body_creates; handle = {body_creates, body_creates - 1};
@@ -57,17 +58,21 @@ struct FakeGame final : Game {
         return at != owned.end() && at->second.owner == owner && at->second.handle == h ? &at->second : nullptr;
     }
     std::string body_read(std::uint64_t owner, const owned_body::Handle& h, owned_body::Sample& sample) override {
-        const auto* b = body_of(owner, h); if (!b || b->released) return "owner or generation";
-        sample = b->sample; return {};
+        auto* b = body_of(owner, h); if (!b || b->released || b->quarantined) return "owner or generation";
+        (void)b->mailbox.observe_successor(b->sample); sample = b->sample; return {};
     }
-    std::string body_submit(std::uint64_t owner, const owned_body::Handle& h, const owned_body::Command& command) override {
+    std::string body_submit(std::uint64_t owner, const owned_body::Handle& h, const owned_body::Command& command, std::uint64_t& sequence) override {
+        sequence = 0;
         auto* b = body_of(owner, h);
-        if (!b || b->released || !b->mailbox.submit(command, b->sample.epoch, 0)) return "owner, generation or packet";
-        ++body_submissions; return {};
+        if (!b || b->released || body_command_sequence == std::numeric_limits<std::uint64_t>::max() ||
+            !b->mailbox.submit(command, b->sample.epoch, 0, body_command_sequence + 1)) return "owner, generation or packet";
+        sequence = ++body_command_sequence; ++body_submissions; return {};
     }
-    std::string body_receipt(std::uint64_t owner, const owned_body::Handle& h, owned_body::Receipt& receipt) override {
-        const auto* b = body_of(owner, h); if (!b) return "owner or generation";
-        receipt = b->mailbox.receipt; receipt.retained = b->released; return {};
+    std::string body_receipt(std::uint64_t owner, const owned_body::Handle& h, std::uint64_t selected, owned_body::Receipt& receipt) override {
+        auto* b = body_of(owner, h); if (!b) return "owner or generation";
+        if (!b->released && !b->quarantined) (void)b->mailbox.observe_successor(b->sample);
+        if (!b->mailbox.find(selected, receipt)) return "receipt sequence unavailable";
+        receipt.retained = b->released; receipt.quarantined = b->quarantined; return {};
     }
     std::string body_acknowledge(std::uint64_t owner, const owned_body::Handle& h, std::uint64_t sequence) override {
         auto* b = body_of(owner, h); return b && b->mailbox.acknowledge(sequence) ? std::string{} : "not ready to acknowledge";
@@ -80,13 +85,15 @@ struct FakeGame final : Game {
         body_releases.push_back(owner);
         for (auto& [id, b] : owned) { (void)id; if (b.owner == owner) { b.released = true; b.mailbox.cancel(); } }
     }
-    void body_producer_step() {
+    void body_producer_step(bool complete = true) {
         for (auto& [id, b] : owned) {
-            (void)id; if (b.released) continue;
+            (void)id; if (b.released || b.quarantined) continue;
             ++b.sample.epoch.serial; b.sample.epoch.time += b.sample.epoch.seconds;
             owned_body::Command out;
-            if (b.mailbox.consume(b.sample.epoch, 1, out)) b.mailbox.finish(true, true, true);
-            (void)b.mailbox.observe_successor(b.sample);
+            if (b.mailbox.consume(b.sample.epoch, 1, out)) {
+                (void)b.mailbox.finish(true, complete, complete);
+                if (!complete) b.quarantined = true;
+            }
         }
     }
     std::optional<std::uint32_t> state;
@@ -943,6 +950,92 @@ void plugins_own_typed_bodies_and_acknowledge_measured_results() {
     check(environment.fake.owned.at(3).owner != old_owner, "reloaded VM reused its old native owner epoch");
     owned_body::Sample sample;
     check(!environment.fake.body_read(environment.fake.owned.at(3).owner, {1,0}, sample).empty(), "another VM instance adopted a retained body");
+}
+
+void plugins_pipeline_native_steps_and_select_owned_receipts() {
+    TestEnvironment environment; Host host(environment, Side::client);
+    host.apply({script("body-pipeline", R"(
+        local P,v=reskate.world.physics,vector.create
+        local d={mass=12,inertia=v(2,3,4),position=v(0,2,0),rotation={0,0,0,1},capsules={{a=v(0,0,0),b=v(0,.5,0),radius=.1}}}
+        local h,other=assert(P.create(d)),assert(P.create(d))
+        local ids={}
+        local function publish(sample)
+            local ok,why,id=P.submit(h,sample.epoch,{force=v(0,20,0)})
+            assert(ok and why==nil and type(id)=="string")
+            table.insert(ids,id)
+            return id
+        end
+        publish(assert(P.read(h)))
+        local ok,why,foreign=P.submit(other,assert(P.read(other)).epoch,{})
+        assert(ok and why==nil and type(foreign)=="string" and foreign~=ids[1])
+        local done=false
+        reskate.on("tick",function()
+            if done then return end
+            local sample=assert(P.read(h))
+            local first=assert(P.receipt(h))
+            assert(first.sequence==ids[1] and first.outcome=="applied")
+            assert(not P.receipt(h,foreign),"foreign body's sequence selected a local receipt")
+            assert(not P.receipt(h,"999999999999"),"absent sequence")
+            assert(not pcall(P.receipt,h,1) and not pcall(P.receipt,h,ids[1]..string.char(0).."x")
+                and not pcall(P.receipt,h,"0"..ids[1]),"malformed selection")
+            if #ids==1 then assert(not first.successor and not P.acknowledge(h,ids[1])) end
+            if #ids>=2 then assert(first.successor.serial=="102","first successor moved to a later observation") end
+            if #ids<4 then
+                local id=publish(sample)
+                assert(P.receipt(h,id).outcome=="queued" and P.receipt(h).sequence==ids[1])
+                return
+            end
+            local accepted,reason=P.submit(h,sample.epoch,{})
+            assert(not accepted and type(reason)=="string","full receipt ring lost backpressure")
+            assert(not P.acknowledge(h,ids[2]),"ack order")
+            assert(P.acknowledge(h,ids[1]) and not P.receipt(h,ids[1]),"freed record stayed selectable")
+            local fifth=publish(sample)
+            assert(P.receipt(h,fifth).outcome=="queued" and P.receipt(h).sequence==ids[2])
+            assert(tonumber(P.receipt(h,ids[2]).produced_serial)==102 and tonumber(P.receipt(h,ids[3]).produced_serial)==103
+                and tonumber(P.receipt(h,ids[4]).produced_serial)==104,"consecutive 60Hz control skipped a native step")
+            done=true;reskate.log("body pipeline advanced four native steps without awaiting acknowledgement")
+        end)
+    )", R"("world.physics")")});
+    running(host, "body-pipeline", environment);
+    for (unsigned i = 0; i < 4; ++i) { environment.fake.body_producer_step(); ticks(host, environment, 1); running(host, "body-pipeline", environment); }
+    check(environment.logged("body pipeline advanced four native steps"), environment.all());
+    check(environment.fake.body_submissions == 6, "full-ring refusal was forwarded or consecutive commands were dropped");
+    const auto pending_sequence = environment.fake.owned.at(1).mailbox.sequence;
+    host.apply({});
+    auto& retired = environment.fake.owned.at(1); owned_body::Receipt canceled;
+    check(retired.released && !retired.mailbox.pending && retired.mailbox.failed && retired.mailbox.find(pending_sequence, canceled) &&
+        canceled.outcome == owned_body::Outcome::rejected, "VM unload did not revoke a pipelined pending packet");
+}
+void plugins_can_inspect_later_partial_failure_without_acknowledging_unmeasured_head() {
+    TestEnvironment environment; Host host(environment, Side::client);
+    host.apply({script("body-pipeline-failure", R"(
+        local P,v=reskate.world.physics,vector.create
+        local h=assert(P.create({mass=12,inertia=v(2,3,4),position=v(0,2,0),rotation={0,0,0,1},capsules={{a=v(0,0,0),b=v(0,.5,0),radius=.1}}}))
+        local ok,why,first=P.submit(h,assert(P.read(h)).epoch,{impulse=v(0,2,0),impulse_id=1})
+        assert(ok and not why and type(first)=="string")
+        local second,held,done
+        reskate.on("tick",function()
+            if done then return end
+            if not second then
+                held=assert(P.read(h)).epoch
+                assert(P.receipt(h,first).outcome=="applied" and not P.receipt(h,first).successor)
+                local ok,why,id=P.submit(h,held,{impulse=v(0,2,0),impulse_id=2})
+                assert(ok and not why);second=id;return
+            end
+            local head,later=assert(P.receipt(h)),assert(P.receipt(h,second))
+            assert(head.sequence==first and head.outcome=="applied" and not head.successor and head.quarantined)
+            assert(later.outcome=="partial" and later.force_attempted and not later.torque_attempted and later.quarantined)
+            assert(not P.acknowledge(h,first) and not P.acknowledge(h,second),"failure waived successor or ack order")
+            assert(not P.read(h) and not P.submit(h,held,{}),"failed owner stayed writable")
+            assert(P.release(h) and P.receipt(h,second).retained)
+            done=true;reskate.log("later partial body receipt is inspectable behind unmeasured head")
+        end)
+    )", R"("world.physics")")});
+    running(host, "body-pipeline-failure", environment);
+    environment.fake.body_producer_step(); ticks(host, environment, 1); running(host, "body-pipeline-failure", environment);
+    environment.fake.body_producer_step(false); ticks(host, environment, 1); running(host, "body-pipeline-failure", environment);
+    check(environment.logged("later partial body receipt is inspectable"), environment.all());
+    check(environment.fake.body_submissions == 2 && environment.fake.owned.at(1).mailbox.failed, "partial command was replayed or failed mailbox reopened");
 }
 
 void native_body_permission_and_client_boundary_are_enforced() {
@@ -4278,6 +4371,8 @@ int main() {
         std::filesystem::remove_all(scratch);
         run(a_manifest_says_what_a_plugin_is);
         run(plugins_own_typed_bodies_and_acknowledge_measured_results);
+        run(plugins_pipeline_native_steps_and_select_owned_receipts);
+        run(plugins_can_inspect_later_partial_failure_without_acknowledging_unmeasured_head);
         run(native_body_permission_and_client_boundary_are_enforced);
         run(a_plugin_loads_ticks_runs_its_commands_and_unloads);
         run(a_permission_must_be_declared);

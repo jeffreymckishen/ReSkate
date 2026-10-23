@@ -9,7 +9,7 @@
 namespace dingosdk::owned_body {
 using Vec = std::array<float, 3>;
 using Quaternion = std::array<float, 4>; // Hamilton XYZW
-inline constexpr std::size_t maximum_capsules = 8, retained_capacity = 8;
+inline constexpr std::size_t maximum_capsules = 8, retained_capacity = 8, receipt_capacity = 4;
 inline constexpr double native_seconds = 1.0 / 60.0;
 inline constexpr std::uint64_t command_lifetime_ms = 100;
 inline constexpr float maximum_force = 40000, maximum_torque = 4000, maximum_impulse = 600;
@@ -105,57 +105,95 @@ inline bool valid(const Command& value) noexcept {
     return finite(combined, maximum_force) && length(combined) <= maximum_force;
 }
 
-// External synchronization owns this fixed mailbox. Consumption precedes the first native
-// setter: even an uncertain/partial setter can never replay an impulse or command serial.
+// External synchronization owns this fixed inbox and receipt ring. A receipt is reserved
+// before publication, and consumption precedes the first setter. Older unacknowledged
+// results cannot overwrite a new packet or prevent consecutive native-step commands.
 struct Mailbox {
     Command command{};
-    Receipt receipt{};
+    std::array<Receipt, receipt_capacity> receipts{};
+    std::size_t head{}, count{}, inbox{};
     std::uint64_t deadline{}, last_serial{}, last_submitted{}, sequence{};
     std::uint32_t last_impulse{};
-    bool pending{}, failed{}, acknowledged = true;
+    Epoch last_requested{};
+    bool pending{}, producing{}, failed{};
 
-    bool submit(const Command& value, const Epoch& observed, std::uint64_t now) noexcept {
-        if (failed || pending || !acknowledged || !valid(value) || value.epoch != observed || value.epoch.serial <= last_submitted ||
-            (value.impulse_id && value.impulse_id <= last_impulse)) return false;
-        command = value; deadline = now + command_lifetime_ms; pending = true; acknowledged = false; last_submitted = value.epoch.serial;
-        receipt = {}; receipt.outcome = Outcome::queued; receipt.sequence = ++sequence; receipt.requested = value.epoch;
+    Receipt oldest() const noexcept { return count ? receipts[head] : Receipt{}; }
+    bool find(std::uint64_t selected, Receipt& out) const noexcept {
+        if (!selected) { out = oldest(); return true; }
+        for (std::size_t i = 0; i < count; ++i) {
+            const auto& record = receipts[(head + i) % receipts.size()];
+            if (record.sequence == selected) { out = record; return true; }
+        }
+        out = {}; return false;
+    }
+    bool needs_successor() const noexcept {
+        for (std::size_t i = 0; i < count; ++i) {
+            const auto& record = receipts[(head + i) % receipts.size()];
+            if (record.outcome == Outcome::applied && !record.successor_available) return true;
+        }
+        return false;
+    }
+    // The service supplies globally unique IDs across its bodies. Zero keeps a local
+    // sequence for standalone users of this contract, including the portable fixture.
+    bool submit(const Command& value, const Epoch& observed, std::uint64_t now, std::uint64_t assigned = 0) noexcept {
+        if (failed || pending || producing || count == receipts.size() || !valid(value) || value.epoch != observed ||
+            value.epoch.serial <= last_submitted || (value.impulse_id && value.impulse_id <= last_impulse) ||
+            sequence == std::numeric_limits<std::uint64_t>::max() || now > std::numeric_limits<std::uint64_t>::max() - command_lifetime_ms ||
+            (last_submitted && (value.epoch.world != last_requested.world || value.epoch.body != last_requested.body ||
+                value.epoch.time <= last_requested.time || value.epoch.seconds != last_requested.seconds))) return false;
+        if (!assigned) assigned = sequence + 1;
+        if (assigned <= sequence) return false;
+        command = value; deadline = now + command_lifetime_ms; pending = true;
+        last_submitted = value.epoch.serial; last_requested = value.epoch; sequence = assigned;
+        inbox = (head + count) % receipts.size(); ++count;
+        auto& record = receipts[inbox]; record = {}; record.outcome = Outcome::queued;
+        record.sequence = sequence; record.requested = value.epoch;
         return true;
     }
     bool consume(const Epoch& current, std::uint64_t now, Command& out) noexcept {
-        if (!pending) return false;
+        if (!pending || failed) return false;
+        auto& record = receipts[inbox];
         Epoch target = command.epoch; ++target.serial; target.time += target.seconds;
         if (now >= deadline || current.serial > target.serial) {
-            pending = false; receipt.outcome = Outcome::expired; return false;
+            pending = false; record.outcome = Outcome::expired; return false;
         }
-        // The client computed from observed predecessor N. Earlier callbacks in N
-        // cannot consume it; only the independently observed listener epoch N+1 may.
         if (current == command.epoch) return false;
-        if (current != target) { pending = false; receipt.outcome = Outcome::rejected; return false; }
-        out = command; pending = false; last_serial = command.epoch.serial;
-        receipt.produced = current;
+        if (current != target) { pending = false; record.outcome = Outcome::rejected; return false; }
+        out = command; pending = false; producing = true; last_serial = command.epoch.serial;
+        record.produced = current;
         if (command.impulse_id) last_impulse = command.impulse_id;
         return true;
     }
-    void finish(bool force_attempted, bool torque_attempted, bool complete) noexcept {
-        receipt.force_attempted = force_attempted; receipt.torque_attempted = torque_attempted;
-        receipt.outcome = complete ? Outcome::applied : force_attempted || torque_attempted ? Outcome::partial : Outcome::rejected;
-        failed = !complete;
+    bool finish(bool force_attempted, bool torque_attempted, bool complete) noexcept {
+        if (!producing) return false;
+        producing = false; auto& record = receipts[inbox];
+        record.force_attempted = force_attempted; record.torque_attempted = torque_attempted;
+        record.outcome = complete ? Outcome::applied : force_attempted || torque_attempted ? Outcome::partial : Outcome::rejected;
+        if (!complete) { failed = true; cancel(); }
+        return true;
     }
     void cancel() noexcept {
-        if (pending) { pending = false; receipt.outcome = Outcome::rejected; }
+        failed = true;
+        if (pending) { pending = false; receipts[inbox].outcome = Outcome::rejected; }
     }
     bool observe_successor(const Sample& value) noexcept {
-        const auto& produced = receipt.produced;
-        if (receipt.outcome != Outcome::applied || value.epoch.world != produced.world || value.epoch.body != produced.body ||
-            value.epoch.serial <= produced.serial || !std::isfinite(value.epoch.time) || value.epoch.time <= produced.time ||
-            !calibrated(value.epoch.seconds)) return false;
-        receipt.successor = value; receipt.successor_available = true; return true;
+        bool attached{};
+        for (std::size_t i = 0; i < count; ++i) {
+            auto& record = receipts[(head + i) % receipts.size()]; const auto& produced = record.produced;
+            if (record.outcome != Outcome::applied || record.successor_available || value.epoch.world != produced.world ||
+                value.epoch.body != produced.body || value.epoch.serial <= produced.serial || !std::isfinite(value.epoch.time) ||
+                value.epoch.time <= produced.time || !calibrated(value.epoch.seconds)) continue;
+            record.successor = value; record.successor_available = true; attached = true;
+        }
+        return attached;
     }
     bool acknowledge(std::uint64_t value) noexcept {
-        if (!value || receipt.sequence != value || pending || receipt.outcome == Outcome::none ||
-            receipt.outcome == Outcome::queued || acknowledged ||
-            (receipt.outcome == Outcome::applied && !receipt.successor_available)) return false;
-        acknowledged = true; return true;
+        if (!value || !count) return false;
+        const auto& record = receipts[head];
+        if (record.sequence != value || record.outcome == Outcome::none || record.outcome == Outcome::queued ||
+            (record.outcome == Outcome::applied && !record.successor_available)) return false;
+        receipts[head] = {}; head = (head + 1) % receipts.size(); --count;
+        return true;
     }
 };
 } // namespace dingosdk::owned_body

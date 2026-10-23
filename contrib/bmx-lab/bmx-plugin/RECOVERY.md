@@ -103,6 +103,12 @@ also prevents an old completion from granting current standing authority to
 another actor/source/incident. Neither outcome proves rendering or future
 balance.
 
+Even after acknowledgement, `standing` requires a valid current frame and clock,
+matching actor/source/fall identities, and current allowed/loaded readiness.
+Invalid frames keep the historical completed receipt and acknowledgement while
+reporting `completion_not_accepted`. Equal-clock valid result joins remain
+permitted; they dispatch no new intents.
+
 Resolved negative terminal receipts remain `terminal_failure`. Independently
 proven exact actor retirement permits acknowledging a terminal unresolved
 record only with quarantine cleared; its outcome is `actor_retired`, never
@@ -119,11 +125,11 @@ one request per fall, exact receipt identity, cleanup across context loss,
 pending-only cancel, uncertain returns, terminal failure/retirement, malformed
 proofs and one-result acknowledgement. Negative terminal receipts without an
 observation timestamp and equal-clock button presses have direct regression
-cases. The final policy passed 17 groups and 330 assertions with zero native
-actions. The Release build and all five focused SDK/Host suites passed; total
-CTest time was 2.03 seconds. Independent source and execution review admitted
-this four-file change. The frozen source, logs and admission are retained in
-`build/bmx/lua-recovery-policy-v2/`. This build was not deployed; these policy
+cases. The revised policy passed 18 groups and 379 assertions with zero native
+actions. The Release build and all five focused SDK/Host suites passed. The
+post-acknowledgement validity checks have direct coverage. The frozen source,
+logs and independent review are retained in
+`build/bmx/lua-recovery-policy-v3/`. This build was not deployed; these policy
 tests establish no native recovery or gameplay integration.
 
 One separate staged native case used source `02473fc` and runtime SHA256

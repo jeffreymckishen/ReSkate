@@ -201,7 +201,8 @@ function Policy:update(f)
     elseif r then
         if r.quarantined or (r.unresolved and not r.actor_retired) then outcome = "unresolved"
         elseif not r.terminal then outcome = r.status
-        elseif standing(r) and not self._boundary and f.actor == self._bound_actor
+        elseif standing(r) and not self._boundary and clock and shape and f.allowed and f.loaded
+            and f.actor == self._bound_actor
             and f.source_epoch == self._bound_source and f.fall_epoch == self._bound_fall then outcome = "standing"
         elseif r.status == "completed" then outcome = "completion_not_accepted"
         elseif r.actor_retired then outcome = "actor_retired"

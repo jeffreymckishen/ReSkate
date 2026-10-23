@@ -257,6 +257,31 @@ function tests.run()
         check(o.retained and not o.acknowledged and o.ack_failed,"a changed second acknowledgement result cannot retire the failed first call")
         cases += 1
     end
+    do
+        for _,change in {
+            function(f)f.actor="actor-b" end,
+            function(f)f.source_epoch=2 end,
+            function(f)f.fall_epoch=2 end,
+            function(f)f.allowed=false end,
+            function(f)f.loaded=false end,
+            function(f)f.now_ms=2 end,
+            function(f)f.now_ms=0/0 end,
+            function(f)f.actor=false end,
+            function(f)f.park_ready="unknown" end,
+        } do
+            local p=accepted();read(p,4,receipt("completed"))
+            local o=p:update(frame(5,{ack_result={attempt=1,handle="handle-a",accepted=true}}))
+            check(o.standing and o.acknowledged,"accepted completion is retained for its original policy context")
+            local f=frame(6);change(f);o=p:update(f)
+            check(not o.standing and o.native_completed and o.receipt.status=="completed",
+                "acknowledged historical completion cannot grant standing to a different or invalid current context")
+        end
+        local p=accepted();read(p,4,receipt("completed"))
+        local o=p:update(frame(4,{ack_result={attempt=1,handle="handle-a",accepted=true}}))
+        check(o.standing and o.acknowledged and next(o.intents)==nil,
+            "a valid equal-clock acknowledgement keeps accepted standing without dispatch")
+        cases += 1
+    end
     return {cases=cases,assertions=assertions,native_actions=0}
 end
 return tests

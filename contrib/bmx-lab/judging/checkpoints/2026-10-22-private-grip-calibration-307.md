@@ -1,0 +1,25 @@
+# 2026-10-22 private grip calibration 307
+
+Closed result: the game reported one successful native two-prop calibration and complete marker cleanup. Marker visibility, renderer completion and rider hand alignment remain unqualified. This evidence does not justify a pose or grip offset change, or a BMX Streets likeness score.
+
+The exact private `StationaryGripProbe`/`GripWorldMarkers` selection ran with `Ride`/`NativeChassis` in `bmx-user-data-grip-stationary-test`, without HumanNativeSwitch. Fresh PID 25000 and creation FILETIME 134371867041749537 were bound to runtime `0855D8652E434100DD0632FCADC07A104BA4460AB9D1C8EA2DFB2EAD00C34874`, built at 897a647. The launch captured 24 selected source files at documentation HEAD cde5ce36; that snapshot does not relabel compiler provenance. The reviewed launcher SHA is `03052C89D8E8D6A30F2C3B19214726B2584D35F967EC6F6B3AE221DD76A58C6F`.
+
+Root manually armed the markers once, closed the console and later requested status. No controller/HID timeline, free camera or separate stationary CPU grip-probe arm was used. The stock rear view drifted from spawn; the private scope name does not establish a stationary measurement.
+
+The complete native report is retained at `profile-after/logs/ReSkate.log:393`, local 19:58:08.201. Its 3490-byte JSON payload and 3552-byte prefixed line fit below the 7600-byte report budget and 8192-byte log cap. It reports `sealed_no_rearm`/`five_second_display_complete`, 11,062 ms pending and 5,000 ms display, 2 creations, 568 placements and 284 source-classified successful two-marker batches. Cleanup reports 1 successful release call, 2 removed handles and 0 live marker handles. The last placement preceded cleanup by 15 ms.
+
+The final saved handlebars matrix and both marker matrices passed owned-entity/collection fences, finite rigid-transform checks and requested-versus-observed equality. Independent source-guided calculations reproduce the authored pedal-contact-to-grip pivot compensation within 0.1 mm of large-world float precision; emitted left/right anchor gaps are 0.042426/0.043139 mm. These are CPU prop-transform measurements. Only the last three matrices are retained; 284 batches is the implementation's counter, not 284 independent saved matrix snapshots. This auditor authored the original marker implementation, so this native evidence audit is not a second independent source acceptance.
+
+The separate bounded pixel review decoded 805 local frames and viewed 10 previews around 80..93 video seconds. It identifies a mounted bike, but no uniquely identifiable temporary pedal rectangles or clear five-second appearance/disappearance. Rear-body occlusion and small hand details leave hand/grip alignment unqualified. There is no calibrated video/native-clock join or full-file review. The source's assembled bike-space coordinates and the prepared-mesh cross-check give counterevidence to adding bar height twice; neither proves the currently deployed GPU pivot or contact. No offset correction follows from this run.
+
+Closure was the owned guardian's **deadline termination**, completed 2026-10-23T00:01:47.6116002Z, with accepted termination and the original held process object signaled twice. Root's earlier Alt+F4 request while the console was open was ineffective; this was not a natural exit. The preservation author subsequently recorded zero Skate processes at 00:05:09.1449723Z and 00:05:26.4691483Z and froze 225 files/18 directories using source/copy/source hashes and stable tree metadata. The actual profile contained 0 hidden files; hidden-file/empty-directory launcher coverage was tested separately with synthetic fixtures.
+
+Evidence is under `build/bmx/grip-markers307` and `build/bmx/overnight-review20261021/grip-markers307-native-independent-review-v1`:
+
+- Unchanged preliminary native audit: `provisional-native-audit.json`, SHA `E87DC910F456D170E7E4503112EC4D8EE81C6A783AF7927B8DD16A978B4BCA53` (88 checks).
+- Final closure addendum: `closed-trial-addendum.json`, SHA `C56C639F1F7C4358CA725C80FEAE58C4A71CFF63D7860BFFFD74864EFE73AA96` (38 additional checks; no repeat 225-file hash walk).
+- Preservation seal: `profile-after-audit-v1/audit-seal.json`, SHA `7C57CB7B5C090660AA2CC6E50E0F10D0BED74FDFD1D8BD9375794A14EC947DBB`; preservation receipt SHA `7827FB9EF5F8717E310426767389B955826D7F2DB10DB39482A6392A31393520`.
+- The exact 40-file nonmedia manifest SHA `AC36FB74368800AC2CD9291B2DCEECD4B473CD6F705233DFEA7AA2DA13B6CF15` excludes media, final-profile and later audit outputs; those scopes remain separate.
+- Attributed pixel review: `independent-video-review-v1/pixel-review.json`, SHA `BC472B32D789D1CEC84F4C639745CACD2ABE2F7E5BE456F18BA95A8D7760D932`. Original 833236125-byte video SHA `7B744F39832C02B90C9DEABA76DE3D8BA369CE84F2F9D3CB5B2AB5373D0DB968`.
+
+The final addendum independently verifies the small sealed receipts and frozen log, attributes whole-profile hashing and pixels to their respective reviewers, and keeps likeness null. A closer native side/oblique view with temporally identifiable markers is still needed before interpreting hand placement or proposing an adjustment.

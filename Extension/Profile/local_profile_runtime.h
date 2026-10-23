@@ -94,6 +94,13 @@ bool local_skater_teleport_pending();
 // Native callbacks never wait for profile mutation. False means unknown, with
 // pending left true; callers must refuse until a fresh idle read succeeds.
 bool try_local_skater_teleport_pending(bool& pending) noexcept;
+// A failed try-lock is distinct from an inactive profile or an unreadable
+// native transition. It does not establish why the mutex was unavailable.
+enum class LocalTeleportObservation : std::uint8_t {
+    not_attempted, known, lock_refused, inactive, manager_read_failed,
+    manager_null, phase_read_failed, exception
+};
+bool try_local_skater_teleport_pending(bool& pending, LocalTeleportObservation& observation) noexcept;
 // The highest collision surface straight down at (x, z) between world heights `top` and
 // `bottom`, from the client physics world (the park editor's native ray). Empty when nothing
 // is there yet (collision still streaming) or the query is unavailable. Client update thread.

@@ -56,7 +56,9 @@ for _,v in {"not_attempted","qualified","enter_owner_lock","enter_ownership","en
     "inspect_owner_lock","inspect_ownership","controls_focus","controls_profile","controls_teleport",
     "controls_motion_active","controls_motion_unavailable","validation_owner_lock","readiness","capture",
     "actor_epoch","lifetime","world","protection","recapture","context","state","final_owner_lock",
-    "final_lifetime","identity"} do actor_phases[v]=true end
+    "final_lifetime","identity","controls_profile_lock","controls_profile_inactive",
+    "controls_profile_manager_read","controls_profile_manager_null","controls_profile_phase_read",
+    "controls_profile_exception"} do actor_phases[v]=true end
 for _,v in {"none","invalid_owner","invalid_kind","unavailable","busy","receipt_capacity","context_changed",
     "focus_changed","teleporting","motion_owned","actor_changed","actor_destroyed","world_changed",
     "unsupported_state","protection_conflict","request_bits_conflict","request_write_failed",

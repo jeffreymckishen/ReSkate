@@ -1645,6 +1645,9 @@ void input_pulse_api_keeps_report_receipts_opaque_and_owner_bound() {
             if not h then return end
             local v,why=P.pulse_state(h)
             if not v then assert(why:find("invalid observations"));reskate.log("pulse malformed rejected");return end
+            if string.sub(v.first_actor_inspect_phase,1,17)=="controls_profile_" then
+                reskate.log("pulse profile phase "..v.first_actor_inspect_phase)
+            end
             if v.status=="released" then
                 assert(v.terminal and v.consumption=="unobserved" and v.semantic_completion=="unobserved")
                 assert(v.press_candidates=="9007199254741012" and v.press_publications=="9007199254741011")
@@ -1674,6 +1677,21 @@ void input_pulse_api_keeps_report_receipts_opaque_and_owner_bound() {
         environment.lines.clear(); environment.logs.clear(); ticks(host,environment,1); running(host,"input-pulse",environment);
         check(environment.logged("pulse malformed rejected"),why); receipt=valid;
     };
+    for (const auto phase : {dingosdk::actor_observation::Phase::controls_profile_lock,
+        dingosdk::actor_observation::Phase::controls_profile_inactive,
+        dingosdk::actor_observation::Phase::controls_profile_manager_read,
+        dingosdk::actor_observation::Phase::controls_profile_manager_null,
+        dingosdk::actor_observation::Phase::controls_profile_phase_read,
+        dingosdk::actor_observation::Phase::controls_profile_exception}) {
+        auto& observation=receipt.first_actor_observation;
+        observation.known=observation.owner_present=observation.call_active=observation.inspect_attempted=true;
+        observation.enter={dingosdk::actor_observation::Phase::qualified,dingosdk::skater_action::Reason::none};
+        observation.inspect={phase,dingosdk::skater_action::Reason::unavailable};
+        environment.lines.clear(); environment.logs.clear(); ticks(host,environment,1); running(host,"input-pulse",environment);
+        check(environment.logged(std::string("pulse profile phase ")+dingosdk::actor_observation::phase_name(phase)),
+            "precise profile refusal did not survive actual Host serialization");
+        receipt=valid;
+    }
     receipt.status=static_cast<p::Status>(999); malformed("unknown pulse status was serialized");
     receipt.reason=static_cast<p::Reason>(999); malformed("unknown pulse reason was serialized");
     receipt.first_rejection_stage=static_cast<p::RejectionStage>(999); malformed("unknown pulse rejection stage was serialized");

@@ -11,7 +11,9 @@ enum class Phase : std::uint8_t {
     inspect_owner_lock, inspect_ownership, controls_focus, controls_profile,
     controls_teleport, controls_motion_active, controls_motion_unavailable,
     validation_owner_lock, readiness, capture, actor_epoch, lifetime, world,
-    protection, recapture, context, state, final_owner_lock, final_lifetime, identity
+    protection, recapture, context, state, final_owner_lock, final_lifetime, identity,
+    controls_profile_lock, controls_profile_inactive, controls_profile_manager_read,
+    controls_profile_manager_null, controls_profile_phase_read, controls_profile_exception
 };
 struct Trace {
     Phase phase{Phase::not_attempted};
@@ -45,6 +47,12 @@ constexpr const char* phase_name(Phase phase) noexcept {
     case Phase::final_owner_lock: return "final_owner_lock";
     case Phase::final_lifetime: return "final_lifetime";
     case Phase::identity: return "identity";
+    case Phase::controls_profile_lock: return "controls_profile_lock";
+    case Phase::controls_profile_inactive: return "controls_profile_inactive";
+    case Phase::controls_profile_manager_read: return "controls_profile_manager_read";
+    case Phase::controls_profile_manager_null: return "controls_profile_manager_null";
+    case Phase::controls_profile_phase_read: return "controls_profile_phase_read";
+    case Phase::controls_profile_exception: return "controls_profile_exception";
     }
     return "invalid";
 }

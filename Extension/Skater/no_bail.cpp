@@ -350,6 +350,19 @@ skater_action::Reason action_check(actor_control_native::Observation* observatio
     if (observation) *observation = {phase, reason};
     return reason;
 }
+constexpr actor_observation::Phase profile_observation_phase(LocalTeleportObservation observation) noexcept {
+    switch (observation) {
+    case LocalTeleportObservation::lock_refused: return actor_observation::Phase::controls_profile_lock;
+    case LocalTeleportObservation::inactive: return actor_observation::Phase::controls_profile_inactive;
+    case LocalTeleportObservation::manager_read_failed: return actor_observation::Phase::controls_profile_manager_read;
+    case LocalTeleportObservation::manager_null: return actor_observation::Phase::controls_profile_manager_null;
+    case LocalTeleportObservation::phase_read_failed: return actor_observation::Phase::controls_profile_phase_read;
+    case LocalTeleportObservation::exception: return actor_observation::Phase::controls_profile_exception;
+    case LocalTeleportObservation::not_attempted:
+    case LocalTeleportObservation::known: break;
+    }
+    return actor_observation::Phase::controls_profile;
+}
 skater_action::Reason action_controls(actor_control_native::Observation* observation = nullptr) noexcept {
     DWORD process{};
     const auto window = GetForegroundWindow();
@@ -357,8 +370,9 @@ skater_action::Reason action_controls(actor_control_native::Observation* observa
         overlay::interface_open() || !multiplayer::native_throwdown_gameplay_input_allowed())
         return action_check(observation, actor_observation::Phase::controls_focus, skater_action::Reason::focus_changed);
     bool teleporting{};
-    if (!try_local_skater_teleport_pending(teleporting))
-        return action_check(observation, actor_observation::Phase::controls_profile, skater_action::Reason::unavailable);
+    LocalTeleportObservation profile_observation;
+    if (!try_local_skater_teleport_pending(teleporting, profile_observation))
+        return action_check(observation, profile_observation_phase(profile_observation), skater_action::Reason::unavailable);
     if (teleporting)
         return action_check(observation, actor_observation::Phase::controls_teleport, skater_action::Reason::teleporting);
     const auto guard = protection().actions.motion_guard.load(std::memory_order_acquire);

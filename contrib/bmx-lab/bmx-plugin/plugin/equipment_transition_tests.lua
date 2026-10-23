@@ -98,6 +98,27 @@ function tests.run()
     end
 
     do
+        for _,phase in {"controls_profile_lock","controls_profile_inactive","controls_profile_manager_read",
+            "controls_profile_manager_null","controls_profile_phase_read","controls_profile_exception"} do
+            local p=accepted()
+            local d=actor_diagnostics(true,{first_actor_call_active=true,first_actor_inspect_attempted=true,
+                first_actor_enter_phase="qualified",first_actor_enter_reason="none",
+                first_actor_inspect_phase=phase,first_actor_inspect_reason="unavailable"})
+            d.press_candidates,d.press_publications,d.neutral_publications="0","0","0"
+            local o=read(p,603,receipt("revoked",d))
+            check(o.intents.store and o.intents.store.receipt.first_actor_inspect_phase==phase
+                and not o.intents.acknowledge,"each precise profile refusal survives store-before-ack")
+            o=p:update(frame(604,{store_result={attempt=1,handle="pulse-a",sequence=sequence,accepted=true}}))
+            check(o.intents.acknowledge and o.terminal_receipt.first_actor_inspect_phase==phase,
+                "classification cannot replace cleanup confirmation")
+            o=p:update(frame(605,{ack_result={attempt=1,handle="pulse-a",sequence=sequence,accepted=true}}))
+            check(o.outcome=="failed" and o.reason=="no_confirmed_report_pair" and not o.retained
+                and not o.qualified_transition,"precise profile diagnostics do not turn zero publications into a switch")
+            check(not p:update(frame(606)).intents.request,"profile diagnostic never retries a failed switch")
+        end
+        cases+=1
+    end
+    do
         local p=Transition.new()
         for t=0,19 do check(not p:update(frame(t,{gesture_down=true})).intents.request,"startup held gesture never dispatches") end
         p:update(frame(20));local o=p:update(frame(20,{gesture_down=true}))

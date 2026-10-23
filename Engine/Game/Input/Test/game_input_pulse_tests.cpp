@@ -434,15 +434,19 @@ void actor_clock_lost() {
         "an actually attempted unavailable clock remains distinct from its short-circuited absence");
     retire(1351);
     check(service::acknowledge(1, clock_handle), "resolved clock-loss receipt can be acknowledged");
-    for (unsigned fault = 0; fault < 4; ++fault) {
+    constexpr observed::Phase phases[]{observed::Phase::inspect_owner_lock, observed::Phase::controls_profile, observed::Phase::context,
+        observed::Phase::controls_profile_lock, observed::Phase::controls_profile_inactive,
+        observed::Phase::controls_profile_manager_read, observed::Phase::controls_profile_manager_null,
+        observed::Phase::controls_profile_phase_read, observed::Phase::controls_profile_exception};
+    for (unsigned fault = 0; fault < std::size(phases) + 1; ++fault) {
         const auto base = 2300 + static_cast<std::uint64_t>(fault) * 1100;
         prime(base); const auto handle = request();
         for (const auto offset : {0u, 34u, 67u}) (void)frame(base + offset);
-        constexpr observed::Phase phases[]{observed::Phase::inspect_owner_lock, observed::Phase::controls_profile, observed::Phase::context};
         if (fault == 0) env.enter_ok = false;
         else {
             env.inspect_ok = false;
-            env.inspect_failure = {phases[fault - 1], fault == 3 ? actor::Reason::context_changed : actor::Reason::unavailable};
+            env.inspect_failure = {phases[fault - 1], phases[fault - 1] == observed::Phase::context ?
+                actor::Reason::context_changed : actor::Reason::unavailable};
         }
         const auto reads = env.clock_reads, inspections = env.inspect_calls;
         check(frame(base + 100).value.Gamepad.wButtons == 0, "diagnostic observations do not bypass a failed warmup guard");

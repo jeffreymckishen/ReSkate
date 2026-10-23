@@ -108,18 +108,28 @@ bool local_skater_teleport_pending() {
         read(manager, phase) && phase != 0;
 }
 bool try_local_skater_teleport_pending(bool& pending) noexcept {
+    LocalTeleportObservation observation;
+    return try_local_skater_teleport_pending(pending, observation);
+}
+bool try_local_skater_teleport_pending(bool& pending, LocalTeleportObservation& observation) noexcept {
     pending = true;
+    observation = LocalTeleportObservation::not_attempted;
     try {
         auto& runtime = local_runtime();
         std::unique_lock lock(runtime.native_mutex, std::try_to_lock);
-        if (!lock.owns_lock() || !runtime.active) return false;
-        if (placements_runtime().position_teleport) return true;
+        if (!lock.owns_lock()) { observation = LocalTeleportObservation::lock_refused; return false; }
+        if (!runtime.active) { observation = LocalTeleportObservation::inactive; return false; }
+        if (placements_runtime().position_teleport) { observation = LocalTeleportObservation::known; return true; }
         std::uintptr_t manager{}; std::uint32_t phase{};
-        if (!read(runtime.base + addr::local_placements::teleport_manager, manager) ||
-            !manager || !read(manager, phase)) return false;
+        if (!read(runtime.base + addr::local_placements::teleport_manager, manager)) {
+            observation = LocalTeleportObservation::manager_read_failed; return false;
+        }
+        if (!manager) { observation = LocalTeleportObservation::manager_null; return false; }
+        if (!read(manager, phase)) { observation = LocalTeleportObservation::phase_read_failed; return false; }
         pending = phase != 0;
+        observation = LocalTeleportObservation::known;
         return true;
-    } catch (...) { return false; }
+    } catch (...) { observation = LocalTeleportObservation::exception; return false; }
 }
 
 std::optional<float> local_ground_height(float x, float z, float top, float bottom) {

@@ -105,6 +105,13 @@ condition failed. `enter_claim` means arbiter entry refused; its `busy` reason d
 lock contention. This is classification only: provider calls, guard order, lock modes,
 warmup, revocation, deadlines and report publication behavior are unchanged.
 
+Profile refusal now identifies the existing failed edge with `controls_profile_lock`,
+`controls_profile_inactive`, `controls_profile_manager_read`, `controls_profile_manager_null`,
+`controls_profile_phase_read` or `controls_profile_exception`. The native reason remains
+`unavailable`. A lock refusal means the nonblocking acquisition failed; it does not identify the
+lock holder or authorize waiting, retrying or treating the profile as ready. A queued teleport
+still reports known/pending, and successful native-phase reads retain the existing Boolean result.
+
 The publication scope is `process_outer_xinput_buffer`. SDK output-buffer publication does not
 prove the wrapper subsequently returned normally. Both `consumption` and `semantic_completion`
 remain `"unobserved"`, including after `released`. No receipt grants raw memory or an actor ticket.

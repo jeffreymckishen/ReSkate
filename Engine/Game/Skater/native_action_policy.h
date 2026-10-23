@@ -1,7 +1,6 @@
 #pragma once
 #include "native_action.h"
 #include <array>
-#include <atomic>
 #include <cstddef>
 #include <limits>
 
@@ -12,20 +11,6 @@ struct State {
     bool known{}, ragdoll_known{}, ragdoll{}, in_air_known{}, in_air{};
     std::uint32_t value{};
     bool operator==(const State&) const = default;
-};
-class MotionClaim {
-public:
-    bool begin_admission() noexcept {
-        unsigned idle = 0; return phase_.compare_exchange_strong(idle, 1, std::memory_order_acq_rel);
-    }
-    void publish(bool active) noexcept { phase_.store(active ? 2U : 0U, std::memory_order_release); }
-    void retire_if_idle() noexcept {
-        unsigned active = 2; (void)phase_.compare_exchange_strong(active, 0, std::memory_order_acq_rel);
-    }
-    bool publication_allowed() const noexcept { return phase_.load(std::memory_order_acquire) == 0; }
-    bool published() const noexcept { return phase_.load(std::memory_order_acquire) == 2; }
-private:
-    std::atomic<unsigned> phase_{};
 };
 constexpr bool target(Kind kind, const State& state) noexcept {
     return state.known && (kind == Kind::board ? state.value == 100 :

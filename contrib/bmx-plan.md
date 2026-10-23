@@ -1,6 +1,22 @@
 # BMX addition: feature and delivery plan
 
-Current priority, 2026-10-18: physics and usable tricks; tire appearance is postponed.
+Current priority, 2026-10-23: implement BMX gameplay as a Luau plugin, with
+permissioned general SDK APIs for the capabilities the plugin needs. The legacy
+C++ BMX dispatcher is retired. The historical runs below describe that prototype;
+they do not demonstrate a playable Lua port or current BMX Streets likeness.
+
+The port proceeds through equipment switching and exclusive actor ownership,
+measured body following and release, rider alignment and fall recovery, then
+wheel contacts, handling and tricks. Each stage needs observed in-game results
+before it qualifies the next. Generic native body, force, query and equipment
+action APIs are available, but repeated Lua equipment switching is not qualified.
+Ordinary controller Y has a successful mount and dismount baseline in separate
+captures; the SDK mount path still needs investigation. The shared actor claim
+is being extracted before a Lua movement API is added, so equipment and movement
+cannot acquire independent authority over the same local actor. No new public
+reservation-only API is planned.
+
+Historical priority, 2026-10-18: physics and usable tricks; tire appearance was postponed.
 Run 87 passed the measured native ramp route: supported ascent, continuous gravity-only
 flight, settled two-wheel landing and braking inside the unchanged route boundary.
 Run 88 passed the current Streets modifier/right-stick barspin and tailwhip requests,

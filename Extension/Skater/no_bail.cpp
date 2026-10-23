@@ -1,6 +1,7 @@
 #include "no_bail.h"
 #include "native_actions.h"
 #include "Engine/Game/Skater/native_action_policy.h"
+#include "Engine/Game/Skater/actor_control_policy.h"
 #include "Engine/Game/Build/20260929/native_actions.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
 #include "Extension/UI/Overlay/overlay.h"
@@ -85,9 +86,11 @@ struct Actions {
     DWORD client_thread{};
     std::uint32_t legacy_inflight{};
     bool ready{}, world_contract{}, listener{};
-    // 0 idle, 1 admission in progress, 2 published action. Observation cleanup
-    // must never release another thread's not-yet-published admission claim.
-    skater_action::MotionClaim motion_claim;
+    // Admission and published equipment use the same claim as future actor
+    // writers. Cleanup must present this exact owner and generation.
+    actor_control::Arbiter motion_claim;
+    actor_control::Ticket equipment_ticket;
+    std::uint64_t equipment_owner{}; // protected by the No Bail lock
     std::atomic<std::uint64_t> destruction_notice{};
     std::atomic<std::uintptr_t> watched_entity{};
     std::atomic<std::uint64_t> actor_destruction{};
@@ -335,9 +338,12 @@ void action_release_claim_locked() noexcept {
     };
     prune(p.dismount, p.dismount_pending); prune(p.board_mount, p.board_mount_pending);
     if (!actions.ledger.active()) {
-        if (actions.motion_claim.published()) {
+        if (actions.equipment_ticket.generation) {
             actions.watched_entity.store(0, std::memory_order_release);
-            actions.motion_claim.retire_if_idle();
+            if (actions.motion_claim.revoke(actions.equipment_owner, actions.equipment_ticket) &&
+                actions.motion_claim.retire(actions.equipment_owner, actions.equipment_ticket)) {
+                actions.equipment_ticket = {}; actions.equipment_owner = 0;
+            }
         }
     }
 }
@@ -3222,7 +3228,8 @@ bool request(std::uint64_t owner, Kind kind, Handle& handle, Reason& reason) noe
     if (!owner) { reason = Reason::invalid_owner; return false; }
     if (kind != Kind::on_foot && kind != Kind::board) { reason = Reason::invalid_kind; return false; }
     auto& p = protection(); auto& a = p.actions;
-    if (!a.motion_claim.begin_admission()) { reason = Reason::busy; return false; }
+    actor_control::Ticket ticket;
+    if (!a.motion_claim.reserve(owner, actor_control::Domain::equipment, ticket)) { reason = Reason::busy; return false; }
     ActionBinding expected;
     AcquireSRWLockShared(&p.lock);
     const auto ready = a.ready && GetCurrentThreadId() == a.client_thread &&
@@ -3264,7 +3271,20 @@ bool request(std::uint64_t owner, Kind kind, Handle& handle, Reason& reason) noe
         }
     }
     if (!a.ledger.active()) a.watched_entity.store(0, std::memory_order_release);
-    a.motion_claim.publish(a.ledger.active() != nullptr);
+    if (accepted && a.ledger.active()) {
+        if (a.motion_claim.publish(owner, ticket)) {
+            a.equipment_ticket = ticket; a.equipment_owner = owner;
+        } else {
+            // Nothing can observe this provisional slot while the lock is
+            // held. Never leave a queued action without its matching claim.
+            if (auto* entry = a.ledger.find(owner, handle))
+                ActionLedger::finish(*entry, Status::invalidated, Reason::motion_owned, now);
+            (void)a.motion_claim.abandon(owner, ticket);
+            action_release_claim_locked();
+        }
+    } else {
+        (void)a.motion_claim.abandon(owner, ticket);
+    }
     ReleaseSRWLockExclusive(&p.lock);
     return accepted;
 }

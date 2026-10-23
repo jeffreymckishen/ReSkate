@@ -194,14 +194,6 @@ void bits_and_publication() {
         if (mode == 0) require(word == 0x4100U && result.before == 0x4000U, "unrelated flags preserved");
         else require((word & 0x180U) == 0, "failure never inserts request");
     }
-    a::MotionClaim claim;
-    require(claim.publication_allowed() && claim.begin_admission(), "initial empty provider may publish or reserve");
-    require(!claim.publication_allowed() && !claim.begin_admission(), "reservation blocks provider and second requester");
-    claim.retire_if_idle(); require(!claim.publication_allowed(), "observer cleanup cannot release in-progress admission");
-    claim.publish(true); require(!claim.publication_allowed(), "published pending/selected action blocks motion publication");
-    claim.retire_if_idle(); require(claim.publication_allowed(), "terminal retirement releases provider");
-    require(claim.begin_admission(), "new admission after terminal"); claim.publish(false);
-    require(claim.publication_allowed(), "failed admission releases reservation");
 }
 }
 int main() {

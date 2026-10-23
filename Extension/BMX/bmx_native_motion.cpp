@@ -8,6 +8,7 @@
 #include "Extension/Skater/free_flight.h"
 #include "Extension/Skater/offboard_flight.h"
 #include "Extension/Skater/no_bail.h"
+#include "Extension/Skater/native_actions.h"
 #include "Engine/Game/Build/20260929/offboard_flight.h"
 #include "Engine/Game/BMX/chassis_transform.h"
 #include <cmath>
@@ -38,6 +39,17 @@ struct Shared {
     bool observer{}; // acquired only on the verified client thread
 };
 Shared& shared() { static auto* value = new Shared; return *value; }
+skater_action::MotionGuardStatus action_motion_guard() noexcept {
+    try {
+        auto& state = shared();
+        std::unique_lock lock(state.mutex, std::try_to_lock);
+        if (!lock.owns_lock() || state.failed.load(std::memory_order_acquire))
+            return skater_action::MotionGuardStatus::unavailable;
+        if (state.lease.expires && GetTickCount64() < state.lease.expires)
+            return skater_action::MotionGuardStatus::active;
+        return skater_action::MotionGuardStatus::idle;
+    } catch (...) { return skater_action::MotionGuardStatus::unavailable; }
+}
 const pose_comparison::MotionBasisDecision& motion_basis_comparison() noexcept {
     static const auto decision=[]() noexcept {
         SourceLastError error;
@@ -463,8 +475,9 @@ bool submit_native_motion(const NativeFrame& frame, const std::array<float, 3>& 
                           const std::array<float, 3>& target, float yaw) noexcept {
     if (!frame.available || !frame.offboard || !finite3(velocity, 28) || !finite3(target, 1000000) || !std::isfinite(yaw)) return false;
     auto& s = shared();
+    if (!skater_action::register_motion_guard(action_motion_guard)) return false;
     std::lock_guard lock(s.mutex);
-    if (s.failed.load()) return false;
+    if (s.failed.load() || !skater_action::motion_publication_allowed()) return false;
     s.lease = {frame, velocity, target, yaw, GetTickCount64() + 200};
     s.lease.revision=s.epoch.value();
     return true;
@@ -473,8 +486,9 @@ bool submit_native_step_off_motion(const NativeFrame& frame,const std::array<flo
                                    const std::array<float,3>& target,float yaw) noexcept {
     if(!frame.available||!frame.offboard||!finite3(velocity,28)||!finite3(target,1000000)||!std::isfinite(yaw))return false;
     auto& s=shared();
+    if (!skater_action::register_motion_guard(action_motion_guard)) return false;
     std::lock_guard lock(s.mutex);
-    if(s.failed.load())return false;
+    if(s.failed.load() || !skater_action::motion_publication_allowed())return false;
     s.lease={frame,velocity,target,yaw,GetTickCount64()+200};
     s.lease.basis=motion_target::Basis::native_step_off;
     s.lease.revision=s.epoch.value();
@@ -487,8 +501,9 @@ bool submit_native_chassis_motion(const NativeFrame& frame, const std::array<flo
     if (!frame.available || !frame.offboard || !finite3(velocity, 28) || !finite3(target, 1000000) ||
         !chassis::unit_quaternion(rotation, checked)) return false;
     auto& s = shared();
+    if (!skater_action::register_motion_guard(action_motion_guard)) return false;
     std::lock_guard lock(s.mutex);
-    if (s.failed.load()) return false;
+    if (s.failed.load() || !skater_action::motion_publication_allowed()) return false;
     s.lease = {frame, velocity, target, 0, GetTickCount64() + 200, checked, true};
     s.lease.revision=s.epoch.value();
     return true;

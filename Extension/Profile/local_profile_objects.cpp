@@ -107,6 +107,20 @@ bool local_skater_teleport_pending() {
     return read(local_runtime().base + addr::local_placements::teleport_manager, manager) && manager &&
         read(manager, phase) && phase != 0;
 }
+bool try_local_skater_teleport_pending(bool& pending) noexcept {
+    pending = true;
+    try {
+        auto& runtime = local_runtime();
+        std::unique_lock lock(runtime.native_mutex, std::try_to_lock);
+        if (!lock.owns_lock() || !runtime.active) return false;
+        if (placements_runtime().position_teleport) return true;
+        std::uintptr_t manager{}; std::uint32_t phase{};
+        if (!read(runtime.base + addr::local_placements::teleport_manager, manager) ||
+            !manager || !read(manager, phase)) return false;
+        pending = phase != 0;
+        return true;
+    } catch (...) { return false; }
+}
 
 std::optional<float> local_ground_height(float x, float z, float top, float bottom) {
     std::lock_guard lock(local_runtime().native_mutex);

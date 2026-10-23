@@ -749,6 +749,7 @@ void Api::install(Plugin& plugin, lua_State* L) {
     install_more_api(plugin, L);
     install_world_api(plugin, L);
     install_physics_api(plugin, L);
+    install_native_actions_api(plugin, L);
     install_services_api(plugin, L);
     install_kit_api(plugin, L);
     install_capture_api(plugin, L);

@@ -36,6 +36,47 @@ std::filesystem::path scratch;
 
 // The wider set's game, faked: it records what plugins asked of it and answers as told.
 struct FakeGame final : Game {
+    struct NativeAction { std::uint64_t owner{}; dingosdk::skater_action::Receipt receipt{}; };
+    std::map<std::uint64_t, NativeAction> native_actions;
+    std::vector<std::uint64_t> native_action_releases;
+    std::uint64_t native_action_sequence{9007199254740994ULL};
+    std::uint64_t native_action_requested_ms{1000};
+    unsigned native_action_requests{}, native_action_reads{}, native_action_cancels{}, native_action_acks{};
+    bool native_actions_available{true};
+    bool native_action_request(std::uint64_t owner, dingosdk::skater_action::Kind kind, dingosdk::skater_action::Handle& handle,
+        dingosdk::skater_action::Reason& reason) override {
+        using namespace dingosdk::skater_action;
+        ++native_action_requests;
+        if (!native_actions_available) { reason = Reason::unavailable; return false; }
+        handle.sequence = ++native_action_sequence;
+        auto& record = native_actions[handle.sequence]; record.owner = owner;
+        record.receipt.handle = handle; record.receipt.kind = kind; record.receipt.requested_ms = native_action_requested_ms;
+        reason = Reason::none; return true;
+    }
+    bool native_action_read(std::uint64_t owner, dingosdk::skater_action::Handle handle, dingosdk::skater_action::Receipt& receipt) override {
+        ++native_action_reads;
+        const auto found = native_actions.find(handle.sequence);
+        if (found == native_actions.end() || found->second.owner != owner) return false;
+        receipt = found->second.receipt; return true;
+    }
+    bool native_action_cancel(std::uint64_t owner, dingosdk::skater_action::Handle handle) override {
+        using namespace dingosdk::skater_action;
+        ++native_action_cancels;
+        const auto found = native_actions.find(handle.sequence);
+        if (found == native_actions.end() || found->second.owner != owner || found->second.receipt.status != dingosdk::skater_action::Status::pending) return false;
+        found->second.receipt.status = dingosdk::skater_action::Status::cancelled; found->second.receipt.reason = Reason::cancelled; return true;
+    }
+    bool native_action_acknowledge(std::uint64_t owner, dingosdk::skater_action::Handle handle) override {
+        ++native_action_acks;
+        const auto found = native_actions.find(handle.sequence);
+        if (found == native_actions.end() || found->second.owner != owner || found->second.receipt.quarantined ||
+            !dingosdk::skater_action::terminal(found->second.receipt.status)) return false;
+        native_actions.erase(found); return true;
+    }
+    void native_action_release_all(std::uint64_t owner) override {
+        native_action_releases.push_back(owner);
+        std::erase_if(native_actions, [owner](const auto& pair) { return pair.second.owner == owner; });
+    }
     struct OwnedBody {
         std::uint64_t owner{};
         owned_body::Handle handle{};
@@ -1147,6 +1188,149 @@ void native_body_permission_and_client_boundary_are_enforced() {
     )"}});
     server.apply({server_plugin}); running(server, "server-body", server_environment);
     check(server_environment.fake.body_creates == 0, "server reached native body creation");
+}
+
+void native_actions_keep_opaque_requests_and_observed_receipts_distinct() {
+    using namespace dingosdk::skater_action;
+    TestEnvironment environment; Host host(environment, Side::client);
+    environment.fake.native_action_requested_ms = 9007199254740997ULL;
+    const auto candidate = script("native-actions", R"(
+        local S = reskate.skater
+        for _,bad in {"get_up", "board\0ignored", "on_foot_extra", 1, {}} do
+            assert(not pcall(S.action,bad))
+        end
+        for _,fn in {S.action_state,S.action_cancel,S.action_acknowledge} do
+            assert(not pcall(fn,{}))
+        end
+        local h = assert(S.action("board"))
+        assert(type(h)=="userdata" and getmetatable(h)=="locked")
+        local r = assert(S.action_state(h))
+        assert(r.status=="pending" and not r.terminal and r.kind=="board")
+        assert(r.sequence=="9007199254740995" and r.requested_ms=="9007199254740997")
+        assert(r.original_candidate==nil and r.final_candidate==nil and r.committed_state==nil)
+        assert(r.ragdoll==nil and r.in_air==nil and r.offered_ms==nil)
+        r.status="completed"
+        assert(S.action_state(h).status=="pending")
+        assert(not S.action_acknowledge(h))
+        local selected = false
+        reskate.on("tick",function()
+            if not h then return end
+            local state=assert(S.action_state(h))
+            if state.status=="selected" then
+                assert(not state.terminal and state.original_candidate==200 and state.final_candidate==200)
+                assert(state.committed_state==504 and state.ragdoll==true and state.in_air==nil)
+                assert(state.offered_ms=="9007199254740998" and not S.action_cancel(h))
+                selected=true
+            elseif state.status=="completed" then
+                assert(selected and state.terminal and state.committed_state==100)
+                assert(state.ragdoll==false and state.in_air==false and state.flag_restored)
+                assert(state.observed_ms=="9007199254740999")
+                assert(S.action_acknowledge(h))
+                assert(S.action_state(h)==nil)
+                h=nil
+                reskate.log("native action receipt acknowledged")
+            end
+        end)
+    )", R"("skater.control")");
+    host.apply({candidate}); running(host, "native-actions", environment);
+    check(environment.fake.native_action_requests == 1, "invalid actions reached the backend");
+    auto& record = environment.fake.native_actions.begin()->second;
+    const auto old_owner = record.owner; const auto old_handle = record.receipt.handle;
+    record.receipt.status = dingosdk::skater_action::Status::selected; record.receipt.offered_ms = 9007199254740998ULL;
+    record.receipt.original_known = record.receipt.final_known = record.receipt.committed_known = true;
+    record.receipt.original_candidate = record.receipt.final_candidate = 200; record.receipt.committed_state = 504;
+    record.receipt.ragdoll_known = record.receipt.ragdoll = true;
+    ticks(host, environment, 1); running(host, "native-actions", environment);
+    check(!environment.logged("native action receipt acknowledged"), "selector proposal was converted to completion by the binding");
+    record.receipt.status = dingosdk::skater_action::Status::completed; record.receipt.committed_state = 100;
+    record.receipt.observed_ms = 9007199254740999ULL;
+    record.receipt.ragdoll = false; record.receipt.in_air_known = true; record.receipt.in_air = false; record.receipt.flag_restored = true;
+    ticks(host, environment, 1); running(host, "native-actions", environment);
+    check(environment.logged("native action receipt acknowledged") && environment.fake.native_actions.empty(), environment.all());
+    host.apply({});
+    check(std::find(environment.fake.native_action_releases.begin(), environment.fake.native_action_releases.end(), old_owner) != environment.fake.native_action_releases.end(),
+        "VM close did not release its native action instance");
+    const auto replacement = script("native-actions", "assert(reskate.skater.action('on_foot'))", R"("skater.control")");
+    host.apply({replacement}); running(host, "native-actions", environment);
+    const auto new_owner = environment.fake.native_actions.begin()->second.owner;
+    check(new_owner != old_owner, "reloaded action owner reused a VM instance");
+    Receipt stale;
+    check(!environment.fake.native_action_read(new_owner, old_handle, stale), "new VM read a retired action");
+    const auto live_handle = environment.fake.native_actions.begin()->second.receipt.handle;
+    check(!environment.fake.native_action_cancel(old_owner, live_handle) && !environment.fake.native_action_acknowledge(old_owner, live_handle),
+        "previous VM changed another VM's action");
+    host.apply({}); check(environment.fake.native_actions.empty(), "VM unload left a pending fake native action");
+}
+
+void native_actions_check_permission_side_cancellation_and_rate() {
+    TestEnvironment environment; Host host(environment, Side::client);
+    host.apply({script("action-no-permission", R"(
+        local S=reskate.skater
+        for _,name in {"action","action_state","action_cancel","action_acknowledge"} do
+            local ok,why=pcall(S[name],{})
+            assert(not ok and why:find("skater.control"),name)
+        end
+    )")}); running(host, "action-no-permission", environment);
+    check(environment.fake.native_action_requests == 0 && environment.fake.native_action_reads == 0 &&
+        environment.fake.native_action_cancels == 0 && environment.fake.native_action_acks == 0, "denied actions reached Game");
+    host.apply({script("action-cancel-rate", R"(
+        local S=reskate.skater
+        for i=1,4 do
+            local h=assert(S.action(i%2==0 and "board" or "on_foot"))
+            assert(S.action_cancel(h))
+            local r=assert(S.action_state(h))
+            assert(r.status=="cancelled" and r.reason=="cancelled" and r.terminal)
+            assert(S.action_acknowledge(h))
+        end
+        local h,why=S.action("board")
+        assert(h==nil and why:find("4 times"))
+    )", R"("skater.control")")}); running(host, "action-cancel-rate", environment);
+    check(environment.fake.native_action_requests == 4 && environment.fake.native_actions.empty(), "native action rate or acknowledgement failed");
+    environment.fake.native_actions_available = false;
+    host.apply({script("action-unavailable", "local h,why=reskate.skater.action('board'); assert(h==nil and why=='unavailable')", R"("skater.control")")});
+    running(host, "action-unavailable", environment);
+    TestEnvironment server_environment; Host server(server_environment, Side::server);
+    server.apply({package("server-actions", {{manifest_file, manifest(R"("skater.control")", "server")}, {"plugin/main.lua", R"(
+        for _,name in {"action","action_state","action_cancel","action_acknowledge"} do
+            local ok,why=pcall(reskate.skater[name],{})
+            assert(not ok and why:find("client phase only"),name)
+        end
+    )"}})}); running(server, "server-actions", server_environment);
+    check(server_environment.fake.native_action_requests == 0 && server_environment.fake.native_action_reads == 0 &&
+        server_environment.fake.native_action_cancels == 0 && server_environment.fake.native_action_acks == 0, "server reached native actions");
+}
+
+void native_action_quarantine_remains_visible_until_safe_acknowledgement() {
+    TestEnvironment environment; Host host(environment, Side::client);
+    host.apply({script("action-quarantine", R"(
+        local S=reskate.skater
+        local h=assert(S.action("on_foot"))
+        local saw_quarantine=false
+        reskate.on("tick",function()
+            if not h then return end
+            local r=assert(S.action_state(h))
+            if r.status~="rejected" then return end
+            assert(r.reason=="request_restore_failed" and r.terminal and not r.flag_restored)
+            if r.quarantined then
+                assert(not S.action_acknowledge(h) and not S.action_cancel(h))
+                saw_quarantine=true
+                reskate.log("native action quarantine retained")
+            else
+                assert(saw_quarantine and S.action_acknowledge(h))
+                h=nil
+                reskate.log("failed native action acknowledged after quarantine cleared")
+            end
+        end)
+    )", R"("skater.control")")}); running(host, "action-quarantine", environment);
+    auto& receipt = environment.fake.native_actions.begin()->second.receipt;
+    receipt.status = dingosdk::skater_action::Status::rejected;
+    receipt.reason = dingosdk::skater_action::Reason::request_restore_failed;
+    receipt.quarantined = true;
+    ticks(host, environment, 1); running(host, "action-quarantine", environment);
+    check(environment.logged("native action quarantine retained") && !environment.fake.native_actions.empty(), environment.all());
+    receipt.quarantined = false;
+    ticks(host, environment, 1); running(host, "action-quarantine", environment);
+    check(environment.logged("failed native action acknowledged after quarantine cleared") && environment.fake.native_actions.empty(), environment.all());
 }
 
 std::string batch_main(std::string body) {
@@ -4883,6 +5067,9 @@ int main() {
         run(plugins_pipeline_native_steps_and_select_owned_receipts);
         run(plugins_can_inspect_later_partial_failure_without_acknowledging_unmeasured_head);
         run(native_body_permission_and_client_boundary_are_enforced);
+        run(native_actions_keep_opaque_requests_and_observed_receipts_distinct);
+        run(native_actions_check_permission_side_cancellation_and_rate);
+        run(native_action_quarantine_remains_visible_until_safe_acknowledgement);
         run(owned_body_batches_are_permissioned_opaque_and_transactional);
         run(owned_body_batches_share_actual_and_logical_query_limits);
         run(a_plugin_loads_ticks_runs_its_commands_and_unloads);

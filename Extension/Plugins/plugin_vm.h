@@ -278,6 +278,7 @@ private:
     friend struct KitApi;
     friend struct CaptureApi;
     friend struct PhysicsApi;
+    friend struct NativeActionsApi;
     std::uint64_t instance_{};
     struct Subcommand { std::string name, args, help; };
     struct Command { std::string help; int function{}; std::vector<Subcommand> subcommands; };

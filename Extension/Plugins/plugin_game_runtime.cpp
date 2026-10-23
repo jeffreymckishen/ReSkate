@@ -16,6 +16,7 @@
 #include "Extension/Plugins/plugin_joystick.h"
 #include "plugin_sound.h"
 #include "Extension/Skater/skater_events.h"
+#include "Extension/Skater/native_actions.h"
 #include "Extension/Skater/outfit_overlay.h"
 #include "Extension/Skater/board_pose.h"
 #include "Extension/Customization/board_material.h"
@@ -179,6 +180,15 @@ public:
         return owned_bodies::probe_batch(owner, h, request, allowed);
     }
     void body_release_all(std::uint64_t owner) override { owned_bodies::release_all(owner); }
+    bool native_action_request(std::uint64_t owner, skater_action::Kind kind, skater_action::Handle& handle, skater_action::Reason& reason) override {
+        return skater_action::request(owner, kind, handle, reason);
+    }
+    bool native_action_read(std::uint64_t owner, skater_action::Handle handle, skater_action::Receipt& receipt) override {
+        return skater_action::read(owner, handle, receipt);
+    }
+    bool native_action_cancel(std::uint64_t owner, skater_action::Handle handle) override { return skater_action::cancel(owner, handle); }
+    bool native_action_acknowledge(std::uint64_t owner, skater_action::Handle handle) override { return skater_action::acknowledge(owner, handle); }
+    void native_action_release_all(std::uint64_t owner) override { skater_action::release_all(owner); }
 
     // ---- the local skater ----------------------------------------------------------------------
     std::optional<std::uint32_t> physics_state() override {

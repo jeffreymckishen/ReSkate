@@ -91,6 +91,9 @@ bool teleport_local_skater_heading(const std::array<float, 3>& position, float h
 bool teleport_local_skater_transform(const std::array<float,16>& transform);
 // Includes the queued request and the native streaming/ground-check transition.
 bool local_skater_teleport_pending();
+// Native callbacks never wait for profile mutation. False means unknown, with
+// pending left true; callers must refuse until a fresh idle read succeeds.
+bool try_local_skater_teleport_pending(bool& pending) noexcept;
 // The highest collision surface straight down at (x, z) between world heights `top` and
 // `bottom`, from the client physics world (the park editor's native ray). Empty when nothing
 // is there yet (collision still streaming) or the query is unavailable. Client update thread.

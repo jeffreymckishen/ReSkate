@@ -43,6 +43,7 @@
 #include "Extension/Skater/ai_skaters.h"
 #include "Extension/World/world_entities.h"
 #include "Extension/Skater/client_source_spawn.h"
+#include "Extension/Skater/native_actions.h"
 #include "Extension/World/owned_bodies.h"
 #include "Extension/Skater/skater_slot_override.h"
 #include "Extension/Throwdowns/native_throwdowns.h"
@@ -1280,6 +1281,9 @@ void update_model(std::uintptr_t client, TickState& frame) {
         DINGO_PROFILE_ZONE("tick/update_model/network objects");
         dingosdk::tick_network_objects();
     }
+    dingosdk::skater_action::tick(r.base, client,
+        !r.observer_failed && named_context_ready && !debug_busy && !r.requests.loading() &&
+        !r.debug_model.noclip && !r.debug_model.free_camera);
     if (r.observer_failed) return; // Keep the bounded restore/telemetry path available after catalog failure.
     {
         // Every tick, not at the 500 ms customization pace: the item grids follow the highlight.

@@ -2,6 +2,7 @@
 #include "plugin_wave.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Game/World/body_query.h"
+#include "Engine/Game/Skater/native_action.h"
 #include "Extension/AnimationStudio/anim_core.h"
 #include "Extension/Throwdowns/throwdown_kit.h"
 #include <array>
@@ -269,6 +270,15 @@ public:
     virtual std::string body_acknowledge(std::uint64_t, const owned_body::Handle&, std::uint64_t) { return unavailable; }
     virtual std::string body_release(std::uint64_t, const owned_body::Handle&) { return unavailable; }
     virtual void body_release_all(std::uint64_t) {}
+    // One-shot native equipment requests. The VM owns opaque receipts; queued,
+    // offered and selected are distinct from a later observed committed state.
+    virtual bool native_action_request(std::uint64_t, skater_action::Kind, skater_action::Handle&, skater_action::Reason& reason) {
+        reason = skater_action::Reason::unavailable; return false;
+    }
+    virtual bool native_action_read(std::uint64_t, skater_action::Handle, skater_action::Receipt&) { return false; }
+    virtual bool native_action_cancel(std::uint64_t, skater_action::Handle) { return false; }
+    virtual bool native_action_acknowledge(std::uint64_t, skater_action::Handle) { return false; }
+    virtual void native_action_release_all(std::uint64_t) {}
     // ---- the local skater ----------------------------------------------------------------------
     // Its physics state (100s riding, 200s in the air, 300 a wipeout, 400s grinding, 504 off the
     // board), or empty without a skater; and how many wipeouts it has had this session.

@@ -3533,17 +3533,21 @@ bool enable_clock(std::uint64_t owner, std::uint64_t sequence,
     const Actor& actor, Reason& reason) noexcept {
     LastError error; reason = Reason::unavailable;
     auto& p = protection(); auto& a = p.actions;
-    if (!TryAcquireSRWLockShared(&p.lock)) return false;
+    // This one-time client-phase admission may wait for SDK bookkeeping.
+    // Never nest the owner and clock locks; native feed/read paths stay Try-only.
+    AcquireSRWLockShared(&p.lock);
     const auto enabled = a.clock_enabled_ticket.load(std::memory_order_acquire);
     const bool matching = GetCurrentThreadId() == a.client_thread && clock_owned_locked(owner, sequence, actor, true) &&
         (!enabled || enabled == actor.ticket.generation) &&
         (a.clock_started_ticket != actor.ticket.generation || enabled == actor.ticket.generation);
     ReleaseSRWLockShared(&p.lock);
-    if (!matching || !clock_lifetime(actor) || !TryAcquireSRWLockExclusive(&p.clock_lock)) return false;
+    if (!matching || !clock_lifetime(actor)) return false;
+    AcquireSRWLockExclusive(&p.clock_lock);
     const auto key = claim_clock_key(owner, sequence, actor);
     const bool initialized = p.claim_clock.enable(key);
     ReleaseSRWLockExclusive(&p.clock_lock);
-    if (!initialized || !clock_lifetime(actor) || !TryAcquireSRWLockExclusive(&p.lock)) return false;
+    if (!initialized || !clock_lifetime(actor)) return false;
+    AcquireSRWLockExclusive(&p.lock);
     const auto current = a.clock_enabled_ticket.load(std::memory_order_acquire);
     const bool unchanged = GetCurrentThreadId() == a.client_thread && clock_owned_locked(owner, sequence, actor, true) &&
         (!current || current == actor.ticket.generation) &&

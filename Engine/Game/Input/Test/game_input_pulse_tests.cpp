@@ -26,6 +26,7 @@ struct Environment {
     std::uint64_t wall{100}, last_step{}, clock_sequence{}, owner{};
     bool focus{true}, gameplay{true}, menu{true}, interference{true};
     bool acquire_ok{true}, inspect_ok{true}, enable_ok{true}, retire_ok{true}, clock_enabled{};
+    actor::Reason acquire_reason{actor::Reason::unavailable};
     DWORD thread_override{};
     unsigned acquire_calls{}, enable_calls{}, inspect_calls{}, retire_calls{}, disable_calls{};
     unsigned reads_before_jump{};
@@ -121,7 +122,7 @@ bool interference_clear() noexcept { return fixture::env.interference; }
 
 namespace dingosdk::actor_control_native {
 bool acquire(std::uint64_t owner, std::uint64_t sequence, Admission admission, Actor& out, Reason& reason) noexcept {
-    auto& f = fixture::env; ++f.acquire_calls; out = {}; reason = Reason::unavailable;
+    auto& f = fixture::env; ++f.acquire_calls; out = {}; reason = f.acquire_reason;
     State state; state.known = true; state.value = 42;
     if (!f.acquire_ok || !admission || !admission(state)) return false;
     control::Ticket ticket;
@@ -180,14 +181,14 @@ void lifecycle() {
         "out-of-range user slot refuses before actor acquisition");
     check(!service::request(1, 0, 3, invalid, refusal) && refusal == model::Reason::invalid_button,
         "combined button bits refuse before actor acquisition");
-    check(!service::request(1, 0, 0x1000, invalid, refusal) && refusal == model::Reason::unavailable,
+    check(!service::request(1, 0, 0x1000, invalid, refusal) && !invalid.sequence && refusal == model::Reason::client_not_ready && !env.acquire_calls,
         "client readiness is required before source admission");
     time(100); service::tick(1, 2, true);
     check(!service::request(1, 0, 0x1000, invalid, refusal) && refusal == model::Reason::source_unavailable && !env.acquire_calls,
         "SDK does not invent a connected source without an actual successful outer observation");
     prime(100);
     env.thread_override = GetCurrentThreadId() + 1;
-    check(!service::request(1, 0, 0x1000, invalid, refusal) && refusal == model::Reason::unavailable && !env.acquire_calls,
+    check(!service::request(1, 0, 0x1000, invalid, refusal) && !invalid.sequence && refusal == model::Reason::wrong_thread && !env.acquire_calls,
         "request from an unqualified client thread refuses");
     env.thread_override = 0;
     SetLastError(0x1234); const auto h = request();
@@ -216,6 +217,19 @@ void lifecycle() {
     const auto frozen = result.observed_ms; time(500); service::tick(1, 2, true);
     check(read(h).observed_ms == frozen, "terminal read remains a historical witness");
     check(service::acknowledge(1, h) && !service::read(1, h, ignored), "only explicit safe acknowledgement removes retained record");
+    const auto acquisitions = env.acquire_calls;
+    (void)frame(751); // Fresh original source, but the last ready client tick was500.
+    invalid = {999};
+    check(!service::request(1, 0, 0x1000, invalid, refusal) && !invalid.sequence &&
+        refusal == model::Reason::client_tick_stale && env.acquire_calls == acquisitions && env.arbiter.publication_allowed(),
+        "stale client eligibility is distinguished from a fresh source and cannot reserve an actor");
+    time(499); invalid = {999};
+    check(!service::request(1, 0, 0x1000, invalid, refusal) && !invalid.sequence &&
+        refusal == model::Reason::client_tick_stale && env.acquire_calls == acquisitions,
+        "regressed eligibility clock refuses before source or actor access");
+    prime(800); const auto after_tick = request();
+    check(service::cancel(1, after_tick), "a new ready tick permits a new explicit request after stale refusal");
+    retire(800);
 }
 void rate() {
     for (const auto ms : {100u, 300u, 500u, 700u}) {
@@ -322,19 +336,38 @@ void provider_failure(std::string_view fault) {
     env.acquire_ok = fault != "acquire_failure";
     env.enable_ok = false;
     env.retire_ok = fault != "clock_retire_failure";
-    model::Handle h; model::Reason reason{};
-    check(!service::request(1, 0, 0x1000, h, reason) && !h.sequence && reason == model::Reason::unavailable, "provider failure does not expose a misleading request handle");
-    if (fault == "acquire_failure") check(env.enable_calls == 0 && env.arbiter.publication_allowed(), "failed acquisition never enables clock or owns actor");
-    else if (fault == "clock_enable_failure") check(env.retire_calls == 1 && env.arbiter.publication_allowed(), "clock-enable failure retires the already-acquired claim");
+    model::Handle h{999}; model::Reason reason{};
+    const auto expected = fault == "acquire_failure" ? model::Reason::actor_unavailable :
+        fault == "clock_enable_failure" ? model::Reason::clock_unavailable : model::Reason::cleanup_pending;
+    check(!service::request(1, 0, 0x1000, h, reason) && !h.sequence && reason == expected,
+        "provider refusal identifies its admission phase without exposing a misleading handle");
+    std::uint64_t recovery_at = 200;
+    if (fault == "acquire_failure") {
+        check(env.enable_calls == 0 && env.arbiter.publication_allowed(), "failed acquisition never enables clock or owns actor");
+        constexpr std::array native_reasons{actor::Reason::focus_changed, actor::Reason::world_changed,
+            actor::Reason::motion_owned, actor::Reason::protection_conflict};
+        constexpr std::array mapped_reasons{model::Reason::focus_lost, model::Reason::actor_changed,
+            model::Reason::busy, model::Reason::interference};
+        for (std::size_t i = 0; i < native_reasons.size(); ++i) {
+            recovery_at = 1200 + static_cast<std::uint64_t>(i) * 1100;
+            prime(recovery_at); env.acquire_reason = native_reasons[i]; h = {999};
+            check(!service::request(1, 0, 0x1000, h, reason) && !h.sequence && reason == mapped_reasons[i] &&
+                !env.enable_calls && env.arbiter.publication_allowed(),
+                "specific native acquisition reasons keep their existing classification without a claim or clock");
+        }
+        recovery_at += 1100;
+    } else if (fault == "clock_enable_failure") check(env.retire_calls == 1 && env.arbiter.publication_allowed(), "clock-enable failure retires the already-acquired claim");
     else {
         const model::Handle private_handle{env.clock_sequence};
-        check(read(private_handle).orphaned && !read(private_handle).claim_released && !env.arbiter.publication_allowed(), "failed retirement retains an unreachable orphan claim");
+        check(read(private_handle).orphaned && !read(private_handle).claim_released &&
+            read(private_handle).reason == model::Reason::cleanup_pending && !env.arbiter.publication_allowed(),
+            "failed retirement retains an unreachable orphan claim with explicit cleanup-pending reason");
         check(!service::request(2, 0, 0x1000, h, reason) && reason == model::Reason::busy, "unresolved acquisition cleanup blocks other owners");
         env.retire_ok = true; retire(101); model::Receipt gone;
         check(!service::read(1, private_handle, gone), "later proven orphan retirement frees its retained slot");
     }
     env.acquire_ok = env.enable_ok = env.retire_ok = true;
-    prime(200); h = request(2); check(service::cancel(2, h), "provider recovery permits a new nonreused request"); retire(200);
+    prime(recovery_at); h = request(2); check(service::cancel(2, h), "provider recovery permits a new nonreused request"); retire(recovery_at);
 }
 void publication_deadline() {
     const auto h = press(); (void)frame(299);

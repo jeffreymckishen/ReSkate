@@ -27,7 +27,8 @@ enum class Reason {
     none, invalid_owner, invalid_source, invalid_button, rate_limited, busy, capacity, unavailable,
     unsupported_transport, source_unavailable, source_changed, actor_changed, focus_lost, menu_open,
     gameplay_inactive, interference, clock_unavailable, clock_regressed, deadline, cancelled,
-    publication_unconfirmed, cleanup_pending, sequence_exhausted
+    publication_unconfirmed, cleanup_pending, sequence_exhausted,
+    client_not_ready, wrong_thread, client_tick_stale, actor_unavailable
 };
 constexpr bool valid_button(std::uint16_t button) noexcept {
     return button && !(button & (button - 1)) && !(button & 0x0c00);
@@ -58,6 +59,10 @@ constexpr const char* reason_name(Reason reason) noexcept {
     case Reason::busy: return "busy";
     case Reason::capacity: return "capacity";
     case Reason::unavailable: return "unavailable";
+    case Reason::client_not_ready: return "client_not_ready";
+    case Reason::wrong_thread: return "wrong_thread";
+    case Reason::client_tick_stale: return "client_tick_stale";
+    case Reason::actor_unavailable: return "actor_unavailable";
     case Reason::unsupported_transport: return "unsupported_transport";
     case Reason::source_unavailable: return "source_unavailable";
     case Reason::source_changed: return "source_changed";

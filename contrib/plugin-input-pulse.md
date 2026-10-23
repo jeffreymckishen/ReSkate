@@ -93,6 +93,24 @@ unresolved, a new epoch cannot discharge it and new requests remain blocked. Act
 not used to excuse process-wide report debt. `contentions` does not classify failures in the provider's
 Try locks; a zero value is not proof that those providers never became unavailable.
 
+A refused start has no handle. Admission reasons identify the failed phase: `client_not_ready`
+means the latest client tick did not enable the service, `wrong_thread` means the request was not
+on that tick's thread, and `client_tick_stale` means its timestamp was future or older than 250 ms.
+`actor_unavailable` means actor acquisition returned an otherwise unclassified refusal; existing
+specific focus, actor/world, protection and busy classifications are preserved. `clock_unavailable`
+means actor acquisition succeeded but clock enabling failed and the newly acquired claim was
+retired. `cleanup_pending` means that retirement could not be proved: a private orphan retains the
+claim, exposes no usable handle to the failed requester, and blocks another start until cleanup.
+These phase labels do not establish which native condition caused a refusal or authorize retry.
+
+One-time clock enabling on the client thread waits for the SDK's owner/clock bookkeeping locks,
+as actor acquisition already does. The owner lock is released before the clock lock is acquired,
+and the clock lock is released before final owner checks; they are never held together. Full
+thread, owner, world, generation and lifetime checks remain on both sides of initialization.
+Native feed, clock reads and disable paths retain their existing nonblocking Try-lock behavior.
+Waiting is not a bounded-latency guarantee or permission to use an obsolete identity; no native
+physics, focus or input guard is relaxed.
+
 ## Caller contract
 
 A broker must supply a nonzero VM owner, globally nonreused sequence, source-observation epoch,

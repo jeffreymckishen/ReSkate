@@ -77,7 +77,7 @@ model::Reason native_issue(actor_control_native::Reason reason) noexcept {
     case Native::actor_changed: case Native::actor_destroyed: case Native::world_changed:
     case Native::native_lifetime_changed: case Native::context_changed: return model::Reason::actor_changed;
     case Native::protection_conflict: case Native::request_bits_conflict: return model::Reason::interference;
-    default: return model::Reason::unavailable;
+    default: return model::Reason::actor_unavailable;
     }
 }
 bool publish(XINPUT_STATE* output, const XINPUT_STATE& value) noexcept {
@@ -145,8 +145,11 @@ bool request(std::uint64_t owner, std::uint32_t user, std::uint16_t button,
     const auto now = environment::now();
     {
         Lock lock(shared.lock);
-        if (!shared.ready || environment::thread() != shared.client_thread || now < shared.eligible_at ||
-            now - shared.eligible_at > 250) { reason = model::Reason::unavailable; return false; }
+        if (!shared.ready) { reason = model::Reason::client_not_ready; return false; }
+        if (environment::thread() != shared.client_thread) { reason = model::Reason::wrong_thread; return false; }
+        if (now < shared.eligible_at || now - shared.eligible_at > 250) {
+            reason = model::Reason::client_tick_stale; return false;
+        }
         if (shared.active != no_entry) { reason = model::Reason::busy; return false; }
         const auto& source = shared.sources[user];
         if (!source.connected || !source.epoch || now < source.observed_ms || now - source.observed_ms > 100) {
@@ -180,9 +183,11 @@ bool request(std::uint64_t owner, std::uint32_t user, std::uint16_t button,
             if (!acquired || abandoned) { entry = {}; shared.active = no_entry; }
             else {
                 entry.actor = actor; entry.admitting = false; entry.receipt.orphaned = true;
-                revoke(entry, model::Status::revoked, model::Reason::unavailable);
+                revoke(entry, model::Status::revoked, model::Reason::cleanup_pending);
             }
-            reason = native_issue(native_reason); return false;
+            reason = !acquired ? native_issue(native_reason) :
+                abandoned ? model::Reason::clock_unavailable : model::Reason::cleanup_pending;
+            return false;
         }
         entry.actor = actor; entry.admitting = false;
         handle = {sequence};

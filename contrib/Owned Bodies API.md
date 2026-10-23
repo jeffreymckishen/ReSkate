@@ -11,8 +11,11 @@ There is no actor motion, pose or render binding in this slice.
 
 ## API
 
-Declare `"world.physics"` in `reskate-plugin.json`. All calls are client phase only and
-refuse multiplayer or an unavailable/changed native owner. Nothing activates on load.
+Declare `"world.physics"` in `reskate-plugin.json`. All calls are client phase only.
+Creation, observation and submission refuse multiplayer or an unavailable/changed native
+owner. Receipt inspection and acknowledgement remain available for retained records;
+release without fresh ownership quarantines without touching an old native handle.
+Nothing activates on load.
 The plugin must explicitly call `reskate.world.physics.create`:
 
 ```lua
@@ -51,11 +54,17 @@ The native snapshot repeats ring headers, contents, direct arrays and complete o
 checks. A raced or changed read publishes no sample. These repeated reads are not an
 engine-wide atomic snapshot guarantee.
 
-`P.submit(body, sample.epoch, command)` returns `true` or `false, why`. `command` has
+`P.submit(body, sample.epoch, command)` returns `true, nil, sequence_string` or
+`false, why`. Existing callers using one or two return values keep their behavior.
+The service assigns each accepted command a process-wide unique sequence, returned as
+a decimal string without a Lua-number uint64 conversion. `command` has
 optional `force`, `torque` and `impulse` vectors (zero when omitted), plus a positive uint32
 `impulse_id` for a nonzero one-shot impulse. Bounds are 40000 N force norm, 4000 Nm torque
 norm, 600 Ns impulse norm and 40000 N for the combined `force + impulse / h`. These are
-safety limits, not vehicle tuning. There is one immutable pending command per body.
+safety limits, not vehicle tuning. Each body has one immutable pending inbox and a fixed
+four-record receipt ring. Publication reserves a ring slot before any native setter.
+A pending inbox cannot be replaced, and a full ring refuses publication without
+consuming the caller's serial or impulse event.
 
 The command computed from sample epoch **N** targets only listener epoch **N+1**, with
 the same calibrated h and time `sample.time + h`. A same-N producer invocation waits;
@@ -68,7 +77,10 @@ callback seconds since its current owner, not a sampled global world clock.
 Each accepted clock copy is independently bound to that callback's current game
 context, native world and world-state pointer, as well as its local participant.
 
-`P.receipt(body)` returns:
+`P.receipt(body)` returns the oldest unacknowledged record (or outcome `none` when
+empty). `P.receipt(body, sequence_string)` selects that body's retained record with a
+bounded four-slot lookup; an absent, freed or other body's sequence returns `nil, why`.
+The selector must be an exact string, as returned by `submit`. It returns:
 
 ```
 {outcome="none"|"queued"|"applied"|"partial"|"rejected"|"expired",
@@ -80,18 +92,28 @@ context, native world and world-state pointer, as well as its local participant.
 `applied` means both guarded native setters returned and their owner/clock checks held.
 It does not assert that integration completed. `successor` is a later independently copied
 sample in the same body/world generation, with serial and time strictly beyond the
-producer epoch. The plugin can inspect the actual resulting motion. Neither the API nor
+producer epoch. Each record freezes its **first** independently observed successor;
+later reads never substitute a more convenient sample. The plugin can inspect the actual resulting motion. Neither the API nor
 the tests fabricate an integrated result from the command.
 
-`P.acknowledge(body, receipt.sequence)` acknowledges an exact terminal receipt once;
-an applied command additionally needs its measured successor. Another command cannot
-overwrite an unacknowledged receipt or reuse a submitted serial. A partial/uncertain
-native call permanently fails that body for further commands, even after acknowledgement.
-Use the returned sequence string directly; no Lua-number uint64 conversion is needed.
-The single unacknowledged mailbox permits the next write no earlier than N+3 after a
-write at N+1 and successor/ack at N+2: at most 30 Hz at the qualified 60 Hz step. It is
-suitable for the first one-shot native test, not final every-step vehicle force transport.
-A later fixed command/receipt pipeline needs separate design and native qualification.
+`P.acknowledge(body, receipt.sequence)` frees only the oldest terminal record, once;
+an applied command additionally requires its actual measured successor. Selecting a
+later record for inspection never permits unordered acknowledgement or waives proof.
+An acknowledged record cannot be selected again, and only its slot becomes reusable.
+Another publication cannot overwrite any retained record or reuse a submitted serial.
+The same observed body can publish N, N+1 and N+2 commands for consecutive N+1, N+2
+and N+3 native targets while earlier records await measurement or acknowledgement.
+A client that observes/publishes every native step can therefore request 60 Hz control;
+the bounded ring applies backpressure when receipts are not drained. This removes the
+previous every-other-step contract limit, not native-thread scheduling or integration
+uncertainty. Actual sustained native 60 Hz behavior still requires a controlled trial.
+
+A partial/uncertain setter permanently fails the body for all later commands. Its
+retained failure record remains selectable even if an older applied head never obtained
+a successor. Quarantine does not manufacture that missing proof; ordered acknowledgement
+of the older head remains unavailable. Release/unload cancels the pending inbox while
+preserving earlier outcomes. An expired packet cannot replay its submitted serial;
+an impulse event is consumed before setters, not by an expired unconsumed packet.
 
 `P.release(body)` revokes its commands and attempts to clear pending force, torque and
 velocities, zero and read back all shape masks, then park the exact owned body keyframed.

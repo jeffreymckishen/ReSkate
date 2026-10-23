@@ -170,8 +170,8 @@ public:
     explicit RealGame(std::uintptr_t base) : base_(base) {}
     std::string body_create(std::uint64_t owner, const owned_body::Definition& d, owned_body::Handle& h) override { return owned_bodies::create(owner, d, h); }
     std::string body_read(std::uint64_t owner, const owned_body::Handle& h, owned_body::Sample& s) override { return owned_bodies::read(owner, h, s); }
-    std::string body_submit(std::uint64_t owner, const owned_body::Handle& h, const owned_body::Command& c) override { return owned_bodies::submit(owner, h, c); }
-    std::string body_receipt(std::uint64_t owner, const owned_body::Handle& h, owned_body::Receipt& r) override { return owned_bodies::receipt(owner, h, r); }
+    std::string body_submit(std::uint64_t owner, const owned_body::Handle& h, const owned_body::Command& c, std::uint64_t& sequence) override { return owned_bodies::submit(owner, h, c, sequence); }
+    std::string body_receipt(std::uint64_t owner, const owned_body::Handle& h, std::uint64_t selected, owned_body::Receipt& r) override { return owned_bodies::receipt(owner, h, selected, r); }
     std::string body_acknowledge(std::uint64_t owner, const owned_body::Handle& h, std::uint64_t sequence) override { return owned_bodies::acknowledge(owner, h, sequence); }
     std::string body_release(std::uint64_t owner, const owned_body::Handle& h) override { return owned_bodies::release(owner, h); }
     void body_release_all(std::uint64_t owner) override { owned_bodies::release_all(owner); }

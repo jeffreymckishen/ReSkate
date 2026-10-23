@@ -92,7 +92,7 @@ struct Service {
     std::uintptr_t base{}, client{}, world{}, state{}, context{};
     DWORD thread{};
     bool eligible{};
-    std::uint64_t generation{}, world_generation{}, tick_at{};
+    std::uint64_t generation{}, world_generation{}, tick_at{}, command_sequence{};
 };
 // Static fixed storage exists before any hook can run. Physics callbacks never construct
 // a function-local singleton, allocate, format text, call Lua or wait for a lock.
@@ -344,7 +344,6 @@ void retire(Slot& s, bool may_park) noexcept {
     s.mailbox.cancel();
     const bool parked = may_park && park(s);
     s.active = false; s.retained = true; s.quarantined = s.allocation.quarantine(parked); s.latest = {};
-    s.mailbox.receipt.retained = true; s.mailbox.receipt.quarantined = s.quarantined;
     // No qualified native destructor exists. This slot is never recycled and its old
     // handles are never adopted by another owner, even after a level reload.
 }
@@ -360,7 +359,7 @@ void produce(NativeHandle* incoming_pointer, std::uintptr_t wrapper) noexcept {
         if (std::find(s.anchor.wrappers.begin(), s.anchor.wrappers.end(), wrapper) == s.anchor.wrappers.end()) continue;
         NativeHandle incoming{}; Epoch current{};
         if (!peek(reinterpret_cast<std::uintptr_t>(incoming_pointer), incoming) || !producer_owner(s, incoming) || !command_clock(s, current)) {
-            s.mailbox.cancel(); s.quarantined = true; s.active = false; s.mailbox.receipt.quarantined = true; continue;
+            s.mailbox.cancel(); s.quarantined = true; s.active = false; continue;
         }
         Command command{};
         if (!s.mailbox.consume(current, GetTickCount64(), command)) continue;
@@ -368,7 +367,7 @@ void produce(NativeHandle* incoming_pointer, std::uintptr_t wrapper) noexcept {
         for (std::size_t i = 0; i < 3; ++i) force[i] += command.impulse[i] / command.epoch.seconds;
         alignas(16) const V4 f{force[0], force[1], force[2], 0}, t{command.torque[0], command.torque[1], command.torque[2], 0};
         const auto qualified = [&]() noexcept {
-            Epoch epoch{}; return GetTickCount64() < s.mailbox.deadline && command_clock(s, epoch) && epoch == s.mailbox.receipt.produced && producer_owner(s, incoming);
+            Epoch epoch{}; return GetTickCount64() < s.mailbox.deadline && command_clock(s, epoch) && epoch == current && producer_owner(s, incoming);
         };
         bool attempted_force{}, attempted_torque{}, ok{};
         if (qualified()) {
@@ -379,7 +378,7 @@ void produce(NativeHandle* incoming_pointer, std::uintptr_t wrapper) noexcept {
             }
         }
         s.mailbox.finish(attempted_force, attempted_torque, ok);
-        if (!ok) { s.quarantined = true; s.active = false; s.mailbox.receipt.quarantined = true; }
+        if (!ok) { s.quarantined = true; s.active = false; }
     }
     ReleaseSRWLockExclusive(&service.lock);
 }
@@ -574,19 +573,22 @@ std::string read(std::uint64_t owner, const Handle& handle, Sample& out) noexcep
         return {};
     } catch (...) { return "native body observation failed closed"; }
 }
-std::string submit(std::uint64_t owner, const Handle& handle, const Command& command) noexcept {
-    LastError error;
+std::string submit(std::uint64_t owner, const Handle& handle, const Command& command, std::uint64_t& sequence) noexcept {
+    LastError error; sequence = 0;
     try {
         if (!eligible()) return "body commands require the current local client phase";
         Locked lock(service.lock); auto* s = lookup(owner, handle);
         if (!s || !s->active || s->retained || s->quarantined || !fresh(*s)) return "body owner or generation changed";
         Epoch current{};
         if (!command_clock(*s, current) || current != s->latest.epoch) return "measured native body epoch expired";
-        if (!s->mailbox.submit(command, current, GetTickCount64())) return "body command invalid, repeated, unacknowledged or already pending";
+        if (service.command_sequence == std::numeric_limits<std::uint64_t>::max() ||
+            !s->mailbox.submit(command, current, GetTickCount64(), service.command_sequence + 1))
+            return "body command invalid, repeated, stopped, pending or receipt ring full";
+        sequence = ++service.command_sequence;
         return {};
     } catch (...) { return "native body command failed closed"; }
 }
-std::string receipt(std::uint64_t owner, const Handle& handle, Receipt& out) noexcept {
+std::string receipt(std::uint64_t owner, const Handle& handle, std::uint64_t selected, Receipt& out) noexcept {
     LastError error; out = {};
     try {
         if (GetCurrentThreadId() != service.thread) return "body receipts are client phase only";
@@ -594,8 +596,9 @@ std::string receipt(std::uint64_t owner, const Handle& handle, Receipt& out) noe
         if (s->mailbox.pending && GetTickCount64() >= s->mailbox.deadline) {
             Command ignored; (void)s->mailbox.consume(s->mailbox.command.epoch, GetTickCount64(), ignored);
         }
-        if (s->active && !s->quarantined && s->mailbox.receipt.outcome == Outcome::applied) { Sample observed; (void)sample(*s, observed); }
-        out = s->mailbox.receipt; out.retained = s->retained; out.quarantined = s->quarantined; return {};
+        if (s->active && !s->quarantined && s->mailbox.needs_successor()) { Sample observed; (void)sample(*s, observed); }
+        if (!s->mailbox.find(selected, out)) return "body receipt sequence unavailable for this owner and generation";
+        out.retained = s->retained; out.quarantined = s->quarantined; return {};
     } catch (...) { return "native body receipt failed closed"; }
 }
 std::string release(std::uint64_t owner, const Handle& handle) noexcept {

@@ -54,7 +54,7 @@ std::uint64_t sequence(lua_State* L, int at) {
     luaL_checktype(L, at, LUA_TSTRING);
     std::size_t size{}; const char* text = luaL_checklstring(L, at, &size); std::uint64_t value{};
     const auto parsed = std::from_chars(text, text + size, value);
-    if (!size || parsed.ec != std::errc{} || parsed.ptr != text + size || !value) luaL_argerror(L, at, "a receipt's sequence string");
+    if (!size || text[0] == '0' || parsed.ec != std::errc{} || parsed.ptr != text + size || !value) luaL_argerror(L, at, "a receipt's sequence string");
     return value;
 }
 void push_sample(lua_State* L, const BodyValue& b, const Sample& sample) {
@@ -122,11 +122,15 @@ struct PhysicsApi {
         }
         lua_pop(L, 1);
         if (!valid(command)) luaL_error(L, "native body command exceeds its force, torque or one-shot impulse bound");
-        return result(L, p.services_.game().body_submit(p.instance(), b.handle, command));
+        std::uint64_t assigned{}; const auto why = p.services_.game().body_submit(p.instance(), b.handle, command, assigned);
+        if (!why.empty()) return result(L, why);
+        if (!assigned) return result(L, "native body did not return a command sequence");
+        lua_pushboolean(L, true); lua_pushnil(L); text_number(L, assigned); return 3;
     }
     static int receipt(lua_State* L) {
         auto& p = plugin(L); const auto b = body(L, p, 1); Receipt receipt;
-        const auto why = p.services_.game().body_receipt(p.instance(), b.handle, receipt);
+        const auto selected = lua_isnoneornil(L, 2) ? std::uint64_t{} : sequence(L, 2);
+        const auto why = p.services_.game().body_receipt(p.instance(), b.handle, selected, receipt);
         if (!why.empty()) return fail(L, why);
         lua_createtable(L, 0, 9);
         lua_pushstring(L, name(receipt.outcome)); lua_setfield(L, -2, "outcome");

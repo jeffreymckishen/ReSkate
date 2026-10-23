@@ -263,8 +263,8 @@ public:
     // only; typed handles/epochs are wrapped in opaque userdata by the permissioned API.
     virtual std::string body_create(std::uint64_t, const owned_body::Definition&, owned_body::Handle&) { return unavailable; }
     virtual std::string body_read(std::uint64_t, const owned_body::Handle&, owned_body::Sample&) { return unavailable; }
-    virtual std::string body_submit(std::uint64_t, const owned_body::Handle&, const owned_body::Command&) { return unavailable; }
-    virtual std::string body_receipt(std::uint64_t, const owned_body::Handle&, owned_body::Receipt&) { return unavailable; }
+    virtual std::string body_submit(std::uint64_t, const owned_body::Handle&, const owned_body::Command&, std::uint64_t&) { return unavailable; }
+    virtual std::string body_receipt(std::uint64_t, const owned_body::Handle&, std::uint64_t, owned_body::Receipt&) { return unavailable; }
     virtual std::string body_acknowledge(std::uint64_t, const owned_body::Handle&, std::uint64_t) { return unavailable; }
     virtual std::string body_release(std::uint64_t, const owned_body::Handle&) { return unavailable; }
     virtual void body_release_all(std::uint64_t) {}

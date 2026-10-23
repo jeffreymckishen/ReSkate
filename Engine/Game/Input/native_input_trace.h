@@ -42,6 +42,9 @@ struct Receipt {
     // The private adapter fills these service-wide counters on a copied read.
     // Their difference is not an exact count of observations missed by a ticket.
     std::uint64_t observer_busy_at_start{}, observer_busy_total{};
+    // Modulo-64 service-wide unknown dispatch entry counters. These are not
+    // exact per-window losses or counts of published/unique caller sites.
+    std::uint64_t unknown_calls_at_start{}, unknown_calls_total{};
     std::uint32_t record_count{};
     std::array<Observation, record_capacity> records{};
 };

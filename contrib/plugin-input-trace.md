@@ -60,3 +60,14 @@ difference is not an exact count of rows lost by this particular window.
 Expiry, row caps and contention mean the receipt is a bounded sample, not a
 complete input history. The observer only samples the two verified dispatch
 lanes for the pinned game build. Other callers tail-forward without sampling.
+
+`unknown_calls_at_start` and `unknown_calls_total` are modulo-64 service-wide
+entry counters for other dispatch callers. They continue while the installed
+hook runs, including after a trace expires. They are not exact per-window
+counts, counts of completed callbacks, or counts of unique caller sites. They
+help distinguish observed unclassified activity from the two sampled lanes;
+zero classified rows alone cannot identify which route carried an input.
+Native return addresses stay private to SDK diagnostics and are never exposed
+to Lua. Capturing an unclassified caller does not authorize reading its arguments
+or assigning it a callable prototype. Atomic counter overhead needs its own
+native performance qualification.

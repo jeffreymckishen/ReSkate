@@ -65,6 +65,7 @@ struct InputTraceApi {
         text(L, "sequence", r.handle.sequence); text(L, "requested_ms", r.requested_ms); text(L, "expires_ms", r.expires_ms);
         text(L, "seen", r.seen); text(L, "duplicates", r.duplicates); text(L, "dropped", r.dropped);
         text(L, "observer_busy_at_start", r.observer_busy_at_start); text(L, "observer_busy_total", r.observer_busy_total);
+        text(L, "unknown_calls_at_start", r.unknown_calls_at_start); text(L, "unknown_calls_total", r.unknown_calls_total);
         lua_createtable(L, static_cast<int>(r.record_count), 0);
         for (std::size_t i = 0; i < r.record_count; ++i) {
             const auto& row = r.records[i]; lua_createtable(L, 0, 11);

@@ -12,12 +12,17 @@
 #include <limits>
 #include <string>
 
-// Written once before the hook is enabled. The assembly unknown lane reads
-// only these frozen cells and never acquires a C++ callback prototype.
+// These three dispatch cells are written once before the hook is enabled. The
+// assembly unknown lane never acquires a C++ callback prototype.
 extern "C" {
 std::uintptr_t reskate_native_input_trace_relay{};
 std::uintptr_t reskate_native_input_trace_interpreter_return{};
 std::uintptr_t reskate_native_input_trace_alternate_return{};
+// Assembly owns these process-lifetime writes. A nonzero aligned PC is its own
+// committed witness; the modulo64 reservation counter is not a ready count.
+// These private SDK PCs are never copied to a plugin receipt or dereferenced.
+alignas(8) volatile std::uint64_t reskate_native_input_trace_unknown_calls{};
+alignas(8) volatile std::uint64_t reskate_native_input_trace_unknown_returns[16]{};
 void reskate_native_input_trace_gate();
 }
 
@@ -51,7 +56,7 @@ struct Cache {
     bool ready{};
 };
 struct Tokens {
-    std::uint64_t owner{}, sequence{}, busy_at_start{};
+    std::uint64_t owner{}, sequence{}, busy_at_start{}, unknown_at_start{};
     std::uint32_t count{};
     std::array<std::uintptr_t, asset_capacity> assets{};
 };
@@ -67,6 +72,12 @@ struct Shared {
 // Construct the fixed ledger and lock before publishing any native hook.
 Shared shared;
 
+std::uint64_t unknown_calls() noexcept {
+    // Match the assembly LOCK XADD with an aligned atomic read, rather than
+    // claiming that C++ volatile alone establishes synchronization.
+    return static_cast<std::uint64_t>(_InterlockedCompareExchange64(
+        reinterpret_cast<volatile LONG64*>(&reskate_native_input_trace_unknown_calls), 0, 0));
+}
 bool span(std::uintptr_t address, std::size_t bytes) noexcept {
     return address >= 0x10000 && bytes && bytes <= memory::highest_user_address &&
         address <= memory::highest_user_address - bytes;
@@ -293,6 +304,7 @@ bool request(std::uint64_t owner, input_trace::Handle& handle, input_trace::Reas
         tokens.owner = owner;
         tokens.sequence = handle.sequence;
         tokens.busy_at_start = shared.observer_busy.load(std::memory_order_relaxed);
+        tokens.unknown_at_start = unknown_calls();
         const auto until = now + input_trace::duration_ms; // Ledger refused overflow before acceptance.
         if (until > shared.active_until.load(std::memory_order_relaxed)) shared.active_until.store(until, std::memory_order_release);
         return true;
@@ -315,6 +327,11 @@ bool read(std::uint64_t owner, input_trace::Handle handle, input_trace::Receipt&
     // lets a caller detect omissions even when contention preceded a ticket.
     receipt.observer_busy_at_start = tokens->busy_at_start;
     receipt.observer_busy_total = shared.observer_busy.load(std::memory_order_relaxed);
+    // Service-wide samples, not per-ticket counts or proof that a native Y
+    // action used this callback. In particular, zero unknown entries alone
+    // cannot prove that no known-lane invocation occurred.
+    receipt.unknown_calls_at_start = tokens->unknown_at_start;
+    receipt.unknown_calls_total = unknown_calls();
     return true;
 }
 bool stop(std::uint64_t owner, input_trace::Handle handle) noexcept {

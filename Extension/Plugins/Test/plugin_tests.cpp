@@ -46,6 +46,7 @@ struct FakeGame final : Game {
         ++input_trace_requests; handle.sequence = ++input_trace_sequence;
         auto& row = input_traces[handle.sequence]; row.owner = owner; row.receipt.handle = handle;
         row.receipt.requested_ms = 9007199254740997ULL; row.receipt.expires_ms = row.receipt.requested_ms + 5000;
+        row.receipt.unknown_calls_at_start = 9007199254740998ULL; row.receipt.unknown_calls_total = 9007199254741008ULL;
         reason = dingosdk::input_trace::Reason::none; return true;
     }
     bool input_trace_read(std::uint64_t owner, dingosdk::input_trace::Handle handle, dingosdk::input_trace::Receipt& receipt) override {
@@ -1570,6 +1571,8 @@ void input_trace_api_keeps_bounded_observations_opaque_and_vm_owned() {
         assert(r.sequence=="9007199254740995" and r.requested_ms=="9007199254740997" and r.expires_ms=="9007199254745997")
         assert(r.status=="active" and not r.terminal and #r.records==0)
         assert(r.seen=="0" and r.duplicates=="0" and r.dropped=="0")
+        assert(r.unknown_calls_at_start=="9007199254740998" and r.unknown_calls_total=="9007199254741008")
+        assert(r.unknown_returns==nil and r.return_addresses==nil)
         assert(not S.input_trace_acknowledge(h))
         local phase=0
         reskate.on("tick",function()
@@ -4149,11 +4152,12 @@ Candidate contributed(const std::string& id) {
     return {id, directory, "1", check_package_files(directory)};
 }
 void the_private_input_trace_fixture_loads_inert_when_present() {
-    const auto directory = std::filesystem::path(RESKATE_SOURCE_DIR) / "build" / "bmx" / "native-input-observer-trial-v1" / "fixture";
-    if (!std::filesystem::exists(directory / manifest_file)) return;
+    for (const auto* version : {"v1", "v2"}) {
+    const auto directory = std::filesystem::path(RESKATE_SOURCE_DIR) / "build" / "bmx" / (std::string("native-input-observer-trial-") + version) / "fixture";
+    if (!std::filesystem::exists(directory / manifest_file)) continue;
     check(check_package_files(directory).empty(), "private input trace fixture is source only");
     TestEnvironment environment; Host host(environment, Side::client);
-    constexpr const char* id = "LuaNativeInputTrace_20261023_v1";
+    const auto id = std::string("LuaNativeInputTrace_20261023_") + version;
     host.apply({{id, directory, "private-input-trace-inert-v1", {}}}); running(host, id, environment);
     environment.panels_open = true; environment.shown = id;
     ticks(host, environment, 10); running(host, id, environment);
@@ -4164,6 +4168,7 @@ void the_private_input_trace_fixture_loads_inert_when_present() {
         environment.fake.native_action_requests == 0 && environment.fake.native_recovery_requests == 0 &&
         environment.fake.body_creates == 0 && environment.fake.calls.empty() && environment.teleports.empty(),
         "input trace fixture is inert before explicit Arm");
+    }
 }
 void the_private_native_recovery_fixture_loads_inert_when_present() {
     const auto directory = std::filesystem::path(RESKATE_SOURCE_DIR) / "build" / "bmx" / "lua-native-recovery-v1" / "fixture";

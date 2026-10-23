@@ -2,6 +2,6 @@
   "name": "BMX_Luau_Migration",
   "version_number": "0.1.0",
   "website_url": "",
-  "description": "BMX input policy migrated to Luau, with a temporary read-only controller inspector. Native body APIs are still required for riding.",
+  "description": "BMX policy migration with an explicit skateboard/on-foot switching menu and a read-only controller inspector. Lua BMX riding is not connected yet.",
   "dependencies": []
 }

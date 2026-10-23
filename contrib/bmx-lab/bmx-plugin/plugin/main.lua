@@ -1,7 +1,10 @@
--- Temporary read-only migration inspector. The actual policy is in input.lua;
--- no command, capture lease, camera, pose, velocity or body service is called.
+-- Switching is an explicit menu action. The input policy inspector below stays
+-- read-only; neither path activates a BMX body, rider pose or old controller.
 local Input = require("./input")
 local catalog = require("./catalog")
+local EquipmentRuntime = require("./equipment_runtime")
+local equipment = EquipmentRuntime.new()
+local switch_request = "No switch requested."
 local mapper = Input.new()
 local observing = false
 local source_epoch = 1
@@ -20,6 +23,8 @@ local function reset()
 end
 
 reskate.on("tick", function(dt_ms)
+    -- Receipt cleanup must keep running when input observation is stopped.
+    equipment:update()
     if not observing then return end
     local focus = reskate.input.focus()
     local pad = reskate.input.gamepad()
@@ -55,7 +60,24 @@ reskate.on("tick", function(dt_ms)
 end)
 
 reskate.menu.page("BMX Lua migration", function(ui)
-    ui:warn("Read-only migration tool. Native body/force APIs are missing; this cannot ride or activate BMX.")
+    ui:warn("Lua BMX riding is not connected yet. These buttons switch the skateboard and on-foot state only.")
+    ui:note("Choose your controller slot, close the menu, and leave every control released. Each click requests one switch.")
+    for slot = 0, 3 do
+        if ui:button("equipment" .. slot, "Switch skateboard / on foot: slot " .. slot) then
+            local accepted, why = equipment:request(slot)
+            switch_request = accepted and "Armed. Close the menu and release every control."
+                or string.sub(tostring(why or "Request refused"), 1, 160)
+        end
+    end
+    local switch = equipment:status()
+    ui:info("Switch phase", tostring(switch.phase or "idle"))
+    ui:info("Switch result", tostring(switch.outcome or "idle"))
+    ui:info("Switch detail", tostring(switch.detail or switch.reason or "No request"))
+    ui:info("Last switch click", switch_request)
+    if switch.receipt then
+        ui:info("Last input report", tostring(switch.receipt.status) .. " / " .. tostring(switch.receipt.reason))
+    end
+    ui:note("The controller inspector below records requests only. It does not execute hops or tricks.")
     ui:note("Observation uses wall-time and a selected model context, not native wheel support or a physics clock.")
     if ui:button("observe", observing and "Stop observing" or "Observe controller") then
         observing = not observing
@@ -83,6 +105,7 @@ reskate.menu.page("BMX Lua migration", function(ui)
 end)
 
 reskate.on("unload", function()
+    equipment:unload()
     observing = false
     mapper:reset()
 end)

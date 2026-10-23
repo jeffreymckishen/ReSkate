@@ -3363,8 +3363,9 @@ void bmx_lua_policy_runs_as_modules_and_the_inspector_starts_inert() {
         return std::string(std::istreambuf_iterator<char>(file), {});
     };
     const auto declaration = contents(directory / manifest_file);
-    check(parse_manifest(declaration).permissions == std::set<std::string, std::less<>>{"input", "menu"} && check_package_files(directory).empty(),
-          "BMX Lua is an input/menu-only source package, without native control permissions");
+    check(parse_manifest(declaration).permissions == std::set<std::string, std::less<>>{"input", "input.control", "skater.read", "menu", "storage"} &&
+              check_package_files(directory).empty(),
+          "BMX Lua requests only input, stock report control, skater observation, menu and receipt storage");
     TestEnvironment environment;
     Host host(environment, Side::client);
     host.apply({{"bmx-lua-inspector", directory, "1", {}}});
@@ -3375,7 +3376,13 @@ void bmx_lua_policy_runs_as_modules_and_the_inspector_starts_inert() {
     running(host, "bmx-lua-inspector", environment);
     check(environment.panels.size() == 1 && environment.panels[0].title == "BMX Lua migration" && environment.fake.calls.empty() &&
               environment.fake.binds.empty() && environment.teleports.empty() && environment.rays == 0,
-          "The actual inspector loads, ticks and builds its page without acquiring input/camera/pose or invoking gameplay");
+          "The actual package loads, ticks and builds its page without acquiring input/camera/pose or invoking gameplay");
+    check(!environment.fake.input_pulse_requests && !environment.fake.input_pulse_reads &&
+              !environment.fake.input_pulse_cancels && !environment.fake.input_pulse_acks,
+          "Startup and menu rebuilds do not arm equipment switching");
+    host.apply({});
+    check(!std::filesystem::exists(environment.storage_root() / "bmx-lua-inspector" / "storage.json"),
+          "An idle package also unloads without writing equipment storage");
     std::map<std::string, std::string> files{{manifest_file, declaration}};
     for (const auto* name : {"input.lua", "catalog.lua", "tests.lua"}) files[std::string("plugin/") + name] = contents(directory / "plugin" / name);
     files["plugin/main.lua"] = R"(
@@ -3496,6 +3503,123 @@ void bmx_lua_equipment_transitions_keep_cleanup_and_target_observation_separate(
         environment.teleports.empty() && environment.rays == 0,
         "Equipment transition policy runs without native services or gameplay permissions\n" + environment.all());
     std::cout << environment.all();
+}
+
+void bmx_lua_equipment_runtime_uses_typed_services_without_native_permissions() {
+    const auto directory = std::filesystem::path(RESKATE_SOURCE_DIR) / "contrib" / "bmx-lab" / "bmx-plugin";
+    std::map<std::string, std::string> files{{manifest_file, R"({"api":1,"entry":"plugin/main.lua","permissions":[]})"}};
+    for (const auto* name : {"equipment_transition.lua", "equipment_runtime.lua", "equipment_runtime_tests.lua"}) {
+        std::ifstream file(directory / "plugin" / name, std::ios::binary);
+        check(file.good(), std::string("BMX Lua runtime source is available: ") + name);
+        files[std::string("plugin/") + name] = std::string(std::istreambuf_iterator<char>(file), {});
+    }
+    files["plugin/main.lua"] = R"(
+        local result = require("./equipment_runtime_tests").run()
+        assert(result.cases >= 8 and result.assertions >= 100 and result.native_actions == 0)
+        reskate.log(string.format("BMX Lua runtime: %d cases, %d assertions, 0 native actions", result.cases, result.assertions))
+    )";
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({package("bmx-lua-runtime-tests", files)});
+    running(host, "bmx-lua-runtime-tests", environment);
+    check(environment.logged("BMX Lua runtime:") && environment.fake.calls.empty() && environment.fake.binds.empty() &&
+              !environment.fake.input_pulse_requests && !environment.fake.input_pulse_reads &&
+              !environment.fake.input_pulse_cancels && !environment.fake.input_pulse_acks &&
+              !environment.fake.native_action_requests && !environment.fake.native_recovery_requests &&
+              !environment.fake.body_creates && !environment.fake.body_submissions && environment.teleports.empty() && !environment.rays,
+          "The actual adapter module tests use injected services without actual gameplay permissions\n" + environment.all());
+    std::cout << environment.all();
+}
+
+void bmx_lua_menu_switches_explicit_slots_and_retains_cleanup_duty() {
+    using dingosdk::Json;
+    namespace p = game_input_pulse;
+    const auto directory = std::filesystem::path(RESKATE_SOURCE_DIR) / "contrib" / "bmx-lab" / "bmx-plugin";
+    for (unsigned scenario = 0; scenario < 8; ++scenario) {
+        const auto id = "bmx-lua-runtime-menu-" + std::to_string(scenario);
+        const auto why = id + ": ";
+        TestEnvironment environment;
+        environment.local_skater = SkaterState{};
+        auto& game = environment.fake;
+        game.focus_now = {true, true, true};
+        game.telemetry = SkaterTelemetry{};
+        game.telemetry->skater = true;
+        auto& watch = game.telemetry->watch;
+        watch.valid = watch.ragdoll_known = true;
+        watch.state = scenario % 2 == 0 ? 504 : 100;
+        const auto expected = watch.state == 504 ? 100u : 504u;
+        Host host(environment, Side::client);
+        host.set_level("sanvan");
+        Candidate candidate{id, directory, "bmx-runtime-menu-v1", {}};
+        if (scenario == 6) {
+            std::map<std::string, std::string> files;
+            for (const auto* name : {"main.lua", "input.lua", "catalog.lua", "equipment_transition.lua", "equipment_runtime.lua"}) {
+                std::ifstream file(directory / "plugin" / name, std::ios::binary);
+                check(file.good(), why + name);
+                files[std::string("plugin/") + name] = std::string(std::istreambuf_iterator<char>(file), {});
+            }
+            files[manifest_file] = manifest(R"("input","skater.read","menu","storage")");
+            candidate = package(id, files);
+        }
+        host.apply({candidate}); running(host, id, environment);
+        const auto step = [&] { environment.now += 100; host.tick(100); running(host, id, environment); };
+        environment.panels_open = true; environment.shown = id;
+        for (unsigned i = 0; i < 10; ++i) step();
+        check(!game.input_pulse_requests && !game.input_pulse_reads && !game.input_pulse_cancels && !game.input_pulse_acks,
+              why + "load and menu rebuilds must remain inert with an otherwise usable baseline");
+        const auto slot = scenario % 4;
+        environment.actions = {plugin_ui::Action{id, "BMX Lua migration", "equipment" + std::to_string(slot), false}};
+        step();
+        for (unsigned i = 0; i < 10; ++i) step();
+        check(!game.input_pulse_requests, why + "an explicit menu request cannot publish while the menu remains open");
+        if (scenario == 4) {
+            game.input_pulse_available = false;
+            game.input_pulse_refusal = p::Reason::clock_unavailable;
+        }
+        if (scenario == 5) { game.focus_now.focused = false; step(); game.focus_now.focused = true; }
+        environment.panels_open = false; game.focus_now.interface_open = false;
+        for (unsigned i = 0; i < 13; ++i) step();
+        const unsigned requests = scenario == 5 || scenario == 6 ? 0u : 1u;
+        check(game.input_pulse_requests == requests, why + "one menu intent requests exactly once in the chosen slot");
+        if (scenario < 4 || scenario == 7) {
+            check(game.input_pulses.size() == 1, why + "one opaque receipt remains owned");
+            auto& receipt = game.input_pulses.begin()->second.receipt;
+            check(receipt.user == slot && receipt.button == 0x8000, why + "the actual menu forwards its explicit slot and only Y");
+            if (scenario == 7) {
+                receipt.status = p::Status::pressing; receipt.report_debt = true;
+                host.apply({});
+                check(game.input_pulse_requests == 1 && game.input_pulse_cancels == 1 && !game.input_pulse_acks &&
+                          game.input_pulses.size() == 1 && receipt.report_debt && receipt.orphaned && receipt.quarantined && !receipt.claim_released,
+                      why + "Lua unload cancels once and SDK cleanup retains unresolved report duty");
+                continue;
+            }
+            receipt.status = p::Status::revoked; receipt.reason = p::Reason::unavailable;
+            receipt.first_rejection_mask = 1280; receipt.first_rejection_stage = p::RejectionStage::core_plan;
+            receipt.press_candidates = receipt.press_publications = 7; receipt.neutral_publications = 1;
+            receipt.claim_released = true; receipt.observed_ms += 50;
+            watch.state = expected;
+        }
+        for (unsigned i = 0; i < 50; ++i) step();
+        check(game.input_pulse_requests == requests && !game.native_action_requests && !game.native_recovery_requests &&
+                  !game.body_creates && !game.body_submissions && game.binds.empty() && game.calls.empty() && environment.teleports.empty() && !environment.rays,
+              why + "observation must not retry or invoke another actuator");
+        check(game.input_pulse_acks == (scenario < 4 ? 1u : 0u), why + "only a saved clean terminal receipt is acknowledged");
+        host.apply({});
+        std::ifstream stored(environment.storage_root() / id / "storage.json", std::ios::binary);
+        check(stored.good(), why + "explicit requests retain their bounded progress ledger");
+        const auto document = Json::parse(std::istreambuf_iterator<char>(stored), std::istreambuf_iterator<char>());
+        const auto& progress = document.at("bmx_equipment_runtime_v1");
+        if (scenario < 4) {
+            const auto& terminal = document.at("bmx_equipment_terminal_v1");
+            check(progress.at("outcome").string() == "target_observed" && progress.at("historical_transition").get<bool>() &&
+                      progress.at("acknowledged").get<bool>() && game.input_pulses.empty(),
+                  why + "the actual package independently qualifies the sampled target and releases the receipt");
+            check(terminal.at("receipt").at("status").string() == "revoked" &&
+                      terminal.at("receipt").at("first_rejection_mask").get<unsigned>() == 1280,
+                  why + "the full saved receipt preserves revocation despite the observed target");
+        } else check(progress.at("outcome").string() != "target_observed", why + "refusal or invalidation cannot become observed success");
+    }
+    std::cout << "BMX Lua menu: four explicit slots, refusal, focus loss, permission denial and unresolved unload; constructed observations only\n";
 }
 
 void bmx_lua_recovery_policy_keeps_native_cleanup_separate() {
@@ -5968,6 +6092,8 @@ int main() {
         run(bmx_lua_policy_runs_as_modules_and_the_inspector_starts_inert);
         run(bmx_lua_equipment_requests_match_the_retained_gesture_rules);
         run(bmx_lua_equipment_transitions_keep_cleanup_and_target_observation_separate);
+        run(bmx_lua_equipment_runtime_uses_typed_services_without_native_permissions);
+        run(bmx_lua_menu_switches_explicit_slots_and_retains_cleanup_duty);
         run(bmx_lua_recovery_policy_keeps_native_cleanup_separate);
         run(bmx_lua_trick_policy_uses_actual_package_modules);
         run(bmx_lua_forces_use_actual_modules_and_match_the_portable_kernel);

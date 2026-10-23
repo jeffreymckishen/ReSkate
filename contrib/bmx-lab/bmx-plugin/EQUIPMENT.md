@@ -3,7 +3,9 @@
 `plugin/equipment.lua` ports our retained `bmx_interaction.h` gestures and the
 toggle/dismount predicates from `equipment_switch.h`. It returns requests and
 owns no native resources. Requiring it performs no tests or gameplay actions.
-The package entry remains the read-only migration inspector.
+The package entry exposes a separate explicit stock switching adapter; this
+gesture module itself remains an offline request policy. See
+[EQUIPMENT_RUNTIME.md](EQUIPMENT_RUNTIME.md).
 
 The toggle needs a neutral sample before each press. Ordinary North/Y produces
 one tap on release or one hold at 500ms; a hold's release never produces a tap.
@@ -40,9 +42,9 @@ current/committed native state 100 or 103. These state numbers reproduce the
 supported-build predicate; supplying them manually does not establish readiness.
 
 No automatic native retry, park, teleport, mount, carry, recovery or equipment
-handoff is implemented here. Those need qualified generic SDK action/ownership
-primitives, observed completion and in-game tests. This module does not restore
-the retired BMX C++ dispatcher or provide playable Lua switching by itself.
+handoff is implemented in this gesture module. The separate adapter uses the
+generic report service and independently checks sampled stock equipment state;
+it does not restore the retired BMX C++ dispatcher or connect BMX riding.
 
 `plugin/equipment_tests.lua` exercises the portable policy. The unconditional
 plugin Host case also compares 160 typed gesture observations against the

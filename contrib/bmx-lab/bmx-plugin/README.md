@@ -35,7 +35,11 @@ compares typed traces against the retained C++ gesture rules. See
 [EQUIPMENT.md](EQUIPMENT.md) for composition and ownership requirements.
 Release Host execution passed **8 groups, 1,269 assertions and 160 C++
 comparisons**, with zero native actions, under the normal VM limits.
-Native equipment execution and observed completion still need generic SDK work.
+The explicit menu adapter now composes the generic bounded input-report API
+with `plugin/equipment_transition.lua`. It preserves the full terminal receipt
+before acknowledgement, then independently observes a stable target state.
+See [EQUIPMENT_RUNTIME.md](EQUIPMENT_RUNTIME.md) for the stock switching path
+and its validation boundaries. This does not connect the BMX body or rider.
 
 Create it with `require("./tricks").new(settings)` and call
 `controller:update(native_seconds, Tricks.input(observation))`. The adapter must
@@ -54,15 +58,21 @@ such as `under_rotated` and `invalid_sample`. Lua also rejects malformed boolean
 direction/device fields and nonfinite heading differences. State/settings readback
 is detached; caller-owned quaternion tables are copied when retained.
 
-The current entry is deliberately a **temporary read-only migration inspector**.
-It asks for only `input` and `menu`. Nothing loads or calls the old BMX console,
-C++ controller, physics backend or private environment modes. It acquires no
-input/camera/body/pose ownership, moves nothing, installs nothing and creates no
-fake or kinematic movement. Loading it does not start observation automatically.
+The current entry combines an **explicit skateboard/on-foot switching menu**
+with the read-only controller inspector. It asks for `input`, `input.control`,
+`skater.read`, `menu` and `storage`. Loading it does not arm switching or start
+controller observation. A slot-specific menu click can request one bounded Y
+report after the menu closes and a settled baseline is observed. No physical
+LB+Y shortcut is bound. Nothing calls the old BMX console, C++ controller,
+physics backend or private modes, or acquires a camera, body or rider pose.
 This package is not yet a playable BMX implementation or a completed migration.
 
 After independent validation and a separately coordinated private installation,
-its page is PLUGINS → BMX Lua migration. Choose a model context and Observe
+its page is PLUGINS → BMX Lua migration. The switching buttons require an
+explicit XInput user slot from0 through3. Close the menu and release every
+control after choosing one; reopening the menu interrupts an active attempt.
+The switch phase and result distinguish report cleanup from the observed state.
+For the separate read-only inspector, choose a model context and Observe
 controller, close the menu, then release every control. Reopen the page to see
 the last sampled requests. The selected grounded/airborne context is a model
 argument, **not measured support**. Tick timing is wall-time, **not the native

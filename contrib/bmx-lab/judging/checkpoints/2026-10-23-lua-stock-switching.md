@@ -164,7 +164,55 @@ follow action was run. After normal Alt+F4, the first process check still saw
 shutdown in progress, so the manifest stayed active. A subsequent check found
 zero Skate processes before manifest withdrawal. Final storage, runtime log
 and the zero-process/zero-active-manifest closure are retained in the session
-folder. The profile-lock failure remains an engineering blocker.
+folder. That session left a profile-lock reliability failure to investigate;
+the next section records the subsequent source change and bounded regression.
+
+## Forward regression after narrowing teleport observation
+
+Source `ae81c7924cfdf746768374533cf5cd3feb5b6f26` replaces the broad profile
+lock in native teleport observation with the actual narrow queue guard and
+opening/closing dispatch checks. Release built cleanly and all 41 focused
+CTests passed. This changes readiness observation, not input retry or deadlines.
+It does not identify the lock holder in the previous failed trial.
+
+The [fresh one-forward session](../../../../build/bmx/lua-stock-switching-teleport-guard-v1/)
+used runtime `9005C91376D141F4DBF2D5AE559BBC1307611558F025A0D0431A3D1E9F46D7EC`
+and matched launcher
+`7E506E09BE32F4E7E7D48D35D0718F37B4F7A0E8C41707878D99C9290BF67247`.
+The binaries were built from the frozen reviewed sources before that commit;
+the compiled Git stamp alone does not identify the later source commit.
+The process was PID 30756, creation FILETIME `134372726952330594`, with the
+supported executable, loaded runtime and guarded neutral controller bound
+before the single Arm/request. A fresh private v7 mod/storage identity was used.
+
+The first terminal archive recorded `done / target_observed`, a `released / none`
+sequence-1 receipt, rejection mask zero, 50 press publications and one neutral
+publication. Request-to-terminal was 312 ms; this is not measured press duration.
+Claim release, cleared report debt, storage and acknowledgement succeeded, with
+no orphan, retained handle or quarantine. Request/read/store/ack counts were
+`1/3/1/1`. The sampled board `100` suffix was 2.5 seconds, with 151 qualified
+samples out of 173. Baseline/final images show an upright rider carrying the
+board and then standing on it. Native input consumption and semantic causality
+remain unobserved. `warmup_deferrals` was `"0"`; no native contention was proved.
+
+Full storage was archived before Go, within the unchanged 45/58/60-second
+guards. The driver completed 301 neutral reports, final neutral release and
+disconnect. No reverse, retry, wipeout, recovery, follow or BMX action ran.
+After normal Alt+F4, process absence was confirmed before manifest withdrawal,
+leaving zero active Lua manifests. Final storage later invalidated current
+qualification at context generation 6 while preserving historical success,
+the original suffix and the terminal receipt. The first qualified result is
+an observation at that time, not an indefinitely current qualification.
+
+The independent outcome audit has SHA-256
+`4A10C8139647DB73887295C241725A3E332166981CD2BDF004C0FC15CFBD715B`.
+The first storage archive has SHA-256
+`3A76E4B48086E043CE652BB009FBD1A60C033BD27979594EE3B74DC163B36F36`.
+Screenshots are stored at
+`E:\RESKATE DEV\reskate\screenshots\lua-stock-switching-teleport-guard-v1`;
+raw logs and receipts are also archived under the corresponding `artifacts`
+folder on E:. This is one successful stock regression, not proof of broad
+switching reliability, a Lua BMX ride or a gameplay likeness score.
 
 ## Remaining checks
 

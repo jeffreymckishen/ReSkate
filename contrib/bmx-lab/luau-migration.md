@@ -20,12 +20,14 @@ proof and optional 128 iterations remain unqualified. Gameplay stays inactive.
 
 ## Latest upstream inspected
 
-Official `Dingo-Shenanigans/ReSkate` main was fetched at
-`7fa407ac36490cd33503e73101a2eb981b5433bd` on October 23. Its 17 commits after
-`e35e33d` were integrated on the existing `BMX` branch in the two-parent merge
+Official `Dingo-Shenanigans/ReSkate` main was last fetched at
+`823dfc27a2e81bbc35e96abb03eff39d9cca02d2` on October 23. The 17 commits from
+`e35e33d` through `7fa407a` were integrated on `BMX` in the two-parent merge
 `d6f1497aab359a92715b75a6b2051078dfa07537`, preserving both histories. A clean
 Release build and all 39 focused CTests passed against the merged source.
 The runtime and launcher were rebuilt together, including protocol 54.
+The later server-documentation-only commit was integrated separately as
+`8e0d5c8`, without changing runtime behavior.
 
 These changes add shared plugin content, world-to-screen bounds validation,
 server roles/cards/polls and other server/launcher improvements. They do not
@@ -34,10 +36,17 @@ cycle APIs remain useful presentation tools; the camera cycle is an enter/exit
 event, not a callback at the render handoff.
 
 The first merged-build stock mount reached the board, but its input receipt
-was revoked after publication when the profile Try-lock was unavailable. That
-is a remaining switching reliability failure, not a clean transport success;
-the [checkpoint](judging/checkpoints/2026-10-23-lua-stock-switching.md) separates
-the observed endpoint from the raw receipt.
+was revoked after publication when the profile Try-lock was unavailable.
+`ae81c79` moved queued-teleport observation to its own narrow Try-lock and
+bracketed native dispatch. Its clean Release build and 41 focused tests passed.
+One fresh in-game forward stock mount then recorded `released / none`, zero
+rejection mask, cleared report debt and a 2.5-second qualified board suffix;
+the endpoint image shows an upright rider on the board. The earlier actual
+lock holder and native contention were not observed, so this one regression
+does not establish broad switching reliability or prove the causal fix under
+contention. The [checkpoint](judging/checkpoints/2026-10-23-lua-stock-switching.md)
+keeps the raw transport, sampled endpoint and later shutdown invalidation separate.
+Neither stock mount is a BMX switch or mounted-bike test.
 
 During ongoing work, refresh both `origin` and `upstream` at least hourly and
 before another Lua API expansion. Fetch and inspect first, then integrate at a

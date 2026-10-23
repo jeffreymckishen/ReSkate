@@ -52,8 +52,11 @@ image and build receipts are retained privately under
 ## Remaining qualification
 
 This proves one capsule allocation and one impulse/application/successor/release
-sequence. Sustained every-step command transport, torque, other body compounds,
-unload/world-change cleanup and partial native failures need separate trials.
+sequence. A [separate native diagnostic](native-pipeline-trial/README.md) subsequently
+completed one 120-command constant-force burst with measured successors and ordered
+acknowledgements. Whole-session control, torque, other body compounds, cleanup
+of an active body during unload or world changes, and partial native failures
+still need separate trials.
 The overlay marked measured positions; it was not a rendered capsule mesh.
 Controller consumption, rider binding, wheel contacts, bike/board switching,
 fall recovery and BMX Streets likeness were not tested by this fixture.

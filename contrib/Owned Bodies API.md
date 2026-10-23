@@ -7,8 +7,11 @@ contacts, controls, hop strength and steering belong in a Luau mod.
 
 The [first native trial](bmx-lab/luau-native-body-trial.md) created one 12 kg capsule,
 applied one 48 Ns impulse, obtained its independently measured successor and parked
-the allocation on release. Sustained every-step control, torque, other compounds and
-unload/world-change/partial-failure cleanup remain unqualified in the game. Portable
+the allocation on release. A [second native diagnostic](bmx-lab/native-pipeline-trial/README.md)
+completed 120 consecutive constant-force commands with exact next-step application,
+independent successors and ordered acknowledgements over one two-second burst.
+Whole-session control, torque, other compounds and cleanup of an active body
+during unload, world changes or partial failures remain unqualified in the game. Portable
 and Host tests qualify the contracts and sandbox; they do not prove those native cases
 or a playable vehicle. There is no actor motion, pose or render binding in this slice.
 
@@ -109,7 +112,8 @@ and N+3 native targets while earlier records await measurement or acknowledgemen
 A client that observes/publishes every native step can therefore request 60 Hz control;
 the bounded ring applies backpressure when receipts are not drained. This removes the
 previous every-other-step contract limit, not native-thread scheduling or integration
-uncertainty. Actual sustained native 60 Hz behavior still requires a controlled trial.
+uncertainty. One controlled native trial has now qualified 120 consecutive commands
+on one capsule; it does not qualify whole-session scheduling or a riding controller.
 
 A partial/uncertain setter permanently fails the body for all later commands. Its
 retained failure record remains selectable even if an older applied head never obtained

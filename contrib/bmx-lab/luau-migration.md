@@ -65,8 +65,10 @@ replace the physical prototype; implemented contracts still require native proof
    The experimental `world.physics` implementation now supplies this contract
    with permission and ownership tests. A [native one-body trial](luau-native-body-trial.md)
    now proves one 12kg capsule and one48Ns impulse/application/successor/park
-   sequence after explicit clock warmup. Other compounds, sustained control and
-   unload/world-change/partial-failure behavior remain unqualified in the game.
+   sequence after explicit clock warmup. A [second native diagnostic](native-pipeline-trial/README.md)
+   completed 120 consecutive constant-force commands and measured acknowledgements.
+   Other compounds, whole-session control and cleanup of an active body during
+   unload, world changes or partial failures remain unqualified in the game.
 2. **Contacts.** Return the actual hit point, normal, surface velocity when
    available, feature, ignored-owned-body status and world/step provenance.
    Existing raycasts do not expose enough information to implement wheel forces;
@@ -78,7 +80,8 @@ replace the physical prototype; implemented contracts still require native proof
    The generic implementation now separates one immutable pending command from
    four retained receipt records, allowing consecutive publications while older
    commands await their first independently measured successor. Contract tests
-   pass; sustained native 60Hz control still needs a game trial.
+   pass. One native trial has now demonstrated a 120-command burst at the qualified
+   60Hz clock; sustained riding with the BMX controller remains unqualified.
 4. **Actor ownership and actions.** Obtain and release exclusive movement,
    pose and input ownership together. Bind the local actor to an owned body
    through generic transform/pose primitives. Typed board/on-foot/GetUp actions

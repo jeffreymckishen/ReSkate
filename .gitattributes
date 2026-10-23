@@ -17,5 +17,8 @@ External/miniz/** -text
 
 # Guarded controller wrappers pin their dependency source bytes with SHA-256.
 contrib/bmx-lab/Bmx-*.py text eol=lf
+# Native diagnostic receipts pin these exact source bytes.
+contrib/bmx-lab/native-pipeline-trial/plugin/main.lua text eol=lf
+contrib/bmx-lab/native-pipeline-trial/reskate-plugin.json text eol=lf
 External/luau/** -text
 External/luau/** whitespace=-blank-at-eol

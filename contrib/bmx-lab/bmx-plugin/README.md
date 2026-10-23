@@ -87,9 +87,12 @@ The experimental [`world.physics` API](../../Owned%20Bodies%20API.md) now provid
 opaque owned bodies, measured state and bounded commands with a four-record
 receipt pipeline. Portable and Host tests pass. A [native one-body trial](../luau-native-body-trial.md)
 also created one 12 kg capsule, applied one 48 Ns impulse, observed its successor
-and parked the allocation on release after explicit clock warmup. Sustained
-60 Hz operation, other body compounds and unload/world-change/partial-failure
-cleanup remain unqualified.
+and parked the allocation on release after explicit clock warmup. A
+[separate native diagnostic](../native-pipeline-trial/README.md) then completed
+120 consecutive constant-force commands with measured successors and ordered
+acknowledgements. Whole-session 60 Hz operation, the BMX controller, other body
+compounds and cleanup of an active body during unload, world changes or partial
+failures remain unqualified.
 
 The following generic SDK pieces are still missing for real riding:
 

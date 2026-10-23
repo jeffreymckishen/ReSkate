@@ -287,7 +287,17 @@ struct FakeGame final : Game {
             if (std::string_view(name).starts_with(prefix) && (!meshes_only || entity_bounds(name))) out.emplace_back(name);
         return out;
     }
+    WorldProbe probe_result;
+    unsigned probes{}, world_picks{};
+    Vec3 probe_from{}, probe_to{};
+    WorldProbe world_probe(const Vec3& from, const Vec3& to) override {
+        ++probes;
+        probe_from = from;
+        probe_to = to;
+        return probe_result;
+    }
     std::optional<WorldPick> world_pick(const Vec3& from, const Vec3&) override {
+        ++world_picks;
         if (from[1] > 50) return std::nullopt; // the sky: nothing met
         WorldPick pick{{1, 0, 2}, true, std::array<float, 16>{0, 0, -1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 3, 1}, "World/Props/TrashCan_01"};
         return pick;
@@ -1087,6 +1097,90 @@ void a_plugin_reloads_when_its_files_change() {
     running(host, "live", environment);
     check(host.reload("live").find("reloaded") != std::string::npos, "and reloaded by hand");
     check(host.reload("nobody").starts_with("error: "), "A plugin that is not there cannot be");
+}
+
+void plugins_distinguish_clear_unavailable_and_hit_world_probes() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({script("bare-probe", R"(
+        local ok, why = pcall(reskate.world.probe, vector.create(1, 2, 3), vector.create(1, -2, 3))
+        assert(not ok and why:find("world.raycast"), tostring(why))
+        reskate.log("probe permission refused")
+    )"), script("surface", R"(
+        local from, to = vector.create(1, 2, 3), vector.create(1, -2, 3)
+        local function fields(result)
+            for key in pairs(result) do
+                assert(key == "status" or key == "position" or key == "fraction", "no unqualified native fields")
+            end
+            assert(result.normal == nil and result.surface_velocity == nil and result.world == nil and result.body == nil)
+        end
+        reskate.console.command("surface", "x", function(args)
+            local result = reskate.world.probe(from, to)
+            fields(result)
+            assert(result.status == args[1], "distinct probe status: " .. result.status)
+            if result.status == "hit" then
+                assert(result.position == vector.create(1, 0, 3) and result.fraction == 0.5, "actual hit fields")
+            else
+                assert(result.position == nil and result.fraction == nil, "only hits carry geometry")
+            end
+            reskate.log("surface " .. args[1])
+        end)
+        reskate.console.command("surface-bad", "x", function()
+            assert(not pcall(reskate.world.probe, vector.create(0/0, 0, 0), to), "NaN")
+            assert(not pcall(reskate.world.probe, from, vector.create(math.huge, 0, 0)), "infinity")
+            assert(not pcall(reskate.world.probe, vector.create(100001, 0, 0), to), "outside map bounds")
+            assert(not pcall(reskate.world.probe, {1, 2, 3}, to), "a vector is required")
+            assert(not pcall(reskate.world.probe, vector.create(0, 0, 0), vector.create(1001, 0, 0)), "ray length")
+            assert(not pcall(reskate.world.probe, from, to, 1234), "no native handle or exclusion argument")
+            local empty = reskate.world.probe(from, from)
+            assert(empty.status == "unavailable" and empty.position == nil and empty.fraction == nil, "zero length is not clear")
+            reskate.log("bad probe inputs refused")
+        end)
+        reskate.console.command("surface-budget", "x", function()
+            for i = 1, 32 do reskate.world.probe(from, to) end
+            for i = 1, 16 do reskate.world.raycast(from, to) end
+            for i = 1, 16 do reskate.world.pick(from, to) end
+            local ok, why = pcall(reskate.world.probe, from, to)
+            assert(not ok and why:find("more than 64 raycasts"), "one shared query budget")
+            assert(not pcall(reskate.world.raycast, from, to) and not pcall(reskate.world.pick, from, to), "old APIs share the cap")
+            reskate.log("probe shared budget refused")
+        end)
+    )", R"("console", "world.raycast")")});
+    running(host, "bare-probe", environment);
+    running(host, "surface", environment);
+    auto& game = environment.fake;
+    check(game.probes == 0 && environment.logged("probe permission refused"), "Permission denial never reaches the backend");
+    check(host.run_console("surface unavailable"), "The default backend is unavailable");
+    game.probe_result = {true, false, {std::numeric_limits<float>::quiet_NaN(), 0, 0}, std::numeric_limits<float>::infinity()};
+    check(host.run_console("surface clear"), "A successful miss stays distinct and exposes no hit fields");
+    game.probe_result = {true, true, {1, 0, 3}, 0.5f};
+    check(host.run_console("surface hit") && game.probe_from == Vec3{1, 2, 3} && game.probe_to == Vec3{1, -2, 3},
+          "The actual segment and hit pass through the generic Game method");
+    const float nan = std::numeric_limits<float>::quiet_NaN(), inf = std::numeric_limits<float>::infinity();
+    const Game::WorldProbe malformed[] = {
+        {true, true, {nan, 0, 3}, .5f}, {true, true, {inf, 0, 3}, .5f},
+        {true, true, {1, 0, 3}, nan}, {true, true, {1, 0, 3}, inf},
+        {true, true, {1, 0, 3}, -.1f}, {true, true, {1, 0, 3}, 1.1f},
+        {true, true, {2, 0, 3}, .5f}, {true, true, {100001, 0, 3}, .5f},
+    };
+    for (const auto& value : malformed) {
+        game.probe_result = value;
+        check(host.run_console("surface unavailable"), "Malformed backend hits are unavailable, not clear or geometry");
+    }
+    const auto before_bad = game.probes;
+    check(host.run_console("surface-bad") && environment.logged("bad probe inputs refused") && game.probes == before_bad,
+          "Invalid and zero-length inputs never reach the native query adapter");
+    ticks(host, environment, 1);
+    const auto before_budget = game.probes;
+    const auto rays_before = environment.rays;
+    const auto picks_before = game.world_picks;
+    check(host.run_console("surface-budget") && environment.logged("probe shared budget refused") && game.probes == before_budget + 32 &&
+          environment.rays == rays_before + 16 && game.world_picks == picks_before + 16,
+          "All three APIs spend the same64-call budget and refused calls never reach their backend");
+    ticks(host, environment, 1);
+    game.probe_result = {};
+    check(host.run_console("surface unavailable") && game.probes == before_budget + 33, "A new tick renews the query budget");
+    running(host, "surface", environment);
 }
 
 void the_skater_can_be_read_moved_and_the_world_probed() {
@@ -3963,6 +4057,7 @@ int main() {
         run(a_plugin_over_its_time_budget_is_stopped);
         run(a_plugin_reloads_when_its_files_change);
         run(the_skater_can_be_read_moved_and_the_world_probed);
+        run(plugins_distinguish_clear_unavailable_and_hit_world_probes);
         run(tricks_reach_plugins_that_ask_for_them);
         run(plugins_draw_on_the_overlay);
         run(plugins_draw_pictures);

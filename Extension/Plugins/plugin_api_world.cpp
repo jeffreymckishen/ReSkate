@@ -557,6 +557,42 @@ struct WorldApi {
         push_position(L, (*box)[1]);
         return 2;
     }
+    // world.probe(from, to): {status = "unavailable"|"clear"|"hit"}; only a hit has position and
+    // fraction. A clear result qualifies this ray, not streaming for a region. No native identity,
+    // surface normal or velocity is supplied. Shares world.raycast/pick's per-tick query budget.
+    static int world_probe(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "world.raycast", "reskate.world.probe");
+        if (lua_gettop(L) != 2) luaL_error(L, "world.probe takes only the ray's start and end");
+        const auto from = position_of(L, 1, "the ray's start");
+        const auto to = position_of(L, 2, "the ray's end");
+        const float dx = to[0] - from[0], dy = to[1] - from[1], dz = to[2] - from[2];
+        const float distance_squared = dx * dx + dy * dy + dz * dz;
+        if (std::sqrt(distance_squared) > plugin.limits_.raycast_metres)
+            luaL_error(L, "a ray is at most %d m long", static_cast<int>(plugin.limits_.raycast_metres));
+        if (++plugin.raycasts_ > plugin.limits_.raycasts_per_tick)
+            luaL_error(L, "more than %d raycasts in one tick", plugin.limits_.raycasts_per_tick);
+        // The native query also refuses segments below this squared length. Do not call it for
+        // one, or label a nonexistent direction clear; still count this bounded API request.
+        const auto probe = distance_squared < 1e-10f ? Game::WorldProbe{} : game(plugin).world_probe(from, to);
+        bool hit = probe.available && probe.hit && std::isfinite(probe.fraction) && probe.fraction >= 0 && probe.fraction <= 1;
+        for (std::size_t i = 0; i < from.size() && hit; ++i) {
+            const float expected = from[i] + (to[i] - from[i]) * probe.fraction;
+            hit = std::isfinite(probe.position[i]) && std::abs(probe.position[i]) <= 1e5f &&
+                  std::abs(probe.position[i] - expected) <= 0.025f;
+        }
+        const char* status = !probe.available || (probe.hit && !hit) ? "unavailable" : hit ? "hit" : "clear";
+        lua_createtable(L, 0, hit ? 3 : 1);
+        lua_pushstring(L, status);
+        lua_setfield(L, -2, "status");
+        if (hit) {
+            push_position(L, probe.position);
+            lua_setfield(L, -2, "position");
+            lua_pushnumber(L, probe.fraction);
+            lua_setfield(L, -2, "fraction");
+        }
+        return 1;
+    }
     // world.pick(from, to): where the ray meets the world, and the object it meets: {position,
     // object = {blueprint?, position, heading, transform = {matrix}}?}, or nil when it is clear.
     static int world_pick(lua_State* L) {
@@ -2643,7 +2679,7 @@ void WorldApi::install(Plugin& plugin, lua_State* L) {
     add_functions(L, "entities", {{"set", entities_set}, {"remove", entities_remove}, {"clear", entities_clear}, {"status", entities_status},
                                   {"ready", entities_ready}, {"blueprints", entities_blueprints},
                                   {"bounds", entities_bounds}});
-    add_functions(L, "world", {{"set_time", set_time}, {"set_control", set_control}, {"set_park", set_park}, {"pick", world_pick}});
+    add_functions(L, "world", {{"set_time", set_time}, {"set_control", set_control}, {"set_park", set_park}, {"pick", world_pick}, {"probe", world_probe}});
     add_functions(L, "travel", {{"locations", locations}, {"levels", levels}, {"go", go}, {"load", load}});
     add_functions(L, "ai", {{"spawn", ai_spawn}, {"clear", ai_clear}, {"count", ai_count}});
     add_functions(L, "session", {{"skaters", skaters}, {"tag", tag}, {"nametags", nametags}, {"joint", session_joint}, {"touch", session_touch},

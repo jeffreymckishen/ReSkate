@@ -19,6 +19,7 @@ add_library(dingosdk_runtime SHARED
     Extension/BMX/bmx_skeleton_phase_probe.cpp
     Extension/BMX/bmx_chassis_probe.cpp
     Extension/BMX/bmx_native_chassis.cpp
+    Extension/World/owned_bodies.cpp
     Extension/BMX/bmx_chassis_ride.cpp
     Extension/BMX/bmx_bail.cpp
     Extension/BMX/bmx_binding_observer.cpp

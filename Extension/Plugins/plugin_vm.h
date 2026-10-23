@@ -251,6 +251,7 @@ public:
     void save_storage();
 
     const std::string& id() const noexcept { return id_; }
+    std::uint64_t instance() const noexcept { return instance_; }
     const std::filesystem::path& directory() const noexcept { return directory_; }
     const Manifest& manifest() const noexcept { return manifest_; }
     State state() const noexcept { return state_; }
@@ -274,6 +275,8 @@ private:
     friend struct ServicesApi;
     friend struct KitApi;
     friend struct CaptureApi;
+    friend struct PhysicsApi;
+    std::uint64_t instance_{};
     struct Subcommand { std::string name, args, help; };
     struct Command { std::string help; int function{}; std::vector<Subcommand> subcommands; };
     struct Timer { double due{}, every{}; int function{}; };

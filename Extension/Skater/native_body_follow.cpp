@@ -1,5 +1,6 @@
 #include "native_body_follow.h"
 #include "Engine/Core/Platform/memory.h"
+#include "Engine/Game/Skater/body_follow_transform.h"
 #include <cmath>
 
 namespace dingosdk::body_follow_native {
@@ -86,48 +87,6 @@ bool published(const Binding& binding) noexcept {
     return value.available && value.owner == binding.owner && value.ticket == binding.actor.ticket &&
         value.domain == actor_control::Domain::follow && value.phase == actor_control::Phase::published;
 }
-bool unit(const owned_body::Quaternion& value) noexcept {
-    double norm{};
-    for (const auto component : value) {
-        if (!std::isfinite(component)) return false;
-        norm += static_cast<double>(component) * component;
-    }
-    return std::abs(norm - 1.0) <= .0001;
-}
-owned_body::Quaternion product(const owned_body::Quaternion& left, const owned_body::Quaternion& right) noexcept {
-    return {left[3]*right[0] + left[0]*right[3] + left[1]*right[2] - left[2]*right[1],
-        left[3]*right[1] - left[0]*right[2] + left[1]*right[3] + left[2]*right[0],
-        left[3]*right[2] + left[0]*right[1] - left[1]*right[0] + left[2]*right[3],
-        left[3]*right[3] - left[0]*right[0] - left[1]*right[1] - left[2]*right[2]};
-}
-owned_body::Vec rotate(const owned_body::Quaternion& q, const owned_body::Vec& value) noexcept {
-    const owned_body::Vec twice{2*(q[1]*value[2] - q[2]*value[1]),
-        2*(q[2]*value[0] - q[0]*value[2]), 2*(q[0]*value[1] - q[1]*value[0])};
-    return {value[0] + q[3]*twice[0] + q[1]*twice[2] - q[2]*twice[1],
-        value[1] + q[3]*twice[1] + q[2]*twice[0] - q[0]*twice[2],
-        value[2] + q[3]*twice[2] + q[0]*twice[1] - q[1]*twice[0]};
-}
-bool transform(const owned_body::Sample& sample, const Attachment& attachment,
-    std::array<float, 16>& target) noexcept {
-    if (!owned_body::finite(attachment.offset_from_com, 10) || !owned_body::finite(sample.position, 100000) ||
-        !unit(sample.rotation) || !unit(attachment.root_in_body)) return false;
-    const auto rotation = product(sample.rotation, attachment.root_in_body);
-    if (!unit(rotation)) return false;
-    // The point is COM-relative in BODY coordinates. Alignment affects the
-    // root basis, not the COM-relative point. No authored-origin assumption.
-    const auto offset = rotate(sample.rotation, attachment.offset_from_com);
-    owned_body::Vec position{};
-    for (unsigned axis = 0; axis < 3; ++axis) position[axis] = sample.position[axis] + offset[axis];
-    if (!owned_body::finite(position, 100000)) return false;
-    for (unsigned axis = 0; axis < 3; ++axis) {
-        owned_body::Vec unit_axis{}; unit_axis[axis] = 1;
-        const auto column = rotate(rotation, unit_axis);
-        for (unsigned component = 0; component < 3; ++component) target[axis*4 + component] = column[component];
-        target[12 + axis] = position[axis];
-    }
-    // The stock target's homogeneous/padding words 3,7,11,15 remain exact.
-    return true;
-}
 }
 bool reserve_binding(std::uint64_t owner, std::uint64_t sequence,
     const owned_bodies::MeasuredSource& source, actor_control_native::Admission admission,
@@ -173,7 +132,7 @@ bool prepare_target(const Binding& binding, std::uintptr_t rig, std::uintptr_t c
     diagnostic = {}; at(diagnostic, DiagnosticStage::prepare_guard);
     if (out.ready || out.call.active() || !binding.reserved || !binding.published || binding.stopped ||
         !supplied || binding.actor.rig != rig || binding.actor.context != context ||
-        !binding.admission || !owned_body::finite(attachment.offset_from_com, 10) || !unit(attachment.root_in_body) || !published(binding)) return false;
+        !binding.admission || !owned_body::finite(attachment.offset_from_com, 10) || !body_follow_transform::unit(attachment.root_in_body) || !published(binding)) return false;
     diagnostic.stage = diagnostic.actor_stage = DiagnosticStage::enter;
     if (!actor_control_native::enter(binding.owner, binding.sequence, binding.actor, out.call, diagnostic.actor)) return false;
     actor_control_native::Actor first; actor_control_native::State state;
@@ -187,14 +146,11 @@ bool prepare_target(const Binding& binding, std::uintptr_t rig, std::uintptr_t c
     if (!memory::peek(reinterpret_cast<std::uintptr_t>(supplied), out.value)) return false;
     at(diagnostic, DiagnosticStage::supplied_finite);
     // Validate XYZ only; keep all supplied SIMD fourth words without rewriting them.
-    for (std::size_t row = 0; row < 4; ++row)
-        for (std::size_t component = 0; component < 3; ++component) {
-            const auto lane = row * 4 + component;
-            if (!std::isfinite(out.value[lane])) {
-                diagnostic.supplied_failed_lane = static_cast<std::uint8_t>(lane);
-                return false;
-            }
-        }
+    const auto failed_lane = body_follow_transform::first_nonfinite_xyz(out.value);
+    if (failed_lane != body_follow_transform::no_failed_lane) {
+        diagnostic.supplied_failed_lane = failed_lane;
+        return false;
+    }
     at(diagnostic, DiagnosticStage::measure);
     if (!owned_bodies::try_measure_source(binding.owner, binding.source, out.source) ||
         (at(diagnostic, DiagnosticStage::measured_allocation), !out.source.same_allocation(binding.source))) return false;
@@ -205,7 +161,7 @@ bool prepare_target(const Binding& binding, std::uintptr_t rig, std::uintptr_t c
         at(diagnostic, DiagnosticStage::borrow_current);
         const auto* current = borrow.current();
         if (!current || (at(diagnostic, DiagnosticStage::borrow_join), !joined(first, *current)) ||
-            (at(diagnostic, DiagnosticStage::transform), !transform(current->sample(), attachment, out.value))) return false;
+            (at(diagnostic, DiagnosticStage::transform), !body_follow_transform::transform(current->sample(), attachment.offset_from_com, attachment.root_in_body, out.value))) return false;
         out.sample = current->sample();
         at(diagnostic, DiagnosticStage::borrow_recheck);
         if (!borrow.current()) return false;

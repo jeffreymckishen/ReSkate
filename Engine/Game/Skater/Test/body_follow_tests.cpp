@@ -1,5 +1,8 @@
 #include "Engine/Game/Skater/body_follow.h"
+#include "Engine/Game/Skater/body_follow_transform.h"
 #include <array>
+#include <bit>
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
@@ -7,6 +10,7 @@
 
 namespace f = dingosdk::body_follow;
 namespace c = dingosdk::actor_control;
+namespace t = dingosdk::body_follow_transform;
 namespace {
 unsigned checks{};
 void require(bool condition, const char* why) {
@@ -477,6 +481,72 @@ void quarantine_never_borrows_foreign_or_unpublished_claims() {
         read(unpublished, handle).release == f::Release{} && !read(unpublished, handle).claim_released,
         "even a matching underlying ticket is never adopted without the retained model publication");
 }
+// These are our constructed values, not captured native target data.
+constexpr std::array<std::uint8_t, 12> transform_xyz_lanes{0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14};
+constexpr std::array<std::uint8_t, 4> transform_fourth_lanes{3, 7, 11, 15};
+constexpr std::array<std::uint32_t, 3> transform_invalid_xyz{0x7FC12345U, 0x7F800000U, 0xFF800000U};
+constexpr std::array<std::uint32_t, 4> transform_fourth_patterns{0x7FC01234U, 0x7F800000U, 0xFF800000U, 0xFFC05678U};
+constexpr std::array<float, 16> transform_supplied{1, 0, 0, 17, 0, 1, 0, 19, 0, 0, 1, 23, 5, 6, 7, 29};
+using TransformBits = std::array<std::uint32_t, 16>;
+
+void supplied_xyz_finiteness() {
+    require(t::first_nonfinite_xyz(transform_supplied) == t::no_failed_lane, "finite supplied XYZ has no failed lane");
+    auto isolated = transform_supplied;
+    isolated[15] = std::bit_cast<float>(transform_invalid_xyz[0]);
+    require(t::first_nonfinite_xyz(isolated) == t::no_failed_lane, "isolated lane-15 NaN is outside the XYZ scan");
+    for (const auto lane : transform_xyz_lanes)
+        for (const auto invalid : transform_invalid_xyz) {
+            auto value = transform_supplied;
+            for (std::size_t index = 0; index < transform_fourth_lanes.size(); ++index)
+                value[transform_fourth_lanes[index]] = std::bit_cast<float>(transform_fourth_patterns[index]);
+            value[lane] = std::bit_cast<float>(invalid);
+            const auto before = std::bit_cast<TransformBits>(value);
+            require(t::first_nonfinite_xyz(value) == lane, "each nonfinite XYZ class reports its actual first lane despite earlier fourth words");
+            require(std::bit_cast<TransformBits>(value) == before, "supplied XYZ scan never changes source bits");
+        }
+    auto ordered = transform_supplied;
+    ordered[2] = std::bit_cast<float>(transform_invalid_xyz[1]);
+    ordered[3] = std::bit_cast<float>(transform_invalid_xyz[0]);
+    ordered[4] = std::bit_cast<float>(transform_invalid_xyz[2]);
+    require(t::first_nonfinite_xyz(ordered) == 2, "first XYZ failure precedes both a fourth word and the next row");
+    ordered[2] = transform_supplied[2];
+    require(t::first_nonfinite_xyz(ordered) == 4, "a nonfinite fourth word cannot hide the next XYZ failure");
+    ordered[4] = transform_supplied[4];
+    require(t::first_nonfinite_xyz(ordered) == t::no_failed_lane, "remaining fourth-word NaN does not refuse valid XYZ");
+}
+
+void target_preserves_fourth_words() {
+    dingosdk::owned_body::Sample sample;
+    sample.position = {20, 30, 40};
+    const auto q = std::sqrt(.5f);
+    sample.rotation = {0, q, 0, q};
+    const dingosdk::owned_body::Vec offset{1, 2, 3};
+    const dingosdk::owned_body::Quaternion root{q, 0, 0, q};
+    // Body yaw +90 maps the COM-relative offset to (3,2,-1). Composing
+    // root roll +90 maps basis X to -Z, Y to X, and Z to -Y.
+    const std::array<float, 12> expected{0, 0, -1, 1, 0, 0, 0, -1, 0, 23, 32, 39};
+    const std::array<std::uint32_t, 4> finite_markers{0x80000000U, 0x3F800000U, 0xC0600000U, 0x00000000U};
+    for (std::size_t variant = 0; variant < 6; ++variant) {
+        auto target = transform_supplied;
+        if (variant == 0) target[15] = std::bit_cast<float>(transform_invalid_xyz[0]);
+        else for (std::size_t index = 0; index < transform_fourth_lanes.size(); ++index) {
+            const auto bits = variant == 5 ? finite_markers[index] :
+                transform_fourth_patterns[(index + variant - 1) % transform_fourth_patterns.size()];
+            target[transform_fourth_lanes[index]] = std::bit_cast<float>(bits);
+        }
+        const auto before = std::bit_cast<TransformBits>(target);
+        require(t::first_nonfinite_xyz(target) == t::no_failed_lane, "all constructed fourth-word variants admit finite XYZ");
+        require(t::transform(sample, offset, root, target), "actual pure target builder accepts the full-orientation COM oracle");
+        for (std::size_t index = 0; index < transform_xyz_lanes.size(); ++index) {
+            const auto value = target[transform_xyz_lanes[index]];
+            require(std::isfinite(value) && std::abs(value - expected[index]) < .00002f,
+                "all twelve output XYZ values match the independent geometric oracle");
+        }
+        const auto after = std::bit_cast<TransformBits>(target);
+        for (const auto lane : transform_fourth_lanes)
+            require(after[lane] == before[lane], "target building preserves every fourth word bit for bit, including NaN payloads and signed zero");
+    }
+}
 static_assert(!std::is_copy_constructible_v<f::Session> && !std::is_move_constructible_v<f::Session>);
 static_assert(std::is_same_v<f::Session, f::BasicSession<c::Arbiter>>);
 }
@@ -495,5 +565,7 @@ int main() {
     refused_revoke_stays_stopped_and_retries_only_its_claim();
     revocation_retry_preserves_failed_reason_and_joins_existing_stop();
     quarantine_never_borrows_foreign_or_unpublished_claims();
+    supplied_xyz_finiteness();
+    target_preserves_fourth_words();
     std::cout << "body_follow checks=" << checks << " native_actions=0\n";
 }

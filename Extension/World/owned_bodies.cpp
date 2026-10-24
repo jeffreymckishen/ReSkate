@@ -87,7 +87,7 @@ struct Service {
     std::array<Slot, retained_capacity> slots{};
     std::atomic<Synchronize> original{};
     std::atomic<bool> hooked{};
-    bool hook_attempted{}, listener{};
+    bool hook_attempted{}, listener{}, initialization_requested{};
     std::uintptr_t base{}, client{}, world{}, state{}, context{};
     DWORD thread{};
     bool eligible{};
@@ -524,8 +524,25 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
     LastError error;
     if (!service.thread) service.thread = GetCurrentThreadId();
     if (GetCurrentThreadId() != service.thread) return;
+    bool prepare{};
+    {
+        Locked lock(service.lock);
+        service.base = base; service.client = client; service.tick_at = GetTickCount64(); service.eligible = ready;
+        if (!eligible()) {
+            service.initialization_requested = false;
+            for (auto& s : service.slots) if (s.attempted && !s.retained) retire(s, false);
+            service.world = service.state = service.context = 0;
+            return;
+        }
+        prepare = service.initialization_requested && !service.hook_attempted;
+        service.initialization_requested = false;
+    }
+    // Process-lifetime producer setup can suspend threads. It runs outside both
+    // the plugin VM budget and this service lock, and never queues a definition
+    // or allocates a plugin body. Only a later explicit create can do that.
+    if (prepare) (void)initialize();
     Locked lock(service.lock);
-    service.base = base; service.client = client; service.tick_at = GetTickCount64(); service.eligible = ready;
+    // Setup may be slow. Do not refresh tick_at to disguise stale readiness.
     if (!eligible()) {
         for (auto& s : service.slots) if (s.attempted && !s.retained) retire(s, false);
         service.world = service.state = service.context = 0;
@@ -549,7 +566,13 @@ std::string create(std::uint64_t owner, const Definition& definition, Handle& ou
         if (!owner || !valid(definition)) return "invalid body definition";
         if (!eligible()) return "owned bodies require the current local client phase outside multiplayer";
         Locked lock(service.lock);
-        if (!initialize()) return "native body ABI or producer hook unavailable; another producer may own it";
+        if (!service.hooked.load(std::memory_order_acquire)) {
+            if (service.hook_attempted) return "native body ABI or producer hook unavailable; another producer may own it";
+            // Preparation is generic and process-lifetime: no owner, definition,
+            // position or allocation request survives this refused call.
+            service.initialization_requested = true;
+            return "waiting for a fresh qualified 60 Hz physics step";
+        }
         Anchor anchor; Epoch epoch;
         if (!capture(anchor) || !clock(anchor, epoch)) return "waiting for a fresh qualified 60 Hz physics step";
         if (anchor.world != service.world || anchor.state != service.state || anchor.context != service.context) {

@@ -21,7 +21,8 @@ three metres to the actor's right and half a metre above their reported origin.
 
 The fixture first waits for the eight entity statuses to become `ready`, then
 attempts one body creation. The exact SDK refusal, `waiting for a fresh qualified
-60 Hz physics step`, covers unavailable anchor capture OR clock qualification in
+60 Hz physics step`, covers queued producer setup, unavailable anchor capture OR
+clock qualification in
 `owned_bodies.cpp`. It proves that this attempt reserved no slot or body, but does
 not establish which prerequisite failed or prove clock initialization. Only that
 preallocation readiness refusal exposes **Retry after readiness wait**. This
@@ -56,3 +57,17 @@ allocation trials.
 The next riding milestone requires qualified contact normals and surface motion,
 same-epoch local-rider/self exclusions, controller provenance and an actual native
 rider ownership/follow/release path. None is bypassed by this spawn diagnostic.
+
+Cold producer setup is requested without hooks or allocation inside the Lua call.
+The SDK performs its one-time generic setup on a later eligible client tick,
+then the existing separate explicit retry remains necessary. Initialization
+failure is sticky and is reported as ABI/producer unavailable. No definition or
+body creation is queued. Setup may complete after caller unload because the
+generic producer hooks have process lifetime and grant no plugin ownership.
+
+The trial stores separate bounded `lua_bike_api_create_result_v4`,
+`lua_bike_api_read_result_v4` and `lua_bike_api_release_result_v4` records as soon
+as each protected API call returns. Cleanup cannot overwrite those records.
+They contain only observed return type/arity/booleans and a bounded reason, never
+raw tokens or a handle string. A missing result after a watchdog stop remains
+unknown; a returned body handle alone is not a native measurement or cleanup proof.

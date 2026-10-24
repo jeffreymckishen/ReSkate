@@ -18,11 +18,25 @@ local function marker(event,operation,key)
         logged[unique]=true
     end
 end
+-- Each result has its own separate key: later cleanup cannot overwrite it.
+-- These are API return facts, not native allocation, measurement or cleanup proof.
+local function returned(operation,result)
+    if operation~="create" and operation~="read" and operation~="release" then return end
+    local value=result[2]
+    local record={operation=operation,pcall_ok=result[1]==true,arity=result.n-1,
+        value_type=typeof(value),first_is_nil=value==nil}
+    if operation=="create" then record.body_returned=typeof(value)=="userdata" end
+    if operation=="release" then record.release_accepted=value==true end
+    local reason=result[1] and result[3] or result[2]
+    if type(reason)=="string" then record.reason=string.sub(reason,1,256) end
+    reskate.storage.set("lua_bike_api_"..operation.."_result_v4",record)
+end
 local function traced(operation,call)
     return function(...)
         local key=(operation=="bounds" or operation=="set" or operation=="status" or operation=="remove") and select(1,...) or ""
         marker("before",operation,key)
         local result=table.pack(pcall(call,...))
+        returned(operation,result)
         if not result[1] then marker("error",operation,key) error(result[2],0) end
         marker("after",operation,key)
         return table.unpack(result,2,result.n)

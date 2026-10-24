@@ -39,7 +39,8 @@ __declspec(align(16)) __declspec(thread) unsigned char source_test_tls[0x4000];
 
 namespace test_facts {
 std::atomic<unsigned> model_calls{}, world_calls{}, body_calls{}, shape_calls{}, mutations{}, forbidden_links{};
-std::atomic<bool> multiplayer_active{};
+std::atomic<bool> multiplayer_active{}, inspect_initializer_lock{}, initializer_unlocked{};
+std::atomic<ULONGLONG> initializer_elapsed{};
 std::function<dingosdk::BoundedLocalSurfaceProbe(const std::array<float,3>&,const std::array<float,3>&,unsigned,bool)> probe_callback;
 }
 namespace dingosdk::multiplayer {
@@ -67,7 +68,16 @@ BoundedLocalSurfaceProbe probe_local_surface_geometry_bounded(const std::array<f
     ++test_facts::forbidden_links;return {};
 }
 namespace supported_build {
-bool running_image_matches(std::uintptr_t) noexcept { ++test_facts::forbidden_links; return false; }
+bool running_image_matches(std::uintptr_t) noexcept {
+    ++test_facts::forbidden_links;
+    if (test_facts::inspect_initializer_lock.load()) {
+        const bool unlocked = TryAcquireSRWLockExclusive(&owned_bodies::service.lock) != 0;
+        test_facts::initializer_unlocked = unlocked;
+        if (unlocked) ReleaseSRWLockExclusive(&owned_bodies::service.lock);
+        test_clock::now += test_facts::initializer_elapsed.load();
+    }
+    return false;
+}
 }
 }
 
@@ -610,10 +620,70 @@ void service_actor_and_nearest_hit_refusals() {
     check(!out.available && out.native_casts==1 && f.calls==2,"unknown nearest hit became foreign/clear or retried");
 }
 
-template<class F> void run(const char* name, F function) {
+void deferred_initialization_stays_outside_create_and_service_lock() {
+    Fixture f;
+    const auto definition=f.slot().definition;
+    const auto read_api=service.api;
+    service.slots={};service.hooked=false;service.hook_attempted=false;
+    service.initialization_requested=false;service.listener=false;service.original=nullptr;
+    service.api={};test_facts::forbidden_links=0;
+    const auto no_allocation=[] {
+        return std::none_of(service.slots.begin(),service.slots.end(),[](const Slot& slot){return slot.attempted;});
+    };
+    Handle out{77,3};
+    check(create(0,definition,out)=="invalid body definition" && !out.generation && !service.initialization_requested,
+        "ownerless create queued producer preparation");
+    auto invalid=definition;invalid.mass=0;
+    check(create(owner,invalid,out)=="invalid body definition" && !service.initialization_requested,
+        "invalid definition queued producer preparation");
+    std::string wrong_thread;
+    std::thread other([&]{Handle ignored;wrong_thread=create(owner,definition,ignored);});other.join();
+    check(!wrong_thread.empty() && !service.initialization_requested,"wrong thread queued producer preparation");
+    test_facts::multiplayer_active=true;
+    check(!create(owner,definition,out).empty() && !service.initialization_requested,"multiplayer queued producer preparation");
+    test_facts::multiplayer_active=false;
+    SetLastError(0x1234);
+    check(create(owner,definition,out)=="waiting for a fresh qualified 60 Hz physics step" && !out.generation &&
+        service.initialization_requested && !service.hook_attempted && test_facts::forbidden_links==0 && no_allocation(),
+        "cold create initialized hooks or reserved a body rather than only requesting setup");
+    check(GetLastError()==0x1234,"cold preparation request changed LastError");
+    check(create(owner+1,definition,out)=="waiting for a fresh qualified 60 Hz physics step" &&
+        service.initialization_requested && test_facts::forbidden_links==0 && no_allocation(),
+        "a second generic preparation request performed native work");
+    tick(f.base,f.client,false);
+    check(!service.initialization_requested && !service.hook_attempted && test_facts::forbidden_links==0 && no_allocation(),
+        "ineligible tick retained or executed a stale preparation request");
+    tick(f.base,f.client,true);
+    check(!service.hook_attempted && test_facts::forbidden_links==0,"eligibility restoration automatically prepared without a new request");
+    check(create(owner,definition,out)=="waiting for a fresh qualified 60 Hz physics step","fresh explicit preparation request refused");
+    test_facts::inspect_initializer_lock=true;test_facts::initializer_unlocked=false;test_facts::initializer_elapsed=251;
+    const auto requested_at=test_clock::now.load();
+    SetLastError(0x5678);tick(f.base,f.client,true);
+    test_facts::inspect_initializer_lock=false;test_facts::initializer_elapsed=0;
+    check(GetLastError()==0x5678,"deferred initializer tick changed LastError");
+    check(service.hook_attempted && !service.hooked && !service.initialization_requested &&
+        test_facts::forbidden_links==1 && test_facts::initializer_unlocked && no_allocation(),
+        "actual fail-closed initializer did not run exactly once outside the service SRW lock");
+    check(service.tick_at==requested_at && test_clock::now==requested_at+251 && !eligible(),
+        "slow producer setup refreshed old readiness instead of failing closed");
+    tick(f.base,f.client,true);
+    check(create(owner,definition,out)=="native body ABI or producer hook unavailable; another producer may own it" &&
+        !service.initialization_requested && test_facts::forbidden_links==1 && no_allocation(),
+        "failed producer initialization was disguised as retryable warmup");
+    tick(f.base,f.client,true);
+    check(test_facts::forbidden_links==1 && no_allocation(),"failed initialization automatically repeated");
+    // Constructed ready state tests the later create gate, not native hook success.
+    service.api=read_api;service.hooked=true;clock_feed.serial=0;clock_feed.sequence=0;
+    tick(f.base,f.client,true);
+    check(create(owner,definition,out)=="waiting for a fresh qualified 60 Hz physics step" && no_allocation() &&
+        !service.initialization_requested && test_facts::mutations==0,
+        "constructed producer readiness bypassed the original fresh clock or allocated automatically");
+}
+
+template<class F> void run(const char* name, F function, unsigned expected_links=0) {
     function();
     check(test_facts::mutations.load() == 0, "source path invoked a native mutator/allocator");
-    check(test_facts::forbidden_links.load() == 0, "source path entered unrelated hook/query/constructor dependency");
+    check(test_facts::forbidden_links.load() == expected_links, "source path entered an unexpected hook/query/constructor dependency");
     ++cases;
     std::cout << "PASS " << name << '\n';
 }
@@ -632,6 +702,7 @@ int main() {
         run("service_contact_opt_in_and_read_only",service_contact_opt_in_and_read_only);
         run("service_whole_batch_contact_fences",service_whole_batch_contact_fences);
         run("service_actor_and_nearest_hit_refusals",service_actor_and_nearest_hit_refusals);
+        run("deferred_producer_initialization_without_allocation",deferred_initialization_stays_outside_create_and_service_lock,1);
         std::cout << cases << " actual-Service cases, " << checks << " checks passed; native mutations "
                   << test_facts::mutations.load() << '\n';
         return 0;

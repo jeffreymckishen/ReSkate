@@ -6481,6 +6481,13 @@ void bmx_lua_spawn_uses_owned_chassis_and_measured_part_placement() {
         check(e.logged("Lua bike API") && receipt["lua_bike_api_marker_v3"]["event"]==Json("after") &&
             receipt["lua_bike_api_marker_v3"]["operation"]==Json("release"),
             "actual trial source keeps before/after API breadcrumbs through release and storage flush");
+        check(receipt["lua_bike_api_create_result_v4"]["pcall_ok"]==Json(true) &&
+            receipt["lua_bike_api_create_result_v4"]["value_type"]==Json("userdata") &&
+            receipt["lua_bike_api_create_result_v4"]["body_returned"]==Json(true) &&
+            receipt["lua_bike_api_create_result_v4"]["arity"]==Json(1) &&
+            receipt["lua_bike_api_read_result_v4"]["value_type"]==Json("table") &&
+            receipt["lua_bike_api_release_result_v4"]["release_accepted"]==Json(true),
+            "independent bounded result records survive later read and release cleanup");
         no_driving(e); ++scenarios;
     }
     for (unsigned scenario=0; scenario<13; ++scenario) {
@@ -6613,6 +6620,28 @@ void bmx_lua_spawn_uses_owned_chassis_and_measured_part_placement() {
             check(state(h,e)["phase"]==Json("closed") && e.fake.test_bounds_lookups==probes &&
                 !e.fake.body_creates && e.fake.entities.empty(),"focus loss stops a partial preflight before another lookup");
         }
+        no_driving(e);++scenarios;
+    }
+    {
+        auto actual=files;
+        actual[manifest_file]=contents(root/"bike-spawn-trial"/manifest_file);
+        actual["plugin/main.lua"]=contents(root/"bike-spawn-trial/plugin/main.lua");
+        TestEnvironment e;assets(e);e.fake.test_body_create_refusal="constructed opaque creation refusal";
+        Host h(e,Side::client);h.apply({package("bike-spawn-refusal-journal",actual)});
+        e.panels_open=true;e.shown="bike-spawn-refusal-journal";e.fake.focus_now.interface_open=true;
+        e.actions={plugin_ui::Action{"bike-spawn-refusal-journal","Lua Bike Spawn Trial","spawn",false}};
+        bounded_ticks(h,e,1);e.panels_open=false;e.fake.focus_now.interface_open=false;
+        bounded_ticks(h,e,9);running(h,"bike-spawn-refusal-journal",e);h.apply({});
+        const auto ledger=Json::parse(contents(e.storage_root()/"bike-spawn-refusal-journal/storage.json"));
+        const auto& observed=ledger["lua_bike_api_create_result_v4"];
+        check(observed["pcall_ok"]==Json(true) && observed["arity"]==Json(2) &&
+            observed["value_type"]==Json("nil") && observed["first_is_nil"]==Json(true) &&
+            observed["body_returned"]==Json(false) && observed["reason"]==Json("constructed opaque creation refusal"),
+            "actual returned refusal is retained independently of later removal markers");
+        check(ledger["lua_bike_api_marker_v3"]["operation"]==Json("remove") &&
+            ledger["lua_bike_spawn_v1"]["cleanup_unknown"]==Json(true) &&
+            !ledger.contains("lua_bike_api_release_result_v4") && !e.fake.body_creates && e.fake.entities.empty(),
+            "unknown creation refusal cannot become known preallocation, a body or an invented release");
         no_driving(e);++scenarios;
     }
     // Compare the Lua port with the existing authored transform mathematics.

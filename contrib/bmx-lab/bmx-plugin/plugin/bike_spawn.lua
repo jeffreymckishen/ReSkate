@@ -158,8 +158,8 @@ function Runtime:_update(dt)
         self.creation_attempts+=1 self.creation_unknown=true
         self.body,self.detail=self.api.world.physics.create(definition)
         if not self.body then
-            -- This exact native refusal covers unavailable anchor capture OR clock
-            -- qualification, before slot reservation/allocation (owned_bodies.cpp).
+            -- This exact refusal covers queued producer setup, unavailable anchor
+            -- capture OR clock qualification, before slot reservation/allocation.
             -- It does not identify the cause or prove clock initialization.
             -- No retry occurs without the separate explicit action.
             local warmup=self.detail=="waiting for a fresh qualified 60 Hz physics step"

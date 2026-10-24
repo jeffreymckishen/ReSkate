@@ -4,8 +4,12 @@
 #include <string>
 
 namespace dingosdk::owned_bodies {
-// Client thread only. Calling tick grants no plugin ownership and creates no hooks or bodies.
+// Client thread only. Tick grants no plugin ownership and never creates bodies;
+// a previously requested producer setup may install generic hooks.
 void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept;
+// Cold create requests only process-lifetime producer setup on a later eligible
+// tick and refuses before allocation. No definition/body request is queued;
+// callers must make a separate explicit create after readiness is available.
 std::string create(std::uint64_t owner, const owned_body::Definition&, owned_body::Handle&) noexcept;
 std::string read(std::uint64_t owner, const owned_body::Handle&, owned_body::Sample&) noexcept;
 body_query::Result probe_batch(std::uint64_t owner, const owned_body::Handle&, const body_query::Request&, unsigned allowance) noexcept;

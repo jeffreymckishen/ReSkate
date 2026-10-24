@@ -1,6 +1,6 @@
-# Lua stock switching checkpoint — 2026-10-23
+# Lua stock switching checkpoint â€” 2026-10-23
 
-Two clean stationary stock on-foot → skateboard → on-foot roundtrips were recorded
+Two clean stationary stock on-foot â†’ skateboard â†’ on-foot roundtrips were recorded
 across separate game launches through
 the production [Lua adapter](../../bmx-plugin/plugin/equipment_runtime.lua) and
 [transition model](../../bmx-plugin/plugin/equipment_transition.lua). This is
@@ -30,8 +30,8 @@ Each leg was explicitly armed once; no automatic request retry was used.
 
 | Leg | Stock states | SDK sequence | Terminal report | Target suffix |
 | --- | --- | --- | --- | --- |
-| Trial 1 | On foot `504` → board `100` | `1` | `released / none`, mask `0` | 2.5 s; 151 qualified / 174 total samples |
-| Trial 2 | Board `100` → on foot `504` | `2` | `released / none`, mask `0` | 2.5 s; 151 qualified / 151 total samples |
+| Trial 1 | On foot `504` â†’ board `100` | `1` | `released / none`, mask `0` | 2.5 s; 151 qualified / 174 total samples |
+| Trial 2 | Board `100` â†’ on foot `504` | `2` | `released / none`, mask `0` | 2.5 s; 151 qualified / 151 total samples |
 
 Both receipts recorded 51 press publications and one neutral publication,
 released claims, no report debt, successful acknowledgement and no retained
@@ -63,8 +63,8 @@ the fresh owner, original deadlines, separate per-leg gates and raw driver ledge
 
 | Leg | Stock states | SDK sequence | Terminal report | Target suffix |
 | --- | --- | --- | --- | --- |
-| Trial 1 | On foot `504` → board `100` | `1` | `released / none`, mask `0` | 2.5 s; 151 qualified / 175 total samples |
-| Trial 2 | Board `100` → on foot `504` | `2` | `released / none`, mask `0` | 2.5 s; 151 qualified / 151 total samples |
+| Trial 1 | On foot `504` â†’ board `100` | `1` | `released / none`, mask `0` | 2.5 s; 151 qualified / 175 total samples |
+| Trial 2 | Board `100` â†’ on foot `504` | `2` | `released / none`, mask `0` | 2.5 s; 151 qualified / 151 total samples |
 
 Each repeat leg recorded 49 press publications and one neutral publication,
 the same clean claim/debt/acknowledgement and `1/3/1/1` request/read/store/ack
@@ -213,6 +213,74 @@ Screenshots are stored at
 raw logs and receipts are also archived under the corresponding `artifacts`
 folder on E:. This is one successful stock regression, not proof of broad
 switching reliability, a Lua BMX ride or a gameplay likeness score.
+
+## Lua bike visual checkpoint
+
+This is separate from the stock switching results above. Source `334c9c98`
+introduced the explicit unmounted Lua diagnostic; `e3c6db54` added one exact
+mesh-bounds lookup per tick and trial API breadcrumbs. Full Release and the
+integrated plugin suite passed (1/1, 6.06 s): 21 Host scenarios, 2048 authored/COM
+comparisons and zero driving calls, with 15 reported skips. The first
+private math-fixture run hit the unchanged 50 ms watchdog; its unchanged rerun
+passed. These are Host/FakeGame checks, not native riding evidence.
+
+The fresh package `BMX_LuaSpawn_20261023_v2` used runtime
+`DEB56DE02629AAE83A36913BB2A90219A1C3DBAC27FD8C3C171E8659B6F66E3F`
+and launcher
+`81B0D4626A54E3ECDBCE5A22F76208340DB0BD1B4AEE536A23C169EFC93137C1`.
+This is a different build from the stock guard regression's `9005C913` runtime
+and `7E506E09` launcher. PID 5544 / creation FILETIME `134372760586865999` was
+bound before the single explicit spawn; no readiness retry or controller action ran.
+
+The after-close image confirms a recognizable bike frame/front-wheel/handlebar/
+seat/crank portion rendered at the left edge, clipped and elevated above ground.
+The later first-observation image shows no bike at that location. All eight
+exact bounds requests have before/after markers. Create1541-before at
+20:43:48.958 and create1542-after at 20:43:49.029 bracket 71 ms. This includes
+wrapper/logging/scheduling work and is not isolated native CPU time. The after
+marker proves the protected call returned without a Lua error; it does not prove
+a nonnil body. Removal then began and the 50 ms watchdog stopped the tick.
+No create return arity/reason, body read, release receipt or final spawn status
+was retained. Final storage contains only before-remove3, sequence1547.
+Visible rendering of a bike portion is proved; chassis success, body measurements, parking
+and cleanup remain unknown. Later visual absence does not establish destruction.
+
+Raw files are retained in
+`C:\Users\Jeffr\Desktop\reskate\build\bmx\lua-bike-spawn-native-v2` and identically
+archived at `E:\RESKATE DEV\reskate\artifacts\lua-bike-spawn-native-v2`.
+The [independent outcome audit](../../../../build/bmx/actor-exclusion-proposal-v1/native-spawn-v3-package-v2-independent-outcome-audit.json)
+has SHA-256 `6A02EB8A44514F7E8FB910415367FF824D4970600BED0889044DEA4BFC618456`.
+Key raw SHA-256 pins are:
+
+| Evidence | SHA-256 |
+| --- | --- |
+| Integrated `lua-spawn-integration-v2/execution.json` | `C64A27C9F4EA1BBB0CA9CC251AE571CD6901E6BE21A6F94743A8B5C0C9BCB791` |
+| `session-final-runtime.log` | `ADE9B9CB6A172A445E371A65BCE9C665F33BC5FE5C9EC7DE80E8745C57454E3B` |
+| `first-storage.json` and identical `session-final-storage.json` | `2C96C9AF9C41D7C628E03AB6211929C96C255E808A9D5880BE3223ACB6C45522` |
+| `session-shutdown.json` | `60163CB7148CCB0B4CAA2BADF48321DCF07BC3B61F4101800704E2582F48698B` |
+| `screenshots.json` | `6F03B5BD672DF10C2F2020B156CB843741CF86E8684954BCDE91E2E8C418E55C` |
+| `after-close.jpg` | `0689C36410D50688CA9C2F9DC4B76F55BA16B5F7A4C4355DACEAD00DA7ADDD8A` |
+| `first-observation.jpg` | `22DAA8968F55FA369F5D47C68441AA112221B88E757FF78597099652ACCFD091` |
+
+Images are under `E:\RESKATE DEV\reskate\screenshots\lua-bike-spawn-native-v2`.
+Normal close, process absence and later manifest withdrawal recorded zero Skate
+processes and active Lua manifests. This ends the failed bounded session;
+it does not qualify native body cleanup.
+
+Upstream `1949427` is merged as `6aad1bed`. The separate fourteen-path generic
+contact checkpoint `2a98eb9c` passed configure/Release, 43/43 focused CTests
+in 15.54 s and server configuration 1/1 in 0.47 s on its first build/test attempt.
+Its [execution receipt](../../../../build/bmx/contact-integration-v1/execution.json)
+has SHA-256 `59370DEDF3272485C1D4E9DB05B97F4329E9D1F623A96308DA42131C93E81D5F`.
+That built runtime `5CC87656` and launcher `D149BD35` were not deployed; the
+visual evidence above remains bound to `DEB56DE0` / `81B0D462`. No native
+contact trial or positive actor exclusion is established. The separate private
+first-use SDK setup/create-read-release result proposal passed 22 Host scenarios,
+2048 comparisons and 11 Service cases/274 checks with zero native mutations.
+Its [private receipt](../../../../build/bmx/owned-body-deferred-initialization-proposal-v1/receipt.json)
+has SHA-256 `54B409454607E8C0F291A5F4D62943821AF3F315B73DC13E6B613CC4E9FAD5B1`.
+Root integration and a new native trial remain pending. These private tests
+establish no mounted riding, tricks, fall recovery or 9.5 likeness.
 
 ## Remaining checks
 

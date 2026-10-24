@@ -21,13 +21,14 @@ proof and optional 128 iterations remain unqualified. Gameplay stays inactive.
 ## Latest upstream inspected
 
 Official `Dingo-Shenanigans/ReSkate` main was last fetched at
-`823dfc27a2e81bbc35e96abb03eff39d9cca02d2` on October 23. The 17 commits from
-`e35e33d` through `7fa407a` were integrated on `BMX` in the two-parent merge
-`d6f1497aab359a92715b75a6b2051078dfa07537`, preserving both histories. A clean
-Release build and all 39 focused CTests passed against the merged source.
-The runtime and launcher were rebuilt together, including protocol 54.
-The later server-documentation-only commit was integrated separately as
-`8e0d5c8`, without changing runtime behavior.
+`194942779cdef48a3646aecdecfcd99ac966b39c` on October 23 and integrated on `BMX`
+in two-parent merge `6aad1bed14c4f9c7373a272af31f134222f6dda6`, preserving both
+histories. This follows the tested Lua spawn checkpoint `e3c6db54` below.
+
+The earlier 17 commits from `e35e33d` through `7fa407a` were integrated in
+`d6f1497`; its clean Release build and 39 focused CTests passed, with runtime and
+launcher rebuilt together for protocol 54. The later server-documentation-only
+commit was integrated separately as `8e0d5c8`.
 
 These changes add shared plugin content, world-to-screen bounds validation,
 server roles/cards/polls and other server/launcher improvements. They do not
@@ -55,6 +56,42 @@ not reset, discard, automatically stash, push or merge into an active game/build
 Rebuild affected binaries and tests, and reconcile their identity before using
 new game evidence. Inspection of the current API must precede implementation;
 older recovered method offsets are not contracts for the installed Streets build.
+
+## Current Lua bike checkpoint
+
+`334c9c98` added an explicit unmounted Lua bike/chassis diagnostic. `e3c6db54`
+replaced its global asset catalog scan with one exact mesh-bounds lookup per
+tick, retaining all eight parts, the original total deadline and separate
+preallocation retry. Its integrated Release build and plugin suite passed;
+the actual Host case passed 21 scenarios and 2048 authored/COM comparisons with
+zero driving calls. The earlier 50 ms math-fixture failure remains archived;
+the unchanged rerun passed without increasing budgets.
+
+The fresh `BMX_LuaSpawn_20261023_v2` game trial now confirms a recognizable
+Lua-driven bike portion rendered at the left edge of the scene. It was clipped
+and elevated; a later image shows no bike there. This is native visual progress,
+not a verified eight-part render, successful chassis creation or a mounted ride.
+All eight bounds calls have before/after markers. Create's log bracket spans
+71 ms, followed by removal and the unchanged 50 ms tick watchdog. Its return
+arity/value/reason was not retained; the last stored marker is before remove3.
+Body success, native measurements and cleanup remain unknown. Normal shutdown
+and subsequent manifest withdrawal recorded zero processes and active Lua manifests.
+
+This trial used runtime `DEB56DE0` and launcher `81B0D462`; keep it separate from
+the clean stock forward regression on runtime `9005C913` / launcher `7E506E09`.
+The [checkpoint](judging/checkpoints/2026-10-23-lua-stock-switching.md#lua-bike-visual-checkpoint)
+pins both builds, raw C:/E: evidence and the independent native outcome audit.
+No riding, tricks, rider alignment, fall recovery or 9.5 likeness is established.
+
+The fourteen-path generic contact measurement checkpoint `2a98eb9c` passed
+Release, all 43 focused CTests (15.54 s), and the separate server configuration
+test (0.47 s) on its first build/test attempt. Its `5CC87656` runtime and
+`D149BD35` launcher are built offline and were not deployed for the visual trial.
+Native contact measurements, positive actor exclusion and wheel-force composition
+remain unqualified. The separate private first-use SDK setup/result-breadcrumb
+proposal passed 22 Host scenarios, 2048 comparisons and 11 Service cases/274
+checks. Root integration and a new native trial remain pending; those private
+checks do not qualify the live game behavior.
 
 ## Where the implementation belongs
 

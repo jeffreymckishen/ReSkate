@@ -121,12 +121,16 @@ struct Service {
     // High32 is the immutable probe generation, low32 a bounded loss count.
     // Old callbacks cannot attribute a loss to a replacement probe.
     std::atomic<std::uint64_t> probe_losses{};
+    // Each fixed counter has its own generation tag. A delayed old callback
+    // cannot count against a replacement probe or mutate a terminal copy.
+    std::array<std::atomic<std::uint64_t>, 8> probe_routes{};
     std::atomic<std::uint32_t> probe_live{};
 };
 // Static fixed storage exists before any hook can run. Physics callbacks never construct
 // a function-local singleton, allocate, format text, call Lua or wait for a lock.
 Service service;
 Clock clock_feed;
+void sync_capture_routes(SyncProbe& probe) noexcept;
 static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
 struct LastError { DWORD value = GetLastError(); ~LastError() { SetLastError(value); } };
 struct Locked { SRWLOCK& lock; explicit Locked(SRWLOCK& value) : lock(value) { AcquireSRWLockExclusive(&lock); } ~Locked() { ReleaseSRWLockExclusive(&lock); } };
@@ -378,6 +382,7 @@ void retire(Slot& s, bool may_park) noexcept {
         service.probe.result.status == body_sync_probe::Status::pending) {
         service.probe.result.status = body_sync_probe::Status::invalidated;
         service.probe_live.store(0, std::memory_order_release);
+        sync_capture_routes(service.probe);
     }
     s.mailbox.cancel();
     const bool parked = may_park && park(s);
@@ -564,6 +569,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
             if ((losses >> 32) == service.probe.sequence) service.probe.result.dropped = static_cast<std::uint32_t>(losses);
             service.probe.result.status = body_sync_probe::Status::expired;
             service.probe_live.store(0, std::memory_order_release);
+            sync_capture_routes(service.probe);
         }
         if (!eligible()) {
             service.initialization_requested = false;
@@ -884,6 +890,7 @@ void release_all(std::uint64_t owner) noexcept {
     if (owner && service.probe.owner == owner && service.probe.result.status == body_sync_probe::Status::pending) {
         service.probe.result.status = body_sync_probe::Status::invalidated;
         service.probe_live.store(0, std::memory_order_release);
+        sync_capture_routes(service.probe);
     }
     for (auto& s : service.slots) if (s.attempted && s.owner == owner && !s.retained) retire(s, eligible() && fresh(s));
 }

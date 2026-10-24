@@ -206,7 +206,7 @@ struct PhysicsApi {
         const auto why = p.services_.game().body_poll_sync_probe(p.instance(), probe.handle, probe.sequence, out);
         if (!why.empty()) return fail(L, why);
         if (!sync_result(out)) return fail(L, "synchronizer probe returned invalid observations");
-        lua_createtable(L, 0, 8);
+        lua_createtable(L, 0, 9);
         lua_pushstring(L, sync_status(out.status)); lua_setfield(L, -2, "status");
         lua_pushboolean(L, out.status != body_sync_probe::Status::pending); lua_setfield(L, -2, "terminal");
         push_sync_epoch(L, out.armed_epoch); lua_setfield(L, -2, "armed_epoch");
@@ -214,6 +214,16 @@ struct PhysicsApi {
         lua_pushnumber(L, out.observed_mask); lua_setfield(L, -2, "observed_mask");
         lua_pushnumber(L, out.rejected); lua_setfield(L, -2, "rejected");
         lua_pushnumber(L, out.dropped); lua_setfield(L, -2, "dropped");
+        lua_createtable(L, 0, 5);
+        lua_pushnumber(L, out.routing.entries); lua_setfield(L, -2, "entries");
+        lua_pushnumber(L, out.routing.other); lua_setfield(L, -2, "other");
+        lua_pushnumber(L, out.routing.already_recorded); lua_setfield(L, -2, "already_recorded");
+        lua_pushnumber(L, out.routing.expired_entries); lua_setfield(L, -2, "expired_entries");
+        lua_createtable(L, 4, 0);
+        for (std::size_t i = 0; i < out.routing.matches.size(); ++i) {
+            lua_pushnumber(L, out.routing.matches[i]); lua_rawseti(L, -2, static_cast<int>(i + 1));
+        }
+        lua_setfield(L, -2, "matches"); lua_setfield(L, -2, "routing");
         lua_createtable(L, 4, 0);
         for (std::size_t i = 0; i < out.records.size(); ++i) {
             const auto& r = out.records[i]; lua_createtable(L, 0, r.present ? 13 : 1);

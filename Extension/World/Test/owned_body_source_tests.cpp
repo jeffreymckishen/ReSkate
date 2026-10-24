@@ -53,8 +53,9 @@ MultiplayerModel model() {
 }
 
 // These constructed link leaves cannot observe a native actor or lifetime.
-// Existing source tests never request a synchronizer probe. Any unexpected
-// call is counted by their existing failure checks and remains unavailable.
+// Existing source tests never request a synchronizer probe. The routing-only
+// cases seed a private pending probe and count the one intentional failed actor
+// read separately; none qualifies a retail actor or begins a native probe.
 namespace dingosdk::actor_control_native {
 bool observe_actor(Actor& actor) noexcept {
     ++test_facts::forbidden_links;
@@ -698,6 +699,145 @@ void deferred_initialization_stays_outside_create_and_service_lock() {
         "constructed producer readiness bypassed the original fresh clock or allocated automatically");
 }
 
+
+// These cases execute the actual hook/router with a constructed pending probe.
+// They do not prove begin_sync_probe admission, native synchronizer invocation
+// in retail, actor lifetime or record-pose qualification.
+std::atomic<unsigned> routing_original_calls{};
+std::uintptr_t routing_original(NativeHandle*, std::uintptr_t) {
+    ++routing_original_calls;
+    SetLastError(0x5EED);
+    return 0x7A5E;
+}
+void seed_routing_probe(Fixture& fixture, std::uint32_t sequence, bool recorded = false) {
+    test_facts::forbidden_links = 0; routing_original_calls = 0;
+    SyncProbe value; value.owner = owner; value.handle = fixture.handle;
+    value.sequence = sequence; value.world_generation = service.world_generation;
+    value.packets = fixture.arena.take(0x1000);
+    value.opened_ms = test_clock::now.load(); value.deadline = value.opened_ms + sync_probe_lifetime_ms;
+    value.result.armed_epoch = fixture.slot().latest.epoch;
+    if (recorded) {
+        value.result.observed_mask = sync_all_records;
+        for (auto& record : value.result.records) record.present = true;
+    }
+    service.probe = value;
+    service.probe_losses = std::uint64_t{sequence} << 32;
+    sync_reset_routes(sequence);
+    service.original = routing_original;
+    service.probe_live = sequence;
+}
+bool same_routing(const body_sync_probe::Routing& a, const body_sync_probe::Routing& b) {
+    return a.entries == b.entries && a.matches == b.matches && a.other == b.other &&
+        a.already_recorded == b.already_recorded && a.expired_entries == b.expired_entries;
+}
+void route_call(Fixture& fixture, std::uintptr_t wrapper) {
+    SetLastError(0x1234);
+    check(synchronize_hook(&fixture.slot().body, wrapper) == 0x7A5E, "routing changed the raw original result");
+    check(GetLastError() == 0x5EED, "routing changed original LastError");
+}
+void sync_routes_distinguish_wrapper_and_record_paths() {
+    Fixture fixture; seed_routing_probe(fixture, 31, true);
+    const auto packets = service.probe.packets;
+    // The 32 producer wrappers are a different selection from these four.
+    route_call(fixture, fixture.slot().anchor.wrappers[0]);
+    for (std::size_t i = 0; i < 4; ++i) route_call(fixture, packets + n::wrapper + i*n::packet_stride);
+    route_call(fixture, packets + n::wrapper);
+    route_call(fixture, 1); // Never dereference a foreign wrapper to classify it.
+    sync_capture_routes(service.probe);
+    auto counts = service.probe.result.routing;
+    check(counts.entries == 7 && counts.other == 2 && counts.already_recorded == 5,
+        "entry/foreign/already-recorded routing branches were conflated");
+    check(counts.matches == std::array<std::uint32_t,4>{2,1,1,1} && counts.expired_entries == 0,
+        "four exact wrappers were not counted before record suppression");
+    check(routing_original_calls == 7 && service.probe.result.rejected == 0 && service.probe.result.dropped == 0,
+        "passive routing changed original count or qualification/loss facts");
+    // One matched unrecorded wrapper reaches the existing unavailable actor
+    // stand-in; its route is still visible without fabricating a record.
+    service.probe.result.records[2].present = false; service.probe.result.observed_mask &= ~4u;
+    route_call(fixture, packets + n::wrapper + 2*n::packet_stride);
+    sync_capture_routes(service.probe); counts = service.probe.result.routing;
+    check(counts.entries == 8 && counts.matches[2] == 2 && counts.already_recorded == 5 &&
+        service.probe.result.rejected == 1 && !service.probe.result.records[2].present,
+        "matched qualification refusal vanished or became an observed record");
+    check(routing_original_calls == 8, "qualification refusal skipped or repeated original");
+    service.probe_live = 0;
+}
+void sync_routes_account_lock_loss_and_freeze_expiry() {
+    Fixture fixture; seed_routing_probe(fixture, 41);
+    bool raw_passed{};
+    AcquireSRWLockExclusive(&service.lock);
+    std::thread callback([&] {
+        SetLastError(0x1234);
+        const auto raw = synchronize_hook(&fixture.slot().body, 1);
+        raw_passed = raw == 0x7A5E && GetLastError() == 0x5EED;
+    });
+    callback.join(); ReleaseSRWLockExclusive(&service.lock);
+    check(raw_passed && routing_original_calls == 1, "Try-lock refusal waited or altered original passthrough");
+    sync_capture_routes(service.probe);
+    check(service.probe.result.routing.entries == 1 && service.probe.result.routing.other == 0 &&
+        static_cast<std::uint32_t>(service.probe_losses.load()) == 1,
+        "contended entry was hidden or incorrectly classified foreign");
+    test_clock::now = service.probe.deadline;
+    route_call(fixture, 1);
+    const auto frozen = service.probe.result;
+    check(frozen.status == SyncStatus::expired && !service.probe_live && frozen.routing.entries == 2 &&
+        frozen.routing.expired_entries == 1 && frozen.routing.other == 0 && frozen.dropped == 1,
+        "expiry-at-entry was classified foreign or existing dropped loss was changed");
+    // Model a callback that captured the old live generation before closure.
+    sync_route(41, SyncRoute::entry); sync_route(41, SyncRoute::other); sync_loss(41); sync_reject(41);
+    route_call(fixture, 1);
+    body_sync_probe::Result read;
+    check(!poll_sync_probe(owner + 1, fixture.handle, 41, read).empty(), "wrong owner read a route ledger");
+    auto wrong_body = fixture.handle; ++wrong_body.generation;
+    check(!poll_sync_probe(owner, wrong_body, 41, read).empty(), "wrong body generation read routes");
+    check(!poll_sync_probe(owner, fixture.handle, 40, read).empty(), "old sequence read routes");
+    check(poll_sync_probe(owner, fixture.handle, 41, read).empty() && same_routing(read.routing, frozen.routing) &&
+        read.dropped == frozen.dropped && read.rejected == frozen.rejected,
+        "terminal route/result facts changed after delayed entry or repeated read");
+    read.routing.entries = 99;
+    check(poll_sync_probe(owner, fixture.handle, 41, read).empty() && same_routing(read.routing, frozen.routing),
+        "mutating a returned copy changed terminal routing ownership");
+    seed_routing_probe(fixture, 42);
+    sync_route(41, SyncRoute::entry); sync_route(41, SyncRoute::other); sync_expire(41);
+    // A callback with a stale live capture must not label the new probe foreign.
+    service.probe_live = 41; route_call(fixture, 1); service.probe_live = 42;
+    sync_capture_routes(service.probe);
+    check(service.probe.result.routing.entries == 0 && service.probe.result.routing.other == 0 &&
+        service.probe.result.status == SyncStatus::pending, "old callback contaminated or closed the replacement probe");
+    route_call(fixture, 1); sync_capture_routes(service.probe);
+    check(service.probe.result.routing.entries == 1 && service.probe.result.routing.other == 1,
+        "replacement probe failed to count its own route");
+    service.probe_live = 0;
+}
+void sync_routes_freeze_other_closures_and_saturate() {
+    for (unsigned closure = 0; closure < 3; ++closure) {
+        Fixture fixture; seed_routing_probe(fixture, 51 + closure);
+        route_call(fixture, 1);
+        if (closure == 0) retire(fixture.slot(), false);
+        if (closure == 1) { service.eligible = false; release_all(owner); }
+        if (closure == 2) {
+            test_clock::now = service.probe.deadline;
+            tick(fixture.base, fixture.client, false);
+        }
+        const auto frozen = service.probe.result;
+        check(frozen.status == (closure == 2 ? SyncStatus::expired : SyncStatus::invalidated) &&
+            frozen.routing.entries == 1 && frozen.routing.other == 1 && !service.probe_live,
+            "release/retirement/tick terminal path did not freeze routes");
+        sync_route(51 + closure, SyncRoute::entry);
+        body_sync_probe::Result read;
+        check(poll_sync_probe(owner, fixture.handle, 51 + closure, read).empty() && same_routing(read.routing, frozen.routing),
+            "closure reopened routing or depended on an actor observation");
+    }
+    Fixture fixture; seed_routing_probe(fixture, UINT32_MAX);
+    auto& counter = service.probe_routes[static_cast<std::size_t>(SyncRoute::entry)];
+    counter = (std::uint64_t{UINT32_MAX} << 32) | (UINT32_MAX - 1);
+    sync_route(UINT32_MAX, SyncRoute::entry); sync_route(UINT32_MAX, SyncRoute::entry);
+    sync_route(UINT32_MAX - 1, SyncRoute::entry); sync_capture_routes(service.probe);
+    check(service.probe.result.routing.entries == UINT32_MAX && (counter.load() >> 32) == UINT32_MAX,
+        "bounded route count wrapped, changed generation or accepted an old generation");
+    service.probe_live = 0;
+}
+
 template<class F> void run(const char* name, F function, unsigned expected_links=0) {
     function();
     check(test_facts::mutations.load() == 0, "source path invoked a native mutator/allocator");
@@ -721,6 +861,9 @@ int main() {
         run("service_whole_batch_contact_fences",service_whole_batch_contact_fences);
         run("service_actor_and_nearest_hit_refusals",service_actor_and_nearest_hit_refusals);
         run("deferred_producer_initialization_without_allocation",deferred_initialization_stays_outside_create_and_service_lock,1);
+        run("sync_routes_wrapper_selection_and_suppression",sync_routes_distinguish_wrapper_and_record_paths,1);
+        run("sync_routes_try_lock_expiry_and_generation_freeze",sync_routes_account_lock_loss_and_freeze_expiry);
+        run("sync_routes_terminal_paths_and_saturation",sync_routes_freeze_other_closures_and_saturate);
         std::cout << cases << " actual-Service cases, " << checks << " checks passed; native mutations "
                   << test_facts::mutations.load() << '\n';
         return 0;

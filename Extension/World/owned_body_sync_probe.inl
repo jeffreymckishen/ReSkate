@@ -5,6 +5,31 @@ constexpr std::uint64_t sync_probe_lifetime_ms = 1000;
 constexpr std::uint32_t sync_all_records = 15;
 using SyncRecord = body_sync_probe::Record;
 using SyncStatus = body_sync_probe::Status;
+enum class SyncRoute : std::size_t { entry, match0, match1, match2, match3, other, recorded, expired };
+void sync_route(std::uint64_t sequence, SyncRoute route) noexcept {
+    auto& counter = service.probe_routes[static_cast<std::size_t>(route)];
+    auto word = counter.load(std::memory_order_acquire);
+    for (unsigned attempt = 0; attempt < 4; ++attempt) {
+        if ((word >> 32) != sequence || static_cast<std::uint32_t>(word) == UINT32_MAX) return;
+        if (counter.compare_exchange_strong(word, word + 1, std::memory_order_acq_rel)) return;
+    }
+    // Fixed work only. Lost increments remain explicitly lower-bound evidence.
+}
+void sync_reset_routes(std::uint64_t sequence) noexcept {
+    for (auto& counter : service.probe_routes) counter.store(sequence << 32, std::memory_order_release);
+}
+void sync_capture_routes(SyncProbe& probe) noexcept {
+    const auto count = [&probe](SyncRoute route) noexcept {
+        const auto word = service.probe_routes[static_cast<std::size_t>(route)].load(std::memory_order_acquire);
+        return (word >> 32) == probe.sequence ? static_cast<std::uint32_t>(word) : std::uint32_t{};
+    };
+    auto& out = probe.result.routing;
+    out.entries = count(SyncRoute::entry);
+    for (std::size_t i = 0; i < out.matches.size(); ++i)
+        out.matches[i] = count(static_cast<SyncRoute>(static_cast<std::size_t>(SyncRoute::match0) + i));
+    out.other = count(SyncRoute::other); out.already_recorded = count(SyncRoute::recorded);
+    out.expired_entries = count(SyncRoute::expired);
+}
 
 void sync_loss(std::uint64_t sequence) noexcept {
     auto word = service.probe_losses.load(std::memory_order_acquire);
@@ -30,6 +55,7 @@ void sync_expire(std::uint64_t sequence) noexcept {
         if ((losses >> 32) == sequence) probe.result.dropped = static_cast<std::uint32_t>(losses);
         probe.result.status = SyncStatus::expired;
         service.probe_live.store(0, std::memory_order_release);
+        sync_capture_routes(probe);
     }
     ReleaseSRWLockExclusive(&service.lock);
 }
@@ -166,16 +192,25 @@ void sync_before(NativeHandle* incoming, std::uintptr_t wrapper, SyncBefore& out
     LastError error;
     const auto live = service.probe_live.load(std::memory_order_acquire);
     if (!live) return;
+    sync_route(live, SyncRoute::entry);
     if (!TryAcquireSRWLockShared(&service.lock)) { sync_loss(live); return; }
     const auto& probe = service.probe;
     if (probe.sequence == live && probe.result.status == SyncStatus::pending && GetTickCount64() >= probe.deadline) {
+        sync_route(live, SyncRoute::expired);
         ReleaseSRWLockShared(&service.lock); sync_expire(live); return;
     }
     std::size_t index = probe.result.records.size();
     if (probe.sequence == live && probe.result.status == SyncStatus::pending)
         for (std::size_t i = 0; i < probe.result.records.size(); ++i)
             if (wrapper == probe.packets + n::wrapper + i*n::packet_stride) index = i;
-    if (index == probe.result.records.size() || probe.result.records[index].present) { ReleaseSRWLockShared(&service.lock); return; }
+    if (probe.sequence != live || probe.result.status != SyncStatus::pending) { ReleaseSRWLockShared(&service.lock); return; }
+    if (index == probe.result.records.size()) {
+        sync_route(live, SyncRoute::other); ReleaseSRWLockShared(&service.lock); return;
+    }
+    sync_route(live, static_cast<SyncRoute>(static_cast<std::size_t>(SyncRoute::match0) + index));
+    if (probe.result.records[index].present) {
+        sync_route(live, SyncRoute::recorded); ReleaseSRWLockShared(&service.lock); return;
+    }
     const auto actor = probe.actor;
     ReleaseSRWLockShared(&service.lock);
     actor_control_native::Actor current;
@@ -283,6 +318,7 @@ std::string begin_sync_probe(std::uint64_t owner, const Handle& handle, std::uin
         value.sequence = ++service.probe_generation;
         service.probe = value;
         service.probe_losses.store(value.sequence << 32, std::memory_order_release);
+        sync_reset_routes(value.sequence);
         service.probe_live.store(static_cast<std::uint32_t>(value.sequence), std::memory_order_release);
         sequence = value.sequence; return {};
     } catch (...) { return "native sync observation failed closed"; }
@@ -322,6 +358,9 @@ std::string poll_sync_probe(std::uint64_t owner, const Handle& handle, std::uint
                 }
             }
             if (probe.result.status != SyncStatus::pending) service.probe_live.store(0, std::memory_order_release);
+            // Terminal results are copied once after admission closes; delayed
+            // callback increments cannot change a later terminal poll.
+            sync_capture_routes(probe);
         }
         out = probe.result; return {};
     } catch (...) { return "native sync observation poll failed closed"; }

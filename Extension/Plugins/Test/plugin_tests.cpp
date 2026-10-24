@@ -13,6 +13,8 @@
 #include "Engine/Game/BMX/bmx_chassis_control.h"
 #include "Engine/Game/BMX/bmx_interaction.h"
 #include "Engine/Game/BMX/equipment_switch.h"
+#include "Extension/BMX/bmx_world_transform.h"
+#include "Extension/BMX/bmx_collision_envelope.h"
 #include <algorithm>
 #include <chrono>
 #include <format>
@@ -232,7 +234,9 @@ struct FakeGame final : Game {
     };
     std::map<std::uint64_t, OwnedBody> owned;
     std::vector<std::uint64_t> body_releases;
-    unsigned body_creates{}, body_submissions{};
+    unsigned body_creates{}, body_submissions{}, body_release_calls{};
+    bool test_body_release_refused{};
+    std::string test_body_create_refusal;
     std::uint64_t body_command_sequence{};
     unsigned query_cast_cost{1}, native_casts{}, batch_calls{}, batch_rays{};
     bool batch_available{true}, batch_clear{}, batch_unqualified{}, batch_change_after{}, batch_bad_count{};
@@ -244,6 +248,7 @@ struct FakeGame final : Game {
     body_query::Request last_batch;
     std::string body_create(std::uint64_t owner, const owned_body::Definition& definition, owned_body::Handle& handle) override {
         if (!owned_body::valid(definition) || owned.size() >= owned_body::retained_capacity) return "definition or capacity";
+        if (!test_body_create_refusal.empty()) return test_body_create_refusal;
         ++body_creates; handle = {body_creates, body_creates - 1};
         auto& b = owned[handle.generation]; b.owner = owner; b.handle = handle; b.definition = definition;
         b.sample.epoch = {77, handle.generation, 100, 3, static_cast<float>(owned_body::native_seconds)};
@@ -316,6 +321,8 @@ struct FakeGame final : Game {
         auto* b = body_of(owner, h); return b && b->mailbox.acknowledge(sequence) ? std::string{} : "not ready to acknowledge";
     }
     std::string body_release(std::uint64_t owner, const owned_body::Handle& h) override {
+        ++body_release_calls;
+        if (test_body_release_refused) return "constructed unknown park";
         auto* b = body_of(owner, h); if (!b) return "owner or generation";
         b->released = true; b->mailbox.cancel(); return {};
     }
@@ -586,8 +593,11 @@ struct FakeGame final : Game {
     }
     // World objects as the fake keeps them: by plugin and id, ready at once unless hidden.
     std::map<std::pair<std::string, std::uint32_t>, std::pair<std::string, std::array<float, 16>>> entities;
+    std::map<std::string, std::array<Vec3,2>> test_entity_boxes;
+    std::uint32_t test_entity_fail_id{};
     std::string entity_set(std::string_view plugin, std::uint32_t id, std::string_view asset, const std::array<float, 16>& m, bool hidden,
                            std::optional<EntityAttach> attach, bool solid) override {
+        if (id == test_entity_fail_id) return "constructed part failure";
         if (entities.size() >= 600) return "too many";
         entities[{std::string(plugin), id}] = {std::string(asset) + (hidden ? " hidden" : ""), m};
         calls.push_back(std::format("entity {} {} {} {:.2f} {:.2f} {:.2f} {:.2f}{}{}", plugin, id, asset, m[12], m[13], m[14], m[8], hidden ? " hidden" : "",
@@ -598,6 +608,7 @@ struct FakeGame final : Game {
     }
     void entity_remove(std::string_view plugin, std::uint32_t id) override { entities.erase({std::string(plugin), id}); }
     std::optional<std::array<Vec3, 2>> entity_bounds(std::string_view blueprint) override {
+        if (const auto found = test_entity_boxes.find(std::string(blueprint)); found != test_entity_boxes.end()) return found->second;
         if (blueprint != "World/Props/TrashCan_01") return std::nullopt;
         return std::array<Vec3, 2>{Vec3{-0.3f, 0, -0.3f}, Vec3{0.3f, 0.9f, 0.3f}};
     }
@@ -605,6 +616,9 @@ struct FakeGame final : Game {
         std::vector<std::string> out;
         for (const auto* name : {"World/Props/Bench_01", "World/Props/TrashCan_01", "World/Vehicles/Car_01"})
             if (std::string_view(name).starts_with(prefix) && (!meshes_only || entity_bounds(name))) out.emplace_back(name);
+        for (const auto& [name, box] : test_entity_boxes) {
+            (void)box; if (std::string_view(name).starts_with(prefix)) out.push_back(name);
+        }
         return out;
     }
     WorldProbe probe_result;
@@ -6317,6 +6331,226 @@ void reskate_hostile_is_stopped_or_refused_every_time() {
 }
 }
 
+// Actual Host + current Lua API. Native Game observations below are constructed;
+// these checks do not establish visible geometry, a native collision or a rider.
+void bmx_lua_spawn_uses_owned_chassis_and_measured_part_placement() {
+    using dingosdk::Json;
+    namespace world = dingosdk::bmx::world;
+    const auto root = std::filesystem::path(RESKATE_SOURCE_DIR) / "contrib/bmx-lab";
+    const auto contents = [](const std::filesystem::path& path) {
+        std::ifstream in(path, std::ios::binary);
+        check(in.good(), "required Lua spawn source: " + path.string());
+        return std::string(std::istreambuf_iterator<char>(in), {});
+    };
+    std::map<std::string, std::string> files;
+    for (const auto* name : {"force_math.lua", "bike_geometry.lua", "bike_visual.lua", "bike_spawn.lua"})
+        files[std::string("plugin/") + name] = contents(root / "bmx-plugin/plugin" / name);
+    files[manifest_file] = manifest(R"("console","world.entities","world.physics","skater.read","input")");
+    files["plugin/main.lua"] = R"(
+        local bike=require("./bike_spawn").new()
+        reskate.console.command("bike-spawn", "test Arm", function() bike:request() end)
+        reskate.console.command("bike-stop", "test stop", function() bike:stop("explicit test stop") end)
+        reskate.console.command("bike-clock-retry", "test explicit readiness retry", function() bike:retry_after_clock_warmup() end)
+        reskate.console.command("bike-state", "test status", function() reskate.log("SPAWN_STATUS "..reskate.json.encode(bike:status())) end)
+        reskate.on("tick",function(dt) bike:update(dt) end)
+        reskate.on("unload",function() bike:stop("unload") end)
+    )";
+    const auto assets = [](TestEnvironment& e) {
+        e.local_skater = SkaterState{{1,2,3}, .3f, 0,0,false,0};
+        e.fake.focus_now = {true,false,true};
+        constexpr auto radius = static_cast<float>(dingosdk::bmx::geometry::wheel_radius);
+        for (const auto name : world::blueprints)
+            e.fake.test_entity_boxes[std::string(name)] = {Vec3{-.2f,-radius,-radius},Vec3{.2f,radius,radius}};
+    };
+    const auto state = [](Host& h, TestEnvironment& e) {
+        check(h.run_console("bike-state"), "status command is registered");
+        constexpr std::string_view marker="SPAWN_STATUS ";
+        for (auto at=e.logs.rbegin(); at!=e.logs.rend(); ++at)
+            if (const auto p=at->find(marker); p!=std::string::npos) return Json::parse(at->substr(p+marker.size()));
+        throw std::runtime_error("missing actual Lua state: " + e.all());
+    };
+    const auto no_driving = [](const TestEnvironment& e) {
+        check(!e.fake.body_submissions && !e.fake.batch_calls && !e.fake.probes && !e.rays &&
+            e.teleports.empty() && e.fake.binds.empty() && !e.fake.input_pulse_requests &&
+            !e.fake.native_action_requests && !e.fake.native_recovery_requests,
+            "spawn diagnostics must never drive the rider, input, contacts or body");
+    };
+    unsigned scenarios=0;
+    {
+        auto actual=files;
+        actual[manifest_file]=contents(root/"bike-spawn-trial"/manifest_file);
+        actual["plugin/main.lua"]=contents(root/"bike-spawn-trial/plugin/main.lua");
+        TestEnvironment e; assets(e); e.panels_open=true; e.shown="bike-spawn-inert";
+        Host h(e,Side::client); h.apply({package("bike-spawn-inert",actual)});
+        ticks(h,e,60); running(h,"bike-spawn-inert",e);
+        check(!e.fake.body_creates && e.fake.entities.empty() && e.fake.calls.empty(),
+            "exact trial page and 60 menu rebuilds remain inert before Arm");
+        check(std::any_of(e.panels.begin(),e.panels.end(),[](const auto& p){return p.title=="Lua Bike Spawn Trial";}),
+            "exact trial page builds");
+        e.fake.focus_now.interface_open=true;
+        e.actions={plugin_ui::Action{"bike-spawn-inert","Lua Bike Spawn Trial","spawn",false}};
+        ticks(h,e,1);check(!e.fake.body_creates && e.fake.entities.empty(),"actual menu Arm cannot spawn while menu is open");
+        e.panels_open=false;e.fake.focus_now.interface_open=false;
+        ticks(h,e,2);running(h,"bike-spawn-inert",e);
+        check(e.fake.body_creates==1 && e.fake.entities.size()==8,"exact menu entry creates one measured chassis after close");
+        e.fake.body_producer_step();ticks(h,e,1);
+        e.panels_open=true;e.fake.focus_now.interface_open=true;
+        ticks(h,e,1);
+        check(e.fake.body_release_calls==1 && e.fake.entities.empty(),"reopening actual menu stops unmounted trial");
+        h.apply({}); // SDK storage flushes on VM shutdown; do not read an older ledger.
+        const auto receipt=Json::parse(contents(e.storage_root()/"bike-spawn-inert/storage.json"));
+        check(receipt["lua_bike_spawn_v1"]["phase"]==Json("closed") &&
+            receipt["lua_bike_spawn_v1"]["visual_updates"]==Json(2) &&
+            receipt["lua_bike_spawn_v1"]["last_measurement"]["serial"]==Json("101"),
+            "exact page writes measured spawn receipt after release");
+        no_driving(e); ++scenarios;
+    }
+    for (unsigned scenario=0; scenario<13; ++scenario) {
+        const std::string id="bike-spawn-case-"+std::to_string(scenario);
+        TestEnvironment e; assets(e);
+        if (scenario==1) e.fake.test_entity_boxes.erase("reskate/bmx/fork");
+        if (scenario==2) e.fake.test_entity_boxes["reskate/bmx/rear_wheel"]={Vec3{-.2f,-.34f,-.34f},Vec3{.2f,.34f,.34f}};
+        if (scenario==3) e.fake.test_entity_fail_id=3;
+        if (scenario==10) e.fake.test_body_create_refusal="waiting for a fresh qualified 60 Hz physics step";
+        if (scenario==11) e.fake.test_body_create_refusal="partial native body creation retained in quarantine; allocation retry prohibited";
+        if (scenario==12) e.fake.test_body_create_refusal="waiting for a fresh qualified 60 Hz physics step";
+        Host h(e,Side::client); h.apply({package(id,files)}); running(h,id,e);
+        ticks(h,e,3); check(!e.fake.body_creates && e.fake.entities.empty(),"startup must not spawn");
+        check(h.run_console("bike-spawn"),"explicit request reaches actual Lua");
+        if (scenario==1) {
+            ticks(h,e,303);
+            check(state(h,e)["phase"]==Json("closed") && !e.fake.body_creates && e.fake.entities.empty(),"missing asset times out without allocation");
+        } else if (scenario==2 || scenario==3) {
+            ticks(h,e,2);
+            const auto result=state(h,e);
+            check(result["phase"]==Json("closed") && !e.fake.body_creates && e.fake.entities.empty(),"mismatched mesh, prefix setter failure or clock refusal cleans requested visuals without body retry: "+result.dump());
+            ticks(h,e,10); check(!e.fake.body_creates,"no hidden body creation retry");
+        } else if (scenario>=10) {
+            ticks(h,e,2); auto result=state(h,e);
+            const bool warmup=scenario!=11;
+            check(result["phase"]==Json(warmup ? "clock_prepared" : "cleanup_unknown") && !e.fake.body_creates && e.fake.entities.empty(),
+                "only exact preallocation readiness refusal makes a separate retry available: "+result.dump());
+            ticks(h,e,10); check(state(h,e)["creation_attempts"]==Json(1),"readiness does not silently retry");
+            if (scenario!=12) e.fake.test_body_create_refusal.clear();
+            check(h.run_console("bike-clock-retry"),"explicit readiness retry action"); ticks(h,e,2);result=state(h,e);
+            if (scenario==10) check(result["phase"]==Json("spawned") && result["creation_attempts"]==Json(2) && e.fake.body_creates==1,
+                "separate explicit request creates after explicit readiness wait");
+            if (scenario==11) check(result["phase"]==Json("cleanup_unknown") && result["creation_attempts"]==Json(1) && !e.fake.body_creates,
+                "partial/unknown create can never enter readiness retry");
+            if (scenario==12) {
+                check(result["phase"]==Json("closed") && result["creation_attempts"]==Json(2),"second exact readiness refusal closes the bounded trial");
+                check(h.run_console("bike-clock-retry"),"third retry refused"); ticks(h,e,2);
+                check(state(h,e)["creation_attempts"]==Json(2),"only one explicit readiness retry allowed");
+            }
+        } else {
+            ticks(h,e,1); check(!e.fake.body_creates && e.fake.entities.size()==8,"all eight ready requests precede chassis allocation");
+            ticks(h,e,1); auto result=state(h,e);
+            check(result["phase"]==Json("spawned") && result["visual_updates"]==Json(1) && e.fake.body_creates==1 && e.fake.entities.size()==8,
+                "one measured chassis spawns after visual readiness: "+result.dump()+"\n"+e.all());
+            auto& body=e.fake.owned.begin()->second;
+            check(body.definition.count==8 && body.definition.mass==106,"authored bounded combined-body definition reached actual API");
+            const auto frame=e.fake.entities.at({id,1}).second;
+            if (scenario==0) {
+                ticks(h,e,1); check(state(h,e)["visual_updates"]==Json(1),"same immutable native epoch is not another visual step");
+                body.sample.position[0]+=.125f; ++body.sample.epoch.serial; body.sample.epoch.time+=body.sample.epoch.seconds;
+                ticks(h,e,1); result=state(h,e);
+                check(result["phase"]==Json("spawned") && result["visual_updates"]==Json(2) &&
+                    std::abs(e.fake.entities.at({id,1}).second[12]-frame[12]-.125f)<.00001f,"actual body read moves all visuals from measured COM");
+                check(h.run_console("bike-stop"),"explicit release command");
+                result=state(h,e);
+                check(result["phase"]==Json("closed") && result["body_release_accepted"]==Json(true) &&
+                    result["visual_remove_requested"]==Json(true) && e.fake.body_release_calls==1 && body.released && e.fake.entities.empty(),
+                    "release acceptance and visual removal requests are separately reported");
+                check(h.run_console("bike-spawn"),"rearm request consumed"); ticks(h,e,2);
+                check(e.fake.body_creates==1 && e.fake.body_release_calls==1,"one shot does not recreate retained allocations");
+            } else if (scenario==4) {
+                e.fake.focus_now={false,false,true}; ticks(h,e,1);
+                check(state(h,e)["phase"]==Json("closed") && body.released && e.fake.entities.empty(),"focus loss releases and removes");
+            } else if (scenario==5) {
+                body.sample.position[0]+=.125f; ticks(h,e,1);
+                check(state(h,e)["phase"]==Json("closed") && body.released && e.fake.entities.empty(),"mutable pose in identical epoch is refused");
+            } else if (scenario==6) {
+                body.sample.epoch.serial=9007199254740994ULL; body.sample.epoch.time+=body.sample.epoch.seconds;
+                ticks(h,e,1); check(state(h,e)["serial"]==Json("9007199254740994"),"epoch serial above 2^53 stays exact");
+                ++body.sample.epoch.serial; body.sample.epoch.time+=body.sample.epoch.seconds; ticks(h,e,1);
+                check(state(h,e)["serial"]==Json("9007199254740995") && state(h,e)["visual_updates"]==Json(3),"adjacent large serials remain distinct");
+            } else if (scenario==7) {
+                e.fake.test_body_release_refused=true; check(h.run_console("bike-stop"),"constructed unknown release");
+                result=state(h,e);
+                check(result["phase"]==Json("cleanup_unknown") && result["body"]==Json(true) &&
+                    result["cleanup_unknown"]==Json(true) && !body.released && e.fake.entities.empty(),"unknown park retains explicit ownership debt");
+                ticks(h,e,10); check(h.run_console("bike-stop") && h.run_console("bike-spawn"),"retry remains inert");
+                check(e.fake.body_release_calls==1 && e.fake.body_creates==1,"unknown cleanup cannot silently retry or rearm");
+            } else if (scenario==8) {
+                h.apply({}); check(body.released && e.fake.body_release_calls==1 && e.fake.entities.empty(),"active unload requests release exactly once before VM cleanup");
+            } else if (scenario==9) {
+                ticks(h,e,8); check(state(h,e)["phase"]==Json("closed") && body.released,"stalled native observation stops before 5 second watchdog");
+            }
+        }
+        no_driving(e); ++scenarios;
+    }
+    // Compare the Lua port with the existing authored transform mathematics.
+    // The oracle is source-only C++; no legacy controller or native writer runs.
+    Json references=Json::array();
+    for (unsigned test=0;test<8;++test) {
+        dingosdk::bmx::visual::Frame frame;
+        const auto angle=static_cast<float>(test)*.17f;
+        frame.position={test%2 ? 1000.f : 0.f,2.f,-3.f};
+        frame.chassis_quaternion_available=true;
+        frame.chassis_quaternion={.2f*std::sin(angle),.4f*std::sin(angle),.894427191f*std::sin(angle),std::cos(angle)};
+        frame.steer=angle; frame.front_wheel_phase=-angle*2; frame.rear_wheel_phase=angle*3;
+        frame.crank_phase=angle*4; frame.barspin=-angle; frame.tailwhip=angle*.5f;
+        frame.movement_bike_pitch=angle*.3f; frame.movement_bike_roll=-angle*.7f;
+        std::array<world::Matrix,world::part_count> expected;
+        check(world::transforms(frame,expected),"authored reference math accepts fixture");
+        auto row=Json::object(); row["root"]=frame.position;row["q"]=frame.chassis_quaternion;row["expected"]=expected;
+        row["capsules"]=Json::array();
+        for (const auto& capsule : dingosdk::bmx::collision_envelope::capsules) {
+            auto a=capsule.a,b=capsule.b;
+            for (unsigned axis=0;axis<3;++axis) { a[axis]-=dingosdk::bmx::geometry::com_from_root[axis];b[axis]-=dingosdk::bmx::geometry::com_from_root[axis]; }
+            row["capsules"].push_back(Json{{"a",a},{"b",b},{"radius",capsule.radius}});
+        }
+        row["pose"]={{"steer",frame.steer},{"front_wheel_phase",frame.front_wheel_phase},{"rear_wheel_phase",frame.rear_wheel_phase},
+            {"crank_phase",frame.crank_phase},{"barspin",frame.barspin},{"tailwhip",frame.tailwhip},
+            {"movement_bike_pitch",frame.movement_bike_pitch},{"movement_bike_roll",frame.movement_bike_roll}};
+        references.push_back(row);
+    }
+    auto math_files=files;
+    math_files[manifest_file]=manifest();
+    math_files["plugin/main.lua"]="local refs=reskate.json.decode([==["+references.dump()+"]==])\n"+R"(
+        local V=require("./bike_visual") local G=require("./bike_geometry")
+        local checks=0
+        for _,r in refs do
+            local actual=assert(V.matrices(r.root,r.q,r.pose))
+            for part=1,8 do for slot=1,16 do
+                assert(math.abs(actual[part][slot]-r.expected[part][slot])<.0002,"authored transform mismatch "..part..":"..slot)
+                checks+=1
+            end end
+            local d=assert(V.definition(r.root,r.q))
+            local measured=assert(V.from_sample({position=d.position,rotation=d.rotation},r.pose))
+            for part=1,8 do for slot=1,16 do assert(math.abs(actual[part][slot]-measured[part][slot])<.0002) checks+=1 end end
+            assert(#d.capsules==8 and d.mass==106 and d.inertia.x==26)
+            for i,c in d.capsules do
+                local expected=r.capsules[i]
+                assert(math.abs(c.radius-expected.radius)<.000001)
+                for axis,name in {"x","y","z"} do
+                    assert(math.abs(c.a[name]-expected.a[axis])<.000001 and math.abs(c.b[name]-expected.b[axis])<.000001)
+                end
+            end
+        end
+        assert(V.matrices({0,0,0},{0,0,0,0})==nil)
+        assert(V.matrices({0/0,0,0},{0,0,0,1})==nil)
+        local bad=V.neutral() bad.tailwhip=0/0
+        assert(V.matrices({0,0,0},{0,0,0,1},bad)==nil)
+        assert(checks==2048) reskate.log("bike visual 2048 authored/COM comparisons")
+    )";
+    TestEnvironment math_environment; Host math_host(math_environment,Side::client);
+    math_host.apply({package("bike-visual-math",math_files)});running(math_host,"bike-visual-math",math_environment);
+    check(math_environment.logged("bike visual 2048 authored/COM comparisons"),"authored transform tests finish: "+math_environment.all());
+    no_driving(math_environment);
+    std::cout<<"Lua bike spawn: "<<scenarios<<" Host scenarios, 2048 authored/COM comparisons, 0 driving calls; native Game facts constructed\n";
+}
+
 int main() {
     unsigned skipped = 0;
     const auto run = [&](void (*test)()) {
@@ -6384,6 +6618,7 @@ int main() {
         run(plugins_play_their_own_sounds);
         run(plugins_have_menu_panels);
         run(camera_inspector_prepares_then_explicitly_requests_a_view);
+        run(bmx_lua_spawn_uses_owned_chassis_and_measured_part_placement);
         run(bmx_lua_policy_runs_as_modules_and_the_inspector_starts_inert);
         run(bmx_lua_equipment_requests_match_the_retained_gesture_rules);
         run(bmx_lua_equipment_transitions_keep_cleanup_and_target_observation_separate);

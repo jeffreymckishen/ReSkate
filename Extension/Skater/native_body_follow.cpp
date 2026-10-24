@@ -92,7 +92,7 @@ bool reserve_binding(std::uint64_t owner, std::uint64_t sequence,
     const owned_bodies::MeasuredSource& source, actor_control_native::Admission admission,
     Binding& out, actor_control_native::Reason& reason) noexcept {
     LastError error; reason = actor_control_native::Reason::unavailable;
-    if (out.reserved || out.published || out.stopped || !owner || !sequence || !admission ||
+    if (out.reserved || out.published || out.stopped || !body_follow_api::valid_cleanup(out.cleanup) || !owner || !sequence || !admission ||
         !current_source(owner, source)) return false;
     actor_control_native::Actor actor;
     if (!actor_control_native::reserve_follow(owner, sequence, admission, actor, reason)) return false;
@@ -225,7 +225,7 @@ namespace {
 bool drained_follow(const Binding& binding) noexcept {
     const auto state = actor_control_native::follow_snapshot(binding.owner, binding.sequence, binding.actor);
     constexpr auto required = actor_control::Barrier::body_parked;
-    return binding.reserved && binding.published && binding.stopped &&
+    return body_follow_api::valid_cleanup(binding.cleanup) && binding.reserved && binding.published && binding.stopped &&
         state.available && state.owner == binding.owner && state.ticket == binding.actor.ticket &&
         state.domain == actor_control::Domain::follow && state.phase == actor_control::Phase::revoking &&
         state.required == required && state.in_flight == 0;
@@ -235,6 +235,15 @@ bool cleanup_actor(const Binding& binding, actor_control_native::Reason& reason,
     actor_control_native::Actor actor; actor_control_native::State state;
     return inspect_at(binding, actor, state, reason, diagnostic, stage, true) &&
         actor == binding.actor;
+}
+bool cleanup_authority(const Binding& binding, actor_control_native::Reason& reason,
+    Diagnostic& diagnostic, DiagnosticStage stage) noexcept {
+    // owned_body is only an opt-in to the existing World cleanup authority.
+    // Its current Anchor/world/body/shape/clock checks still execute unchanged.
+    // The original Actor is an SDK claim key here, never native call arguments.
+    if (binding.cleanup == CleanupPolicy::owned_body) return true;
+    if (binding.cleanup != CleanupPolicy::actor_lifetime) return false;
+    return cleanup_actor(binding, reason, diagnostic, stage);
 }
 }
 bool capture_park_fence(const Binding& binding, ParkFence& out, actor_control_native::Reason& reason) noexcept {
@@ -246,7 +255,7 @@ bool capture_park_fence(const Binding& binding, ParkFence& out, actor_control_na
     LastError error; reason = actor_control_native::Reason::unavailable;
     diagnostic = {}; at(diagnostic, DiagnosticStage::fence_guard);
     if (out.available() || !drained_follow(binding) ||
-        !cleanup_actor(binding, reason, diagnostic, DiagnosticStage::fence_actor)) return false;
+        !cleanup_authority(binding, reason, diagnostic, DiagnosticStage::fence_actor)) return false;
     ParkFence value;
     // Cleanup reads a new clock floor, never renews the original source sample
     // or its actuation lease. No actor lock crosses the world-service read.
@@ -254,18 +263,19 @@ bool capture_park_fence(const Binding& binding, ParkFence& out, actor_control_na
     if (!owned_bodies::capture_retirement_basis(binding.owner, binding.source, value.basis_) ||
         (at(diagnostic, DiagnosticStage::fence_world), value.basis_.native_world() != binding.actor.world) ||
         (at(diagnostic, DiagnosticStage::fence_state), value.basis_.native_state() != binding.actor.world_state) ||
-        !cleanup_actor(binding, reason, diagnostic, DiagnosticStage::fence_closing_actor) ||
+        !cleanup_authority(binding, reason, diagnostic, DiagnosticStage::fence_closing_actor) ||
         (at(diagnostic, DiagnosticStage::fence_drained), !drained_follow(binding))) {
         if (reason == actor_control_native::Reason::none) reason = actor_control_native::Reason::unavailable;
         return false;
     }
-    value.owner_ = binding.owner; value.sequence_ = binding.sequence; value.actor_ = binding.actor;
+    value.owner_ = binding.owner; value.sequence_ = binding.sequence; value.actor_ = binding.actor; value.cleanup_ = binding.cleanup;
     out = value; reason = actor_control_native::Reason::none; return true;
 }
 bool park_history_matches(const Binding& binding, const ParkFence& fence,
     const owned_bodies::RetainedParkReceipt& receipt) noexcept {
     LastError error;
-    return fence.available() && fence.owner_ == binding.owner && fence.sequence_ == binding.sequence &&
+    return body_follow_api::valid_cleanup(binding.cleanup) && fence.available() && fence.owner_ == binding.owner && fence.sequence_ == binding.sequence &&
+        fence.cleanup_ == binding.cleanup &&
         fence.actor_ == binding.actor && fence.actor_.world == fence.basis_.native_world() &&
         fence.actor_.world_state == fence.basis_.native_state() &&
         owned_bodies::matches_retained_park(binding.owner, fence.basis_, receipt);
@@ -288,12 +298,12 @@ bool observe_park(const Binding& binding, const ParkFence& fence, owned_bodies::
     }
     at(diagnostic, DiagnosticStage::park_guard);
     if (!fence.available() || fence.owner_ != binding.owner || fence.sequence_ != binding.sequence ||
-        fence.actor_ != binding.actor || !drained_follow(binding) ||
-        !cleanup_actor(binding, reason, diagnostic, DiagnosticStage::park_actor)) return false;
+        fence.actor_ != binding.actor || fence.cleanup_ != binding.cleanup || !drained_follow(binding) ||
+        !cleanup_authority(binding, reason, diagnostic, DiagnosticStage::park_actor)) return false;
     owned_bodies::RetainedParkReceipt observed;
     at(diagnostic, DiagnosticStage::park_observe);
     if (!owned_bodies::observe_retained_park(binding.owner, fence.basis_, observed) ||
-        !cleanup_actor(binding, reason, diagnostic, DiagnosticStage::park_closing_actor) ||
+        !cleanup_authority(binding, reason, diagnostic, DiagnosticStage::park_closing_actor) ||
         (at(diagnostic, DiagnosticStage::park_drained), !drained_follow(binding)) ||
         (at(diagnostic, DiagnosticStage::park_match), !park_history_matches(binding, fence, observed))) {
         if (reason == actor_control_native::Reason::none) reason = actor_control_native::Reason::unavailable;
@@ -307,8 +317,9 @@ bool completed_history_matches(const Binding& binding, const ParkFence& fence,
     // Only complete_stop clears reserved on a published binding, after actual
     // World identity and same-object receipt validation plus claim retirement.
     // These objects remain immutable in the retaining Service until ACK.
-    return binding.published && binding.stopped && !binding.reserved &&
+    return body_follow_api::valid_cleanup(binding.cleanup) && binding.published && binding.stopped && !binding.reserved &&
         fence.available() && fence.owner_ == binding.owner && fence.sequence_ == binding.sequence &&
+        fence.cleanup_ == binding.cleanup &&
         fence.actor_ == binding.actor && fence.basis_.native_world() == binding.actor.world &&
         fence.basis_.native_state() == binding.actor.world_state && receipt.available() &&
         receipt.observed_epoch().world == fence.basis_.epoch().world &&
@@ -330,10 +341,12 @@ bool complete_stop(Binding& binding, const ParkFence& fence,
     diagnostic = {}; at(diagnostic, DiagnosticStage::complete_drained);
     if (!drained_follow(binding) ||
         (at(diagnostic, DiagnosticStage::complete_history), !park_history_matches(binding, fence, receipt)) ||
-        !cleanup_actor(binding, reason, diagnostic, DiagnosticStage::complete_actor) ||
+        !cleanup_authority(binding, reason, diagnostic, DiagnosticStage::complete_actor) ||
         (at(diagnostic, DiagnosticStage::complete_closing_drained), !drained_follow(binding)) ||
         (at(diagnostic, DiagnosticStage::complete_retire),
-            !actor_control_native::retire_follow(binding.owner, binding.sequence, binding.actor, fence.basis_, receipt))) return false;
+            !(binding.cleanup == CleanupPolicy::owned_body ?
+                actor_control_native::retire_follow_parked_sdk(binding.owner, binding.sequence, binding.actor, fence.basis_, receipt) :
+                actor_control_native::retire_follow(binding.owner, binding.sequence, binding.actor, fence.basis_, receipt)))) return false;
     // Only the actual matched Arbiter retirement can clear a published binding.
     // Published/stopped and the retained final history remain available to ACK.
     binding.reserved = false;

@@ -201,7 +201,7 @@ public:
         if (!body_follow_api::valid(attachment)) return false;
         owned_bodies::MeasuredSource source;
         if (!owned_bodies::capture_source(owner, body, source)) return false;
-        const body_follow_native::Attachment native_attachment{attachment.offset_from_com, attachment.root_in_body};
+        const body_follow_native::Attachment native_attachment{attachment.offset_from_com, attachment.root_in_body, attachment.cleanup};
         body_follow_service::Handle native_handle;
         const bool accepted = body_follow_service::reserve(owner, body, source, native_attachment,
             body_follow_api::eligible, native_handle, reason);

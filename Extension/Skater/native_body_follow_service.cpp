@@ -164,6 +164,7 @@ bool quiet() noexcept {
     return skater_action::follow_duties_idle();
 }
 bool valid_attachment(const body_follow_native::Attachment& value) noexcept {
+    if (!body_follow_api::valid_cleanup(value.cleanup)) return false;
     if (!owned_body::finite(value.offset_from_com, 10)) return false;
     double norm{};
     for (const auto lane : value.root_in_body) {
@@ -201,6 +202,7 @@ bool reserve(std::uint64_t owner, const owned_body::Handle& body,
     if (!owned_bodies::capture_source(owner, body, actual) || !actual.same_allocation(expected) ||
         !body_query::same_sample(actual.sample(), expected.sample())) return false;
     s.occupied = true; s.body = body; s.attachment = attachment;
+    s.binding.cleanup = attachment.cleanup;
     const auto sequence = ++s.next_sequence;
     if (!body_follow_native::reserve_binding(owner, sequence, actual, admission, s.binding, reason)) {
         if (!s.binding.reserved) { s.occupied = false; s.binding = {}; return false; }
@@ -363,6 +365,15 @@ void tick(bool ready) noexcept {
     // Retain the token until a subsequent real query resolves that state.
     if (!release_known) {
         cleanup_observation(s, CleanupOrigin::release_query, {}); return;
+    }
+    // The opt-in body-authority route cannot drop its dependency hold or even
+    // capture a park floor while a committed original is invoking/unreturned.
+    // Zero/zero is valid when no original was ever committed. Legacy ordering stays.
+    if (s.binding.cleanup == body_follow_native::CleanupPolicy::owned_body &&
+        (s.edge.load(std::memory_order_acquire) != stopped_bit ||
+            s.final.revision != s.returned_revision.load(std::memory_order_acquire))) {
+        s.park_reason = actor_control_native::Reason::unavailable;
+        cleanup_observation(s, CleanupOrigin::capture_fence, {}); return;
     }
     body_follow_native::Diagnostic diagnostic;
     if (!s.park_fence.available() &&

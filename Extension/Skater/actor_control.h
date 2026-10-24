@@ -94,6 +94,11 @@ bool revoke_follow(std::uint64_t owner, std::uint64_t sequence, const Actor& act
 // or native pose-history/consumer-retirement claim is accepted or produced.
 bool retire_follow(std::uint64_t owner, std::uint64_t sequence, const Actor& actor,
     const owned_bodies::RetirementBasis&, const owned_bodies::RetainedParkReceipt&) noexcept;
+// Explicit body-authority cleanup only. The retaining Service has stopped and
+// joined its exact final normal return; World already issued a matching park
+// history. This only retires the exact SDK claim, with no actor native reads.
+bool retire_follow_parked_sdk(std::uint64_t owner, std::uint64_t sequence, const Actor& actor,
+    const owned_bodies::RetirementBasis&, const owned_bodies::RetainedParkReceipt&) noexcept;
 
 using Clock = actor_clock::Sample;
 // Opt-in observation only. No sample exists until a qualified native step.

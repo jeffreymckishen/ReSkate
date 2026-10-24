@@ -3986,6 +3986,30 @@ bool retire_follow(std::uint64_t owner, std::uint64_t sequence, const Actor& act
     ReleaseSRWLockExclusive(&p.lock);
     return retired;
 }
+bool retire_follow_parked_sdk(std::uint64_t owner, std::uint64_t sequence, const Actor& actor,
+    const owned_bodies::RetirementBasis& basis, const owned_bodies::RetainedParkReceipt& receipt) noexcept {
+    LastError error;
+    if (actor.domain != actor_control::Domain::follow || actor.continuity != Continuity::native_lifetime ||
+        basis.native_world() != actor.world || basis.native_state() != actor.world_state ||
+        !owned_bodies::matches_retained_park(owner, basis, receipt)) return false;
+    auto& p = protection(); auto& a = p.actions;
+    if (!TryAcquireSRWLockExclusive(&p.lock)) return false;
+    const auto claim = a.motion_claim.snapshot();
+    const bool exact = owned_locked(owner, sequence, actor) && p.base == actor.base &&
+        claim.available && claim.owner == owner && claim.ticket == actor.ticket &&
+        claim.domain == actor_control::Domain::follow && claim.phase == actor_control::Phase::revoking &&
+        claim.required == actor_control::Barrier::body_parked && claim.in_flight == 0;
+    const bool retired = exact && a.motion_claim.satisfy(owner, actor.ticket, actor_control::Barrier::body_parked) &&
+        a.motion_claim.retire(owner, actor.ticket);
+    if (retired) {
+        if (a.clock_enabled_ticket.load(std::memory_order_acquire) == actor.ticket.generation)
+            a.clock_enabled_ticket.store(0, std::memory_order_release);
+        clear_follow_locked(owner, actor);
+    }
+    ReleaseSRWLockExclusive(&p.lock);
+    return retired;
+}
+
 bool inspect(std::uint64_t owner, std::uint64_t sequence, const Actor& expected,
     Actor& actor, State& state, Reason& reason, bool cleanup) noexcept {
     Observation observation;

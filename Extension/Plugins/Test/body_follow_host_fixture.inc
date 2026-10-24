@@ -59,6 +59,35 @@ void body_follow_host_fixture_v1() {
         state.value=504; state.known=false; check(!f::eligible(state),"unknown actor state admitted");
     }
 
+    // Optional cleanup selects only the stopped-body authority path. These
+    // Host controls prove argument delivery, never native cleanup or a park.
+    for (const auto& policy : {std::string{}, std::string{"actor_lifetime"}, std::string{"owned_body"}}) {
+        TestEnvironment e; Host host(e,Side::client); const auto name=id();
+        const auto selection=policy.empty()?std::string{}:"attachment.cleanup='"+policy+"'\n";
+        host.apply({script(name,setup+selection+R"(
+            local h,why=P.reserve_follow(body,attachment);assert(h and why==nil)
+        )",permissions)}); running(host,name,e);
+        const auto expected=policy=="owned_body"?f::CleanupPolicy::owned_body:f::CleanupPolicy::actor_lifetime;
+        check(e.fake.follow_reserves==1 && e.fake.follow_fixture.attachment.cleanup==expected &&
+            !e.fake.follow_publishes && !e.fake.follow_stops && !e.fake.follow_acks,
+            "cleanup selection was lost or performed an unrelated follow operation\n"+e.all());
+        no_unrelated_effects(e);
+    }
+    {
+        TestEnvironment e; Host host(e,Side::client); const auto name=id();
+        host.apply({script(name,setup+R"(
+            for _,bad in {'unknown','owned_body\0other',true,7,{},function()end} do
+                attachment.cleanup=bad
+                local ok,why=pcall(P.reserve_follow,body,attachment)
+                assert(not ok and why:find('cleanup',1,true))
+            end
+        )",permissions)}); running(host,name,e);
+        check(!e.fake.follow_reserves,"invalid cleanup option reached the backend\n"+e.all());
+        f::Attachment malformed;malformed.cleanup=static_cast<f::CleanupPolicy>(255);
+        check(!f::valid(malformed),"unknown C++ cleanup policy accepted");
+        no_unrelated_effects(e);
+    }
+
     // Strict finite attachment and opaque handle/arity boundaries. No caller
     // can supply an admission callback, native identity, completion or proof.
     {
@@ -265,6 +294,6 @@ void body_follow_host_fixture_v1() {
             "malformed follow DTO corruption "+std::to_string(corruption)+"\n"+e.all());
         no_unrelated_effects(e);
     }
-    std::cout << "Body follow Lua: 8 groups, " << cases << " constructed Host scenarios; native Service not executed\n";
+    std::cout << "Body follow Lua: 9 groups, " << cases << " constructed Host scenarios; native Service not executed\n";
 }
 } // namespace

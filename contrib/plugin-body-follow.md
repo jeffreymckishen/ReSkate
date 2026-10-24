@@ -42,6 +42,8 @@ local P = reskate.world.physics
 local follow, why = P.reserve_follow(body, {
     offset_from_com = vector.create(0, 0.4, 0),
     root_in_body = {0, 0, 0, 1},
+    -- Omit cleanup, or use nil or "actor_lifetime", for the strict default.
+    cleanup = "owned_body", -- Explicit stopped-cleanup opt-in.
 })
 ```
 
@@ -50,11 +52,33 @@ measured source itself and the Service independently repeats the same-allocation
 join. No Lua body sample, epoch, native address, eligibility callback or proof
 boolean substitutes for either check.
 
-The attachment table has exactly those two fields. The COM offset is finite,
-within +/-10 meters per axis, and expressed in the measured principal-body
-basis. `root_in_body` is a unit Hamilton XYZW quaternion expressing the actor
-root basis in that same body basis. The runtime never chooses vehicle geometry
-or a yaw-only orientation for the mod.
+The attachment table requires `offset_from_com` and `root_in_body` and accepts
+optional `cleanup`. The COM offset is finite, within +/-10 meters per axis, and
+expressed in the measured principal-body basis. `root_in_body` is a unit Hamilton
+XYZW quaternion expressing the actor root basis in that same body basis. The
+runtime never chooses vehicle geometry or a yaw-only orientation for the mod.
+
+Omitting `cleanup`, passing `nil`, or using the exact string `"actor_lifetime"`
+keeps the existing default. The only opt-in is `cleanup="owned_body"`. Non-nil
+values must be strings with exactly one of those two spellings; other types,
+unknown names, whitespace/case changes and NUL-suffixed strings are rejected
+before the reserve attempt reaches the backend. The policy is copied at reserve
+and cannot be changed by editing the attachment or a returned receipt. Both
+existing permissions and the client-phase restriction still apply.
+
+`owned_body` changes only stopped cleanup, using the existing fresh owned-body/
+World checks instead of the adapter's additional old actor-lifetime rechecks.
+The fresh Anchor, current World/state, exact body and every shape allocation
+and generation, and current physics-clock checks remain in force.
+For a published follow, cleanup still needs the exact stopped/revoked/drained
+claim, every committed original's normal return, unchanged fresh World/body
+qualification, actual guarded park with a matching later receipt, and exact SDK
+claim retirement. It does not change live admission, publication or the lease,
+pin the old actor's native lifetime, or prove native consumption, destruction or
+reuse. The public receipt shape and ACK rules are unchanged: completed park and
+SDK retirement are history, `native_retirement_known` stays `false`, and unknown
+duties remain retained. Clean never-published abandonment still follows the
+separate body-ownership rule below.
 
 The reserve results have three meanings:
 
@@ -105,7 +129,10 @@ requires body cleanup, using the ordinary body release contract.
 `completed` means the published follow actually stopped/drained, the release
 hold was released, the dependent body release started, a matching retained park
 was observed, and the exact SDK actor claim retired under the revised contract.
-ACK frees that completed receipt. This does not erase copied native transform
+World body release and its matching retained park have already occurred; after
+a matching `completed` receipt and successful ACK, no second ordinary
+`P.release(body)` is needed. ACK frees only that follow receipt.
+This does not erase copied native transform
 history, prove native consumers forgot a value, recover a fallen actor or switch
 back to the skateboard. `native_retirement_known` remains `false` even when the
 phase is `completed`. Any later stock action/recovery is a separate explicitly

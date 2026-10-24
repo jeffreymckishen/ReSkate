@@ -7,9 +7,15 @@ namespace dingosdk::body_follow_api {
 // Copied plugin-facing values. Native identity, measured-source credentials,
 // actor claims and park fences remain inside the runtime services.
 struct Handle { std::uint64_t sequence{}; };
+// Explicit cleanup only. This never changes native actor admission or actuation.
+enum class CleanupPolicy : std::uint8_t { actor_lifetime, owned_body };
+constexpr bool valid_cleanup(CleanupPolicy policy) noexcept {
+    return policy == CleanupPolicy::actor_lifetime || policy == CleanupPolicy::owned_body;
+}
 struct Attachment {
     owned_body::Vec offset_from_com{};
     owned_body::Quaternion root_in_body{0, 0, 0, 1};
+    CleanupPolicy cleanup{CleanupPolicy::actor_lifetime};
 };
 enum class Phase : std::uint8_t { reserved, following, stopping, retained, abandoned, completed };
 enum class Pending : std::uint8_t { none, body_parked };
@@ -40,6 +46,7 @@ constexpr const char* phase_name(Phase phase) noexcept {
     return nullptr;
 }
 inline bool valid(const Attachment& attachment) noexcept {
+    if (!valid_cleanup(attachment.cleanup)) return false;
     if (!owned_body::finite(attachment.offset_from_com, 10)) return false;
     double norm{};
     for (const float lane : attachment.root_in_body) {

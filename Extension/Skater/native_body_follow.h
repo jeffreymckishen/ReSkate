@@ -1,10 +1,12 @@
 #pragma once
 #include "actor_control.h"
+#include "Engine/Game/Skater/body_follow_api.h"
 #include "Extension/World/owned_bodies.h"
 #include <array>
 #include <cstdint>
 
 namespace dingosdk::body_follow_native {
+using CleanupPolicy = body_follow_api::CleanupPolicy;
 // Internal first-fault context. Plain copied data only; no native identities,
 // allocation, logging or additional game reads are needed to record a stage.
 enum class DiagnosticStage : std::uint8_t {
@@ -37,6 +39,8 @@ struct Binding {
     // Native motion never treats its original pose or wall age as current.
     owned_bodies::MeasuredSource source{};
     actor_control_native::Admission admission{};
+    // Selected once at reserve by the owning service; no effect on target admission.
+    CleanupPolicy cleanup{CleanupPolicy::actor_lifetime};
     bool reserved{}, published{}, stopped{};
 };
 // Out must be empty. A false result may still have reserved=true if bounded
@@ -55,6 +59,7 @@ bool publish_binding(Binding&, actor_control_native::Reason& reason) noexcept;
 struct Attachment {
     owned_body::Vec offset_from_com{};
     owned_body::Quaternion root_in_body{0, 0, 0, 1};
+    CleanupPolicy cleanup{CleanupPolicy::actor_lifetime};
 };
 // A NEW current-epoch measured source supplies both translation and full basis.
 // Exact supplied padding words are retained. No body borrow spans original.
@@ -104,6 +109,7 @@ private:
     friend bool completed_history_matches(const Binding&, const ParkFence&, const owned_bodies::RetainedParkReceipt&) noexcept;
     std::uint64_t owner_{}, sequence_{};
     actor_control_native::Actor actor_{};
+    CleanupPolicy cleanup_{CleanupPolicy::actor_lifetime};
     owned_bodies::RetirementBasis basis_{};
 };
 bool capture_park_fence(const Binding&, ParkFence&, actor_control_native::Reason&) noexcept;

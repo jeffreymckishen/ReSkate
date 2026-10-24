@@ -257,7 +257,7 @@ FollowValue follow(lua_State* L, Plugin& p) {
     return value;
 }
 body_follow_api::Attachment follow_attachment(lua_State* L, int at) {
-    fields(L, at, {"offset_from_com", "root_in_body"});
+    fields(L, at, {"offset_from_com", "root_in_body", "cleanup"});
     body_follow_api::Attachment attachment;
     attachment.offset_from_com = vec_field(L, at, "offset_from_com");
     lua_getfield(L, at, "root_in_body"); luaL_checktype(L, -1, LUA_TTABLE);
@@ -267,6 +267,16 @@ body_follow_api::Attachment follow_attachment(lua_State* L, int at) {
         lua_rawgeti(L, -1, i + 1);
         attachment.root_in_body[static_cast<std::size_t>(i)] = static_cast<float>(luaL_checknumber(L, -1));
         lua_pop(L, 1);
+    }
+    lua_pop(L, 1);
+    lua_getfield(L, at, "cleanup");
+    if (!lua_isnil(L, -1)) {
+        if (lua_type(L, -1) != LUA_TSTRING) luaL_error(L, "follow cleanup is actor_lifetime or owned_body");
+        std::size_t length{};
+        const auto* text = lua_tolstring(L, -1, &length);
+        const std::string_view cleanup{text, length};
+        if (cleanup == "owned_body") attachment.cleanup = body_follow_api::CleanupPolicy::owned_body;
+        else if (cleanup != "actor_lifetime") luaL_error(L, "follow cleanup is actor_lifetime or owned_body");
     }
     lua_pop(L, 1);
     if (!body_follow_api::valid(attachment))

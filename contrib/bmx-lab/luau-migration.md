@@ -113,6 +113,27 @@ failure remains archived; its cause and cleanup are not resolved retrospectively
 Mounted riding, rider alignment, contacts, forces, tricks, fall recovery and the
 requested 9.5 likeness remain unqualified.
 
+The later owned-self-ray native check returned three world hits at one capsule
+placement, with owned bodies excluded and the complete before/after body sample
+unchanged. Requested local-actor exclusion still refused before any cast. This
+does not qualify actor-safe wheel contacts, contact normals, forces or riding.
+The [bounded ray result](judging/checkpoints/2026-10-23-lua-stock-switching.md#owned-self-ray-native-check)
+retains its one explicit readiness retry and proof limits.
+
+The general permissioned Lua input lease/capture expansion passed full Release
+and 105 focused CTests on its first composed attempt; fifteen optional plugin
+fixtures were absent. Its new runtime has not yet been deployed or exercised
+for native capture. The next in-game check is a bounded capture/release trial,
+followed by connecting the Lua control policy, rider attachment and equipment
+lifecycle. Pure Lua input integration and generic actor-exclusion qualification
+are delegated separately; mounted switching, alignment and fall recovery remain
+unfinished. See the [input checkpoint](judging/checkpoints/2026-10-23-lua-stock-switching.md#lua-input-lease-and-capture-build).
+
+The [general input API guide](../plugin-input-lease.md) describes the new
+permissions, source identity, capture and cleanup contracts. Preserve existing
+scripting behavior; add only the API bindings and general native support
+required by the Lua mod.
+
 ## Where the implementation belongs
 
 | Function | Luau mod | Generic SDK support |
@@ -177,8 +198,9 @@ replace the physical prototype; implemented contracts still require native proof
    for excluded or unknown identity. Every returned pair is rechecked. Native
    validation now includes one [two-hit native geometry batch](native-geometry-trial/README.md)
    with actor exclusion explicitly false, no submitted force commands and an
-   unchanged full body sample. Native self-hit rejection and contact/force
-   composition remain unqualified; actor exclusion remains unavailable.
+   unchanged full body sample. Broad native self-hit rejection and contact/force
+   composition remain unqualified; actor exclusion remains unavailable. The later
+   three-ray result above qualifies one capsule placement only.
    Vehicle queries must retain actor exclusion and the observation checks.
 3. **Commands and receipts.** Queue finite bounded force, torque and one-shot
    impulse against an exact observed body epoch. Commit once in the supported
@@ -194,9 +216,13 @@ replace the physical prototype; implemented contracts still require native proof
    through generic transform/pose primitives. Typed board/on-foot/GetUp actions
    need observed completion, cancellation and owner identity; a timer or a
    copied animation alone cannot establish a completed equipment transition.
-5. **Input identity.** Include a source/device epoch. The current gamepad API
-   does not establish replacement identity for a held gesture. Extend ownership
-   beyond camera-only capture without coupling a vehicle mod to a free camera.
+5. **Input identity.** The new permissioned input lease/capture API observes an
+   original selected XInput stream with an opaque source epoch, fresh-observation
+   ordinals and renewable ownership. Capture waits for a later raw-neutral
+   observation and retains cleanup duties until a qualified neutral handoff.
+   Its build and regression tests passed, but native capture/release is untested.
+   This input source is not physical-device, actor or body authority; the Lua
+   mod must join the actual independent ownership and body observations.
 
 Permissions and limits belong at each API boundary. Existing single supported
 game hashes, per-build address/fingerprint headers, paid-content restrictions,

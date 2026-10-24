@@ -348,6 +348,50 @@ seven screenshot hashes match. This bounded result does not establish the cause 
 the earlier v2 failure, broad switching reliability, mounted riding, rider
 alignment, contact/force composition, fall recovery or the requested 9.5 likeness.
 
+## Owned-self-ray native check
+
+The later [bounded ray session](../../../../build/bmx/owned-self-ray-native-v1/)
+used the same `7F33A210` runtime and `D149BD35` launcher as the native chassis
+trial, in a fresh process and package. One initial preallocation refusal was
+followed by one explicit readiness retry. The accepted 12kg capsule then
+produced three counted geometry casts: inside and crossing rays reached the
+same world point below it, and an adjacent ray reached a nearby point. The
+result reported owned bodies excluded; the complete measured body sample was
+unchanged. A separate actor-exclusion request returned
+`local_actor_exclusion_unavailable` with zero casts. No force or rider action ran.
+
+Release returned true. Normal shutdown, process absence and subsequent manifest
+withdrawal were recorded, with zero active plugin manifests. The
+[independent native outcome audit](../../../../build/bmx/owned-self-ray-native-v1/independent-native-outcome-audit-v1.json)
+verified the raw C:/E: archive and eight screenshots. This qualifies three rays
+at one capsule placement, without distinguishing filtering from native
+start-inside behavior. It does not qualify all shapes, local-actor exclusion,
+contact normals or surface motion, native parking/destruction, wheel support,
+contact forces, mounted riding or likeness.
+
+## Lua input lease and capture build
+
+The general permissioned Lua input lease/capture expansion passed configure
+and full Release on its first composed attempt. Plugins passed 1/1 plus
+104 relevant input/UI/actor/body and legacy handoff CTests. The Host included
+42 input-observation and 46 capture scenarios; fifteen optional plugin fixtures
+were absent. The [execution receipt](../../../../build/bmx/input-capture-integration-v1/execution.json)
+binds the frozen source, logs and binaries. These are 105 selected CTest passes,
+not the entire repository suite or native input evidence.
+
+The built runtime `8F6B51B6` and matched launcher `573BD3BF` have not yet been
+deployed. The isolated game evidence above remains on `7F33A210` / `D149BD35`;
+native input capture and neutral release remain untested. All BMX behavior
+stays in Lua; native changes provide only the general API support required by
+that mod. The immediate next check is bounded native capture/release, before
+connecting Lua controls to rider attachment and mount/dismount cleanup.
+Mounted bike/skateboard switching, rider alignment and fall recovery remain
+unfinished, and BMX Streets likeness remains unscored.
+
+The [general API guide](../../../plugin-input-lease.md) documents the input
+contract. Existing scripting behavior stays intact; the new BMX mod supplies
+the bike policy.
+
 ## Remaining checks
 
 These are proposed bounded tests, not completed coverage or new native admission.

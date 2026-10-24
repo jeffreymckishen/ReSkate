@@ -57,8 +57,8 @@ function Input.actions()
 end
 
 -- Fill the same defaults as the C++ RawInput aggregate. A caller-supplied
--- device is an opaque uint32 source epoch; it must change on replacement.
--- The present native input.gamepad API does not provide that epoch.
+-- device is a uint32 routing key. A source adapter must separately track exact
+-- native lease/source/context identity and reset gestures when that changes.
 function Input.raw(source)
     source = source or {}
     local result = {
@@ -190,7 +190,7 @@ end
 local numeric_fields = { "left_x", "left_y", "right_x", "right_y", "pedal", "brake", "left_trigger", "right_trigger" }
 local boolean_fields = { "available", "focused", "menu_open", "quick_hop", "left_shoulder", "right_shoulder" }
 
-function Mapper:update(source, context, seconds)
+local function update(self, source, context, seconds, allow_zero)
     local raw = Input.raw(source)
     local grounded = context == nil or context.grounded == nil or context.grounded
     local valid = type(grounded) == "boolean" and finite(raw.device) and raw.device % 1 == 0
@@ -198,7 +198,8 @@ function Mapper:update(source, context, seconds)
     for _, field in ipairs(numeric_fields) do valid = valid and finite(raw[field]) end
     for _, field in ipairs(boolean_fields) do valid = valid and type(raw[field]) == "boolean" end
     if not valid or not raw.available or not raw.focused or raw.menu_open
-        or not finite(seconds) or seconds <= 0 or seconds > self._settings.max_sample_seconds then
+        or not finite(seconds) or seconds < 0 or (seconds == 0 and not allow_zero)
+        or seconds > self._settings.max_sample_seconds then
         self:reset()
         return Input.actions()
     end
@@ -240,6 +241,16 @@ function Mapper:update(source, context, seconds)
         self:_air_pitch(front, out)
     end
     return out
+end
+
+function Mapper:update(source, context, seconds)
+    return update(self, source, context, seconds, false)
+end
+
+-- Distinct ordered source observations can share one native millisecond stamp.
+-- Zero advances their edges only; it invents no charge or release duration.
+function Mapper:update_observation(source, context, seconds)
+    return update(self, source, context, seconds, true)
 end
 
 return Input

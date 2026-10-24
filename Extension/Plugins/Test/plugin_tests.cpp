@@ -4581,6 +4581,17 @@ void camera_inspector_prepares_then_explicitly_requests_a_view() {
     check(explained, "The permission refusal remains visible on the page");
 }
 
+#include "bmx_first_ride_import_test.inc"
+
+void bmx_lua_first_ride_imports_stay_inert() {
+    const auto root = std::filesystem::path(RESKATE_SOURCE_DIR);
+    const auto entry = root / "Extension" / "Plugins" / "Test" / "fixtures" / "bmx_first_ride_import.lua";
+    std::ifstream file(entry, std::ios::binary);
+    check(file.good(), "required inert first-ride import entry: " + entry.string());
+    const std::string text(std::istreambuf_iterator<char>(file), {});
+    run_bmx_first_ride_import_fixture(root / "contrib" / "bmx-lab" / "bmx-plugin" / "plugin", text);
+}
+
 void bmx_lua_policy_runs_as_modules_and_the_inspector_starts_inert() {
     const auto directory = std::filesystem::path(RESKATE_SOURCE_DIR) / "contrib" / "bmx-lab" / "bmx-plugin";
     const auto contents = [](const std::filesystem::path& path) {
@@ -7848,6 +7859,7 @@ int main() {
         run(camera_inspector_prepares_then_explicitly_requests_a_view);
         run(bmx_lua_spawn_uses_owned_chassis_and_measured_part_placement);
         run(bmx_lua_policy_runs_as_modules_and_the_inspector_starts_inert);
+        run(bmx_lua_first_ride_imports_stay_inert);
         run(bmx_lua_equipment_requests_match_the_retained_gesture_rules);
         run(bmx_lua_equipment_transitions_keep_cleanup_and_target_observation_separate);
         run(bmx_lua_equipment_runtime_uses_typed_services_without_native_permissions);

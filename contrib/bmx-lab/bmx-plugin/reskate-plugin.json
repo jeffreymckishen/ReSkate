@@ -2,5 +2,5 @@
   "api": 1,
   "entry": "plugin/main.lua",
   "side": "client",
-  "permissions": ["input", "input.control", "skater.read", "menu", "storage"]
+  "permissions": ["input", "input.control", "input.lease", "input.capture", "skater.read", "menu", "storage", "world.physics", "world.physics.follow", "world.entities"]
 }

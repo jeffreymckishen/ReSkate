@@ -1,5 +1,11 @@
 # BMX Luau migration
 
+This integration gives the entry one bike lifecycle owner. Private v3 Host
+validation with constructed fixtures passed startup (14 cases, 2,790 assertions)
+and lifecycle (14 cases, 2,884 assertions). The normal Release plugin regression suite also passed; 15 optional contributor examples were absent. Public mounting
+remains disabled, and this package is not rideable; native gameplay and performance
+parity remain unverified.
+
 This package starts the migration of **all** BMX feature policy to a Lua mod.
 `plugin/input.lua` is a real pure-Luau port of the current
 `Engine/Game/BMX/bmx_input.h`: settings sanitation, radial normalization, source
@@ -39,7 +45,7 @@ The explicit menu adapter now composes the generic bounded input-report API
 with `plugin/equipment_transition.lua`. It preserves the full terminal receipt
 before acknowledgement, then independently observes a stable target state.
 See [EQUIPMENT_RUNTIME.md](EQUIPMENT_RUNTIME.md) for the stock switching path
-and its validation boundaries. This does not connect the BMX body or rider.
+and its validation boundaries. The bike lifecycle owner now decides whether a stock request is allowed; the stock adapter itself does not own a bike or rider.
 
 Create it with `require("./tricks").new(settings)` and call
 `controller:update(native_seconds, Tricks.input(observation))`. The adapter must
@@ -58,20 +64,78 @@ such as `under_rotated` and `invalid_sample`. Lua also rejects malformed boolean
 direction/device fields and nonfinite heading differences. State/settings readback
 is detached; caller-owned quaternion tables are copied when retained.
 
-The current entry combines an **explicit skateboard/on-foot switching menu**
-with the read-only controller inspector. It asks for `input`, `input.control`,
-`skater.read`, `menu` and `storage`. Loading it does not arm switching or start
-controller observation. A slot-specific menu click can request one bounded Y
-report after the menu closes and a settled baseline is observed. No physical
-LB+Y shortcut is bound. Nothing calls the old BMX console, C++ controller,
-physics backend or private modes, or acquires a camera, body or rider pose.
-This package is not yet a playable BMX implementation or a completed migration.
+The entry constructs exactly one `BikeRuntime.new()` with default options. That
+owner creates the equipment adapter, selected input source and spawner; main
+never constructs or drives a second owner. Requiring modules and constructing
+it perform no reskate API calls, storage access or actuators. Main only registers
+its menu and tick/unload callbacks at load. An idle tick remains inert while the
+inspector is stopped. The Host's automatic storage-file loading is separate from
+Lua entry behavior.
 
-After independent validation and a separately coordinated private installation,
-its page is PLUGINS → BMX Lua migration. The switching buttons require an
-explicit XInput user slot from0 through3. Close the menu and release every
-control after choosing one; reopening the menu interrupts an active attempt.
-The switch phase and result distinguish report cleanup from the observed state.
+The public page remains PLUGINS → BMX Lua migration. Its slot-specific **Mount
+bike (unavailable)** actions call the owner and return the native lifecycle
+qualification denial before any game or storage call. There is no UI, storage
+or configuration setting that enables qualification. **Stop bike / cleanup**
+latches stop through the same owner. Cleanup continues on ticks even when
+controller inspection is stopped. Stop freezes further body reads and entity
+SETs; unresolved Follow/body duty remains visible and cannot silently re-arm.
+The SDK's VM-close cleanup remains authoritative and is not a successful dismount.
+
+**Switch skateboard / on foot** still requests one bounded Y report after the
+menu closes and a settled baseline is observed. Choose an explicit XInput slot
+from0 through3 and release every control; reopening the menu interrupts an
+active attempt. The owner rejects stock switching while any bike authority,
+acquisition, retained reload marker, or unknown/unresolved cleanup exists. The
+switch phase and result distinguish input-report cleanup from the observed
+stock state. No physical LB+Y shortcut is bound and no automatic board return
+occurs. Nothing invokes the old BMX console, C++ controller or private mode.
+
+The extracted lifecycle also contains a separate private qualification mode for
+reviewed Host/native development. Public main never passes that option. It is
+one zero-force Follow attempt per VM, bounded to500ms, with no automatic retry,
+body reuse or continuous Follow renewal. Existing input-lease freshness renewals
+do not extend Follow. The native Follow service independently has a fixed
+three-second lease from reservation, one process-wide receipt slot and no
+renewal API. The SDK retains at most eight native body allocation slots for the
+process lifetime, including failed/partial attempts. Native destruction remains
+unproven and slots are not recycled; capacity may already be exhausted before
+this VM starts. One attempt per VM is not an eight-retry entitlement, and VM
+unload does not reset native capacity. These are development bounds, not a
+playable session policy.
+
+The promoted `bike_spawn.lua` is the reviewed FirstFollow extension: it transfers
+future body-release ownership before Follow reserve, keeps that transfer
+permanent after failed/partial reserve, and updates visuals only from supplied
+measured samples. Main never exposes its standalone diagnostic request/retry
+methods. Published/transferred visuals remain until the owner observes matching
+completed Follow cleanup and accepted ACK, or accepted ordinary caller release
+for a provably never-published abandonment. Unknown outcomes retain duty. The
+latest separate native archive reached twelve normal FOLLOW returns but stopped
+on a lifetime change with body park and retirement unresolved; it proves no
+mounted alignment, native input consumption or riding.
+
+The manifest preserves `input`, `input.control`, `skater.read`, `menu` and
+`storage` for the inspector, bounded stock reports, current actor facts, menu
+registration and explicit-intent ledgers. Five additional permissions match
+actual transitive lifecycle calls, rather than enabling public mounting:
+
+| Permission | Transitive use |
+| --- | --- |
+| `input.lease` | Selected-source lease/read/state/freshness/release/ACK calls. |
+| `input.capture` | Selected-source capture/state/release/ACK calls. |
+| `world.physics` | Spawner body create/read/release and the Follow prerequisite. |
+| `world.physics.follow` | The lifecycle's reserve/publish/read/stop/ACK Follow calls. |
+| `world.entities` | Eight-part bounds/readiness checks and visual SET/removal requests. |
+
+No mesh assets ship in this source package. Qualification requires a separate
+compatible resource layer registering `reskate/bmx/{frame,fork,rear_wheel,
+front_wheel,cranks,handlebars,left_pedal,right_pedal}`. Asset preflight stays
+bounded to one bounds lookup per tick and eight ready IDs. The isolated
+prototype resource pack used in prior development remains private and retains
+donor native material/LOD dependencies; it is not a distributable free-asset
+pack. A raw FBX in a Lua folder does not register native meshes. Original or
+verified reusable resource assets and a clean-install test remain necessary.
+
 For the separate read-only inspector, choose a model context and Observe
 controller, close the menu, then release every control. Reopen the page to see
 the last sampled requests. The selected grounded/airborne context is a model
@@ -85,8 +149,9 @@ is a caller-supplied uint32 source epoch, changed on source replacement. The
 current `reskate.input.gamepad()` supplies sticks/buttons but lacks device ID,
 packet identity and sampling epoch. The inspector therefore uses an explicitly
 manual source epoch and resets it on request; it cannot detect a replacement
-pad reusing the same slot. This must be replaced by a generic fenced input
-snapshot before gameplay activation. No identity is invented from the PS flag.
+pad reusing the same slot. This inspector remains separate from the lifecycle's
+selected-source lease/capture path. Neither path invents physical-device identity
+from the PS flag or claims native input consumption.
 
 `plugin/tests.lua` contains portable tests of the actual Lua policy.
 Requiring it does not run tests. The unconditional plugin Host regression loads
@@ -121,22 +186,22 @@ N+2 velocity visibility for commands requested at N and applied at N+1. The
 adapter must reconcile that phase before pairing modeled history with measured
 body state; applied setters do not prove an integrated N+1 response.
 
-The following generic SDK pieces are still missing for real riding:
+Generic input lease/capture, owned-body query and Follow APIs now exist. These
+native integration boundaries remain unqualified for riding:
 
-- Contact normals and qualified surface velocity. The generic `world.probe`
-  distinguishes unavailable, clear and hit, with hit position/fraction.
-  [Owned-body batches](../../plugin-body-query.md) additionally bind complete
-  body/world/epoch observations and bounded exclusions. Their first native
-  composition trial refused its first batch before any reported cast or force
-  publication, then released the capsule. A separate
-  [native geometry diagnostic](../native-geometry-trial/README.md) now returned
-  two actual hits from two casts with actor exclusion explicitly false and no
-  force commands. Native actor/self-hit exclusion, normals, surface motion and
-  contact/force composition still need verification.
-- Input ownership independent of owning a camera, with original-device epochs
-  and atomic local-actor motion/pose/input handoff and observed native actions.
-- Native-phase bindings of plugin entities and the local actor to an owned body,
-  with generation checks and actual publication/consumption receipts.
+- Actor-safe wheel support, contact normals and surface velocity must be composed
+  with measured body/epoch facts before force publication. [Owned-body batches](../../plugin-body-query.md)
+  bind observations and bounded exclusions; API availability does not prove that
+  native actor/self-hit exclusion or complete contact/force composition works.
+  The earlier [native geometry diagnostic](../native-geometry-trial/README.md)
+  returned two hits with actor exclusion explicitly false and no force commands.
+- Selected-source capture reports process input-buffer publication, not native
+  input consumption or physical-device identity. The lifecycle does not infer
+  those facts from a successful lease, report, capture or transport completion.
+- [Follow](../../plugin-body-follow.md) supplies a bounded local-actor/body
+  binding with strict lifetime checks. The latest normal-return evidence still
+  leaves body park/cleanup unresolved. It establishes neither mounted alignment
+  nor a renewable riding lifetime, and does not connect pose, force or recovery.
 
 Upstream35824f4 adds `skater.carry`, pose/reach visibility options and
 `camera.cycle`. Reuse them in the full migration. The latter integrates the

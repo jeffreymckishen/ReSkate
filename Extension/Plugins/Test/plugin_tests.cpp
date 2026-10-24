@@ -1031,6 +1031,8 @@ struct FakeGame final : Game {
     std::optional<std::uint32_t> pad_bits_now;
     unsigned focus_reads{};
     InputFocus focus_now{};
+    bool input_allowed_now{};
+    bool input_allowed() override { return input_allowed_now; }
     std::optional<std::uint32_t> pad_bits(bool) override { return pad_bits_now; }
     InputFocus input_focus() override { ++focus_reads; return focus_now; }
     std::optional<Cursor> cursor_now;
@@ -4716,9 +4718,10 @@ void bmx_lua_policy_runs_as_modules_and_the_inspector_starts_inert() {
         return std::string(std::istreambuf_iterator<char>(file), {});
     };
     const auto declaration = contents(directory / manifest_file);
-    check(parse_manifest(declaration).permissions == std::set<std::string, std::less<>>{"input", "input.control", "skater.read", "menu", "storage"} &&
+    check(parse_manifest(declaration).permissions == std::set<std::string, std::less<>>{"input", "input.control", "input.lease", "input.capture", "skater.read",
+                  "menu", "storage", "world.physics", "world.physics.follow", "world.entities"} &&
               check_package_files(directory).empty(),
-          "BMX Lua requests only input, stock report control, skater observation, menu and receipt storage");
+          "The public package declares exactly its reviewed general input/body/entity permissions and no native skater control");
     TestEnvironment environment;
     Host host(environment, Side::client);
     host.apply({{"bmx-lua-inspector", directory, "1", {}}});
@@ -4733,20 +4736,52 @@ void bmx_lua_policy_runs_as_modules_and_the_inspector_starts_inert() {
     check(!environment.fake.input_pulse_requests && !environment.fake.input_pulse_reads &&
               !environment.fake.input_pulse_cancels && !environment.fake.input_pulse_acks,
           "Startup and menu rebuilds do not arm equipment switching");
+    environment.shown = "bmx-lua-inspector";
+    const auto panel_value = [&](std::string_view label) {
+        for (const auto& panel : environment.panels)
+            for (const auto& widget : panel.widgets)
+                if (widget.text == label) return widget.help;
+        throw std::runtime_error("Missing public bike status: " + std::string(label));
+    };
+    for (unsigned slot = 0; slot < 4; ++slot) {
+        environment.actions = {plugin_ui::Action{"bmx-lua-inspector", "BMX Lua migration", "bike_mount" + std::to_string(slot), false}};
+        ticks(host, environment, 10);
+        running(host, "bmx-lua-inspector", environment);
+        check(panel_value("Last mount click") == "Native bike lifecycle qualification unavailable" &&
+                  panel_value("Mount enabled") == "false" && panel_value("Bike authority") == "false" &&
+                  panel_value("Cleanup pending / unknown") == "false / false",
+              "Each real public Mount button refuses before authority or cleanup duty");
+    }
+    check(environment.fake.calls.empty() && environment.fake.binds.empty() && environment.fake.entities.empty() &&
+              !environment.fake.body_prepares && !environment.fake.body_create_calls && !environment.fake.body_read_calls &&
+              !environment.fake.body_submit_entries && !environment.fake.follow_reserves && !environment.fake.follow_publishes &&
+              !environment.fake.follow_reads && !environment.fake.follow_stops && !environment.fake.follow_acks &&
+              !environment.fake.input_pulse_requests && !environment.fake.input_pulse_reads &&
+              !environment.fake.input_pulse_cancels && !environment.fake.input_pulse_acks &&
+              !environment.fake.native_action_requests && !environment.fake.native_recovery_requests &&
+              environment.teleports.empty() && !environment.rays,
+          "Public Mount denial never reaches input reports, Follow, body/entity allocation or native skater actions");
     host.apply({});
     check(!std::filesystem::exists(environment.storage_root() / "bmx-lua-inspector" / "storage.json"),
           "An idle package also unloads without writing equipment storage");
     std::map<std::string, std::string> files{{manifest_file, declaration}};
     for (const auto* name : {"input.lua", "catalog.lua", "tests.lua"}) files[std::string("plugin/") + name] = contents(directory / "plugin" / name);
+    // Cold module loading and policy execution use separate unchanged Host call budgets.
     files["plugin/main.lua"] = R"(
-        local result = require("./tests").run()
-        assert(result.cases == 12 and result.assertions == 1216 and result.native_actions == 0,
-            string.format("unexpected Lua coverage: %s/%s", tostring(result.cases), tostring(result.assertions)))
-        local pad, focus = reskate.input.gamepad(), reskate.input.focus()
-        assert(type(pad.left_x) == "number" and type(pad.right_y) == "number" and pad.left_trigger > 0 and pad.right_trigger > 0)
-        assert(pad.buttons.a and pad.buttons.b and pad.buttons.y and pad.buttons.right_stick and pad.buttons.lb and pad.buttons.rb)
-        assert(focus.focused and not focus.interface_open and focus.gameplay)
-        reskate.log("BMX Lua: 12 cases, 1216 assertions, 0 native actions")
+        local tests = require("./tests")
+        local complete = false
+        reskate.on("tick", function()
+            if complete then return end
+            complete = true
+            local result = tests.run()
+            assert(result.cases == 12 and result.assertions == 1216 and result.native_actions == 0,
+                string.format("unexpected Lua coverage: %s/%s", tostring(result.cases), tostring(result.assertions)))
+            local pad, focus = reskate.input.gamepad(), reskate.input.focus()
+            assert(type(pad.left_x) == "number" and type(pad.right_y) == "number" and pad.left_trigger > 0 and pad.right_trigger > 0)
+            assert(pad.buttons.a and pad.buttons.b and pad.buttons.y and pad.buttons.right_stick and pad.buttons.lb and pad.buttons.rb)
+            assert(focus.focused and not focus.interface_open and focus.gameplay)
+            reskate.log("BMX Lua: 12 cases, 1216 assertions, 0 native actions")
+        end)
     )";
     TestEnvironment portable;
     portable.fake.pad = PadInput{0.25f, 0, 0, -1, 0.3f, 0.9f, 0xb380, false};
@@ -4754,8 +4789,67 @@ void bmx_lua_policy_runs_as_modules_and_the_inspector_starts_inert() {
     Host unit(portable, Side::client);
     unit.apply({package("bmx-lua-policy-tests", files)});
     running(unit, "bmx-lua-policy-tests", portable);
+    const auto policy_inert = [&] {
+        const auto& game = portable.fake;
+        return game.calls.empty() && game.binds.empty() && game.entities.empty() &&
+            !game.body_prepares && !game.body_create_calls && !game.body_read_calls && !game.body_submissions &&
+            !game.follow_reserves && !game.follow_publishes && !game.follow_reads && !game.follow_stops && !game.follow_acks &&
+            !game.input_pulse_requests && !game.input_pulse_reads && !game.input_pulse_cancels && !game.input_pulse_acks &&
+            !game.native_action_requests && !game.native_recovery_requests && portable.teleports.empty() && !portable.rays;
+    };
+    check(!portable.logged("BMX Lua: 12 cases, 1216 assertions, 0 native actions") && policy_inert(),
+          "Cold policy loading stays inert and defers the regression suite to a separate tick call\n" + portable.all());
+    unit.tick(1.0 / 60.0);
+    running(unit, "bmx-lua-policy-tests", portable);
     check(portable.logged("BMX Lua: 12 cases, 1216 assertions, 0 native actions") && portable.fake.calls.empty(),
           "Actual package modules run through the vendored Luau Host with expected coverage and actual input API fields\n" + portable.all());
+    check(policy_inert(), "The policy suite and actual input reads never invoke an actuator\n" + portable.all());
+    const auto completed = portable.all();
+    unit.tick(1.0 / 60.0);
+    running(unit, "bmx-lua-policy-tests", portable);
+    check(portable.all() == completed && policy_inert(), "The input policy regression suite runs only once");
+}
+
+void bmx_lua_public_bike_facade_denies_mount_before_service_access() {
+    const auto path = std::filesystem::path(RESKATE_SOURCE_DIR) / "contrib" / "bmx-lab" / "bmx-plugin" / "plugin" / "bike_runtime.lua";
+    std::ifstream source(path, std::ios::binary);
+    check(source.good(), "The public bike facade source is required: " + path.string());
+    std::map<std::string, std::string> files{{manifest_file, manifest("")}};
+    files["plugin/bike_runtime.lua"] = std::string(std::istreambuf_iterator<char>(source), {});
+    files["plugin/main.lua"] = R"(
+        local reads = 0
+        local services = setmetatable({}, {__index = function()
+            reads += 1
+            error("public denial must precede service lookup")
+        end})
+        local owner = require("./bike_runtime").new(services)
+        for slot = 0, 3 do
+            local accepted, why = owner:request_mount(slot)
+            assert(accepted == false and why == "Native bike lifecycle qualification unavailable")
+        end
+        for _, slot in {-1, 4, 0.5, "0", math.huge} do
+            local accepted, why = owner:request_mount(slot)
+            assert(accepted == false and why == "Choose an XInput slot from0 to3")
+        end
+        local state = owner:status()
+        assert(state.mount_enabled == false and state.bike_authority == false and state.used == false)
+        assert(state.startup.loaded == 0 and state.startup.pending == false)
+        state.phase = "external mutation"; state.startup.loaded = 99
+        assert(owner:status().phase == "idle" and owner:status().startup.loaded == 0)
+        assert(owner:request_stop("pristine stop") == true)
+        for _ = 1, 60 do owner:step(16) end
+        assert(reads == 0 and owner:status().used == false)
+        owner:unload()
+        assert(reads == 0 and owner:status().unloaded == true)
+        reskate.log("Public bike facade: denied before service access")
+    )";
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({package("bmx-public-facade-denial", files)});
+    running(host, "bmx-public-facade-denial", environment);
+    check(environment.logged("Public bike facade: denied before service access") && environment.fake.calls.empty() &&
+              !environment.fake.input_pulse_requests && !environment.fake.body_creates && !environment.fake.follow_reserves,
+          "The actual public facade needs no permission, backend module, service read or actuator to deny Mount");
 }
 
 void bmx_lua_equipment_requests_match_the_retained_gesture_rules() {
@@ -4978,6 +5072,7 @@ void bmx_lua_menu_switches_explicit_slots_and_retains_cleanup_duty() {
         environment.local_skater = SkaterState{};
         auto& game = environment.fake;
         game.focus_now = {true, true, true};
+        game.input_allowed_now = true; // Constructed native-input readiness; production guard remains required.
         game.telemetry = SkaterTelemetry{};
         game.telemetry->skater = true;
         auto& watch = game.telemetry->watch;
@@ -4989,12 +5084,21 @@ void bmx_lua_menu_switches_explicit_slots_and_retains_cleanup_duty() {
         Candidate candidate{id, directory, "bmx-runtime-menu-v1", {}};
         if (scenario == 6) {
             std::map<std::string, std::string> files;
-            for (const auto* name : {"main.lua", "input.lua", "catalog.lua", "equipment_transition.lua", "equipment_runtime.lua"}) {
-                std::ifstream file(directory / "plugin" / name, std::ios::binary);
-                check(file.good(), why + name);
-                files[std::string("plugin/") + name] = std::string(std::istreambuf_iterator<char>(file), {});
+            // Keep the complete real package; subtract only the tested permission.
+            // Missing a new lazy dependency would fail load before testing denial.
+            for (const auto& entry : std::filesystem::recursive_directory_iterator(directory)) {
+                check(!entry.is_symlink(), why + "package source must not contain symlinks");
+                if (!entry.is_regular_file()) continue;
+                std::ifstream file(entry.path(), std::ios::binary);
+                check(file.good(), why + entry.path().string());
+                files[entry.path().lexically_relative(directory).generic_string()] = std::string(std::istreambuf_iterator<char>(file), {});
             }
-            files[manifest_file] = manifest(R"("input","skater.read","menu","storage")");
+            auto denied_manifest = Json::parse(files.at(manifest_file));
+            denied_manifest["permissions"] = Json::array();
+            for (const auto* permission : {"input", "input.lease", "input.capture", "skater.read", "menu", "storage",
+                                          "world.physics", "world.physics.follow", "world.entities"})
+                denied_manifest["permissions"].push_back(permission);
+            files[manifest_file] = denied_manifest.dump();
             candidate = package(id, files);
         }
         host.apply({candidate}); running(host, id, environment);
@@ -8049,6 +8153,7 @@ int main() {
         run(camera_inspector_prepares_then_explicitly_requests_a_view);
         run(bmx_lua_spawn_uses_owned_chassis_and_measured_part_placement);
         run(bmx_lua_policy_runs_as_modules_and_the_inspector_starts_inert);
+        run(bmx_lua_public_bike_facade_denies_mount_before_service_access);
         run(bmx_lua_first_ride_imports_stay_inert);
         run(bmx_lua_equipment_requests_match_the_retained_gesture_rules);
         run(bmx_lua_equipment_transitions_keep_cleanup_and_target_observation_separate);

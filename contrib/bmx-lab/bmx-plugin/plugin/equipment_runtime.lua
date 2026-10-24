@@ -93,7 +93,7 @@ function Adapter:_facts()
     self._facts_now=facts
     return facts
 end
-function Adapter:request(slot)
+function Adapter:request(slot,admitted_at_ms)
     if self._closed or self._storage_fault then return false,"Adapter is closed or storage is unresolved" end
     if not integer(slot,3) then return false,"Choose an XInput slot from0 to3" end
     local out=self._output
@@ -105,7 +105,14 @@ function Adapter:request(slot)
         self._detail="Arm refused: settled focused stock equipment is unavailable."
         return false,self._detail
     end
-    self._pending={slot=slot,at=f.now_ms,last=f.now_ms,context=f.context,level=f.level,state=f.observation.state,neutral=false}
+    -- A same-owner deferred caller may preserve its original admission deadline.
+    -- Existing callers omit this argument and retain the original request timing.
+    if admitted_at_ms~=nil and (not integer(admitted_at_ms,maximum_integer)
+        or admitted_at_ms>f.now_ms or f.now_ms-admitted_at_ms>=arm_ms) then
+        self._detail="Arm refused: original admission deadline elapsed or clock is invalid."
+        return false,self._detail
+    end
+    self._pending={slot=slot,at=admitted_at_ms or f.now_ms,last=f.now_ms,context=f.context,level=f.level,state=f.observation.state,neutral=false}
     self._wipeouts=f.wipeouts
     self._ever_requested=true
     self._detail="Armed for60s: close the menu; leave the physical controller neutral."

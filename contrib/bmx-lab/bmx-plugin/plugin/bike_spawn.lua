@@ -1,5 +1,5 @@
--- One explicit spawn/read/visual/release trial. No input claim, rider mutation,
--- contact query, force packet or legacy C++ BMX call is made by this module.
+-- Derived spawn/visual owner with an explicit external follow-trial handoff.
+-- No follow, input, force or contact API is called by this module.
 local M=require("./force_math")
 local G=require("./bike_geometry")
 local Visual=require("./bike_visual")
@@ -44,11 +44,16 @@ function Runtime:status()
     return {phase=self.phase,detail=self.detail,used=self.used,body=self.body~=nil,
         visual_updates=self.updates,serial=self.sample and self.sample.serial or nil,
         body_release_attempted=self.body_release_attempted,body_release_accepted=self.body_release_accepted,
+        follow_handed_off=self.follow_handed_off==true,
+        body_release_owner=self.follow_handed_off and "external_follow_trial" or "spawn",
+        body_release_scope="Spawn release acceptance only; external handoff cleanup and park are not observed here",
+        follow_visual_error=self.follow_visual_error,
         visual_remove_requested=self.visual_remove_requested,cleanup_unknown=self.cleanup_unknown,
         creation_attempts=self.creation_attempts,creation_unknown=self.creation_unknown,
         clock_retry_available=self.phase=="clock_prepared" and not self.clock_retried,
         last_measurement=measurement,
-        scope="Lua bike visual and owned chassis only; no mounted rider, riding or tricks"}
+        scope=self.follow_handed_off and "Measured bike visuals only; external trial owns body/follow cleanup; no alignment or riding proof"
+            or "Lua bike visual and owned chassis only; no mounted rider, riding or tricks"}
 end
 function Runtime:request()
     if self.used or self.phase~="idle" then return false,"This VM already consumed its one spawn request." end
@@ -70,11 +75,12 @@ function Runtime:stop(reason)
     if self.visual_requested and not self.visual_remove_requested then
         self.visual_remove_requested=true
         for id=1,8 do
+            -- Void removal: pcall records request acceptance, not rendered absence.
             local ok=pcall(self.api.entities.remove,id)
             if not ok then self.cleanup_unknown=true end
         end
     end
-    if self.body and not self.body_release_attempted then
+    if self.body and not self.follow_handed_off and not self.body_release_attempted then
         self.body_release_attempted=true
         local called,released,why=pcall(self.api.world.physics.release,self.body)
         self.body_release_accepted=called and released==true
@@ -83,6 +89,55 @@ function Runtime:stop(reason)
     self.phase=self.cleanup_unknown and "cleanup_unknown" or "closed"
 end
 function Runtime:owned_measurement() return self.body,self.sample end
+function Runtime:handoff_follow()
+    if self.phase~="spawned" or self.follow_handed_off or self.body_release_attempted
+        or self.creation_unknown or typeof(self.body)~="userdata" or not valid(self.sample) then
+        return nil,nil,"Known spawned body and measured sample required for one handoff"
+    end
+    local body,sample=self.body,self.sample
+    -- Ownership of future release decisions transfers before any follow reserve.
+    -- A failed/partial reserve must not silently return it to this spawn owner.
+    self.body=nil self.follow_handed_off=true self.phase="follow_owned"
+    self.follow_wall,self.follow_observed_at=nil,nil
+    self.detail="Body handed to external follow trial; spawn stop now removes visuals only."
+    return body,sample,nil
+end
+function Runtime:_follow_visual(sample,now_ms)
+    if not self.follow_handed_off or self.phase~="follow_owned" or self.visual_remove_requested then
+        return false,"Follow visual ownership is unavailable or already stopped"
+    end
+    if not M.finite(now_ms) or now_ms<0 or now_ms>9007199254740991
+        or self.follow_wall and now_ms<self.follow_wall then return false,"Invalid or reversed follow visual wall clock" end
+    if not valid(sample) then return false,"Invalid measured bike body for follow visuals" end
+    local order=compare(sample.serial,self.sample.serial)
+    if order<0 or sample.time<self.sample.time or (order>0 and sample.time<=self.sample.time)
+        or (order==0 and not same(sample,self.sample)) then
+        return false,"Body observation regressed or changed within its epoch"
+    end
+    local delta=M.sub(xyz(sample.position),M.add(self.root,M.turn(self.rotation,G.com)))
+    if M.length(delta)>2 then return false,"Body left the two-metre spawn envelope" end
+    if order==0 then
+        -- The first explicit call establishes a Lua wall baseline, not native freshness.
+        local observed=self.follow_observed_at or now_ms
+        if now_ms-observed>100 then return false,"Body native clock stopped advancing for follow visuals" end
+        self.follow_wall,self.follow_observed_at=now_ms,observed
+        return true
+    end
+    local matrices,why=Visual.from_sample(sample)
+    if not matrices then return false,why end
+    local placed,reason=self:_place(matrices)
+    if not placed then return false,reason end
+    self.sample=sample self.follow_wall=now_ms self.follow_observed_at=now_ms self.updates+=1
+    self.detail="Bike visuals follow supplied measured chassis; mounted alignment remains unproved."
+    return true
+end
+function Runtime:follow_visual(sample,now_ms)
+    local result=table.pack(pcall(self._follow_visual,self,sample,now_ms))
+    if result[1] and result[2]==true then return true end
+    local why=result[1] and result[3] or "Follow visual exception: "..tostring(result[2])
+    self.follow_visual_error=tostring(why or "Follow visual update refused")
+    return false,self.follow_visual_error
+end
 function Runtime:_assets()
     -- Exact names avoid a cold walk of the complete native asset registry.
     -- One lookup per tick keeps the eight-part preflight inside one deadline.
@@ -116,7 +171,8 @@ function Runtime:_place(matrices)
     return true
 end
 function Runtime:_update(dt)
-    if self.phase=="idle" or self.phase=="closed" or self.phase=="cleanup_unknown" or self.phase=="clock_prepared" then return end
+    if self.phase=="idle" or self.phase=="closed" or self.phase=="cleanup_unknown" or self.phase=="clock_prepared"
+        or self.phase=="follow_owned" then return end
     if not M.finite(dt) or dt<0 or dt>250 then self:stop("invalid/stalled wall tick") return end
     self.wall+=dt
     local focus=self.api.input.focus()

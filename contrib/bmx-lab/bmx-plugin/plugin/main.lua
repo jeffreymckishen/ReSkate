@@ -1,31 +1,35 @@
--- Switching is an explicit menu action. The input policy inspector below stays
--- read-only; neither path activates a BMX body, rider pose or old controller.
-local Input = require("./input")
-local catalog = require("./catalog")
-local EquipmentRuntime = require("./equipment_runtime")
-local equipment = EquipmentRuntime.new()
+-- One lifecycle owner handles explicit requests and cleanup. Public mounting
+-- stays unavailable; the controller policy inspector remains read-only.
+local Input, catalog
+local BikeRuntime = require("./bike_runtime")
+local bike = BikeRuntime.new()
+local mount_request = "Unavailable: native lifecycle qualification has not completed."
+local stop_request = "No stop requested."
 local switch_request = "No switch requested."
-local mapper = Input.new()
+local mapper
 local observing = false
 local source_epoch = 1
 local context_choice = 1
 local status = "Stopped. This package cannot activate BMX riding."
-local last_actions = Input.actions()
+local last_actions
 local last_hop = "None observed"
 local last_trick = "None observed"
 local samples = 0
 local last_seconds = 0
 
 local function reset()
-    mapper:reset()
-    last_actions = Input.actions()
+    if mapper then mapper:reset() end
+    last_actions = Input and Input.actions() or nil
     last_hop, last_trick, samples, last_seconds = "None observed", "None observed", 0, 0
 end
 
 reskate.on("tick", function(dt_ms)
     -- Receipt cleanup must keep running when input observation is stopped.
-    equipment:update()
-    if not observing then return end
+    local lifecycle = bike:step(dt_ms)
+    if not observing or lifecycle.startup and lifecycle.startup.work_this_tick then return end
+    -- Inspector chunks are independent of lifecycle cleanup and load on demand.
+    if not catalog then catalog = require("./catalog"); return end
+    if not Input then Input = require("./input"); mapper = Input.new(); last_actions = Input.actions(); return end
     local focus = reskate.input.focus()
     local pad = reskate.input.gamepad()
     if not focus or not pad or not focus.focused or focus.interface_open or not focus.gameplay then
@@ -60,16 +64,38 @@ reskate.on("tick", function(dt_ms)
 end)
 
 reskate.menu.page("BMX Lua migration", function(ui)
-    ui:warn("Lua BMX riding is not connected yet. These buttons switch the skateboard and on-foot state only.")
-    ui:note("Choose your controller slot, close the menu, and leave every control released. Each click requests one switch.")
+    ui:warn("BMX mounting is unavailable while native lifecycle qualification remains incomplete. This package is not rideable.")
+    ui:note("Mount requests stay disabled in public mode. Stop/cleanup remains available; stock switches require clear bike ownership.")
+    for slot = 0, 3 do
+        if ui:button("bike_mount" .. slot, "Mount bike (unavailable): slot " .. slot) then
+            local accepted, why = bike:request_mount(slot)
+            mount_request = accepted and "Mount intent accepted; inspect the lifecycle status."
+                or string.sub(tostring(why or "Mount unavailable"), 1, 160)
+        end
+    end
+    if ui:button("bike_stop", "Stop bike / cleanup") then
+        local accepted, why = bike:request_stop("explicit menu stop")
+        stop_request = accepted and "Stop requested. Cleanup continues on ticks."
+            or string.sub(tostring(why or "No active bike request"), 1, 160)
+    end
+    ui:note("For stock switching, choose your controller slot, close the menu, and leave every control released. Each click requests one switch.")
     for slot = 0, 3 do
         if ui:button("equipment" .. slot, "Switch skateboard / on foot: slot " .. slot) then
-            local accepted, why = equipment:request(slot)
+            local accepted, why = bike:request_stock_toggle(slot)
             switch_request = accepted and "Armed. Close the menu and release every control."
                 or string.sub(tostring(why or "Request refused"), 1, 160)
         end
     end
-    local switch = equipment:status()
+    local lifecycle = bike:status()
+    ui:info("Bike phase", tostring(lifecycle.phase or "idle"))
+    ui:info("Bike detail", tostring(lifecycle.detail or "Unavailable"))
+    ui:info("Mount enabled", tostring(lifecycle.mount_enabled == true))
+    ui:info("Bike authority", tostring(lifecycle.bike_authority == true))
+    ui:info("Cleanup pending / unknown", tostring(lifecycle.cleanup_pending == true) .. " / " .. tostring(lifecycle.cleanup_unknown == true))
+    ui:info("Stock toggle blocked", tostring(lifecycle.stock_toggle_blocked == true))
+    ui:info("Last mount click", mount_request)
+    ui:info("Last stop click", stop_request)
+    local switch = lifecycle.equipment or {}
     ui:info("Switch phase", tostring(switch.phase or "idle"))
     ui:info("Switch result", tostring(switch.outcome or "idle"))
     ui:info("Switch detail", tostring(switch.detail or switch.reason or "No request"))
@@ -94,6 +120,7 @@ reskate.menu.page("BMX Lua migration", function(ui)
     ui:info("Status", status)
     ui:info("Source epoch", tostring(source_epoch) .. " (manual; the native API does not expose device identity)")
     ui:info("Model timing", string.format("%.5f wall seconds; %d samples", last_seconds, samples))
+    if not last_actions then ui:note("No controller sample; Observe loads the inspector on later ticks."); return end
     ui:info("Last sample active", tostring(last_actions.active))
     ui:info("Steer / pitch request", string.format("%.3f / %.3f", last_actions.steer, last_actions.air_pitch))
     ui:info("Pedal / brake request", string.format("%.3f / %.3f", last_actions.pedal, last_actions.brake))
@@ -105,7 +132,7 @@ reskate.menu.page("BMX Lua migration", function(ui)
 end)
 
 reskate.on("unload", function()
-    equipment:unload()
+    bike:unload()
     observing = false
-    mapper:reset()
+    if mapper then mapper:reset() end
 end)

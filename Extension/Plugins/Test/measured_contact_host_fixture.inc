@@ -317,6 +317,11 @@ void measured_contact_host_fixture_v1() {
         host.apply({});
         check(game.body_release_calls==1 && game.body_releases.size()>all_releases,
               "Unloading a completed diagnostic repeated its explicit release or omitted Host owner cleanup");
+        const auto committed_path=f::storage_path(environment,id);
+        std::error_code committed_error;
+        const bool committed=std::filesystem::is_regular_file(committed_path,committed_error);
+        check(committed,"Measured-contact exact-success storage commit is not a regular file: " + committed_path.string() +
+              "\nfilesystem status: " + committed_error.message() + "\n" + environment.all());
         const auto saved_bytes=f::contents(f::storage_path(environment,id));
         const auto document=f::stored(environment,id);
         const auto& report=document.at("measured_contact_trial_v1");

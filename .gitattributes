@@ -34,3 +34,5 @@ contrib/bmx-lab/measured-contact-trial/plugin/main.lua text eol=lf
 contrib/bmx-lab/measured-contact-trial/reskate-plugin.json text eol=lf
 contrib/bmx-lab/passive-sync-trial/plugin/main.lua text eol=lf
 contrib/bmx-lab/passive-sync-trial/reskate-plugin.json text eol=lf
+contrib/bmx-lab/passive-sync-routes-trial/plugin/main.lua text eol=lf
+contrib/bmx-lab/passive-sync-routes-trial/reskate-plugin.json text eol=lf

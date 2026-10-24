@@ -1,0 +1,1 @@
+{"api":1,"entry":"plugin/main.lua","side":"client","permissions":["world.physics","world.physics.observe","skater.read","input","menu","storage"]}

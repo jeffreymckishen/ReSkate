@@ -4607,6 +4607,7 @@ void camera_inspector_prepares_then_explicitly_requests_a_view() {
 
 #include "bmx_first_ride_import_test.inc"
 #include "passive_sync_trial_test.inc"
+#include "passive_sync_routes_trial_test.inc"
 
 void bmx_lua_first_ride_imports_stay_inert() {
     const auto root = std::filesystem::path(RESKATE_SOURCE_DIR);
@@ -7834,6 +7835,7 @@ int main() {
         run(sync_probe_binding_rejects_malformed_backend_facts);
         run(sync_probe_terminal_partial_facts_and_body_release_remain_distinct);
         run(the_tracked_passive_sync_trial_runs_once_and_keeps_observation_separate);
+        run(the_tracked_passive_sync_routes_trial_copies_validated_route_counts);
         run(native_actions_keep_opaque_requests_and_observed_receipts_distinct);
         run(native_actions_check_permission_side_cancellation_and_rate);
         run(native_action_quarantine_remains_visible_until_safe_acknowledgement);

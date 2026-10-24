@@ -117,6 +117,8 @@ struct LocalSurfaceProbe {
     std::uint64_t hit_entity{};
     std::array<std::uint64_t, 2> hit_body{};
     unsigned excluded_bodies{};
+    std::array<float,3> normal{};
+    bool normal_available{};
 };
 // Client update thread. A clear ray is not proof that collision for the entire region has
 // streamed. Optional native body references must be independently verified for this world;
@@ -133,7 +135,7 @@ BoundedLocalSurfaceProbe probe_local_surface_bounded(const std::array<float,3>& 
 // One geometry query, with no native owner ignore list, entity lookup or retry.
 // hit_body retains the native picking reader's shape handle; it is not a body.
 BoundedLocalSurfaceProbe probe_local_surface_geometry_bounded(const std::array<float,3>& from,const std::array<float,3>& to,
-    unsigned maximum_casts);
+    unsigned maximum_casts, bool measure_contact=false);
 // Small allowlisted progression commands, executed on the game update thread.
 bool set_local_progression(const std::vector<std::string>& arguments);
 // Small ReSkate-owned booleans saved beside the profile under a "ReSkate."

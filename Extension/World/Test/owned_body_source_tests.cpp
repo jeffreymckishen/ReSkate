@@ -1,6 +1,7 @@
-// Includes the actual proposed translation unit. Only its wall-time dependency
-// is substituted. The same capture/observe/native-read/clock/borrow functions,
-// actual fixed Service/Slot/Clock, memory::peek and SRW locks execute below.
+// Includes the actual proposed translation unit. Wall time is substituted and
+// named native ABI stand-ins read constructed arrays or return a counted query.
+// The actual Service/Slot/Clock, capture/observe/borrow/query implementation,
+// memory::peek and SRW locks execute below; no retail native code executes.
 #include <Windows.h>
 #include <intrin.h>
 #include <array>
@@ -9,6 +10,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <functional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -38,6 +40,7 @@ __declspec(align(16)) __declspec(thread) unsigned char source_test_tls[0x4000];
 namespace test_facts {
 std::atomic<unsigned> model_calls{}, world_calls{}, body_calls{}, shape_calls{}, mutations{}, forbidden_links{};
 std::atomic<bool> multiplayer_active{};
+std::function<dingosdk::BoundedLocalSurfaceProbe(const std::array<float,3>&,const std::array<float,3>&,unsigned,bool)> probe_callback;
 }
 namespace dingosdk::multiplayer {
 MultiplayerModel model() {
@@ -48,8 +51,8 @@ MultiplayerModel model() {
 }
 }
 
-// Link-only dependencies of unrelated create/hook/query entry points. Every
-// one fails closed and is counted; none is allowed to execute in these tests.
+// Unrelated create/hook links fail closed and are counted. Only the named
+// contact-query cases install the counted, constructed native-query ABI stand-in.
 namespace dingosdk {
 HookStatus WINAPI hook_initialize() { ++test_facts::forbidden_links; return HookNotInitialized; }
 HookStatus WINAPI hook_prepare(void*, void*, void**) { ++test_facts::forbidden_links; return HookNotInitialized; }
@@ -58,8 +61,11 @@ HookBatch::HookBatch() noexcept { ++test_facts::forbidden_links; }
 HookBatch::~HookBatch() { ++test_facts::forbidden_links; }
 bool start_no_bail(std::uintptr_t) noexcept { ++test_facts::forbidden_links; return false; }
 bool add_no_bail_step_listener(NoBailStepObserver) noexcept { ++test_facts::forbidden_links; return false; }
-BoundedLocalSurfaceProbe probe_local_surface_geometry_bounded(const std::array<float, 3>&,
-    const std::array<float, 3>&, unsigned) { ++test_facts::forbidden_links; return {}; }
+BoundedLocalSurfaceProbe probe_local_surface_geometry_bounded(const std::array<float, 3>& from,
+    const std::array<float, 3>& to, unsigned allowed, bool contact) {
+    if(test_facts::probe_callback) return test_facts::probe_callback(from,to,allowed,contact);
+    ++test_facts::forbidden_links;return {};
+}
 namespace supported_build {
 bool running_image_matches(std::uintptr_t) noexcept { ++test_facts::forbidden_links; return false; }
 }
@@ -174,7 +180,7 @@ public:
         test_clock::advance_at_world_read = false;
         test_facts::model_calls = 0; test_facts::world_calls = 0;
         test_facts::body_calls = 0; test_facts::shape_calls = 0;
-        test_facts::mutations = 0; test_facts::multiplayer_active = false;
+        test_facts::mutations = 0; test_facts::multiplayer_active = false; test_facts::probe_callback={};
         // Only reserve address space up to the largest used RVA; commit two
         // data pages. No retail code/data is copied or executed.
         image_ = VirtualAlloc(nullptr, e::tls_index + 0x1000, MEM_RESERVE, PAGE_NOACCESS);
@@ -486,6 +492,124 @@ void sdk_release_cannot_cross_borrow() {
     for (const auto handle : {held, leave, release_entered, release_finished}) CloseHandle(handle);
 }
 
+// These cases execute actual probe_batch/Service/Slot/Clock and body-hit
+// qualification over constructed native arrays. The one external native query
+// is a counted ABI stand-in; it does not prove retail ray safety or consumption.
+class ContactFixture : public Fixture {
+public:
+    static constexpr std::uint32_t foreign_index=1, foreign_generation=9;
+    static constexpr std::array<std::uint32_t,2> hit_shapes{2,3};
+    static constexpr std::array<std::uint8_t,2> hit_generations{13,14};
+    unsigned calls{};
+    bool normals=true, hit_owned{}, hit_unknown{};
+    std::function<void(unsigned)> during_query;
+    std::vector<bool> contact_options;
+    std::uintptr_t shape_bodies{};
+    ContactFixture() {
+        put(allocations,(1U<<body_index)|(1U<<foreign_index));
+        put(body_generations+foreign_index*4,foreign_generation);
+        put(position+foreign_index*sizeof(V4),V4{0,0,0,0});
+        put(velocity+foreign_index*sizeof(V4),V4{2,0,0,0});
+        put(spin+foreign_index*sizeof(V4),V4{0,1,0,0});
+        const auto bits=load<std::uintptr_t>(state+r::shape_allocated_bits);
+        const auto generations=load<std::uintptr_t>(state+r::shape_generations);
+        put(bits,(1U<<shape_index)|(1U<<hit_shapes[0])|(1U<<hit_shapes[1]));
+        shape_bodies=arena.take(capacity*4);
+        put(state+r::shape_body_indices,shape_bodies);
+        put(shape_bodies+shape_index*4,body_index);
+        for(std::size_t i=0;i<hit_shapes.size();++i) {
+            put(generations+hit_shapes[i],hit_generations[i]);
+            put(shape_bodies+hit_shapes[i]*4,foreign_index);
+        }
+        test_facts::probe_callback=[&](const auto& from,const auto& to,unsigned allowed,bool contact) {
+            ++calls;contact_options.push_back(contact);
+            check(allowed>=1 && allowed<=2,"Service lost actual cast budget");
+            if(during_query) during_query(calls);
+            BoundedLocalSurfaceProbe result;
+            result.native_casts=1;auto& hit=result.surface;
+            hit.available=true;hit.hit=true;hit.context=context;hit.world=world;
+            hit.fraction=.5f;
+            for(std::size_t i=0;i<from.size();++i) hit.position[i]=(from[i]+to[i])*.5f;
+            const auto ordinal=(calls-1)%hit_shapes.size();
+            NativeHandle shape{world,hit_owned?shape_index:hit_shapes[ordinal],
+                hit_owned?shape_generation:hit_generations[ordinal]};
+            if(hit_unknown) shape.generation++;
+            std::memcpy(hit.hit_body.data(),&shape,sizeof(shape));
+            hit.normal={0,1,0};hit.normal_available=contact && normals;
+            if(hit.normal_available) hit.position[2]+=.01f;
+            return result;
+        };
+    }
+    ~ContactFixture(){test_facts::probe_callback={};}
+    body_query::Request request(std::size_t rays=1,bool contact=true) {
+        body_query::Request out;out.count=rays;out.require_contact=contact;
+        check(read(owner,handle,out.observation).empty(),"Service test could not publish measured canonical sample");
+        for(std::size_t i=0;i<rays;++i) out.rays[i]={{1,2,0},{1,-2,0}};
+        return out;
+    }
+};
+
+void service_contact_opt_in_and_read_only() {
+    ContactFixture f;auto request=f.request(1,false);
+    std::array<unsigned char,sizeof(Mailbox)> mailbox{};
+    std::memcpy(mailbox.data(),&f.slot().mailbox,mailbox.size());
+    const auto latest=f.slot().latest;
+    SetLastError(0x4321);
+    auto out=probe_batch(owner,f.handle,request,64);
+    check(GetLastError()==0x4321,"Service contact changed LastError");
+    check(out.available && out.native_casts==1 && !out.rays[0].normal_available &&
+        !out.rays[0].surface_velocity_available && !f.contact_options.back(),"legacy Service geometry collected contact");
+    request.require_contact=true;out=probe_batch(owner,f.handle,request,64);
+    check(out.available && out.native_casts==1 && out.rays[0].normal_available && f.contact_options.back(),
+        "actual Service did not join required contact");
+    check(out.rays[0].position==Vec{1,0,.01f} && out.rays[0].surface_velocity_available &&
+        out.rays[0].surface_velocity==Vec{2.01f,0,-1},
+        "actual Service fabricated static motion or lost cross sign");
+    check((load<std::uint32_t>(f.dynamics)&(1U<<f.foreign_index))==0,
+        "moving foreign witness unexpectedly depended on a dynamic bit");
+    f.normals=false;out=probe_batch(owner,f.handle,request,64);
+    check(!out.available && out.failure==body_query::Failure::contact_measurement_unavailable && out.native_casts==1,
+        "required unknown normal became support");
+    f.normals=true;put(f.velocity+f.foreign_index*sizeof(V4),V4{NAN,0,0,0});
+    out=probe_batch(owner,f.handle,request,64);
+    check(!out.available && out.failure==body_query::Failure::contact_measurement_unavailable && out.native_casts==1,
+        "required malformed foreign motion became support");
+    request.require_contact=false;out=probe_batch(owner,f.handle,request,64);
+    check(out.available && !out.rays[0].surface_velocity_available && !f.contact_options.back(),
+        "legacy geometry gained a foreign motion read/fence dependency");
+    check(body_query::same_sample(latest,f.slot().latest) &&
+        std::memcmp(mailbox.data(),&f.slot().mailbox,mailbox.size())==0,"contact query published a pose/command/receipt");
+}
+
+void service_whole_batch_contact_fences() {
+    for(unsigned variant=0;variant<3;++variant) {
+        ContactFixture f;auto request=f.request(2);
+        f.during_query=[&](unsigned calls) {
+            if(calls!=2)return;
+            if(variant==0)put(f.velocity+f.foreign_index*sizeof(V4),V4{3,0,0,0});
+            if(variant==1)put(f.shape_bodies+f.hit_shapes[0]*4,body_index);
+            if(variant==2)f.step();
+        };
+        const auto out=probe_batch(owner,f.handle,request,64);
+        check(f.calls==2 && out.native_casts==2,"contact fence lost actual two-cast accounting");
+        check(!out.available && out.failure==body_query::Failure::observation_changed,
+            "Service accepted changed foreign motion/individual shape/canonical native clock");
+        check(out.rays[0].status==body_query::Status::unavailable && !out.rays[0].normal_available &&
+            !out.rays[1].surface_velocity_available,"whole-batch refusal leaked partial contacts");
+    }
+}
+
+void service_actor_and_nearest_hit_refusals() {
+    ContactFixture f;auto request=f.request();request.exclude_local_actor=true;
+    auto out=probe_batch(owner,f.handle,request,64);
+    check(!out.available && out.failure==body_query::Failure::local_actor_exclusion_unavailable &&
+        out.native_casts==0 && f.calls==0,"actor exclusion was bypassed or reached a native cast");
+    request.exclude_local_actor=false;f.hit_owned=true;out=probe_batch(owner,f.handle,request,64);
+    check(!out.available && out.native_casts==1 && f.calls==1,"owned nearest hit became clear or was recast through");
+    f.hit_owned=false;f.hit_unknown=true;out=probe_batch(owner,f.handle,request,64);
+    check(!out.available && out.native_casts==1 && f.calls==2,"unknown nearest hit became foreign/clear or retried");
+}
+
 template<class F> void run(const char* name, F function) {
     function();
     check(test_facts::mutations.load() == 0, "source path invoked a native mutator/allocator");
@@ -505,6 +629,9 @@ int main() {
         run("owner_clock_and_closing_clock_refusal", owner_clock_and_closing_clock_refusal);
         run("try_locks_thread_affinity_and_last_error", try_locks_and_thread_affinity);
         run("actual_sdk_release_serialization", sdk_release_cannot_cross_borrow);
+        run("service_contact_opt_in_and_read_only",service_contact_opt_in_and_read_only);
+        run("service_whole_batch_contact_fences",service_whole_batch_contact_fences);
+        run("service_actor_and_nearest_hit_refusals",service_actor_and_nearest_hit_refusals);
         std::cout << cases << " actual-Service cases, " << checks << " checks passed; native mutations "
                   << test_facts::mutations.load() << '\n';
         return 0;

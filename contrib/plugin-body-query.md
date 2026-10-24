@@ -40,8 +40,8 @@ must have a nonzero direction, be at least 10 micrometres long and at most 1000 
 long, subject to a lower configured host limit. Invalid arguments raise a Lua
 error. Lists must be dense arrays; extra fields are refused.
 
-Options are `exclude_bodies = {other_owned_body, ...}` and
-`exclude_local_actor = true|false`. At most eight additional opaque body handles
+Options are `exclude_bodies = {other_owned_body, ...}`,
+`exclude_local_actor = true|false`, and `require_contact = true|false`. At most eight additional opaque body handles
 are accepted. Every exclusion must still belong to this VM, its current native
 world and a fresh owned generation. The anchoring body must always be excluded.
 The native ray filter consumes owner indices, not body or shape handles, and the
@@ -56,11 +56,47 @@ A verified actor conversion and a compatible exclusion domain are still required
 Omitting actor exclusion does not establish rider-safe vehicle contact queries.
 
 The result has `status = "available"|"unavailable"`, `native_casts`,
-`budget_exhausted`, and a dense `rays` list of the requested length. An unavailable
-batch also has a `reason`. Each available ray has `status = "clear"|"hit"`.
-A hit adds its actual segment `position` and `fraction`, `motion = "unknown"`,
-and optionally an opaque `body` token. Normals, velocity, surface/feature IDs and
-native identity fields are omitted. A clear ray has no geometry or body token.
+`budget_exhausted`, the exact supplied opaque `epoch`, and a dense `rays` list
+of the requested length. An unavailable batch also has a `reason`.
+`local_actor_excluded` reports whether an available result honored that explicit
+request; it currently cannot be true in the native backend. The available
+`owned_bodies_excluded` flag describes nearest-hit postclassification against
+owned exclusions, not native ignored-owner filtering or proof the whole ray is empty.
+Each available ray has `status = "clear"|"hit"`. A hit adds its segment
+`position` and `fraction`, known flags `normal_available` and
+`surface_velocity_available`, `motion`, and optionally an opaque `body` token.
+With default options the new measurements are omitted and `motion` is `"unknown"`.
+Surface/feature IDs and native identity fields stay private. A clear ray has no
+geometry, contact measurements or body token.
+
+`require_contact` defaults to false. Only an explicit true value enables the new
+contact fingerprints, native result-vector reads, foreign-body motion reads and
+their closing fences. Every hit then needs both a validated `normal` and
+`surface_velocity`; otherwise the entire batch reports
+`contact_measurement_unavailable`, retaining its actual cast count. A clear ray
+remains clear without invented contact values. The option does not imply actor
+exclusion: a riding caller must still request `exclude_local_actor=true` and keep
+the vehicle inactive on its current zero-cast refusal.
+
+The contact path copies the actual native hit point and normal while the ray
+result's release scope remains alive. The point must agree with the segment
+interpolation within 2 cm; malformed, nonfinite, nonunit or backfacing normals
+are refused, never normalized or flipped. Point motion comes from that hit's
+separately qualified current body arrays as
+`linear + angular cross (contact_point - body_position)`.
+An available value has `motion="measured"`; zero motion is an instantaneous
+measurement, not proof that a surface is permanently static. No dynamic bit,
+inverse mass or stationary image substitutes for this measurement. Every
+accepted hit's ring headers and values are rechecked separately during the final
+whole-batch shape/body/clock fence, even when several shapes share one body.
+These remain endpoint observations; they do not pin native allocations or rule
+out same-value reuse, generation wrap, or a write after the last observation.
+
+The contact-vector roles are supported by static consumers in the one supported
+game build. The source and constructed-memory tests do not demonstrate the new
+measurements in a retail native ray. Known flat and moving surfaces, normal
+conventions, actor coverage and body/query/force composition still need distinct
+in-game qualification before this API can support a riding controller.
 
 The optional `body` token supports equality **only within that returned batch**:
 two qualified hits on the same current native body compare equal. Tokens from
@@ -106,8 +142,8 @@ Lua world raycast, probe, pick, session occlusion and body-batch paths share a h
 including an exclusion retry. `native_cast_budget_exhausted` means the shared
 allowance ended; `ray_cast_limit_exhausted` means that ray's two attempts could
 not establish a result. Both defer the whole batch and set `budget_exhausted`.
-Other reasons are `query_unavailable`, `body_epoch_or_observation_changed`,
-`invalid_ray_batch` or `invalid_query_backend_result`. A malformed internal
+Other reasons are `query_unavailable`, `contact_measurement_unavailable`,
+`body_epoch_or_observation_changed`, `invalid_ray_batch` or `invalid_query_backend_result`. A malformed internal
 accounting result closes the remaining tick budget and omits `native_casts`
 rather than inventing an actual count.
 
@@ -124,13 +160,15 @@ retrying. Its result cleanup guard is installed before the invocation. Exception
 before entering the query path report `query_preconditions_unavailable` with known
 zero casts instead. These C++ exception boundaries do not establish recovery from
 every native fault or from a failing cleanup routine.
-An unavailable batch after any accounted cast
-remains `query_unavailable`; observation changes and budget failures retain their
-existing precedence. These categories do not identify an individual failed native
+An accounted native ray with an ordinary unavailable result reports
+`query_unavailable`. Missing required contact details report
+`contact_measurement_unavailable`; malformed available geometry or contact
+details report `invalid_query_backend_result`. Observation changes and budget
+failures retain their existing precedence. These categories do not identify an individual failed native
 contract or relax any guard.
 
-This replacement passed a clean Release runtime build and six focused CTest
-suites. The bounded in-game result below qualifies one positive geometry batch.
+The earlier geometry-only replacement passed a clean Release runtime build and
+six focused CTest suites. The bounded in-game result below qualifies one positive geometry batch.
 It does not activate a vehicle or establish complete contact accuracy, motion
 qualification or performance.
 

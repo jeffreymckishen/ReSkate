@@ -150,7 +150,7 @@ struct PhysicsApi {
     }
     static int probe_batch(lua_State* L) {
         auto& p = plugin(L); need(L, p, "world.raycast", "reskate.world.physics.probe_batch");
-        if (lua_gettop(L) < 3 || lua_gettop(L) > 4) luaL_error(L, "probe_batch takes body, measured epoch, rays and optional exclusions");
+        if (lua_gettop(L) < 3 || lua_gettop(L) > 4) luaL_error(L, "probe_batch takes body, measured epoch, rays and optional query options");
         const auto b = body(L, p, 1);
         const auto& epoch = *static_cast<const EpochValue*>(luaL_checkudata(L, 2, epoch_type));
         if (epoch.owner != p.instance() || epoch.handle != b.handle) luaL_error(L, "body epoch belongs to another body or plugin instance");
@@ -163,7 +163,10 @@ struct PhysicsApi {
             const auto at = lua_absindex(L, -1); request.rays[i] = {vec_field(L, at, "from"), vec_field(L, at, "to")}; lua_pop(L, 1);
         }
         if (!lua_isnoneornil(L, 4)) {
-            fields(L, 4, {"exclude_bodies", "exclude_local_actor"});
+            fields(L, 4, {"exclude_bodies", "exclude_local_actor", "require_contact"});
+            lua_getfield(L, 4, "require_contact");
+            if (!lua_isnil(L,-1)) { luaL_checktype(L,-1,LUA_TBOOLEAN); request.require_contact=lua_toboolean(L,-1)!=0; }
+            lua_pop(L,1);
             lua_getfield(L, 4, "exclude_local_actor");
             if (!lua_isnil(L, -1)) { luaL_checktype(L, -1, LUA_TBOOLEAN); request.exclude_local_actor = lua_toboolean(L, -1) != 0; }
             lua_pop(L, 1); lua_getfield(L, 4, "exclude_bodies");
@@ -196,7 +199,8 @@ struct PhysicsApi {
             bool valid = out.count == request.count && out.failure == body_query::Failure::none &&
                 out.native_casts >= request.count && out.native_casts <= request.count * body_query::casts_per_ray;
             for (std::size_t i = 0; i < request.count && valid; ++i) valid = body_query::consistent(request.rays[i], out.rays[i]) &&
-                out.rays[i].body <= request.count;
+                out.rays[i].body <= request.count && (!request.require_contact || out.rays[i].status!=body_query::Status::hit ||
+                    (out.rays[i].normal_available && out.rays[i].surface_velocity_available));
             if (!valid) { out.available = false; out.failure = body_query::Failure::backend; }
         }
         if (p.body_query_sequence_ == std::numeric_limits<std::uint64_t>::max()) return fail(L, "ray batch identity sequence exhausted");
@@ -206,13 +210,20 @@ struct PhysicsApi {
         if (!out.available) { lua_pushstring(L, body_query::name(out.failure == body_query::Failure::none ? body_query::Failure::unavailable : out.failure)); lua_setfield(L, -2, "reason"); }
         if (accounted) { lua_pushinteger(L, static_cast<int>(out.native_casts)); lua_setfield(L, -2, "native_casts"); }
         lua_pushboolean(L, out.budget_exhausted); lua_setfield(L, -2, "budget_exhausted");
+        lua_pushvalue(L,2); lua_setfield(L,-2,"epoch");
+        lua_pushboolean(L,out.available && request.exclude_local_actor); lua_setfield(L,-2,"local_actor_excluded");
+        lua_pushboolean(L,out.available); lua_setfield(L,-2,"owned_bodies_excluded");
         lua_createtable(L, static_cast<int>(request.count), 0);
         for (std::size_t i = 0; i < request.count; ++i) {
             const auto& hit = out.rays[i]; const bool present = out.available && hit.status == body_query::Status::hit;
             lua_createtable(L, 0, 5); lua_pushstring(L, !out.available ? "unavailable" : present ? "hit" : "clear"); lua_setfield(L, -2, "status");
             if (present) {
                 push_position(L, hit.position); lua_setfield(L, -2, "position"); lua_pushnumber(L, hit.fraction); lua_setfield(L, -2, "fraction");
-                lua_pushstring(L, "unknown"); lua_setfield(L, -2, "motion");
+                lua_pushstring(L, hit.surface_velocity_available ? "measured" : "unknown"); lua_setfield(L,-2,"motion");
+                lua_pushboolean(L,hit.normal_available); lua_setfield(L,-2,"normal_available");
+                lua_pushboolean(L,hit.surface_velocity_available); lua_setfield(L,-2,"surface_velocity_available");
+                if (hit.normal_available) { push_position(L,hit.normal); lua_setfield(L,-2,"normal"); }
+                if (hit.surface_velocity_available) { push_position(L,hit.surface_velocity); lua_setfield(L,-2,"surface_velocity"); }
                 if (hit.body) { opaque(L, HitBodyValue{p.instance(), batch, hit.body}, hit_body_type); lua_setfield(L, -2, "body"); }
             }
             lua_rawseti(L, -2, static_cast<int>(i + 1));

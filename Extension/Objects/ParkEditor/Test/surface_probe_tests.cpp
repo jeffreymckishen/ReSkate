@@ -174,6 +174,32 @@ int main() {
     check(!geometry.surface.available && geometry.native_casts == 1 && !geometry.budget_exhausted,
         "caught query exception retains the one attempted native call and does not retry");
     check(releases == calls - 1 && scopes == releases, "single geometry path retains native result cleanup");
+
+    static unsigned contact_calls{},contact_releases{};
+    static bool invalid_normal{};
+    static std::array<std::array<float,4>,2> contact_points{},contact_normals{};
+    const NativeSurfaceApi contact_api{nullptr,
+        [](std::uintptr_t world,NativeSurfaceResult* out,const NativeSurfaceRay* request,const char*)->void* {
+            ++contact_calls;
+            check(request->ignored_bodies==std::array<std::uintptr_t,5>{},"contact details must not add native owner IDs");
+            static std::array<float,2> fs{.8f,.25f};static std::array<std::uintptr_t,5> fields{};
+            contact_points={{{0,.8f,0,1},{.01f,3,0,1}}};
+            contact_normals={{{1,0,0,0},{0,invalid_normal?NAN:1.f,0,0}}};
+            fields[1]=reinterpret_cast<std::uintptr_t>(fs.data());fields[3]=reinterpret_cast<std::uintptr_t>(contact_points.data());
+            fields[4]=reinterpret_cast<std::uintptr_t>(contact_normals.data());
+            out->world=world;out->data=reinterpret_cast<std::uintptr_t>(fields.data());out->count=2;out->allocator=1;return out;
+        },nullptr,[](void*,std::uintptr_t){++contact_releases;contact_normals={};},true,true};
+    auto contact=cast_surface_geometry_probe_bounded(contact_api,1234,from,to,2,zero_shape,true);
+    check(contact.surface.available && contact.surface.hit && contact.surface.normal_available &&
+        contact.surface.position==Vec3{.01f,3,0} && contact.surface.normal==Vec3{0,1,0} && contact.native_casts==1 && contact_calls==1 && contact_releases==1,
+        "contact copies the nearest actual point/normal inside result scope and retains them after release");
+    const auto legacy_contact=cast_surface_geometry_probe_bounded(contact_api,1234,from,to,2,zero_shape);
+    check(legacy_contact.surface.available && legacy_contact.surface.hit && !legacy_contact.surface.normal_available,
+        "legacy geometry skips newly available contact details unless explicitly requested");
+    invalid_normal=true;contact=cast_surface_geometry_probe_bounded(contact_api,1234,from,to,2,zero_shape,true);
+    check(contact.surface.available && contact.surface.hit && !contact.surface.normal_available && contact.native_casts==1,
+        "invalid normal remains unknown without faking clear or recasting through geometry");
+    check(contact_calls==3 && contact_releases==3,"optional details preserve actual onecast accounting and result cleanup");
     if (failures) return 1;
     std::printf("Surface backend assertions including repeated callbacks: %u\n",assertions);
     std::puts("Typed surface probes: hit/clear/unavailable, empty native arrays, validation and cleanup passed.");

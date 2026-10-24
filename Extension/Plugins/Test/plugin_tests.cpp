@@ -270,6 +270,8 @@ struct FakeGame final : Game {
             !b->mailbox.submit(command, b->sample.epoch, 0, body_command_sequence + 1)) return "owner, generation or packet";
         sequence = ++body_command_sequence; ++body_submissions; return {};
     }
+    int batch_contact_mode{};
+    unsigned batch_available_corruptions{};
     body_query::Result body_probe_batch(std::uint64_t owner, const owned_body::Handle& h, const body_query::Request& request, unsigned allowed) override {
         ++batch_calls; last_batch = request;
         if (batch_refusal != body_query::Failure::none) {
@@ -289,7 +291,7 @@ struct FakeGame final : Game {
             }
             return true;
         };
-        return body_query::execute(request, allowed, 1000, [&](const body_query::Ray& ray, unsigned permitted) {
+        auto result=body_query::execute(request, allowed, 1000, [&](const body_query::Ray& ray, unsigned permitted) {
             ++batch_rays; const auto index = rays++;
             if (!index && batch_drift_field) {
                 switch (batch_drift_field) {
@@ -306,8 +308,23 @@ struct FakeGame final : Game {
             out.hit.status = batch_clear ? body_query::Status::clear : body_query::Status::hit;
             for (std::size_t i = 0; i < ray.from.size(); ++i) out.hit.position[i] = (ray.from[i] + ray.to[i]) * .5f;
             out.hit.fraction = .5f; out.hit.body = batch_unqualified || batch_clear ? 0 : 1;
+            if (batch_contact_mode && !batch_clear) {
+                out.hit.normal_available=out.hit.surface_velocity_available=true;
+                out.hit.normal={0,1,0};out.hit.surface_velocity={2,0,-1};
+                if (batch_contact_mode==2) out.hit.normal[1]=std::numeric_limits<float>::quiet_NaN();
+                if (batch_contact_mode==3) out.hit.normal[1]=-1;
+            }
             return out;
         }, fence);
+        // Deliberately malformed AVAILABLE results exercise the binding's own
+        // independent result guard, after the shared query core has accepted.
+        if(result.available && batch_contact_mode>=4) {
+            ++batch_available_corruptions;
+            if(batch_contact_mode==4)result.rays[0].normal[1]=std::numeric_limits<float>::quiet_NaN();
+            if(batch_contact_mode==5)result.rays[0].normal[1]=-1;
+            if(batch_contact_mode==6)result.rays[0].surface_velocity_available=false;
+        }
+        return result;
     }
     std::string body_receipt(std::uint64_t owner, const owned_body::Handle& h, std::uint64_t selected, owned_body::Receipt& receipt) override {
         auto* b = body_of(owner, h); if (!b) return "owner or generation";
@@ -2038,13 +2055,56 @@ std::string batch_main(std::string body) {
         end
     )" + body;
 }
+
+void body_contact_details_are_known_and_epoch_bound() {
+    body_query::Request last;
+    unsigned corruptions{};
+    const auto load=[&](const char* id,int mode,bool clear,std::string assertions) {
+        // Each case starts a fresh synthetic native world. Retained body slots
+        // are never erased/recycled merely to make another case fit.
+        TestEnvironment environment;Host host(environment,Side::client);
+        auto& game=environment.fake;game.batch_contact_mode=mode;game.batch_clear=clear;
+        host.apply({script(id,batch_main(assertions),R"("world.physics","world.raycast")")});
+        running(host,id,environment);last=game.last_batch;
+        corruptions+=game.batch_available_corruptions;
+        check(game.body_submissions==0,"contact reads submitted body commands");
+    };
+    load("contact-measured",1,false,R"(
+        local out=P.probe_batch(h,epoch,rays(1),{require_contact=true,exclude_local_actor=true})
+        assert(out.status=="available" and out.epoch==epoch and out.local_actor_excluded and out.owned_bodies_excluded)
+        local hit=out.rays[1]
+        assert(hit.motion=="measured" and hit.normal_available and hit.normal==v(0,1,0))
+        assert(hit.surface_velocity_available and hit.surface_velocity==v(2,0,-1))
+        assert(not pcall(P.probe_batch,h,epoch,rays(1),{require_contact=1}))
+    )");
+    check(last.require_contact && last.exclude_local_actor,"contact options were dropped");
+    load("contact-unknown",0,false,R"(
+        unavailable(P.probe_batch(h,epoch,rays(1),{require_contact=true}),"contact_measurement_unavailable")
+        local out=P.probe_batch(h,epoch,rays(1))
+        assert(out.status=="available" and out.epoch==epoch and not out.local_actor_excluded)
+        assert(out.rays[1].normal_available==false and out.rays[1].surface_velocity_available==false)
+        assert(not out.rays[1].normal and not out.rays[1].surface_velocity)
+    )");
+    for(int mode=2;mode<=6;++mode) {
+        load(("contact-malformed-"+std::to_string(mode)).c_str(),mode,false,R"(
+            unavailable(P.probe_batch(h,epoch,rays(1),{require_contact=true}),"invalid_query_backend_result")
+        )");
+    }
+    check(corruptions==3,"binding guard was not given all three malformed AVAILABLE backend results");
+    load("contact-clear",1,true,R"(
+        local out=P.probe_batch(h,epoch,rays(1),{require_contact=true})
+        assert(out.status=="available" and out.rays[1].status=="clear")
+        assert(not out.rays[1].normal and not out.rays[1].surface_velocity)
+    )");
+}
+
 void owned_body_batches_are_permissioned_opaque_and_transactional() {
     TestEnvironment environment; Host host(environment, Side::client);
     host.apply({script("batch-no-ray", R"(
-        local ok,why=pcall(reskate.world.physics.probe_batch,{},{},{})
+        local ok,why=pcall(reskate.world.physics.probe_batch,{},{},{},{require_contact=true})
         assert(not ok and why:find("world.raycast"))
     )", R"("world.physics")"), script("batch-no-body", R"(
-        local ok,why=pcall(reskate.world.physics.probe_batch,{},{},{})
+        local ok,why=pcall(reskate.world.physics.probe_batch,{},{},{},{require_contact=true})
         assert(not ok and why:find("world.physics"))
     )", R"("world.raycast")"), script("body-batch", batch_main(R"(
         local out=P.probe_batch(h,epoch,rays(2),{exclude_bodies={other,h},exclude_local_actor=true})
@@ -6651,6 +6711,7 @@ int main() {
         run(the_private_input_trace_fixture_loads_inert_when_present);
         run(the_private_native_recovery_fixture_loads_inert_when_present);
         run(owned_body_batches_are_permissioned_opaque_and_transactional);
+        run(body_contact_details_are_known_and_epoch_bound);
         run(owned_body_batches_share_actual_and_logical_query_limits);
         run(a_plugin_loads_ticks_runs_its_commands_and_unloads);
         run(a_permission_must_be_declared);

@@ -15,7 +15,7 @@ enum class Failure {
     none, invalid, unavailable, observation_changed, budget, ray_limit, backend,
     client_phase_unavailable, local_actor_exclusion_unavailable,
     query_preconditions_unavailable, query_backend_exception,
-    body_exclusions_unavailable
+    body_exclusions_unavailable, contact_measurement_unavailable
 };
 inline const char* name(Failure value) noexcept {
     switch (value) {
@@ -31,6 +31,7 @@ inline const char* name(Failure value) noexcept {
     case Failure::query_preconditions_unavailable: return "query_preconditions_unavailable";
     case Failure::query_backend_exception: return "query_backend_exception";
     case Failure::body_exclusions_unavailable: return "body_exclusions_unavailable";
+    case Failure::contact_measurement_unavailable: return "contact_measurement_unavailable";
     }
     return "query_unavailable";
 }
@@ -41,6 +42,8 @@ struct Hit {
     // An SDK-assigned ordinal, comparable only inside this batch. It is not a
     // native body index or a collider/face identity. Zero means unqualified.
     std::uint32_t body{};
+    Vec normal{}, surface_velocity{};
+    bool normal_available{}, surface_velocity_available{};
 };
 struct Request {
     owned_body::Sample observation{};
@@ -49,6 +52,7 @@ struct Request {
     std::array<owned_body::Handle, maximum_exclusions> excluded{};
     std::size_t exclusions{};
     bool exclude_local_actor{};
+    bool require_contact{}; // Every hit needs qualified normal and point motion; clear stays clear.
 };
 // Compare each published numeric lane exactly, including signed zero. Padding is not state.
 inline bool same_sample(const owned_body::Sample& a, const owned_body::Sample& b) noexcept {
@@ -90,7 +94,19 @@ inline bool valid(const Request& request, float maximum_distance) noexcept {
     return true;
 }
 inline bool consistent(const Ray& ray, const Hit& hit) noexcept {
-    if (hit.status == Status::clear) return true;
+    if (hit.status == Status::clear) return !hit.normal_available && !hit.surface_velocity_available;
+    if (hit.normal_available) {
+        if (!owned_body::finite(hit.normal, 1.01f)) return false;
+        double norm{}; for (float lane : hit.normal) norm += double(lane)*lane;
+        if (norm < .98 || norm > 1.02) return false;
+        double facing{}, distance{};
+        for (std::size_t i=0;i<ray.from.size();++i) {
+            const double delta=double(ray.to[i])-ray.from[i];
+            facing+=delta*hit.normal[i]; distance+=delta*delta;
+        }
+        if (facing>1e-4*std::sqrt(distance)) return false;
+    }
+    if (hit.surface_velocity_available && !owned_body::finite(hit.surface_velocity, 100)) return false;
     if (hit.status != Status::hit || !std::isfinite(hit.fraction) || hit.fraction < 0 || hit.fraction > 1 ||
         !owned_body::finite(hit.position, 100000) || hit.body > maximum_rays) return false;
     for (std::size_t i = 0; i < ray.from.size(); ++i)
@@ -130,6 +146,9 @@ Result execute(const Request& request, unsigned allowance, float maximum_distanc
             return finish_failure(probe.budget_exhausted ? (out.native_casts == allowance ? Failure::budget : Failure::ray_limit) :
                 out.native_casts ? Failure::unavailable : Failure::query_preconditions_unavailable);
         if (!probe.native_casts || !consistent(request.rays[i], probe.hit)) return finish_failure(Failure::backend);
+        if (request.require_contact && probe.hit.status == Status::hit &&
+            (!probe.hit.normal_available || !probe.hit.surface_velocity_available))
+            return finish_failure(Failure::contact_measurement_unavailable);
         out.rays[i] = probe.hit;
     }
     if (!fence()) return fail(Failure::observation_changed);

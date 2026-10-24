@@ -242,7 +242,7 @@ LocalSurfaceProbe probe_local_surface(const std::array<float, 3>& from, const st
 }
 static BoundedLocalSurfaceProbe probe_local_surface_bounded_impl(const std::array<float, 3>& from, const std::array<float, 3>& to,
     unsigned maximum_casts, std::span<const std::array<std::uint64_t, 2>> ignored_bodies, std::uint64_t ignore_local_entity,
-    bool resolve_entity) {
+    bool resolve_entity, bool measure_contact=false) {
     BoundedLocalSurfaceProbe result;const auto began=std::chrono::steady_clock::now();
     const auto finish=[&] {result.elapsed_microseconds=static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-began).count());return result;};
@@ -255,7 +255,13 @@ static BoundedLocalSurfaceProbe probe_local_surface_bounded_impl(const std::arra
             if (!std::isfinite(value) || std::abs(value) > 1e5f) return finish();
     static std::uintptr_t api_base{};
     static editor::NativeSurfaceApi api;
-    if (api_base != local_runtime().base) { api = editor::surface_api(local_runtime().base); api_base = local_runtime().base; }
+    static bool api_contact{};
+    // Geometry keeps its original fingerprint/read path. Upgrade this cache only
+    // for an explicit contact request; a changed image base clears that choice.
+    if (api_base != local_runtime().base || (measure_contact && !api_contact)) {
+        api = editor::surface_api(local_runtime().base, measure_contact);
+        api_base = local_runtime().base; api_contact = measure_contact;
+    }
     if (!api.ready) return finish();
     // The authoritative server context's world is null in this client query path.
     // Resolve the current client TLS context instead of keeping an address across unloads.
@@ -279,7 +285,7 @@ static BoundedLocalSurfaceProbe probe_local_surface_bounded_impl(const std::arra
         ignore_local_entity ? std::span<const std::uint64_t>(ignored) : std::span<const std::uint64_t>{},
         picking.api.ready ? &surface_probe_body : nullptr) :
         editor::cast_surface_geometry_probe_bounded(api, result.surface.world, from, to, maximum_casts,
-            picking.api.ready ? &surface_probe_body : nullptr);
+            picking.api.ready ? &surface_probe_body : nullptr, measure_contact);
     result.native_casts=cast.native_casts;result.budget_exhausted=cast.budget_exhausted;
     result.surface.available = cast.surface.available;
     result.surface.hit = cast.surface.hit;
@@ -288,6 +294,8 @@ static BoundedLocalSurfaceProbe probe_local_surface_bounded_impl(const std::arra
     result.surface.hit_entity = cast.surface.entity;
     result.surface.hit_body = cast.surface.body;
     result.surface.excluded_bodies = cast.surface.excluded_bodies;
+    result.surface.normal = cast.surface.normal;
+    result.surface.normal_available = cast.surface.normal_available;
     return finish();
 }
 BoundedLocalSurfaceProbe probe_local_surface_bounded(const std::array<float, 3>& from, const std::array<float, 3>& to,
@@ -295,8 +303,8 @@ BoundedLocalSurfaceProbe probe_local_surface_bounded(const std::array<float, 3>&
     return probe_local_surface_bounded_impl(from, to, maximum_casts, ignored_bodies, ignore_local_entity, true);
 }
 BoundedLocalSurfaceProbe probe_local_surface_geometry_bounded(const std::array<float, 3>& from, const std::array<float, 3>& to,
-    unsigned maximum_casts) {
-    return probe_local_surface_bounded_impl(from, to, maximum_casts, {}, 0, false);
+    unsigned maximum_casts, bool measure_contact) {
+    return probe_local_surface_bounded_impl(from, to, maximum_casts, {}, 0, false, measure_contact);
 }
 bool teleport_to_local_placed_object(std::string_view map, std::uint64_t token) {
     std::lock_guard lock(local_runtime().native_mutex);

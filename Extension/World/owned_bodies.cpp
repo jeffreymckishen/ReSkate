@@ -9,6 +9,7 @@
 #include "Engine/Game/Build/20260929/rigid_bodies.h"
 #include "Engine/Game/Build/20260929/skater_state.h"
 #include "Engine/Game/World/body_hit_identity.h"
+#include "Engine/Game/World/body_contact_read.h"
 #include "Extension/Multiplayer/Session/session.h"
 #include "Extension/Skater/no_bail.h"
 #include "Extension/Profile/local_profile_runtime.h"
@@ -698,6 +699,8 @@ body_query::Result probe_batch(std::uint64_t owner, const Handle& handle, const 
             if (!peek(field, array) || !pointer(array)) { failed.failure = body_query::Failure::body_exclusions_unavailable; return failed; }
         }
         body_hit_identity::Witnesses<body_query::maximum_rays> witnesses;
+        std::array<body_contact_read::Motion,body_query::maximum_rays> motions{};
+        std::size_t motion_count{};
         const auto world_current = [&] { return service.world_generation == generation && anchor_current(anchor); };
         const auto qualify = [&](const NativeHandle& shape, NativeHandle& body) {
             return body_hit_identity::resolve(anchor.world, anchor.state, shape, body,
@@ -709,6 +712,11 @@ body_query::Result probe_batch(std::uint64_t owner, const Handle& handle, const 
                         valid_handle(service.api.body_valid, value) && allocated(anchor.state, value.index) && world_current();
                 });
         };
+        const auto motion_body_current = [&](const NativeHandle& body) {
+            return world_current() && body.world==anchor.world && allocated(anchor.state,body.index) &&
+                valid_handle(service.api.body_valid,body) && allocated(anchor.state,body.index) && world_current();
+        };
+        const auto read_contact = [](std::uintptr_t at, auto& value) { return peek(at,value); };
         const auto fence = [&] {
             Anchor current; Epoch epoch{};
             if (!eligible() || service.world_generation != generation || !capture(current) || !anchor.same(current) ||
@@ -722,6 +730,8 @@ body_query::Result probe_batch(std::uint64_t owner, const Handle& handle, const 
                 !witnesses.current([&](const body_hit_identity::Witness& witness) {
                     NativeHandle body; return qualify(witness.shape, body) && body == witness.body;
                 })) return false;
+            for (std::size_t i=0;i<motion_count;++i)
+                if (!body_contact_read::motion_current(anchor.world,anchor.state,motions[i],read_contact,motion_body_current)) return false;
             Epoch after{}; after.world = generation; after.body = selected->handle.generation;
             return world_current() && clock(anchor, after) && after == requested_epoch &&
                 body_query::same_sample(canonical, selected->latest);
@@ -731,7 +741,7 @@ body_query::Result probe_batch(std::uint64_t owner, const Handle& handle, const 
             // Native ignored IDs are owner indices. Query without either list or
             // the ECS owner resolver; classify only the actual nearest hit below.
             ray_entered = true;
-            const auto counted = probe_local_surface_geometry_bounded(ray.from, ray.to, permitted);
+            const auto counted = probe_local_surface_geometry_bounded(ray.from, ray.to, permitted, request.require_contact);
             performed += counted.native_casts; out.native_casts = counted.native_casts; out.budget_exhausted = counted.budget_exhausted;
             const auto& hit = counted.surface;
             if (!hit.available || hit.context != anchor.context || hit.world != anchor.world) return out;
@@ -743,7 +753,15 @@ body_query::Result probe_batch(std::uint64_t owner, const Handle& handle, const 
                 if (body.world == owners[i]->body.world && body.index == owners[i]->body.index) return out;
             if (!witnesses.add({shape, body})) return out;
             out.hit.status = body_query::Status::hit; out.hit.position = hit.position; out.hit.fraction = hit.fraction;
-            // No public body token, normal or surface motion is inferred here.
+            out.hit.normal=hit.normal; out.hit.normal_available=hit.normal_available;
+            body_contact_read::Motion motion;
+            if (request.require_contact && hit.normal_available && body_contact_read::motion(anchor.world,anchor.state,body,hit.position,motion,read_contact,motion_body_current) &&
+                motion_count<motions.size()) {
+                motions[motion_count++]=motion;
+                out.hit.surface_velocity=motion.velocity; out.hit.surface_velocity_available=true;
+            }
+            // No public native body identity is minted. Unknown details stay absent;
+            // actor exclusions above remain unavailable until their own conversion is qualified.
             return out;
         };
         return body_query::execute(request, allowance, 1000, query, fence);

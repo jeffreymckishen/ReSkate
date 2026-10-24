@@ -9,6 +9,10 @@ namespace dingosdk::owned_bodies {
 // Client thread only. Tick grants no plugin ownership and never creates bodies;
 // a previously requested producer setup may install generic hooks.
 void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept;
+// Explicit process-lifetime producer preparation, never body creation. Cold
+// calls queue only deferred setup and refuse; a later explicit call can report
+// a freshly captured local client/clock. No owner, definition or slot is kept.
+std::string prepare() noexcept;
 // Cold create requests only process-lifetime producer setup on a later eligible
 // tick and refuses before allocation. No definition/body request is queued;
 // callers must make a separate explicit create after readiness is available.

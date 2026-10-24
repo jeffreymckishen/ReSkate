@@ -321,6 +321,13 @@ struct PhysicsApi {
         if (p.services_.authority()) luaL_error(L, "native bodies are client phase only");
         return p;
     }
+    static int prepare(lua_State* L) {
+        auto& p = plugin(L);
+        if (lua_gettop(L) != 0) luaL_error(L, "prepare takes no arguments");
+        if (p.body_prepares_ >= 1) return result(L, "asked to prepare native bodies more than once in one tick");
+        ++p.body_prepares_;
+        return result(L, p.services_.game().body_prepare());
+    }
     static Plugin& follow_plugin(lua_State* L) {
         auto& p = plugin(L);
         need(L, p, "world.physics.follow", "reskate.world.physics follow");
@@ -642,7 +649,7 @@ void install_physics_api(Plugin&, lua_State* L) {
     luaL_newmetatable(L, hit_body_type); lua_pushstring(L, "locked"); lua_setfield(L, -2, "__metatable");
     lua_pushcfunction(L, hit_body_equal, "hit body equality"); lua_setfield(L, -2, "__eq"); lua_setreadonly(L, -1, true); lua_pop(L, 1);
     lua_getfield(L, -1, "world"); lua_setreadonly(L, -1, false);
-    add_functions(L, "physics", {{"create", PhysicsApi::create}, {"read", PhysicsApi::read}, {"submit", PhysicsApi::submit},
+    add_functions(L, "physics", {{"prepare", PhysicsApi::prepare}, {"create", PhysicsApi::create}, {"read", PhysicsApi::read}, {"submit", PhysicsApi::submit},
         {"receipt", PhysicsApi::receipt}, {"acknowledge", PhysicsApi::acknowledge}, {"release", PhysicsApi::release}, {"probe_batch", PhysicsApi::probe_batch},
         {"begin_sync_probe", PhysicsApi::begin_sync_probe}, {"poll_sync_probe", PhysicsApi::poll_sync_probe},
         {"begin_motion_refresh_probe", PhysicsApi::begin_motion_refresh_probe}, {"poll_motion_refresh_probe", PhysicsApi::poll_motion_refresh_probe},

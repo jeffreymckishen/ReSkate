@@ -645,6 +645,26 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
         else if (!s.active || s.quarantined) retire(s, fresh(s));
     }
 }
+std::string prepare() noexcept {
+    LastError error;
+    try {
+        if (!eligible()) return "owned bodies require the current local client phase outside multiplayer";
+        Locked lock(service.lock);
+        // The lock may have waited. Do not enqueue setup using stale or foreign
+        // client readiness, even though preparation retains no body request.
+        if (!eligible()) return "owned bodies require the current local client phase outside multiplayer";
+        if (!service.hooked.load(std::memory_order_acquire)) {
+            if (service.hook_attempted) return "native body ABI or producer hook unavailable; another producer may own it";
+            service.initialization_requested = true;
+            return "native body producer setup pending; call prepare again explicitly";
+        }
+        Anchor anchor; Epoch epoch;
+        if (!capture(anchor) || !clock(anchor, epoch)) return "waiting for a fresh qualified 60 Hz physics step";
+        // Readiness is sampled only. In particular, do not reconcile worlds,
+        // retire prior slots, retain a definition, reserve a slot or allocate.
+        return {};
+    } catch (...) { return "native body preparation failed closed"; }
+}
 std::string create(std::uint64_t owner, const Definition& definition, Handle& out) noexcept {
     LastError error; out = {};
     try {

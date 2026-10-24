@@ -239,6 +239,9 @@ struct FakeGame final : Game {
     std::vector<std::uint64_t> body_releases;
     unsigned body_creates{}, body_submissions{}, body_release_calls{};
     unsigned body_submit_entries{};
+    unsigned body_prepares{};
+    std::string body_prepare_error;
+    std::string body_prepare() override { ++body_prepares; return body_prepare_error; }
 #include "body_follow_fake_game_fixture.inc"
     struct SyncProbe {
         std::uint64_t owner{},sequence{};
@@ -7889,6 +7892,7 @@ void bmx_lua_spawn_uses_owned_chassis_and_measured_part_placement() {
 
 #include "measured_contact_host_fixture.inc"
 #include "motion_refresh_host_fixture.inc"
+#include "body_prepare_host_fixture.inc"
 #include "body_follow_host_fixture.inc"
 
 int main() {
@@ -7915,6 +7919,7 @@ int main() {
         run(sync_probe_binding_rejects_malformed_backend_facts);
         run(sync_probe_terminal_partial_facts_and_body_release_remain_distinct);
         run(motion_refresh_host_fixture_v1);
+        run(body_prepare_host_fixture_v1);
         run(body_follow_host_fixture_v1);
         run(the_tracked_passive_sync_trial_runs_once_and_keeps_observation_separate);
         run(the_tracked_passive_sync_routes_trial_copies_validated_route_counts);

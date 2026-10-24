@@ -1046,6 +1046,8 @@ void motion_record_arrives_during_client_poll() {
         "next client poll failed to reject the interleaved copied-packet chain change");
 }
 
+#include "body_prepare_source_fixture.inc"
+
 template<class F> void run(const char* name, F function, unsigned expected_links=0) {
     function();
     check(test_facts::mutations.load() == 0, "source path invoked a native mutator/allocator");
@@ -1069,6 +1071,10 @@ int main() {
         run("service_whole_batch_contact_fences",service_whole_batch_contact_fences);
         run("service_actor_and_nearest_hit_refusals",service_actor_and_nearest_hit_refusals);
         run("deferred_producer_initialization_without_allocation",deferred_initialization_stays_outside_create_and_service_lock,1);
+        run("prepare_cold_queues_only_deferred_setup",prepare_cold_queues_only_deferred_setup);
+        run("prepare_deferred_failure_is_terminal_without_retry",prepare_deferred_failure_is_terminal_without_retry,1);
+        run("prepare_warm_readiness_needs_fresh_capture_and_clock",prepare_warm_readiness_needs_fresh_capture_and_clock);
+        run("prepare_does_not_reconcile_world_or_touch_existing_slots",prepare_does_not_reconcile_world_or_touch_existing_slots);
         run("sync_routes_wrapper_selection_and_suppression",sync_routes_distinguish_wrapper_and_record_paths,1);
         run("sync_routes_try_lock_expiry_and_generation_freeze",sync_routes_account_lock_loss_and_freeze_expiry);
         run("sync_routes_terminal_paths_and_saturation",sync_routes_freeze_other_closures_and_saturate);

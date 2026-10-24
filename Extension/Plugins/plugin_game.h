@@ -270,6 +270,8 @@ public:
     virtual ~Game() = default;
     // Native bodies owned by one VM instance, not by a reloadable plugin name. Client phase
     // only; typed handles/epochs are wrapped in opaque userdata by the permissioned API.
+    // Generic deferred producer setup/readiness only; no owner or definition is retained.
+    virtual std::string body_prepare() { return unavailable; }
     virtual std::string body_create(std::uint64_t, const owned_body::Definition&, owned_body::Handle&) { return unavailable; }
     virtual std::string body_read(std::uint64_t, const owned_body::Handle&, owned_body::Sample&) { return unavailable; }
     virtual std::string body_begin_sync_probe(std::uint64_t, const owned_body::Handle&, std::uint64_t&) { return unavailable; }

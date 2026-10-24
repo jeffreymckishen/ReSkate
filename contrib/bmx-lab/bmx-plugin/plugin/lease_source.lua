@@ -19,6 +19,9 @@ local capture_fields = {"transport", "source_identity", "physical_device_identit
     "publication_scope", "consumption", "semantic_completion", "capturing", "report_debt", "phase", "reason",
     "terminal", "quarantined", "user", "sequence", "source_epoch", "context_generation", "generation", "revision",
     "expires_ms", "publications", "neutral_releases"}
+local lease_nonzero_fields = {"requested_ms", "expires_ms"}
+local lease_counter_fields = {"observed_ms", "last_observation", "renewals"}
+local capture_nonzero_fields = {"generation", "revision", "expires_ms"}
 local lease_statuses = {warming=true, active=true, released=true, revoked=true, expired=true}
 local capture_phases = {waiting_neutral=1, capturing=2, releasing=3, complete=4}
 local lease_reasons = {none=true, unavailable=true, busy=true, invalid_owner=true, invalid_source=true, wrong_thread=true,
@@ -113,10 +116,10 @@ local function lease_copy(s, row)
         not lease_reasons[row.reason] or type(row.terminal) ~= "boolean" or
         type(row.source_released) ~= "boolean" or type(row.capture_reserved) ~= "boolean" or
         type(row.orphaned) ~= "boolean" then return nil end
-    for _, name in ipairs({"requested_ms", "expires_ms"}) do
+    for _, name in ipairs(lease_nonzero_fields) do
         if not Identity.is_nonzero_u64(row[name]) then return nil end
     end
-    for _, name in ipairs({"observed_ms", "last_observation", "renewals"}) do
+    for _, name in ipairs(lease_counter_fields) do
         if not Identity.is_u64(row[name]) then return nil end
     end
     local terminal = row.status ~= "active" and row.status ~= "warming"
@@ -145,7 +148,7 @@ local function capture_copy(s, row)
         row.consumption ~= "unobserved" or row.semantic_completion ~= "unobserved" or
         row.capturing ~= (row.phase == "capturing") or row.terminal ~= (row.phase == "complete") or
         type(row.report_debt) ~= "boolean" or type(row.quarantined) ~= "boolean" then return nil end
-    for _, name in ipairs({"generation", "revision", "expires_ms"}) do
+    for _, name in ipairs(capture_nonzero_fields) do
         if not Identity.is_nonzero_u64(row[name]) then return nil end
     end
     if not Identity.is_u64(row.publications) or not Identity.is_u64(row.neutral_releases) or
@@ -180,6 +183,7 @@ local function frame(s, permitted, fresh)
 end
 local function invalidate(s)
     s.input_ok = false
+    s.authorization_frame = nil
     if s.generation < MAX_SAFE then s.generation += 1 end
 end
 local function release(s)
@@ -309,6 +313,49 @@ function Source:unload()
     return Source.stop(self, "unload requested; VM-close native cleanup remains authoritative")
 end
 
+-- This observation checks current selected-stream permission, not model input.
+-- It neither renews nor adopts a newer report. The exact step result is a private
+-- publication token; copying its public fields cannot create another token.
+function Source:authorize(selected)
+    local s = states[self]
+    local function current()
+        return states[self] == s and s.authorization_frame == selected and s.input_ok == true
+            and s.phase == "capturing" and s.capture_admitted == true and s.capture_seen == true
+            and s.handle ~= nil and selected.lease_handle == s.handle
+            and selected.generation == s.generation and selected.input_ok == true
+            and selected.sample == s.sample and selected.capture_state == s.capture_state
+            and not s.request_uncertain and not s.capture_uncertain
+    end
+    if s.busy or type(selected) ~= "table" or not current() then
+        return false, "selected Source publication is not current"
+    end
+    s.busy = true
+    local function refuse(why)
+        s.busy = false
+        return false, why
+    end
+    local called, raw = invoke(s, "lease_read", s.handle)
+    local sample = called and current() and sample_copy(s, raw) or nil
+    if not sample then return refuse("fresh selected input unavailable") end
+    local state_called, lease_row = invoke(s, "lease_state", s.handle)
+    local lease = state_called and current() and lease_copy(s, lease_row) or nil
+    if not lease or lease.status ~= "active" or lease.orphaned or lease.source_released
+        or not lease.capture_reserved or Identity.compare(lease.last_observation, sample.observation_serial) < 0
+        or Identity.compare(lease.observed_ms, sample.observed_ms) < 0 then
+        return refuse("fresh selected lease authority unavailable")
+    end
+    local capture_called, capture_row = invoke(s, "lease_capture_state", s.handle)
+    local capture = capture_called and current() and capture_copy(s, capture_row) or nil
+    -- Publications may increase within this capture. A new generation means
+    -- revoke/reopen, even if the same retained lease key is still readable.
+    if not capture or capture.phase ~= "capturing" or capture.quarantined or not capture.report_debt
+        or capture.generation ~= selected.capture_state.generation or not current() then
+        return refuse("fresh selected capture authority unavailable")
+    end
+    s.busy = false
+    return true
+end
+
 local function advance(s, now_ms, gates)
     s.input_ok = false
     if s.phase == "idle" or s.phase == "complete" or s.phase == "cleanup_unknown" then return frame(s, false, false) end
@@ -407,7 +454,9 @@ function Source:step(now_ms, gates)
     local s = states[self]
     if s.busy then return frame(s, false, false) end
     s.busy = true
+    s.authorization_frame = nil
     local result = advance(s, now_ms, gates)
+    if result.input_ok then s.authorization_frame = result end
     s.busy = false
     return result
 end

@@ -104,13 +104,14 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     local steer=c.enabled and math.clamp(c.steer,-1,1) or 0
     local contacts,next_normals={},{{},{}} local support_sum,surface_sum={0,0,0},{0,0,0} local surface_count=0
     for i=1,2 do
-        local s=samples[i] contacts[i]=M.copy(s.contact) local contact=contacts[i]
+        local s=samples[i] if type(s)~="table" or type(s.contact)~="table" then return out end
+        contacts[i]=M.copy(s.contact) local contact=contacts[i]
         if contact.status=="unavailable" then out.issue="unavailable_contact" return out end
         if contact.status~="hit" and contact.status~="clear" then return out end
-        local basis=M.basis(contact.normal,contact.forward)
-        if not M.finite(s.separation) or not basis or not M.vec(contact.point) or not M.vec(contact.surface_velocity,50) then return out end
-        contact.normal=basis.normal contact.forward=basis.forward
         if contact.status=="hit" then
+            local basis=M.basis(contact.normal,contact.forward)
+            if not M.finite(s.separation) or not basis or not M.vec(contact.point) or not M.vec(contact.surface_velocity,50) then return out end
+            contact.normal=basis.normal contact.forward=basis.forward
             if s.separation < -t.maximum_penetration then out.issue="penetration_limit" return out end
             if s.separation>t.contact_gap then contact.status="clear"
             else
@@ -171,8 +172,9 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
         local delta=math.min(rate_delta,joint_delta) out.front_steer_angle=math.clamp(out.requested_front_steer_angle,prior_steering.angle-delta,prior_steering.angle+delta)
     end
     local candidate_angle=out.front_steer_angle
+    local front_heading=contacts[1].status=="hit" and contacts[1].forward or body_forward
     local function heading(angle)
-        local front=balance_frame and M.basis(up,M.around(contacts[1].forward,axis,angle)) or nil if not front then return nil end
+        local front=balance_frame and M.basis(up,M.around(front_heading,axis,angle)) or nil if not front then return nil end
         local value=math.atan2(M.dot(up,M.cross(forward,front.forward)),math.clamp(M.dot(forward,front.forward),-1,1))
         return M.finite(value) and math.abs(value)<1.4 and value or nil
     end
@@ -185,7 +187,22 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
         end
         out.turning_lean_angle=math.atan(-speed*speed*math.tan(turn)/(M.length(t.gravity)*t.wheelbase))
     end
-    contacts[1].forward=M.around(contacts[1].forward,axis,out.front_steer_angle)
+    local wheel_axes={}
+    for i=1,2 do
+        if contacts[i].status=="hit" then
+            if i==1 then contacts[i].forward=M.around(contacts[i].forward,axis,out.front_steer_angle) end
+            local wheel_basis=M.basis(contacts[i].normal,contacts[i].forward) if not wheel_basis then return out end
+            wheel_axes[i]=wheel_basis.lateral
+        else
+            -- Retain the zero-camber wheel model using body/joint policy only.
+            -- This frame is not observed terrain and never becomes contact geometry.
+            if i==1 then
+                local wheel_basis=M.basis(body_up,M.around(body_forward,axis,out.front_steer_angle))
+                if not wheel_basis then return out end
+                wheel_axes[i]=wheel_basis.lateral
+            else wheel_axes[i]=body_left end
+        end
+    end
     local motor_speed=math.max(0,speed,wheels[2].angular_speed*wheels[2].radius)
     local pedal_scale=math.clamp((t.pedal_cutoff-motor_speed)/(t.pedal_cutoff-t.pedal_fade_start),0,1)
     local pedal=c.enabled and math.clamp(c.pedal,0,1)*pedal_scale or 0 local brake=c.enabled and math.clamp(c.brake,0,1) or 0
@@ -226,14 +243,14 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     end
     out.wheels=M.copy(wheels)
     for i=1,2 do
-        local free=M.copy(contacts[i]) free.status="clear"
-        local solved,b,w=Tire.solve(h,prediction,out.wheels[i],free,{drive_torque=i==2 and pedal*t.pedal_torque or 0,brake_torque=0},t.friction)
-        if not solved.valid then return result() end prediction=b out.wheels[i]=w
+        -- The contact-free drive stage needs an axle, not a fabricated clear plane.
+        local b,w=Tire.axle_couple(prediction,out.wheels[i],wheel_axes[i],(i==2 and pedal*t.pedal_torque or 0)*h)
+        if not b then return result() end prediction=b out.wheels[i]=w
     end
     local actuated,actuated_wheels=M.copy(prediction),M.copy(out.wheels)
     out.pre_contact_prediction=M.copy(actuated) out.pre_contact_prediction_available=true
     local effects
-    prediction,out.wheels,effects=Solver.solve(h,prediction,out.wheels,contacts,t,brake)
+    prediction,out.wheels,effects=Solver.solve(h,prediction,out.wheels,contacts,t,brake,wheel_axes)
     if not prediction then return result() end
     local base_linear=M.sub(M.mul(M.sub(M.sub(actuated.linear_velocity,measured.linear_velocity),gravity_delta),measured.mass),out.hop_impulse)
     local base_angular=M.tensor(measured,M.sub(actuated.angular_velocity,measured.angular_velocity),false)

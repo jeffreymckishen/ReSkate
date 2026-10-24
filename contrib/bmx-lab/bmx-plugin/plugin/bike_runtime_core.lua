@@ -7,6 +7,11 @@ local BikeRuntime={}
 local vm_attempt_used=false
 local KEY="bmx_bike_lifecycle_v1"
 local MAX=9007199254740991
+-- Source proposal only. No option, public request or manifest can open this.
+-- The separate Ride469D activation literal also remains false.
+local RIDE_COMPOSITION_QUALIFIED=false
+local receipt_revisions={"final_revision","final_native_epoch","returned_revision"}
+local receipt_flags={"claim_known","orphaned","park_observed","native_retirement_known","terminal"}
 
 function BikeRuntime.new(services,options,shared_state)
 local supplied=services or reskate
@@ -17,6 +22,7 @@ local T=shared_state or {phase="idle",detail="Stock switching and inspection onl
     remove_attempted={},remove_accepted={}}
 local object={}
 local stop_all,latch_stop,source,spawn,equipment,facts,closed_ready,snapshot,flush_removals
+local ride,ride_binding,selected_source_frame,stop_ride,drain_ride,observe_ride
 local function finite(v) return type(v)=="number" and v==v and math.abs(v)<math.huge end
 local function short(v) return type(v)=="string" and v:gsub("[%c]"," "):sub(1,180) or "unavailable or malformed result" end
 local function reason(v) return type(v)=="string" and #v>0 and #v<=200 end
@@ -68,20 +74,33 @@ local function plain(value, depth, budget)
     return out
 end
 local function copied(value) return plain(value,0,{n=0}) end
-local function source_record(f)
+local function source_record(f,defer_copy)
     if type(f)~="table" then return nil end
     -- Opaque lease handles and private input epochs never enter the storage DTO.
-    return copied({phase=f.phase,reason=f.reason,input_ok=f.input_ok,new_observation=f.new_observation,
+    local record={phase=f.phase,reason=f.reason,input_ok=f.input_ok,new_observation=f.new_observation,
         generation=f.generation,lease_handle_present=f.lease_handle~=nil,cleanup_pending=f.cleanup_pending,cleanup_unknown=f.cleanup_unknown,
-        sample=f.sample,lease_state=f.lease_state,capture_state=f.capture_state})
+        sample=f.sample,lease_state=f.lease_state,capture_state=f.capture_state}
+    -- snapshot immediately validates and detaches the whole DTO with copied;
+    -- its source subtree need not be recursively copied twice. Stored step
+    -- records still take their own copy and never retain dependency state.
+    return defer_copy and record or copied(record)
 end
 local function status_of(object)
     if not object then return nil end
     local ok,value=pcall(object.status,object)
     return ok and type(value)=="table" and value or nil
 end
-local function source_clean()
-    local f=status_of(source)
+local function force_clear()
+    if T.ride_unknown==true then return false end
+    if not ride_binding then return T.ride_construct_attempted~=true end
+    if ride_binding.inflight or ride_binding.unknown or ride_binding.sequence then return false end
+    local row=T.ride_status
+    -- This is only the subordinate's local force ledger gate. Native body,
+    -- Follow, Source and equipment still require their independent conjunction.
+    return type(row)=="table" and row.force_pending==false and row.unknown==false
+end
+local function source_clean(read_status)
+    local f=(read_status or status_of)(source)
     return f and f.phase=="complete" and f.lease_handle==nil and f.cleanup_pending==false and f.cleanup_unknown==false
 end
 local function visuals_accepted()
@@ -90,7 +109,7 @@ local function visuals_accepted()
 end
 local function spawn_cleanup_allowed()
     -- Unknown handoff/reservation results can hide SDK ownership even without a handle.
-    if T.handoff_unknown or T.reserve_unknown or T.follow then return false end
+    if not force_clear() or T.handoff_unknown or T.reserve_unknown or T.follow then return false end
     if T.transferred then
         return T.completed_ack==true and T.acknowledged==true
             or T.release_accepted==true and not T.published_seen
@@ -107,39 +126,52 @@ local function stop_spawn_when_allowed(why)
     if flush_removals then flush_removals() end
 end
 
-local function equipment_clear()
-    local e=status_of(equipment)
+local function equipment_clear(read_status)
+    local e=(read_status or status_of)(equipment)
     return e and not e.retained and not e.unloaded and (e.phase=="idle" or e.phase=="done")
 end
-local function source_clear()
+local function source_clear(read_status)
     if not source then return not T.source_armed end
-    local s=status_of(source)
-    return s and (not T.source_armed and s.phase=="idle" or source_clean())
+    local read=read_status or status_of
+    local s=read(source)
+    return s and (not T.source_armed and s.phase=="idle" or source_clean(read))
 end
-local function unknown_duty()
-    local s=status_of(source);local b=status_of(spawn);local e=status_of(equipment)
+local function unknown_duty(read_status)
+    local read=read_status or status_of
+    local s=read(source);local b=read(spawn);local e=read(equipment)
     return T.reload_blocked==true or T.marker_unknown==true or T.storage_fault==true or T.clock_unknown==true
         or T.handoff_unknown==true or T.reserve_unknown==true or T.gear_unknown==true
-        or T.cleanup_expired==true or T.protocol_unknown==true
+        or T.cleanup_expired==true or T.protocol_unknown==true or T.ride_unknown==true
+        or T.stop_latched==true and not force_clear()
         or T.ack_attempted==true and T.acknowledged~=true
         or T.release_attempted==true and T.release_accepted~=true
         or s and s.cleanup_unknown==true or b and (b.cleanup_unknown==true or b.creation_unknown==true)
         or e and e.outcome=="unresolved" or T.removal_unknown==true
 end
-local function stock_blocked()
-    if T.unloaded or T.busy or T.gear_requested or T.startup_pending or T.startup_closed or unknown_duty() then return true end
-    if not equipment_clear() or not source_clear() then return true end
+local function stock_blocked(read_status)
+    if T.unloaded or T.busy or T.gear_requested or T.startup_pending or T.startup_closed or unknown_duty(read_status) then return true end
+    if not force_clear() or not equipment_clear(read_status) or not source_clear(read_status) then return true end
     if T.intent_inflight or T.active or T.follow or T.body or T.handoff_unknown or T.reserve_unknown then return true end
     if T.used and T.phase~="done" and not T.startup_handoff then return true end
     return false
 end
 snapshot=function()
+    -- These dependency status methods read only local cached state. Reuse one
+    -- detached observation inside this diagnostic copy, never across a call,
+    -- tick or actuator callback. Authority helpers keep their ordinary reader.
+    local s,b,e=status_of(source),status_of(spawn),status_of(equipment)
+    local function read_cached(object)
+        if object==source then return s end
+        if object==spawn then return b end
+        if object==equipment then return e end
+        return nil
+    end
     return copied({schema=1,kind="bike-lifecycle-v1",storage_key=KEY,
         mount_enabled=false,qualification_only=qualification_only,used=T.used==true,
         bike_authority=T.active==true or T.follow~=nil or T.body~=nil or T.handoff_unknown==true or T.reserve_unknown==true,
         cleanup_pending=T.stop_latched==true and not T.bike_cleanup_complete or T.gear_requested==true
             or T.reload_blocked==true or T.marker_unknown==true,
-        cleanup_unknown=unknown_duty()==true,stock_toggle_blocked=stock_blocked(),
+        cleanup_unknown=unknown_duty(read_cached)==true,stock_toggle_blocked=stock_blocked(read_cached),
         retained_reload_marker=T.reload_blocked==true,marker_unknown=T.marker_unknown==true,
         bike_cleanup_complete=T.bike_cleanup_complete==true,
         stock_requested=T.gear_requested==true,equipment_purpose=T.gear_purpose,
@@ -150,8 +182,10 @@ snapshot=function()
         effect_start_ms=T.effect_at,stop_ms=T.stop_at,stop_reason=T.stop_reason,
         stop_latched=T.stop_latched==true,unloaded=T.unloaded==true,clock_unknown=T.clock_unknown==true,
         storage_fault=T.storage_fault==true,readiness=T.facts,initial_readiness=T.initial_facts,
-        capture_attempted=T.capture_attempted==true,source=source_record(status_of(source)),last_source_step=T.source_record,
-        spawn=status_of(spawn),equipment=status_of(equipment),
+        capture_attempted=T.capture_attempted==true,source=source_record(s,true),last_source_step=T.source_record,
+        spawn=b,equipment=e,
+        ride_composition_qualified=RIDE_COMPOSITION_QUALIFIED,ride=T.ride_status,
+        force_cleanup_clear=force_clear(),force_cleanup_unknown=T.ride_unknown==true,
         handoff_attempted=T.handoff_attempted==true,body_transferred=T.transferred==true,
         handoff_unknown=T.handoff_unknown==true,reserve_attempted=T.reserve_attempted==true,
         reserve_unknown=T.reserve_unknown==true,reserve_refused=T.reserve_refused==true,
@@ -199,6 +233,8 @@ latch_stop=function(why)
     if not T.stop_latched then
         T.stop_latched=true;T.generation+=1;T.stop_at=T.now;T.stop_reason=short(why)
         T.phase="stopping";T.detail=T.stop_reason;T.stop_needs_cleanup=true
+        -- Pure local Ride stop precedes any reentrant Follow/Source callback.
+        if stop_ride then stop_ride(T.stop_reason) end
     end
 end
 stop_all=function(why)
@@ -223,6 +259,7 @@ stop_all=function(why)
 end
 
 local function removal_allowed()
+    if not force_clear() then return false end
     if T.transferred then
         return spawn_cleanup_allowed()
     end
@@ -390,10 +427,10 @@ local function receipt_copy(row)
     local n=0;for key in pairs(row) do if not fields[key] then return nil end;n+=1 end
     if n~=14 or not phases[row.phase] or not reasons[row.reason] or not reasons[row.park_reason]
         or not Identity.is_nonzero_u64(row.sequence) or T.sequence and row.sequence~=T.sequence then return nil end
-    for _,key in ipairs({"final_revision","final_native_epoch","returned_revision"}) do if not Identity.is_u64(row[key]) then return nil end end
+    for _,key in ipairs(receipt_revisions) do if not Identity.is_u64(row[key]) then return nil end end
     if Identity.compare(row.returned_revision,row.final_revision)>0 or (row.final_revision=="0")~=(row.final_native_epoch=="0")
         or not finite(row.in_flight) or row.in_flight<0 or row.in_flight>255 or row.in_flight%1~=0 then return nil end
-    for _,key in ipairs({"claim_known","orphaned","park_observed","native_retirement_known","terminal"}) do
+    for _,key in ipairs(receipt_flags) do
         if type(row[key])~="boolean" then return nil end
     end
     if row.native_retirement_known or row.terminal~=(row.phase=="abandoned" or row.phase=="completed") or type(row.pending)~="table" then return nil end
@@ -408,7 +445,7 @@ local function receipt_copy(row)
     return out
 end
 local function release_once()
-    if T.unloaded or T.release_attempted or not T.body or T.follow or T.reserve_unknown or T.handoff_unknown or T.published_seen then return end
+    if not force_clear() or T.unloaded or T.release_attempted or not T.body or T.follow or T.reserve_unknown or T.handoff_unknown or T.published_seen then return end
     local handoff_without_reserve=T.transferred==true and T.handoff_attempted==true
         and T.handoff_unknown==false and T.reserve_attempted~=true
     if not handoff_without_reserve and not T.reserve_refused
@@ -451,6 +488,165 @@ local function read_follow(force)
     if dto.terminal then accept_terminal(dto) end
     return true
 end
+local source_identity_names={"sequence","source_epoch","context_generation"}
+local function same_selected(frame,bound)
+    if type(frame)~="table" or frame.input_ok~=true or frame.cleanup_pending or frame.cleanup_unknown
+        or frame.lease_handle~=bound.lease_handle or frame.generation~=bound.generation
+        or type(frame.sample)~="table" or frame.sample.user~=bound.user then return false end
+    for _,name in ipairs(source_identity_names) do if frame.sample[name]~=bound[name] then return false end end
+    return true
+end
+local function remember_ride(row)
+    if type(row)~="table" or type(row.force_pending)~="boolean" or type(row.unknown)~="boolean"
+        or type(row.stop_requested)~="boolean" or not finite(row.submitted) or row.submitted<0 or row.submitted%1~=0
+        or not finite(row.acknowledged) or row.acknowledged<0 or row.acknowledged%1~=0 then
+        T.ride_unknown=true;return false
+    end
+    local ok,detached=pcall(copied,row)
+    if not ok then T.ride_unknown=true;return false end
+    T.ride_status=detached
+    if row.unknown then T.ride_unknown=true end
+    return true
+end
+stop_ride=function(why)
+    if not ride then return end
+    local r=call("ride.stop",ride.stop,ride,why)
+    if not r[1] or r.n~=2 or not remember_ride(r[2]) then T.ride_unknown=true end
+end
+drain_ride=function()
+    if not ride then return end
+    local r=call("ride.drain",ride.drain,ride)
+    if not r[1] or r.n~=2 or not remember_ride(r[2]) then T.ride_unknown=true end
+end
+local function current_ride_owner(binding,epoch)
+    local owner=binding.owner
+    if not current(owner.generation) or ride_binding~=binding or not binding.observing
+        or not T.active or T.body~=owner.body or T.follow~=owner.follow or T.input_current~=true
+        or T.phase~="following" or not same_selected(selected_source_frame,owner.source)
+        or not binding.sample or epoch~=binding.sample.epoch then return false end
+    local now=clock()
+    if not now or not current(owner.generation) or not T.publish_at or now-T.publish_at>=500 then return false end
+    local f=facts();T.facts=f
+    if not current(owner.generation) or not closed_ready(f,false) then return false end
+    if not read_follow(true) or not current(owner.generation) then return false end
+    local receipt=T.receipt
+    if not receipt or receipt.phase~="following" or receipt.claim_known~=true or receipt.orphaned
+        or receipt.terminal or receipt.park_observed then return false end
+    -- Source owns this fresh read-only lease/capture check. It does not publish
+    -- another model input or native body sample. All earlier guard callbacks
+    -- run first; a post-effect failure still retains the accepted sequence.
+    local authorization=call("source.authorize",source.authorize,source,selected_source_frame)
+    now=clock() -- Include authorization time in the finite sampled500ms boundary.
+    return now~=nil and current(owner.generation) and T.body==owner.body and T.follow==owner.follow
+        and T.input_current==true and same_selected(selected_source_frame,owner.source)
+        and now-T.publish_at<500 and binding.observing and binding.sample and epoch==binding.sample.epoch
+        and authorization[1] and authorization.n==2 and authorization[2]==true
+end
+local function create_ride(frame)
+    if not RIDE_COMPOSITION_QUALIFIED or ride or T.ride_construct_attempted then return end
+    T.ride_construct_attempted=true
+    local source_key={lease_handle=frame.lease_handle,generation=frame.generation,user=frame.sample.user}
+    for _,name in ipairs(source_identity_names) do source_key[name]=frame.sample[name] end
+    table.freeze(source_key)
+    local owner=table.freeze({body=T.body,follow=T.follow,generation=T.generation,
+        source=source_key,incarnation=table.freeze({})})
+    local binding={owner=owner}
+    ride_binding=binding -- Reserve before constructors/callbacks can reenter.
+    local api={}
+    local function guard(epoch)
+        if binding.inflight or binding.unknown or not current_ride_owner(binding,epoch) then
+            stop_all("current Core Source/Follow/body/epoch force guard refused")
+            return false
+        end
+        return true
+    end
+    api.probe_batch=function(epoch,rays,query_options)
+        if type(query_options)~="table" or query_options.require_contact~=true
+            or query_options.exclude_local_actor~=true or not guard(epoch) then return nil end
+        local serial=binding.sample.serial
+        if binding.last_probe==serial then stop_all("second contact batch for one native serial refused");return nil end
+        binding.last_probe=serial
+        local r=call("ride.probe_batch",lookup("world.physics.probe_batch"),owner.body,epoch,rays,query_options)
+        if not current_ride_owner(binding,epoch) then stop_all("Core guard changed during contact query") end
+        if not r[1] then error("contact query result unknown",0) end
+        return table.unpack(r,2,r.n)
+    end
+    api.submit=function(epoch,command)
+        if not guard(epoch) then return false,"Core force publication guard refused before SDK call" end
+        local serial=binding.sample.serial
+        if binding.sequence or binding.last_submit==serial then
+            stop_all("pending or duplicate force publication refused")
+            return false,"one force transaction per measured serial"
+        end
+        binding.last_submit=serial;binding.inflight=true
+        local r=call("ride.submit",lookup("world.physics.submit"),owner.body,epoch,command)
+        -- Adopt the actual returned sequence even if Stop/unload ran inside SDK.
+        -- Never replace a late accepted tuple with a fabricated clean refusal.
+        if r[1] and r.n==4 and r[2]==true and r[3]==nil and Identity.is_nonzero_u64(r[4]) then
+            binding.sequence=r[4];binding.ack_attempted=false
+        elseif not (r[1] and r.n==3 and r[2]==false and type(r[3])=="string") then
+            binding.unknown=true;T.ride_unknown=true
+        end
+        binding.inflight=false
+        if not current_ride_owner(binding,epoch) then stop_all("Core guard changed during force publication") end
+        if not r[1] then error("force publication outcome unknown",0) end
+        return table.unpack(r,2,r.n)
+    end
+    api.receipt=function(sequence)
+        -- Original body binding survives T.body=nil, Follow ACK, stop and unload.
+        if sequence~=binding.sequence or not Identity.is_nonzero_u64(sequence) then
+            binding.unknown=true;T.ride_unknown=true;return nil
+        end
+        local r=call("ride.receipt",lookup("world.physics.receipt"),owner.body,sequence)
+        if not r[1] then binding.unknown=true;T.ride_unknown=true;error("force receipt unknown",0) end
+        return table.unpack(r,2,r.n)
+    end
+    api.acknowledge=function(sequence)
+        if sequence~=binding.sequence or binding.ack_attempted or not Identity.is_nonzero_u64(sequence) then
+            binding.unknown=true;T.ride_unknown=true;return false,"exact original pending sequence required"
+        end
+        binding.ack_attempted=true
+        local r=call("ride.acknowledge",lookup("world.physics.acknowledge"),owner.body,sequence)
+        if yes(r) then binding.sequence=nil
+        else binding.unknown=true;T.ride_unknown=true end
+        if not r[1] then error("force acknowledgement outcome unknown",0) end
+        return table.unpack(r,2,r.n)
+    end
+    table.freeze(api)
+    local built=call("ride.new",function()
+        local Ride=require("./ride_runtime")
+        local Contact=require("./contact_runtime")
+        local Trick=require("./trick_runtime")
+        return Ride.new(api,{contact=Contact,tricks=Trick.new()},{body_handle=owner.body,incarnation=owner.incarnation})
+    end)
+    if built[1] and built.n==2 and type(built[2])=="table" then ride=built[2] end
+    if not ride or not remember_ride(status_of(ride)) then
+        T.ride_unknown=true;stop_all("subordinate construction or force ledger unavailable");return
+    end
+    if not current(owner.generation) then stop_ride("cancelled during subordinate construction") end
+end
+observe_ride=function(frame,sample,now)
+    if not RIDE_COMPOSITION_QUALIFIED then return end
+    if not ride then create_ride(frame) end
+    if not ride or not ride_binding or T.stop_latched then return end
+    -- Freeze this exact same-read sample; both Ride and the visual update use
+    -- these userdata/vector values. No extra body read or receipt surrogate.
+    if type(sample)~="table" or getmetatable(sample)~=nil or typeof(sample.epoch)~="userdata"
+        or not Identity.is_nonzero_u64(sample.serial) or type(sample.rotation)~="table" then
+        stop_all("same-read body sample unavailable for subordinate");return
+    end
+    if not table.isfrozen(sample.rotation) then table.freeze(sample.rotation) end
+    if not table.isfrozen(sample) then table.freeze(sample) end
+    local binding=ride_binding
+    binding.sample=sample;binding.observing=true
+    local r=call("ride.observe",ride.observe,ride,frame,sample,
+        {now_ms=now,focused=T.facts.focused,menu_open=not T.facts.interface_closed or not T.facts.game_menu_closed,loaded=true})
+    binding.observing=false;binding.sample=nil
+    if not r[1] or r.n~=2 or not remember_ride(r[2]) then
+        T.ride_unknown=true;stop_all("subordinate observation outcome unknown")
+    elseif r[2].stop_requested then stop_all("subordinate requested stop") end
+end
+
 local function handoff_and_follow()
     local generation=T.generation
     T.handoff_attempted=true;T.handoff_unknown=true
@@ -497,6 +693,9 @@ local function cleanup_tick()
     if T.bike_cleanup_complete then return end
     local previous=T.phase
     follow_stop_once()
+    -- Follow cancellation/park is immediate. It never fabricates force ACK;
+    -- cleanup capabilities retain the original body after Follow clears T.body.
+    drain_ride()
     local start=T.effect_at or T.stop_at
     if not T.cleanup_expired and T.now and start and T.now-start>=20000 then
         T.cleanup_expired=true;T.detail="Cleanup watchdog expired; unresolved duty retained for SDK VM close."
@@ -513,7 +712,7 @@ local function cleanup_tick()
     local removals_clear=not b or not b.visual_remove_requested or visuals_accepted()
     local e=status_of(equipment)
     local equipment_clean=e and not e.retained and (e.phase=="idle" or e.phase=="done")
-    if source_clear() and body_clear and follow_clear and removals_clear and equipment_clean
+    if force_clear() and source_clear() and body_clear and follow_clear and removals_clear and equipment_clean
         and not unknown_duty() then
         T.active=false;T.gear_requested=false;T.bike_cleanup_complete=true;T.phase="done"
         T.detail=T.completed_ack and "Completed + ACK; input drained. Stock return requires a separate explicit request."
@@ -681,6 +880,7 @@ function object:request_stock_toggle(slot,admitted)
     return true
 end
 local function tick(dt)
+    selected_source_frame=nil
     if T.unloaded or T.phase=="blocked" then return end
     if not T.used and not T.gear_requested then return end
     if T.phase=="done" and not T.gear_requested then return end
@@ -728,6 +928,7 @@ local function tick(dt)
             end
             if current(generation) and frame[2].input_ok then
                 T.input_seen=true;T.input_current=true
+                selected_source_frame=frame[2] -- Exact private Source output, never source_record DTO.
                 if not exact_zero(frame[2]) then stop_all("selected raw pad left exact zero")
                 elseif not T.spawn_requested then
                     T.spawn_requested=true
@@ -757,12 +958,16 @@ local function tick(dt)
                 now=clock()
                 if not now or now-T.publish_at>=500 then stop_all("qualification interval elapsed during receipt read")
                 elseif current(generation) then
-                    local r=call("body.read",lookup("world.physics.read"),T.body)
+                    local measured_body=T.body
+                    local r=call("body.read",lookup("world.physics.read"),measured_body)
                     now=clock()
                     if not now or now-T.publish_at>=500 then stop_all("qualification interval elapsed during body read")
                     elseif not r[1] or r.n~=2 or type(r[2])~="table" then stop_all("following body observation unavailable")
+                    elseif RIDE_COMPOSITION_QUALIFIED and T.body~=measured_body then
+                        stop_all("body owner changed during same-read subordinate observation")
                     elseif current(generation) then
-                        local v=call("spawn.follow_visual",spawn.follow_visual,spawn,r[2],now)
+                        observe_ride(selected_source_frame,r[2],now)
+                        local v=current(generation) and call("spawn.follow_visual",spawn.follow_visual,spawn,r[2],now) or {false,n=1}
                         now=clock()
                         if not yes(v) or not now or not current(generation) or now-T.publish_at>=500 then
                             stop_all("follow visual refused, cancelled or interval elapsed")
@@ -794,6 +999,7 @@ function object:unload()
     if T.unloaded then return self:status() end
     T.unloaded=true;T.generation+=1
     if T.used or T.gear_requested or T.intent_inflight then stop_all("unload; SDK retains unresolved native duty") end
+    drain_ride()
     if source then call("source.unload",source.unload,source) end
     call("equipment.unload",equipment.unload,equipment)
     if T.used then stop_spawn_when_allowed("unload visual cleanup");persist(true) end

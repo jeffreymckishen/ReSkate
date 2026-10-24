@@ -40,6 +40,127 @@ function tests.run(reference,projections)
         check(vector_near(b.angular_velocity,{.2,-.4,.7}),"input measured body immutable")
     end
     cases+=1 do
+        local b,w=fixture() local clear={{contact={status="clear"}},{contact={status="clear"}}}
+        local r=F.new():step(h,b,w,clear,{hop_strength=1,hop_event_id=1,pump_operator_available=true,ground_pump=-1})
+        check(r.valid and not r.grounded and not r.hop_applied,"honest clear needs no terrain fields and grants no hop")
+        check(not F.eligible_support(b,clear[1]),"honest clear cannot qualify support directly")
+        check(vector_near(r.force,{0,0,0}) and vector_near(r.torque,{0,0,0}),"honest clear invents no support or pump force")
+        for i=1,2 do
+            check(r.normal_impulse[i]==0 and r.longitudinal_impulse[i]==0 and r.lateral_impulse[i]==0,"clear has no tire impulse "..i)
+            check(clear[i].separation==nil and clear[i].contact.point==nil and clear[i].contact.normal==nil and
+                clear[i].contact.forward==nil and clear[i].contact.surface_velocity==nil,"clear input never receives fabricated geometry "..i)
+        end
+    end
+    cases+=1 do
+        local b,w=fixture() b.orientation={0,0,math.sin(.3),math.cos(.3)}
+        local clear={{contact={status="clear"}},{contact={status="clear"}}}
+        local r=F.new():step(h,b,w,clear,{pedal=1})
+        local axle=M.turn(b.orientation,{1,0,0})
+        local rotor=(r.wheels[2].angular_speed-w[2].angular_speed)*w[2].inertia
+        check(r.valid and r.wheels[2].angular_speed>w[2].angular_speed,"airborne pedal uses mechanical axle without terrain")
+        check(vector_near(r.linear_impulse,{0,0,0}) and r.normal_impulse[1]==0 and r.normal_impulse[2]==0,"airborne pedal creates no tire force")
+        check(vector_near(M.add(r.angular_impulse,M.mul(axle,rotor)),{0,0,0}),"airborne drive preserves opposite chassis/rotor angular impulse")
+    end
+    cases+=1 do
+        local b,w=fixture(3) b.orientation={0,0,math.sin(.3),math.cos(.3)}
+        local clear={{contact={status="clear"}},{contact={status="clear"}}}
+        local r=F.new():step(h,b,w,clear,{brake=1})
+        local axle=M.turn(b.orientation,{1,0,0}) local rotor=0
+        for i=1,2 do rotor+=(r.wheels[i].angular_speed-w[i].angular_speed)*w[i].inertia end
+        check(r.valid and not r.grounded and r.wheels[1].angular_speed<w[1].angular_speed and r.wheels[2].angular_speed<w[2].angular_speed,"airborne brake slows both mechanical rotors")
+        check(vector_near(r.linear_impulse,{0,0,0}) and r.normal_impulse[1]==0 and r.normal_impulse[2]==0 and
+            r.longitudinal_impulse[1]==0 and r.longitudinal_impulse[2]==0 and r.lateral_impulse[1]==0 and r.lateral_impulse[2]==0,"airborne braking creates no tire impulses")
+        check(vector_near(M.add(r.angular_impulse,M.mul(axle,rotor)),{0,0,0}),"airborne brake reaction conserves chassis/rotor angular impulse")
+    end
+    cases+=1 do
+        -- A tilted steerer must not add free-wheel camber to the retained model.
+        -- All axes below are authored body/joint policy, never clear-ray geometry.
+        local b,w=fixture(3) local bank,tilt=.2,-.15
+        b.orientation={math.cos(bank/2)*math.sin(tilt/2),math.sin(bank/2)*math.sin(tilt/2),
+            math.sin(bank/2)*math.cos(tilt/2),math.cos(bank/2)*math.cos(tilt/2)}
+        b.linear_velocity=M.turn(b.orientation,{0,0,3}) b.inertia_body={11,37,5}
+        local clear={{contact={status="clear"}},{contact={status="clear"}}}
+        local tuning={rear_brake_torque=0} local controls={brake=1,steer=-.4}
+        local r=F.new(tuning):step(h,b,w,clear,controls)
+        local up=M.turn(b.orientation,{0,1,0}) local forward=M.turn(b.orientation,{0,0,1})
+        local steerer=M.unit(M.turn(b.orientation,{0,.9601196050643921,-.2795896530151367}))
+        local wheel=M.basis(up,M.around(forward,steerer,r.front_steer_angle))
+        local cambered=M.unit(M.around(M.turn(b.orientation,{1,0,0}),steerer,r.front_steer_angle))
+        check(r.valid and not r.grounded and wheel~=nil,"inclined-steerer free front brake remains a valid zero-camber model")
+        check(math.abs(M.dot(cambered,up))>.01,"regression separates physical camber from the selected zero-camber approximation")
+        check(near(M.dot(r.angular_impulse,up),0,1e-8),"free front axle stays within body-derived zero-camber plane")
+        check(vector_near(r.angular_impulse,M.mul(wheel.lateral,60*h)),"front brake chassis impulse follows projected body-derived axle")
+        local rotor=(r.wheels[1].angular_speed-w[1].angular_speed)*w[1].inertia
+        check(near(rotor,-60*h),"isolated front brake transfers the bounded rotor impulse")
+        check(vector_near(M.add(r.angular_impulse,M.mul(wheel.lateral,rotor)),{0,0,0}),"front brake conserves opposite chassis and rotor angular impulse")
+        check(near(r.wheels[2].angular_speed,w[2].angular_speed),"disabled rear brake leaves rear spin unchanged")
+        check(vector_near(r.linear_impulse,{0,0,0}),"derived wheel frame invents no clear tire force")
+        local poisoned=M.copy(clear)
+        for _,s in poisoned do
+            s.separation=0/0 s.contact.normal={0/0,0,0} s.contact.forward=false
+            s.contact.point="not terrain" s.contact.surface_velocity={math.huge,0,0}
+        end
+        local ignored=F.new(tuning):step(h,b,w,poisoned,controls)
+        check(ignored.valid and not ignored.grounded,"poisoned clear terrain cannot invalidate body-derived axle policy")
+        check(vector_near(r.force,ignored.force) and vector_near(r.torque,ignored.torque),"absent and poisoned clear geometry produce the same force and torque")
+        for i=1,2 do
+            check(near(r.wheels[i].angular_speed,ignored.wheels[i].angular_speed),"clear geometry cannot change zero-camber rotor response "..i)
+            check(r.normal_impulse[i]==0 and r.longitudinal_impulse[i]==0 and r.lateral_impulse[i]==0,"zero-camber frame never becomes native contact support "..i)
+            check(clear[i].contact.normal==nil and clear[i].contact.forward==nil and clear[i].contact.point==nil,"body-derived frame is not written into clear terrain "..i)
+        end
+    end
+    cases+=1 do
+        for clear_index=1,2 do
+            local b,w,s=fixture(3) s[clear_index]={contact={status="clear"}}
+            local r=F.new():step(h,b,w,s,{steer=.25})
+            check(r.valid and r.grounded,"one honest clear wheel permits the other measured support "..clear_index)
+            check(r.normal_impulse[clear_index]==0 and r.longitudinal_impulse[clear_index]==0 and r.lateral_impulse[clear_index]==0,"missing wheel geometry cannot receive contact impulse "..clear_index)
+            check(r.normal_load[3-clear_index]>0,"remaining measured wheel supplies support "..clear_index)
+        end
+    end
+    cases+=1 do
+        for _,field in {"point","normal","forward","surface_velocity"} do
+            local b,w,s=fixture() s[1].contact[field]=nil
+            check(not F.new():step(h,b,w,s).valid,"hit still requires measured "..field)
+        end
+        local b,w,s=fixture() s[1].separation=nil
+        check(not F.new():step(h,b,w,s).valid,"hit still requires finite measured separation")
+        b,w,s=fixture() s[1].contact.surface_velocity={0,0/0,0}
+        check(not F.new():step(h,b,w,s).valid,"nonfinite hit closing-motion input is never treated as clear")
+        b,w,s=fixture() s[1].contact.surface_velocity={0,50.00001,0}
+        check(not F.new():step(h,b,w,s).valid,"hit surface motion bounds remain intact")
+    end
+    cases+=1 do
+        local b,w=fixture() local clear={{contact={status="clear"}},{contact={status="clear"}}}
+        local malformed=M.copy(clear)
+        for _,s in malformed do
+            s.contact.point="unused" s.contact.normal={0/0,0,0} s.contact.forward=false
+            s.contact.surface_velocity={math.huge,0,0} s.separation=0/0 s.verified_plane=true
+            s.balance_normal_available=true s.balance_normal={0/0,0,0}
+        end
+        local expected=F.new():step(h,b,w,clear,{steer=.4,pedal=.2,brake=.3})
+        local actual=F.new():step(h,b,w,malformed,{steer=.4,pedal=.2,brake=.3})
+        check(expected.valid and actual.valid and not actual.grounded,"clear's unavailable terrain fields are not consumed")
+        check(vector_near(actual.force,expected.force) and vector_near(actual.torque,expected.torque),"clear terrain garbage cannot change mechanical response")
+        for i=1,2 do check(near(actual.wheels[i].angular_speed,expected.wheels[i].angular_speed),"clear rotor response depends on bike mechanics only "..i) end
+    end
+    cases+=1 do
+        local b,w,s=fixture() local controller=F.new()
+        check(controller:step(h,b,w,s,{recovery_step_verified=true}).grounded,"seed actual support before honest clear")
+        local clear={{contact={status="clear"}},{contact={status="clear"}}}
+        local r=controller:step(h,b,w,clear,{recovery_step_verified=true,hop_strength=1,hop_event_id=1})
+        check(r.valid and not r.grounded and not r.hop_applied and r.balance_support_mask==0,"honest clear cannot continue stale support or hop")
+        check(controller:consumed_hop_event_id()==1,"airborne event remains consumed once")
+        check(not controller:step(h,b,w,s,{hop_strength=1,hop_event_id=1}).hop_applied,"clear-to-hit cannot replay consumed hop")
+        clear[1].contact.status="unavailable"
+        local unavailable=controller:step(h,b,w,clear)
+        check(not unavailable.valid and unavailable.issue=="unavailable_contact","unavailable still refuses instead of becoming clear")
+        clear[1].contact.status="other"
+        check(not controller:step(h,b,w,clear).valid,"unknown contact still refuses")
+        clear[1].contact.status="clear"
+        check(not controller:step(h*2,b,w,clear).valid,"clear does not relax native fixed-step clock")
+    end
+    cases+=1 do
         local b,w,s=fixture()
         check(F.eligible_support(b,s[1]),"current support")
         s[1].separation=.005 check(F.eligible_support(b,s[1]),"strict support boundary inclusive")

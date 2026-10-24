@@ -9,6 +9,19 @@ local axis_names = { "left_x", "left_y", "right_x", "right_y" }
 local trigger_names = { "left_trigger", "right_trigger" }
 local button_names = { "a", "b", "right_stick", "lb", "rb" }
 local identity_names = { "sequence", "source_epoch", "context_generation" }
+local action_source_names = { "lease_handle", "generation", "user", "sequence", "source_epoch",
+    "context_generation", "observation_serial", "observed_ms", "packet" }
+-- SDK records are plain tables. Reject callbacks before reading fields, and
+-- retain only the bounded native pad shape before any copy or comparison.
+local sdk_buttons = { "up", "down", "left", "right", "start", "back", "left_stick", "right_stick",
+    "lb", "rb", "a", "b", "x", "y" }
+local pad_keys = { left_x=true, left_y=true, right_x=true, right_y=true,
+    left_trigger=true, right_trigger=true, playstation=true, buttons=true }
+local button_keys = {}
+for _, name in ipairs(sdk_buttons) do button_keys[name] = true end
+local function plain(value)
+    return type(value) == "table" and getmetatable(value) == nil
+end
 
 local function finite(v)
     return type(v) == "number" and v == v and math.abs(v) < math.huge
@@ -33,31 +46,47 @@ local function reason(value, fallback)
     return type(value) == "string" and #value > 0 and #value <= 128 and value or fallback
 end
 local function sample_valid(sample)
-    if type(sample) ~= "table" or not integer(sample.user, 0, 3)
+    if not plain(sample) or not integer(sample.user, 0, 3)
         or not integer(sample.packet, 0, 4294967295) then return false end
     for _, name in ipairs(identity_names) do
         if not Identity.is_nonzero_u64(sample[name]) then return false end
     end
     if not Identity.is_nonzero_u64(sample.observation_serial)
-        or not Identity.is_u64(sample.observed_ms) or type(sample.pad) ~= "table"
-        or type(sample.pad.buttons) ~= "table" then return false end
+        or not Identity.is_u64(sample.observed_ms) or not plain(sample.pad)
+        or not plain(sample.pad.buttons) then return false end
+    local pad = sample.pad
+    for name in pairs(pad) do if not pad_keys[name] then return false end end
+    for name, value in pairs(pad.buttons) do
+        if not button_keys[name] or type(value) ~= "boolean" then return false end
+    end
+    if pad.playstation ~= nil and type(pad.playstation) ~= "boolean" then return false end
     for _, name in ipairs(axis_names) do
-        if not finite(sample.pad[name]) or math.abs(sample.pad[name]) > 1 then return false end
+        if not finite(pad[name]) or math.abs(pad[name]) > 1 then return false end
     end
     for _, name in ipairs(trigger_names) do
-        if not finite(sample.pad[name]) or sample.pad[name] < 0 or sample.pad[name] > 1 then return false end
+        if not finite(pad[name]) or pad[name] < 0 or pad[name] > 1 then return false end
     end
     for _, name in ipairs(button_names) do
-        if type(sample.pad.buttons[name]) ~= "boolean" then return false end
+        if type(pad.buttons[name]) ~= "boolean" then return false end
     end
     return true
+end
+local function projected_pad(pad)
+    local out = { buttons = {} }
+    for _, name in ipairs(axis_names) do out[name] = pad[name] end
+    for _, name in ipairs(trigger_names) do out[name] = pad[name] end
+    for _, name in ipairs(sdk_buttons) do
+        if pad.buttons[name] ~= nil then out.buttons[name] = pad.buttons[name] end
+    end
+    if pad.playstation ~= nil then out.playstation = pad.playstation end
+    return out
 end
 local function source_record(frame)
     local s = frame.sample
     return { lease_handle = frame.lease_handle, generation = frame.generation,
         user = s.user, sequence = s.sequence, source_epoch = s.source_epoch,
         context_generation = s.context_generation, observation_serial = s.observation_serial,
-        observed_ms = s.observed_ms, packet = s.packet, pad = copy(s.pad) }
+        observed_ms = s.observed_ms, packet = s.packet, pad = projected_pad(s.pad) }
 end
 local function same_identity(a, b)
     return a and b and a.lease_handle == b.lease_handle and a.user == b.user
@@ -109,8 +138,8 @@ end
 function Mapper:observe(frame, context)
     -- A duplicate still has to pass current source and explicit owner guards.
     -- The native source adapter supplies input_ok only after its fresh checks.
-    if type(frame) ~= "table" or frame.input_ok ~= true then return self:_refuse("input_unavailable") end
-    if type(context) ~= "table" or type(context.grounded) ~= "boolean"
+    if not plain(frame) or frame.input_ok ~= true then return self:_refuse("input_unavailable") end
+    if not plain(context) or type(context.grounded) ~= "boolean"
         or type(context.focused) ~= "boolean" or type(context.menu_open) ~= "boolean"
         or type(context.rotation_reserved) ~= "boolean" then return self:_refuse("context_unavailable") end
     if not context.focused then return self:_refuse("focus_lost") end
@@ -187,7 +216,7 @@ function Mapper:observe(frame, context)
 end
 function Mapper:controls(context)
     local out = { valid = false, issue = self._issue, submission_allowed = false }
-    if type(context) ~= "table" or type(context.physics_epoch) ~= "userdata"
+    if not plain(context) or type(context.physics_epoch) ~= "userdata"
         or not finite(context.h) or context.h <= 0 or context.h > self._settings.max_sample_seconds
         or type(context.grounded) ~= "boolean" or type(context.rotation_reserved) ~= "boolean" then
         self:_invalidate("invalid_step_context")
@@ -205,8 +234,9 @@ function Mapper:controls(context)
     end
     local a, raw = self._actions, self._raw
     local neutral = self._settings.deadzone + (1 - self._settings.deadzone) * self._settings.neutral_threshold
+    local rear_magnitude = math.sqrt(raw.right_x^2 + raw.right_y^2)
     local raw_rotation = math.sqrt(raw.left_x^2 + raw.left_y^2) > neutral
-        or math.sqrt(raw.right_x^2 + raw.right_y^2) > neutral
+        or rear_magnitude > neutral
         or raw.left_shoulder or raw.right_shoulder
         or raw.left_trigger > self._settings.trigger_neutral or raw.right_trigger > self._settings.trigger_neutral
     local manual, nose = a.manual, a.nose_manual
@@ -214,6 +244,13 @@ function Mapper:controls(context)
     local hop = self._pending
     out.valid, out.issue, out.submission_allowed = true, "none", true
     out.physics_epoch, out.h, out.source, out.hop = context.physics_epoch, context.h, copy(self._source), copy(hop)
+    -- Both authored bar and rear selections use the right stick. Neutral is a
+    -- fact from this same admitted raw snapshot, never inferred from no request.
+    local actions = copy(a)
+    actions.physics_epoch, actions.h, actions.source = context.physics_epoch, context.h, {}
+    for _, name in ipairs(action_source_names) do actions.source[name] = self._source[name] end
+    actions.bar_neutral, actions.rear_neutral = rear_magnitude <= neutral, rear_magnitude <= neutral
+    out.actions = actions
     out.force_controls = { enabled = true, pedal = a.pedal, brake = a.brake, steer = a.steer,
         manual = manual, nose_manual = nose, air_yaw = a.steer, ground_pump = a.front_weight,
         pump_operator_available = true,

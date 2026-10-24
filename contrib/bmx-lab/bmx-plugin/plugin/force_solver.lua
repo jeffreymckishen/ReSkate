@@ -26,9 +26,15 @@ local function apply(state,r,wi,j,point_impulse)
     if point_impulse then for k=1,3 do if math.abs(r[k]*j)>1e9 then return false end end end
     for k=1,6 do state[k]+=r[k+7]*j end state[wi]+=r[14]*j return valid(state)
 end
-local function prepare(body,wheel,contact)
-    local basis=M.basis(contact.normal,contact.forward) if not basis then return nil end
-    local lateral=basis.lateral
+local function prepare(body,wheel,contact,free_axis)
+    local basis,lateral
+    if contact.status=="clear" and free_axis~=nil then
+        -- Mechanical rotor coupling remains available without a terrain observation.
+        lateral=M.unit(free_axis) if not lateral then return nil end
+    else
+        basis=M.basis(contact.normal,contact.forward) if not basis then return nil end
+        lateral=basis.lateral
+    end
     local p={hit=contact.status=="hit",inertia=wheel.inertia,radius=wheel.radius,cache={},cache_slot=1}
     p.axle=row(body,wheel,{0,0,0},M.mul(lateral,-1),1,0)
     p.axle_mass=1/wheel.inertia+M.dot(lateral,M.tensor(body,lateral,true))
@@ -110,9 +116,9 @@ local function tangent(state,p,wi,h,j,brake,friction,solved)
     if not valid(state) then return nil end
     solved.longitudinal_impulse=fj solved.lateral_impulse=lj return bj
 end
-function S.solve(h,body,wheels,contacts,t,brake)
+function S.solve(h,body,wheels,contacts,t,brake,free_axes)
     local state={body.linear_velocity[1],body.linear_velocity[2],body.linear_velocity[3],body.angular_velocity[1],body.angular_velocity[2],body.angular_velocity[3],wheels[1].angular_speed,wheels[2].angular_speed}
-    local prepared={prepare(body,wheels[1],contacts[1]),prepare(body,wheels[2],contacts[2])}
+    local prepared={prepare(body,wheels[1],contacts[1],free_axes and free_axes[1]),prepare(body,wheels[2],contacts[2],free_axes and free_axes[2])}
     if not prepared[1] or not prepared[2] then return nil end
     local braking=brake>0 and (t.front_brake_torque>0 or t.rear_brake_torque>0)
     local effects={} for i=1,2 do effects[i]={linear={0,0,0},angular={0,0,0},spin=0,brake=0,normal_linear={0,0,0},normal_angular={0,0,0},solved={}} end

@@ -5339,7 +5339,7 @@ void bmx_lua_forces_use_actual_modules_and_match_the_portable_kernel() {
                {3.2303603001549694, 2.4246027387432054, 0}, {1, 1, 1});
     files["plugin/main.lua"] = "local reference = reskate.json.decode([=[" + reference.dump() + "]=])\nlocal projections = reskate.json.decode([=[" + projections.dump() + R"(]=])
         local result = require("./force_tests").run(reference, projections)
-        assert(result.cases == 17 and result.assertions > 1800 and result.comparisons == 83 and result.projections == 18 and result.native_actions == 0,
+        assert(result.cases == 25 and result.assertions > 1800 and result.comparisons == 83 and result.projections == 18 and result.native_actions == 0,
             string.format("unexpected force coverage: %s/%s/%s", tostring(result.cases), tostring(result.assertions), tostring(result.comparisons)))
         reskate.log(string.format("BMX Lua forces: %d cases, %d assertions, %d C++ comparisons, %d direct projections, 0 native actions", result.cases, result.assertions, result.comparisons, result.projections))
     )";
@@ -5350,7 +5350,7 @@ void bmx_lua_forces_use_actual_modules_and_match_the_portable_kernel() {
     Host host(environment, Side::client, limits);
     host.apply({package("bmx-lua-force-tests", files)});
     running(host, "bmx-lua-force-tests", environment);
-    check(environment.logged("BMX Lua forces: 17 cases") && environment.fake.calls.empty() && environment.fake.binds.empty() &&
+    check(environment.logged("BMX Lua forces: 25 cases") && environment.fake.calls.empty() && environment.fake.binds.empty() &&
               environment.fake.body_creates == 0 && environment.fake.body_submissions == 0 && environment.teleports.empty() && environment.rays == 0,
           "Pure force modules and actual C++ arithmetic agree without native services or permissions\n" + environment.all());
     std::cout << environment.all();

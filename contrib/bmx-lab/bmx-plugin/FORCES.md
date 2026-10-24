@@ -46,12 +46,21 @@ rear, with `radius`, axial `inertia` and absolute `angular_speed`. Proposed
 106kg/26,32,10 moments and geometry are Lua policy defaults only; actual measured
 mass, moments and supplied wheel properties remain authoritative.
 
-Each contact sample has a `contact` table (`status`: `unavailable`, `clear` or
-`hit`; `point`, `normal`, `forward`, `surface_velocity`), signed `separation`,
-and optional `balance_normal_available`/`balance_normal` and `verified_plane`.
-Even clear samples require a valid current wheel plane and finite fields in the
-chassis kernel. A wider query skin can produce contact response; it cannot grant
-a grounded hop or landing. Unavailable contacts invalidate the calculation.
+Each contact sample has a `contact` table with `status`: `unavailable`, `clear`
+or `hit`. A hit requires finite `point`, `normal`, `forward`, `surface_velocity`
+and signed `separation`, with optional `balance_normal_available`/`balance_normal`
+and `verified_plane`. A clear row needs only `{contact={status="clear"}}`; its
+absent geometry is never filled with a plane, point or surface velocity. Clear
+rows contribute no tire/contact impulses and grant no support, hop or landing.
+Airborne drive/brake reaction retains the documented zero-camber approximation.
+The free front axle is the lateral basis of body-up and steered body-forward
+projected onto that body-derived model plane; the rear axle is body-left. This
+authored frame is not terrain, support or measured steering-induced camber.
+Supplied clear-row geometry is ignored. The inclined-steerer/front-brake
+regression checks axle orientation, opposite chassis/rotor angular impulse and
+absent/poisoned clear-terrain invariance. This conservative contract choice is
+not a matched BMX Streets camber measurement. A wider query skin can produce contact response; it cannot grant a
+grounded hop or landing. Unavailable contacts invalidate the calculation.
 
 `Forces.controls()` supplies the original typed defaults. Pass partial overrides
 to `step`/`preview`: `enabled`, `pedal`, `brake`, `steer`, `manual`, `nose_manual`,
@@ -59,8 +68,8 @@ to `step`/`preview`: `enabled`, `pedal`, `brake`, `steer`, `manual`, `nose_manua
 `rotation_reserved`, `pump_operator_available`, `pump_inhibited`, `ground_pump`.
 Scalar fields must be finite and boolean fields must be booleans. Hop IDs are
 monotonic exact nonnegative integers through 2^53-1, rather than C++ uint64.
-Unknown control or tuning keys raise an error. Full contact/body/wheel tables
-are required, as with the source's typed aggregates.
+Unknown control or tuning keys raise an error. Full body/wheel tables and full
+measured hit fields are required; clear rows carry no terrain geometry.
 
 The caller must prove `recovery_step_verified` from the same owned body/world,
 consecutive native serials and calibrated native time, after current queries.

@@ -4814,19 +4814,34 @@ void bmx_lua_equipment_requests_match_the_retained_gesture_rules() {
             ++clock; ++wall;
         }
     }
-    files["plugin/main.lua"] = "local reference = reskate.json.decode([=[" + reference.dump() + R"(]=])
-        local result = require("./equipment_tests").run(reference)
-        assert(result.cases == 8 and result.assertions > 1000 and result.comparisons == 160 and result.native_actions == 0,
-            string.format("unexpected equipment coverage: %s/%s/%s", tostring(result.cases), tostring(result.assertions), tostring(result.comparisons)))
-        reskate.log(string.format("BMX Lua equipment: %d cases, %d assertions, %d C++ comparisons, 0 native actions", result.cases, result.assertions, result.comparisons))
+    // Loading the policy modules and running the entire regression suite are
+    // separate calls, each with the Host's unchanged production time limit.
+    files["plugin/main.lua"] = R"(local tests = require("./equipment_tests")
+        local complete = false
+        reskate.on("tick", function()
+            if complete then return end
+            complete = true
+            local reference = reskate.json.decode([=[)" + reference.dump() + R"(]=])
+            local result = tests.run(reference)
+            assert(result.cases == 8 and result.assertions > 1000 and result.comparisons == 160 and result.native_actions == 0,
+                string.format("unexpected equipment coverage: %s/%s/%s", tostring(result.cases), tostring(result.assertions), tostring(result.comparisons)))
+            reskate.log(string.format("BMX Lua equipment: %d cases, %d assertions, %d C++ comparisons, 0 native actions", result.cases, result.assertions, result.comparisons))
+        end)
     )";
     TestEnvironment environment;
     Host host(environment, Side::client);
     host.apply({package("bmx-lua-equipment-tests", files)});
     running(host, "bmx-lua-equipment-tests", environment);
+    check(!environment.logged("BMX Lua equipment:"), "Equipment policy tests wait for their separate tick call");
+    host.tick(1.0 / 60.0);
+    running(host, "bmx-lua-equipment-tests", environment);
     check(environment.logged("BMX Lua equipment: 8 cases") && environment.fake.calls.empty() && environment.fake.binds.empty() &&
               environment.fake.body_creates == 0 && environment.fake.body_submissions == 0 && environment.teleports.empty() && environment.rays == 0,
           "Actual equipment modules agree with retained gesture rules without native services or gameplay permissions\n" + environment.all());
+    const auto completed = environment.all();
+    host.tick(1.0 / 60.0);
+    running(host, "bmx-lua-equipment-tests", environment);
+    check(environment.all() == completed, "The equipment regression suite runs only once");
     std::cout << environment.all();
 }
 

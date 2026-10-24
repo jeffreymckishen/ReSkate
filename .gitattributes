@@ -29,3 +29,6 @@ contrib/bmx-lab/native-geometry-trial/plugin/main.lua text eol=lf
 contrib/bmx-lab/native-geometry-trial/reskate-plugin.json text eol=lf
 External/luau/** -text
 External/luau/** whitespace=-blank-at-eol
+# Preserve the exact Lua diagnostic admitted by the mandatory Host fixture.
+contrib/bmx-lab/measured-contact-trial/plugin/main.lua text eol=lf
+contrib/bmx-lab/measured-contact-trial/reskate-plugin.json text eol=lf

@@ -18,6 +18,7 @@
 #include "Extension/BMX/bmx_collision_envelope.h"
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <format>
 #include <fstream>
 #include <iostream>
@@ -272,6 +273,9 @@ struct FakeGame final : Game {
     }
     bool test_body_release_refused{};
     std::string test_body_create_refusal;
+    unsigned body_create_calls{}, body_read_calls{};
+    bool test_body_read_unavailable{};
+    bool batch_ground_plane{};
     std::uint64_t body_command_sequence{};
     unsigned query_cast_cost{1}, native_casts{}, batch_calls{}, batch_rays{};
     bool batch_available{true}, batch_clear{}, batch_unqualified{}, batch_change_after{}, batch_bad_count{};
@@ -282,6 +286,7 @@ struct FakeGame final : Game {
     bool batch_refusal_accounting_valid{true};
     body_query::Request last_batch;
     std::string body_create(std::uint64_t owner, const owned_body::Definition& definition, owned_body::Handle& handle) override {
+        ++body_create_calls;
         if (!owned_body::valid(definition) || owned.size() >= owned_body::retained_capacity) return "definition or capacity";
         if (!test_body_create_refusal.empty()) return test_body_create_refusal;
         ++body_creates; handle = {body_creates, body_creates - 1};
@@ -295,6 +300,8 @@ struct FakeGame final : Game {
         return at != owned.end() && at->second.owner == owner && at->second.handle == h ? &at->second : nullptr;
     }
     std::string body_read(std::uint64_t owner, const owned_body::Handle& h, owned_body::Sample& sample) override {
+        ++body_read_calls;
+        if (test_body_read_unavailable) return "constructed sample unavailable";
         auto* b = body_of(owner, h); if (!b || b->released || b->quarantined) return "owner or generation";
         b->latest = b->sample; (void)b->mailbox.observe_successor(b->sample); sample = b->sample; return {};
     }
@@ -343,6 +350,19 @@ struct FakeGame final : Game {
             out.hit.status = batch_clear ? body_query::Status::clear : body_query::Status::hit;
             for (std::size_t i = 0; i < ray.from.size(); ++i) out.hit.position[i] = (ray.from[i] + ray.to[i]) * .5f;
             out.hit.fraction = .5f; out.hit.body = batch_unqualified || batch_clear ? 0 : 1;
+            if (batch_ground_plane && !batch_clear) {
+                // Constructed fixture geometry only; the shared query fences still apply.
+                const float dy = ray.to[1] - ray.from[1];
+                const float fraction = dy != 0 ? -ray.from[1] / dy : std::numeric_limits<float>::quiet_NaN();
+                if (!std::isfinite(dy) || !std::isfinite(fraction) || fraction < 0 || fraction > 1) {
+                    out.hit = {};
+                    out.hit.status = body_query::Status::clear;
+                    return out; // Preserve this attempted cast's actual accounting.
+                }
+                out.hit.fraction = fraction;
+                for (std::size_t i = 0; i < ray.from.size(); ++i)
+                    out.hit.position[i] = ray.from[i] + (ray.to[i] - ray.from[i]) * fraction;
+            }
             if (batch_contact_mode && !batch_clear) {
                 out.hit.normal_available=out.hit.surface_velocity_available=true;
                 out.hit.normal={0,1,0};out.hit.surface_velocity={2,0,-1};
@@ -926,9 +946,10 @@ struct FakeGame final : Game {
     }
     // SmokeyDawg58's editor reads the pad and the window's focus.
     std::optional<std::uint32_t> pad_bits_now;
+    unsigned focus_reads{};
     InputFocus focus_now{};
     std::optional<std::uint32_t> pad_bits(bool) override { return pad_bits_now; }
-    InputFocus input_focus() override { return focus_now; }
+    InputFocus input_focus() override { ++focus_reads; return focus_now; }
     std::optional<Cursor> cursor_now;
     std::optional<Cursor> cursor() override { return cursor_now; }
     void dialog_close(std::string_view plugin, std::string_view id) override { calls.push_back(std::format("dialog close {} {}", plugin, id)); }
@@ -1122,7 +1143,8 @@ struct TestEnvironment final : Environment {
     std::vector<std::pair<Vec3, float>> teleports;
     int rays{};
     unsigned ray_cast_cost{1}, native_ray_casts{};
-    std::optional<SkaterState> skater() override { return local_skater; }
+    unsigned skater_reads{};
+    std::optional<SkaterState> skater() override { ++skater_reads; return local_skater; }
     std::optional<ScoreState> score_now;
     std::optional<ScoreState> score() override { return score_now; }
     std::vector<std::string> toasts, sounds;
@@ -7783,6 +7805,8 @@ void bmx_lua_spawn_uses_owned_chassis_and_measured_part_placement() {
     std::cout<<"Lua bike spawn: "<<scenarios<<" Host scenarios, 2048 authored/COM comparisons, 0 driving calls; native Game facts constructed\n";
 }
 
+#include "measured_contact_host_fixture.inc"
+
 int main() {
     unsigned skipped = 0;
     const auto run = [&](void (*test)()) {
@@ -7797,6 +7821,7 @@ int main() {
         scratch = std::filesystem::temp_directory_path() / "reskate-plugin-tests";
         std::filesystem::remove_all(scratch);
         run(a_manifest_says_what_a_plugin_is);
+        run(measured_contact_host_fixture_v1);
         run(plugins_own_typed_bodies_and_acknowledge_measured_results);
         run(plugins_pipeline_native_steps_and_select_owned_receipts);
         run(plugins_can_inspect_later_partial_failure_without_acknowledging_unmeasured_head);

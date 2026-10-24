@@ -24,6 +24,10 @@ struct Actor {
     bool operator==(const Actor&) const = default;
 };
 
+// Read-only native lifetime observation. No motion claim, watched-entity change,
+// gameplay-input admission or current actuation authority is acquired.
+bool observe_actor(Actor& actor) noexcept;
+
 // A trusted native service supplies its eligibility predicate. A null predicate
 // is refused, and the predicate runs outside the shared publication lock.
 using Admission = bool (*)(const State&) noexcept;

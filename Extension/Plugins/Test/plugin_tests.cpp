@@ -236,6 +236,40 @@ struct FakeGame final : Game {
     std::map<std::uint64_t, OwnedBody> owned;
     std::vector<std::uint64_t> body_releases;
     unsigned body_creates{}, body_submissions{}, body_release_calls{};
+    struct SyncProbe {
+        std::uint64_t owner{},sequence{};
+        owned_body::Handle handle{};
+        dingosdk::body_sync_probe::Result result{};
+    } sync_probe;
+    std::uint64_t sync_probe_sequence{20};
+    unsigned sync_probe_starts{},sync_probe_polls{};
+    std::string body_begin_sync_probe(std::uint64_t owner,const owned_body::Handle& h,std::uint64_t& sequence) override {
+        ++sync_probe_starts;sequence=0;
+        auto* b=body_of(owner,h);
+        if (!b || b->released || b->quarantined ||
+            (sync_probe.sequence && sync_probe.result.status==dingosdk::body_sync_probe::Status::pending)) return "owner, generation or occupied observer";
+        b->sample.epoch.serial=9007199254740994ULL;
+        sync_probe={};sync_probe.owner=owner;sync_probe.handle=h;sync_probe.sequence=++sync_probe_sequence;
+        sync_probe.result.armed_epoch=b->sample.epoch;
+        sequence=sync_probe.sequence;return {};
+    }
+    std::string body_poll_sync_probe(std::uint64_t owner,const owned_body::Handle& h,std::uint64_t sequence,dingosdk::body_sync_probe::Result& out) override {
+        ++sync_probe_polls;out={};
+        if (!sequence || sync_probe.owner!=owner || sync_probe.handle!=h || sync_probe.sequence!=sequence) return "foreign or stale probe";
+        out=sync_probe.result;return {};
+    }
+    void complete_sync_probe() {
+        namespace s=dingosdk::body_sync_probe;
+        auto& out=sync_probe.result;out.status=s::Status::observed;out.observed_mask=15;out.rejected=2;out.dropped=3;
+        for(std::size_t i=0;i<out.records.size();++i) {
+            auto& r=out.records[i];r.present=r.pending_before=r.transform_matches=true;r.pending_after=false;
+            r.before_flags=0x80000001u;r.after_flags=0x80000000u;
+            r.supplied={1,0,0,0,0,1,0,0,0,0,1,0,5,6,7,1};
+            r.com_position={1,2,3};r.origin={5,6,7};r.local_com={.1f,.2f,.3f};r.rotation=r.local_rotation={0,0,0,1};
+            r.epoch=out.armed_epoch;r.epoch.serial+=static_cast<std::uint64_t>(i+1);r.epoch.time+=static_cast<double>(i+1)*r.epoch.seconds;
+        }
+        out.observed_epoch=out.records.back().epoch;++out.observed_epoch.serial;out.observed_epoch.time+=out.observed_epoch.seconds;
+    }
     bool test_body_release_refused{};
     std::string test_body_create_refusal;
     std::uint64_t body_command_sequence{};
@@ -342,11 +376,16 @@ struct FakeGame final : Game {
         ++body_release_calls;
         if (test_body_release_refused) return "constructed unknown park";
         auto* b = body_of(owner, h); if (!b) return "owner or generation";
-        b->released = true; b->mailbox.cancel(); return {};
+        b->released = true; b->mailbox.cancel();
+        if (sync_probe.owner==owner && sync_probe.handle==h && sync_probe.result.status==dingosdk::body_sync_probe::Status::pending)
+            sync_probe.result.status=dingosdk::body_sync_probe::Status::invalidated;
+        return {};
     }
     void body_release_all(std::uint64_t owner) override {
         release_order.emplace_back(owner, "body");
         body_releases.push_back(owner);
+        if (sync_probe.owner==owner && sync_probe.result.status==dingosdk::body_sync_probe::Status::pending)
+            sync_probe.result.status=dingosdk::body_sync_probe::Status::invalidated;
         for (auto& [id, b] : owned) { (void)id; if (b.owner == owner) { b.released = true; b.mailbox.cancel(); } }
     }
     void body_producer_step(bool complete = true) {
@@ -1379,6 +1418,215 @@ void plugins_can_inspect_later_partial_failure_without_acknowledging_unmeasured_
     environment.fake.body_producer_step(false); ticks(host, environment, 1); running(host, "body-pipeline-failure", environment);
     check(environment.logged("later partial body receipt is inspectable"), environment.all());
     check(environment.fake.body_submissions == 2 && environment.fake.owned.at(1).mailbox.failed, "partial command was replayed or failed mailbox reopened");
+}
+
+void sync_probe_observations_are_opaque_bounded_and_copied() {
+    TestEnvironment environment; Host host(environment, Side::client);
+    const auto candidate = script("sync-probe", R"(
+        local P=reskate.world.physics;local v=vector.create
+        local h=assert(P.create({mass=12,inertia=v(2,3,4),position=v(1,2,3),rotation={0,0,0,1},
+            capsules={{a=v(0,0,0),b=v(0,1,0),radius=.1}}}))
+        assert(not pcall(P.begin_sync_probe,{}) and not pcall(P.begin_sync_probe,h,h))
+        local probe=assert(P.begin_sync_probe(h))
+        assert(type(probe)=="userdata" and getmetatable(probe)=="locked")
+        assert(not pcall(function() return probe.sequence end))
+        assert(not pcall(P.read,probe) and not pcall(P.poll_sync_probe,h))
+        assert(not pcall(P.poll_sync_probe,{}) and not pcall(P.poll_sync_probe,"9007199254740995"))
+        assert(not pcall(P.poll_sync_probe,probe,probe))
+        local again,why=P.begin_sync_probe(h);assert(again==nil and why:find("once in one tick"))
+        for i=1,8 do
+            local r=assert(P.poll_sync_probe(probe));assert(r.status=="pending" and not r.terminal)
+            assert(#r.records==4 and r.observed_mask==0 and not r.observed_epoch and not r.sequence)
+            assert(r.armed_epoch.serial=="9007199254740994" and not r.armed_epoch.world and not r.armed_epoch.body)
+            for _,row in r.records do assert(not row.present and not row.supplied and not row.epoch) end
+        end
+        local no,why=P.poll_sync_probe(probe);assert(no==nil and why:find("8 times in one tick"))
+        local done=false
+        reskate.on("tick",function()
+            if done then return end
+            local r=assert(P.poll_sync_probe(probe));assert(r.status=="observed" and r.terminal and r.observed_mask==15)
+            assert(r.observed_epoch.serial=="9007199254740999" and not r.observed_epoch.world and not r.observed_epoch.body)
+            assert(r.rejected==2 and r.dropped==3 and not r.sequence and not r.native_consumed)
+            local previous=r.armed_epoch.time
+            for i,row in r.records do
+                assert(row.present and row.pending_before and not row.pending_after and row.transform_matches)
+                assert(row.before_flags==2147483649 and row.after_flags==2147483648)
+                assert(#row.supplied==16 and row.supplied[13]==5 and row.com_position==v(1,2,3))
+                assert(row.origin==v(5,6,7) and row.local_com==v(.1,.2,.3))
+                assert(#row.rotation==4 and #row.local_rotation==4 and row.epoch.time>previous)
+                assert(not row.epoch.world and not row.epoch.body and not row.body and not row.sequence)
+                previous=row.epoch.time
+            end
+            r.records[1].supplied[13]=999;r.records[1].origin=v(999,999,999);r.observed_mask=0
+            local copy=assert(P.poll_sync_probe(probe));assert(copy.records[1].supplied[13]==5 and copy.observed_mask==15)
+            assert(copy.records[1].origin==v(5,6,7))
+            done=true;reskate.log("bounded passive synchronizer facts copied without authority")
+        end)
+    )", R"("world.physics","world.physics.observe")");
+    host.apply({candidate}); running(host,"sync-probe",environment);
+    check(environment.fake.sync_probe_starts==1 && environment.fake.sync_probe_polls==8,
+        "invalid arguments or per-tick budget reached probe backend");
+    environment.fake.complete_sync_probe(); ticks(host,environment,1); running(host,"sync-probe",environment);
+    check(environment.logged("bounded passive synchronizer facts copied without authority"),environment.all());
+    check(environment.fake.sync_probe_polls==10 && !environment.fake.body_submissions &&
+        !environment.fake.batch_calls && environment.teleports.empty() && environment.fake.calls.empty(),
+        "copied passive observations performed a body command, raycast or actor action");
+    const auto old=environment.fake.sync_probe;
+    dingosdk::body_sync_probe::Result denied;
+    check(!environment.fake.body_poll_sync_probe(old.owner+1,old.handle,old.sequence,denied).empty() &&
+        !environment.fake.body_poll_sync_probe(old.owner,{old.handle.generation+1,old.handle.slot},old.sequence,denied).empty() &&
+        !environment.fake.body_poll_sync_probe(old.owner,old.handle,old.sequence+1,denied).empty(),
+        "foreign owner, body or opaque sequence adopted probe authority");
+    host.apply({});
+    check(environment.fake.sync_probe.sequence==old.sequence &&
+        std::find(environment.fake.body_releases.begin(),environment.fake.body_releases.end(),old.owner)!=environment.fake.body_releases.end() &&
+        environment.fake.body_poll_sync_probe(old.owner,old.handle,old.sequence,denied).empty() &&
+        denied.status==old.result.status && denied.observed_mask==old.result.observed_mask &&
+        denied.observed_epoch==old.result.observed_epoch && denied.records[0].supplied==old.result.records[0].supplied,
+        "VM unload rewrote immutable terminal history");
+    host.apply({candidate}); running(host,"sync-probe",environment);
+    check(environment.fake.sync_probe.owner!=old.owner && environment.fake.sync_probe.sequence!=old.sequence &&
+        !environment.fake.body_poll_sync_probe(environment.fake.sync_probe.owner,old.handle,old.sequence,denied).empty(),
+        "replacement VM inherited a previous probe capability");
+}
+
+void sync_probe_permissions_client_phase_and_transport_are_enforced() {
+    TestEnvironment environment; Host host(environment, Side::client);
+    for (const auto& permission : {std::string{},std::string{R"("world.physics")"},std::string{R"("world.physics.observe")"}}) {
+        host.apply({script("probe-denied",R"(
+            for _,name in {"begin_sync_probe","poll_sync_probe"} do
+                local ok,why=pcall(reskate.world.physics[name],{})
+                assert(not ok and why:find("world.physics"),name)
+            end
+        )",permission)}); running(host,"probe-denied",environment);
+    }
+    check(!environment.fake.sync_probe_starts && !environment.fake.sync_probe_polls,"permission denial reached probe backend");
+    TestEnvironment server_environment; Host server(server_environment,Side::server);
+    server.apply({package("probe-server",{{manifest_file,manifest(R"("world.physics","world.physics.observe")","server")},{"plugin/main.lua",R"(
+        for _,name in {"begin_sync_probe","poll_sync_probe"} do
+            local ok,why=pcall(reskate.world.physics[name],{})
+            assert(not ok and why:find("client phase only"),name)
+        end
+    )"}})}); running(server,"probe-server",server_environment);
+    check(!server_environment.fake.sync_probe_starts && !server_environment.fake.sync_probe_polls,"server reached probe backend");
+
+    host.apply({script("probe-library",R"(
+        local P=reskate.world.physics;local v=vector.create
+        local h=assert(P.create({mass=12,inertia=v(2,3,4),position=v(1,2,3),rotation={0,0,0,1},
+            capsules={{a=v(0,0,0),b=v(0,1,0),radius=.1}}}))
+        local probe=assert(P.begin_sync_probe(h))
+        reskate.expose({probe=function() return probe end})
+    )",R"("world.physics","world.physics.observe")"),script("probe-foreign",R"(
+        reskate.console.command("probe-transfer","x",function()
+            local other=assert(reskate.require_plugin("probe-library"))
+            local ok=pcall(other.probe);assert(not ok,"userdata crossed plugin instance transport")
+            reskate.log("probe userdata cannot cross plugin transport")
+        end)
+    )",R"("console","world.physics","world.physics.observe")")});
+    running(host,"probe-library",environment); running(host,"probe-foreign",environment);
+    check(host.run_console("probe-transfer") && environment.logged("probe userdata cannot cross plugin transport"),environment.all());
+    check(environment.fake.sync_probe_starts==1 && !environment.fake.sync_probe_polls,
+        "cross-instance transport reached probe polling");
+}
+
+void sync_probe_binding_rejects_malformed_backend_facts() {
+    for (unsigned corruption=1;corruption<=20;++corruption) {
+        TestEnvironment environment; Host host(environment,Side::client);
+        host.apply({script("probe-malformed",R"(
+            local P=reskate.world.physics;local v=vector.create
+            local h=assert(P.create({mass=12,inertia=v(2,3,4),position=v(1,2,3),rotation={0,0,0,1},
+                capsules={{a=v(0,0,0),b=v(0,1,0),radius=.1}}}))
+            local probe=assert(P.begin_sync_probe(h))
+            reskate.on("tick",function()
+                local r,why=P.poll_sync_probe(probe)
+                assert(r==nil and why:find("invalid observations"))
+                reskate.log("malformed passive evidence rejected")
+            end)
+        )",R"("world.physics","world.physics.observe")")});
+        running(host,"probe-malformed",environment); environment.fake.complete_sync_probe();
+        auto& out=environment.fake.sync_probe.result;auto& r=out.records[0];
+        const auto nan=std::numeric_limits<float>::quiet_NaN();
+        switch(corruption) {
+        case 1: out.status=static_cast<dingosdk::body_sync_probe::Status>(255);break;
+        case 2: out.armed_epoch.time=nan;break;
+        case 3: out.observed_mask|=16;break;
+        case 4: r.present=false;break;
+        case 5: r.epoch.serial=out.armed_epoch.serial;break;
+        case 6: ++r.epoch.world;break;
+        case 7: ++r.epoch.body;break;
+        case 8: r.pending_after=true;break;
+        case 9: r.supplied[0]=nan;break;
+        case 10: r.com_position[0]=nan;break;
+        case 11: r.origin[0]=nan;break;
+        case 12: r.local_com[0]=nan;break;
+        case 13: r.rotation[0]=nan;break;
+        case 14: r.local_rotation[0]=nan;break;
+        case 15: out.observed_epoch=out.armed_epoch;break;
+        case 16: out.observed_mask=7;out.records[3].present=false;break;
+        case 17: out.observed_epoch=out.records.back().epoch;break;
+        case 18: out.armed_epoch.serial=0;break;
+        case 19: r.epoch.time=out.armed_epoch.time;break;
+        case 20: r.pending_before=false;break;
+        }
+        ticks(host,environment,1); running(host,"probe-malformed",environment);
+        check(environment.logged("malformed passive evidence rejected"),"corruption "+std::to_string(corruption)+"\n"+environment.all());
+        check(environment.fake.sync_probe_starts==1 && environment.fake.sync_probe_polls==1 && !environment.fake.body_submissions,
+            "malformed evidence issued body commands or retried admission");
+    }
+}
+
+void sync_probe_terminal_partial_facts_and_body_release_remain_distinct() {
+    namespace s=dingosdk::body_sync_probe;
+    for(const auto terminal:{s::Status::expired,s::Status::invalidated}) {
+        TestEnvironment environment;Host host(environment,Side::client);
+        host.apply({script("probe-terminal",R"(
+            local P=reskate.world.physics;local v=vector.create
+            local h=assert(P.create({mass=12,inertia=v(2,3,4),position=v(1,2,3),rotation={0,0,0,1},
+                capsules={{a=v(0,0,0),b=v(0,1,0),radius=.1}}}))
+            local probe=assert(P.begin_sync_probe(h));local done=false
+            reskate.on("tick",function()
+                if done then return end
+                local r=assert(P.poll_sync_probe(probe))
+                assert(r.terminal and (r.status=="expired" or r.status=="invalidated"))
+                assert(r.observed_mask==3 and not r.observed_epoch and not r.native_consumed)
+                assert(r.records[1].present and r.records[2].present and not r.records[3].present and not r.records[4].present)
+                assert(P.release(h));local history=assert(P.poll_sync_probe(probe))
+                assert(history.status==r.status and history.terminal and history.observed_mask==3)
+                assert(history.armed_epoch.serial==r.armed_epoch.serial and not history.observed_epoch)
+                assert(history.records[1].supplied[13]==r.records[1].supplied[13])
+                done=true;reskate.log("partial terminal facts retained without live body authority")
+            end)
+        )",R"("world.physics","world.physics.observe")")});
+        running(host,"probe-terminal",environment);environment.fake.complete_sync_probe();
+        auto& out=environment.fake.sync_probe.result;out.status=terminal;out.observed_mask=3;out.observed_epoch={};
+        out.records[2]={};out.records[3]={};
+        ticks(host,environment,1);running(host,"probe-terminal",environment);
+        check(environment.logged("partial terminal facts retained without live body authority") &&
+            environment.fake.body_release_calls==1 && environment.fake.sync_probe.sequence && !environment.fake.body_submissions,
+            "explicit release rewrote terminal diagnostic history or observation issued a body command\n"+environment.all());
+    }
+    for(const bool release_explicitly:{false,true}) {
+        TestEnvironment environment;Host host(environment,Side::client);
+        const std::string after=release_explicitly?R"(
+            assert(P.release(h));local a=assert(P.poll_sync_probe(probe));local b=assert(P.poll_sync_probe(probe))
+            assert(a.status=="invalidated" and a.terminal and a.observed_mask==0 and not a.observed_epoch)
+            assert(b.status==a.status and b.armed_epoch.serial==a.armed_epoch.serial)
+        )":"";
+        host.apply({script("probe-pending",R"(
+            local P=reskate.world.physics;local v=vector.create
+            local h=assert(P.create({mass=12,inertia=v(2,3,4),position=v(1,2,3),rotation={0,0,0,1},
+                capsules={{a=v(0,0,0),b=v(0,1,0),radius=.1}}}))
+            local probe=assert(P.begin_sync_probe(h))
+        )"+after,R"("world.physics","world.physics.observe")")});
+        running(host,"probe-pending",environment);const auto before=environment.fake.sync_probe;host.apply({});
+        s::Result history;
+        check(environment.fake.body_poll_sync_probe(before.owner,before.handle,before.sequence,history).empty() &&
+            history.status==s::Status::invalidated && !history.observed_mask &&
+            history.armed_epoch==before.result.armed_epoch && !environment.fake.body_submissions,
+            "pending probe was not canceled on explicit release or VM unload");
+        check(!environment.fake.body_poll_sync_probe(before.owner+1,before.handle,before.sequence,history).empty(),
+            "canceled probe history became another owner's authority");
+    }
 }
 
 void native_body_permission_and_client_boundary_are_enforced() {
@@ -7542,6 +7790,10 @@ int main() {
         run(plugins_pipeline_native_steps_and_select_owned_receipts);
         run(plugins_can_inspect_later_partial_failure_without_acknowledging_unmeasured_head);
         run(native_body_permission_and_client_boundary_are_enforced);
+        run(sync_probe_observations_are_opaque_bounded_and_copied);
+        run(sync_probe_permissions_client_phase_and_transport_are_enforced);
+        run(sync_probe_binding_rejects_malformed_backend_facts);
+        run(sync_probe_terminal_partial_facts_and_body_release_remain_distinct);
         run(native_actions_keep_opaque_requests_and_observed_receipts_distinct);
         run(native_actions_check_permission_side_cancellation_and_rate);
         run(native_action_quarantine_remains_visible_until_safe_acknowledgement);

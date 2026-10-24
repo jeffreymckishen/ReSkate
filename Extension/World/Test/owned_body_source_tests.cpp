@@ -52,6 +52,24 @@ MultiplayerModel model() {
 }
 }
 
+// These constructed link leaves cannot observe a native actor or lifetime.
+// Existing source tests never request a synchronizer probe. Any unexpected
+// call is counted by their existing failure checks and remains unavailable.
+namespace dingosdk::actor_control_native {
+bool observe_actor(Actor& actor) noexcept {
+    ++test_facts::forbidden_links;
+    actor = {};
+    return false;
+}
+}
+namespace dingosdk::multiplayer {
+bool entity_destruction_epoch(std::uintptr_t, std::uint64_t& epoch) noexcept {
+    ++test_facts::forbidden_links;
+    epoch = 0;
+    return false;
+}
+}
+
 // Unrelated create/hook links fail closed and are counted. Only the named
 // contact-query cases install the counted, constructed native-query ABI stand-in.
 namespace dingosdk {

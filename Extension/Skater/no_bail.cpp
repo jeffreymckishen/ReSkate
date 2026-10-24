@@ -3557,6 +3557,37 @@ bool owned_locked(std::uint64_t owner, std::uint64_t sequence, const Actor& acto
 }
 }
 
+bool observe_actor(Actor& actor) noexcept {
+    LastError error; actor = {};
+    auto& p = protection(); auto& a = p.actions;
+    if (!TryAcquireSRWLockShared(&p.lock)) return false;
+    const auto opened = GetTickCount64();
+    const bool ready = a.ready && a.world_contract && opened >= a.tick_at &&
+        opened - a.tick_at < skater_action::offer_timeout_ms;
+    const auto expected = a.published;
+    const auto generation = a.world_generation;
+    ReleaseSRWLockShared(&p.lock);
+    if (!ready || !expected.owner.entity || !expected.lifetime_epoch) return false;
+    ActionBinding first, second; std::uint64_t epoch{}, after{};
+    if (!action_capture(expected.owner, first, epoch)) return false;
+    first.world_generation = generation;
+    if (first != expected || !action_capture(expected.owner, second, after)) return false;
+    second.world_generation = generation;
+    if (first != second || epoch != after || !TryAcquireSRWLockShared(&p.lock)) return false;
+    const bool lifetime_current = multiplayer::entity_destruction_epoch(p.base, after) && after == epoch;
+    const auto finished = GetTickCount64();
+    const bool unchanged = a.ready && a.world_contract && a.world_generation == generation &&
+        a.published == expected && finished >= opened && finished >= a.tick_at &&
+        finished - a.tick_at < skater_action::offer_timeout_ms &&
+        lifetime_current;
+    ReleaseSRWLockShared(&p.lock);
+    if (!unchanged) return false;
+    // No Arbiter reservation, controls provider or watched-entity mutation.
+    // This identity is sampled diagnostic evidence, never an input lease.
+    actor = captured_actor(first, {});
+    return true;
+}
+
 bool acquire(std::uint64_t owner, std::uint64_t sequence, Admission admission,
     Actor& actor, Reason& reason, Continuity continuity) noexcept {
     LastError error; actor = {}; reason = Reason::none;

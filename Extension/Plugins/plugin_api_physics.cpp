@@ -12,9 +12,12 @@ namespace {
 using namespace owned_body;
 constexpr char handle_type[] = "reskate.world.physics.body";
 constexpr char epoch_type[] = "reskate.world.physics.epoch";
+constexpr char sync_probe_type[] = "reskate.world.physics.sync_probe";
 constexpr char hit_body_type[] = "reskate.world.physics.hit_body";
 struct BodyValue { std::uint64_t owner{}; Handle handle{}; };
 struct EpochValue { std::uint64_t owner{}; Handle handle{}; Sample sample{}; };
+// The numeric sequence is private authority, inseparable from this VM and body.
+struct SyncProbeValue { std::uint64_t owner{}; Handle handle{}; std::uint64_t sequence{}; };
 // Equality only inside one returned batch. This is not a usable owned-body handle,
 // native identity, feature identity, or claim about the body's motion.
 struct HitBodyValue { std::uint64_t owner{}, batch{}; std::uint32_t ordinal{}; };
@@ -93,6 +96,51 @@ void push_sample(lua_State* L, const BodyValue& b, const Sample& sample) {
     for (int i = 0; i < 4; ++i) { lua_pushnumber(L, sample.rotation[static_cast<std::size_t>(i)]); lua_rawseti(L, -2, i + 1); }
     lua_setfield(L, -2, "rotation");
 }
+const char* sync_status(body_sync_probe::Status status) noexcept {
+    switch (status) {
+    case body_sync_probe::Status::pending: return "pending";
+    case body_sync_probe::Status::observed: return "observed";
+    case body_sync_probe::Status::expired: return "expired";
+    case body_sync_probe::Status::invalidated: return "invalidated";
+    }
+    return nullptr;
+}
+bool sync_epoch(const Epoch& e) noexcept {
+    return e.world && e.body && e.serial && std::isfinite(e.time) && e.time >= 0 && calibrated(e.seconds);
+}
+template<std::size_t N> bool finite_values(const std::array<float, N>& values) noexcept {
+    for (float v : values) if (!std::isfinite(v)) return false;
+    return true;
+}
+bool sync_result(const body_sync_probe::Result& out) noexcept {
+    if (!sync_status(out.status) || !sync_epoch(out.armed_epoch) || (out.observed_mask & ~15u)) return false;
+    for (std::size_t i = 0; i < out.records.size(); ++i) {
+        const auto& r = out.records[i];
+        if (r.present != ((out.observed_mask & (1u << i)) != 0)) return false;
+        if (!r.present) continue;
+        if (!sync_epoch(r.epoch) || r.epoch.world != out.armed_epoch.world || r.epoch.body != out.armed_epoch.body ||
+            r.epoch.serial <= out.armed_epoch.serial || r.epoch.time <= out.armed_epoch.time ||
+            r.pending_before != ((r.before_flags & 1u) != 0) || r.pending_after != ((r.after_flags & 1u) != 0) ||
+            !finite_values(r.supplied) || !finite_values(r.com_position) || !finite_values(r.origin) ||
+            !finite_values(r.local_com) || !finite_values(r.rotation) || !finite_values(r.local_rotation)) return false;
+    }
+    if (out.status == body_sync_probe::Status::observed) {
+        if (out.observed_mask != 15 || !sync_epoch(out.observed_epoch) ||
+            out.observed_epoch.world != out.armed_epoch.world || out.observed_epoch.body != out.armed_epoch.body) return false;
+        for (const auto& r : out.records) if (out.observed_epoch.serial <= r.epoch.serial || out.observed_epoch.time <= r.epoch.time) return false;
+    }
+    return true;
+}
+void push_sync_epoch(lua_State* L, const Epoch& e) {
+    lua_createtable(L, 0, 3);
+    text_number(L, e.serial); lua_setfield(L, -2, "serial");
+    lua_pushnumber(L, e.time); lua_setfield(L, -2, "time");
+    lua_pushnumber(L, e.seconds); lua_setfield(L, -2, "seconds");
+}
+template<std::size_t N> void push_values(lua_State* L, const std::array<float, N>& values) {
+    lua_createtable(L, static_cast<int>(N), 0);
+    for (std::size_t i = 0; i < N; ++i) { lua_pushnumber(L, values[i]); lua_rawseti(L, -2, static_cast<int>(i + 1)); }
+}
 }
 
 struct PhysicsApi {
@@ -127,6 +175,66 @@ struct PhysicsApi {
         const auto why = p.services_.game().body_read(p.instance(), b.handle, sample);
         if (!why.empty()) return fail(L, why);
         push_sample(L, b, sample); return 1;
+    }
+    static Plugin& sync_plugin(lua_State* L) {
+        auto& p = plugin(L);
+        need(L, p, "world.physics.observe", "reskate.world.physics synchronizer observation");
+        return p;
+    }
+    static int begin_sync_probe(lua_State* L) {
+        auto& p = sync_plugin(L);
+        if (lua_gettop(L) != 1) luaL_error(L, "begin_sync_probe takes one owned body");
+        const auto b = body(L, p, 1);
+        if (p.sync_probe_starts_ >= 1) return fail(L, "asked to begin a synchronizer probe more than once in one tick");
+        ++p.sync_probe_starts_;
+        // Allocate before admission so a Lua allocation failure leaves no orphan probe.
+        auto* probe = new (lua_newuserdata(L, sizeof(SyncProbeValue))) SyncProbeValue{p.instance(), b.handle, 0};
+        luaL_getmetatable(L, sync_probe_type); lua_setmetatable(L, -2);
+        const auto why = p.services_.game().body_begin_sync_probe(p.instance(), b.handle, probe->sequence);
+        if (!why.empty()) { lua_pop(L, 1); return fail(L, why); }
+        if (!probe->sequence) { lua_pop(L, 1); return fail(L, "synchronizer probe did not return owned authority"); }
+        return 1;
+    }
+    static int poll_sync_probe(lua_State* L) {
+        auto& p = sync_plugin(L);
+        if (lua_gettop(L) != 1) luaL_error(L, "poll_sync_probe takes one opaque probe");
+        const auto probe = *static_cast<const SyncProbeValue*>(luaL_checkudata(L, 1, sync_probe_type));
+        if (probe.owner != p.instance()) luaL_error(L, "synchronizer probe belongs to another plugin instance");
+        if (p.sync_probe_polls_ >= 8) return fail(L, "asked to poll synchronizer probes more than 8 times in one tick");
+        ++p.sync_probe_polls_;
+        body_sync_probe::Result out;
+        const auto why = p.services_.game().body_poll_sync_probe(p.instance(), probe.handle, probe.sequence, out);
+        if (!why.empty()) return fail(L, why);
+        if (!sync_result(out)) return fail(L, "synchronizer probe returned invalid observations");
+        lua_createtable(L, 0, 8);
+        lua_pushstring(L, sync_status(out.status)); lua_setfield(L, -2, "status");
+        lua_pushboolean(L, out.status != body_sync_probe::Status::pending); lua_setfield(L, -2, "terminal");
+        push_sync_epoch(L, out.armed_epoch); lua_setfield(L, -2, "armed_epoch");
+        if (out.status == body_sync_probe::Status::observed) { push_sync_epoch(L, out.observed_epoch); lua_setfield(L, -2, "observed_epoch"); }
+        lua_pushnumber(L, out.observed_mask); lua_setfield(L, -2, "observed_mask");
+        lua_pushnumber(L, out.rejected); lua_setfield(L, -2, "rejected");
+        lua_pushnumber(L, out.dropped); lua_setfield(L, -2, "dropped");
+        lua_createtable(L, 4, 0);
+        for (std::size_t i = 0; i < out.records.size(); ++i) {
+            const auto& r = out.records[i]; lua_createtable(L, 0, r.present ? 13 : 1);
+            lua_pushboolean(L, r.present); lua_setfield(L, -2, "present");
+            if (r.present) {
+                lua_pushboolean(L, r.pending_before); lua_setfield(L, -2, "pending_before");
+                lua_pushboolean(L, r.pending_after); lua_setfield(L, -2, "pending_after");
+                lua_pushboolean(L, r.transform_matches); lua_setfield(L, -2, "transform_matches");
+                lua_pushnumber(L, r.before_flags); lua_setfield(L, -2, "before_flags");
+                lua_pushnumber(L, r.after_flags); lua_setfield(L, -2, "after_flags");
+                push_values(L, r.supplied); lua_setfield(L, -2, "supplied");
+                push_position(L, r.com_position); lua_setfield(L, -2, "com_position");
+                push_position(L, r.origin); lua_setfield(L, -2, "origin");
+                push_position(L, r.local_com); lua_setfield(L, -2, "local_com");
+                push_values(L, r.rotation); lua_setfield(L, -2, "rotation");
+                push_values(L, r.local_rotation); lua_setfield(L, -2, "local_rotation");
+                push_sync_epoch(L, r.epoch); lua_setfield(L, -2, "epoch");
+            }
+            lua_rawseti(L, -2, static_cast<int>(i + 1));
+        }
+        lua_setfield(L, -2, "records"); return 1;
     }
     static int submit(lua_State* L) {
         auto& p = plugin(L); const auto b = body(L, p, 1);
@@ -257,12 +365,13 @@ struct PhysicsApi {
     }
 };
 void install_physics_api(Plugin&, lua_State* L) {
-    metatable(L, handle_type); metatable(L, epoch_type);
+    metatable(L, handle_type); metatable(L, epoch_type); metatable(L, sync_probe_type);
     luaL_newmetatable(L, hit_body_type); lua_pushstring(L, "locked"); lua_setfield(L, -2, "__metatable");
     lua_pushcfunction(L, hit_body_equal, "hit body equality"); lua_setfield(L, -2, "__eq"); lua_setreadonly(L, -1, true); lua_pop(L, 1);
     lua_getfield(L, -1, "world"); lua_setreadonly(L, -1, false);
     add_functions(L, "physics", {{"create", PhysicsApi::create}, {"read", PhysicsApi::read}, {"submit", PhysicsApi::submit},
-        {"receipt", PhysicsApi::receipt}, {"acknowledge", PhysicsApi::acknowledge}, {"release", PhysicsApi::release}, {"probe_batch", PhysicsApi::probe_batch}});
+        {"receipt", PhysicsApi::receipt}, {"acknowledge", PhysicsApi::acknowledge}, {"release", PhysicsApi::release}, {"probe_batch", PhysicsApi::probe_batch},
+        {"begin_sync_probe", PhysicsApi::begin_sync_probe}, {"poll_sync_probe", PhysicsApi::poll_sync_probe}});
     lua_setreadonly(L, -1, true); lua_pop(L, 1);
 }
 } // namespace dingosdk::plugins

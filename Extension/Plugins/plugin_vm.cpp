@@ -387,6 +387,7 @@ void Plugin::tick(double dt_ms) {
     ++tick_number_;
     raycasts_ = 0;
     native_casts_ = {};
+    sync_probe_starts_ = sync_probe_polls_ = 0;
     const double now = services_.now_ms();
     std::vector<int> due;
     for (const auto& [id, timer] : timers_)

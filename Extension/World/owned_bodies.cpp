@@ -8,9 +8,12 @@
 #include "Engine/Game/Build/20260929/remote_collision.h"
 #include "Engine/Game/Build/20260929/rigid_bodies.h"
 #include "Engine/Game/Build/20260929/skater_state.h"
+#include "Engine/Game/Build/20260929/sync_probe.h"
 #include "Engine/Game/World/body_hit_identity.h"
 #include "Engine/Game/World/body_contact_read.h"
 #include "Extension/Multiplayer/Session/session.h"
+#include "Extension/Multiplayer/Remote/native_skater.h"
+#include "Extension/Skater/actor_control.h"
 #include "Extension/Skater/no_bail.h"
 #include "Extension/Profile/local_profile_runtime.h"
 #include <Windows.h>
@@ -26,6 +29,7 @@ namespace r = addr::rigid_bodies;
 namespace c = addr::remote_collision;
 namespace e = addr::engine;
 namespace k = addr::skater_state;
+namespace n = addr::sync_probe;
 using V4 = std::array<float, 4>;
 using NativeHandle = body_hit_identity::NativeHandle;
 static_assert(sizeof(NativeHandle) == 16);
@@ -81,6 +85,26 @@ struct Slot {
     Sample latest{};
     Mailbox mailbox{};
 };
+// One finite diagnostic uses existing opaque owned-body ownership. It is not
+// a second actor owner, follow lease or reusable native body allocation.
+struct SyncProbe {
+    std::uint64_t owner{}, sequence{}, world_generation{}, opened_ms{}, deadline{};
+    Handle handle{};
+    actor_control_native::Actor actor{};
+    std::uintptr_t packets{};
+    body_sync_probe::Result result{};
+    std::array<NativeHandle, 4> bodies{};
+};
+struct SyncBefore {
+    std::uint64_t owner{}, sequence{}, world_generation{}, deadline{};
+    Handle handle{};
+    actor_control_native::Actor actor{};
+    NativeHandle body{};
+    std::uintptr_t incoming{}, wrapper{}, packets{};
+    std::size_t index{};
+    body_sync_probe::Record record{};
+    bool ready{};
+};
 struct Service {
     SRWLOCK lock = SRWLOCK_INIT;
     Api api{};
@@ -92,6 +116,12 @@ struct Service {
     DWORD thread{};
     bool eligible{};
     std::uint64_t generation{}, world_generation{}, tick_at{}, command_sequence{};
+    SyncProbe probe{};
+    std::uint32_t probe_generation{};
+    // High32 is the immutable probe generation, low32 a bounded loss count.
+    // Old callbacks cannot attribute a loss to a replacement probe.
+    std::atomic<std::uint64_t> probe_losses{};
+    std::atomic<std::uint32_t> probe_live{};
 };
 // Static fixed storage exists before any hook can run. Physics callbacks never construct
 // a function-local singleton, allocate, format text, call Lua or wait for a lock.
@@ -344,6 +374,11 @@ bool park(Slot& s) noexcept {
         vector(service.api.angular, s.body, zero.data()) && body_current(s) && set_int(service.api.motion, s.body, 2) && body_current(s) && pending_zero(s);
 }
 void retire(Slot& s, bool may_park) noexcept {
+    if (service.probe.owner == s.owner && service.probe.handle == s.handle &&
+        service.probe.result.status == body_sync_probe::Status::pending) {
+        service.probe.result.status = body_sync_probe::Status::invalidated;
+        service.probe_live.store(0, std::memory_order_release);
+    }
     s.mailbox.cancel();
     const bool parked = may_park && park(s);
     s.active = false; s.retained = true; s.quarantined = s.allocation.quarantine(parked); s.latest = {};
@@ -385,11 +420,7 @@ void produce(NativeHandle* incoming_pointer, std::uintptr_t wrapper) noexcept {
     }
     ReleaseSRWLockExclusive(&service.lock);
 }
-std::uintptr_t synchronize_hook(NativeHandle* incoming, std::uintptr_t wrapper) {
-    const auto original = service.original.load(std::memory_order_acquire);
-    const auto result = original(incoming, wrapper); LastError error;
-    produce(incoming, wrapper); return result;
-}
+std::uintptr_t synchronize_hook(NativeHandle* incoming, std::uintptr_t wrapper);
 bool initialize() noexcept {
     if (service.hook_attempted) return service.hooked.load(std::memory_order_acquire);
     service.hook_attempted = true;
@@ -528,6 +559,12 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
     {
         Locked lock(service.lock);
         service.base = base; service.client = client; service.tick_at = GetTickCount64(); service.eligible = ready;
+        if (service.probe.sequence && service.probe.result.status == body_sync_probe::Status::pending && service.tick_at >= service.probe.deadline) {
+            const auto losses = service.probe_losses.load(std::memory_order_acquire);
+            if ((losses >> 32) == service.probe.sequence) service.probe.result.dropped = static_cast<std::uint32_t>(losses);
+            service.probe.result.status = body_sync_probe::Status::expired;
+            service.probe_live.store(0, std::memory_order_release);
+        }
         if (!eligible()) {
             service.initialization_requested = false;
             for (auto& s : service.slots) if (s.attempted && !s.retained) retire(s, false);
@@ -684,6 +721,8 @@ bool try_borrow_source(std::uint64_t owner, const MeasuredSource& source, Source
     ReleaseSRWLockShared(&service.lock);
     return false;
 }
+
+#include "owned_body_sync_probe.inl"
 
 body_query::Result probe_batch(std::uint64_t owner, const Handle& handle, const body_query::Request& request, unsigned allowance) noexcept {
     LastError error;
@@ -842,6 +881,10 @@ void release_all(std::uint64_t owner) noexcept {
     LastError error;
     if (GetCurrentThreadId() != service.thread) return;
     Locked lock(service.lock);
+    if (owner && service.probe.owner == owner && service.probe.result.status == body_sync_probe::Status::pending) {
+        service.probe.result.status = body_sync_probe::Status::invalidated;
+        service.probe_live.store(0, std::memory_order_release);
+    }
     for (auto& s : service.slots) if (s.attempted && s.owner == owner && !s.retained) retire(s, eligible() && fresh(s));
 }
 } // namespace dingosdk::owned_bodies

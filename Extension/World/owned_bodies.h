@@ -1,5 +1,6 @@
 #pragma once
 #include "Engine/Game/World/body_query.h"
+#include "Engine/Game/World/sync_probe.h"
 #include <cstdint>
 #include <string>
 
@@ -18,6 +19,12 @@ std::string receipt(std::uint64_t owner, const owned_body::Handle&, std::uint64_
 std::string acknowledge(std::uint64_t owner, const owned_body::Handle&, std::uint64_t sequence) noexcept;
 std::string release(std::uint64_t owner, const owned_body::Handle&) noexcept;
 void release_all(std::uint64_t owner) noexcept;
+
+// Client-thread bounded diagnostic over the existing native synchronizer.
+// Sequence stays behind opaque plugin userdata, paired with exact owner/body.
+// It never modifies a target, acquires a follow claim or satisfies a barrier.
+std::string begin_sync_probe(std::uint64_t owner, const owned_body::Handle&, std::uint64_t& sequence);
+std::string poll_sync_probe(std::uint64_t owner, const owned_body::Handle&, std::uint64_t sequence, body_sync_probe::Result&);
 
 // Private native-service bridge. These values never cross the Lua API.
 // The source owns a copy of the original measured sample, not a live pose.

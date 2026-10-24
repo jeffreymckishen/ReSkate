@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstring>
 #include <format>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -46,6 +47,7 @@ struct Wanted {
 };
 struct Live {
     std::uintptr_t entity{}, owner{}, context{};
+    std::uint64_t witness_owner{}, witness_instance{};
     std::string asset;
     Matrix matrix{};
     std::uint64_t moved{};
@@ -71,8 +73,71 @@ struct State {
     bool verified{};
     std::string error, waiting;
     std::map<Key, std::uint64_t> lost; // client thread: attached objects whose joint is not known, since when
+    LifetimeWitnessSnapshot witness;
+    std::size_t witness_first{};
+    std::uint64_t witness_instance{};
+    std::atomic<bool> witness_recording_failed{};
 };
 State& state() { static auto* s = new State; return *s; }
+
+// Only fixed SDK metadata is recorded. These labels cannot authorize native lifetime or cleanup.
+void witness_increment(std::uint64_t& value, State& s) noexcept {
+    if (value == (std::numeric_limits<std::uint64_t>::max)()) s.witness.counter_saturated = true;
+    else ++value;
+}
+std::uint64_t witness_owner(std::string_view owner) noexcept {
+    std::uint64_t hash = 14695981039346656037ull;
+    for (const char byte : owner) hash = (hash ^ static_cast<unsigned char>(byte)) * 1099511628211ull;
+    return hash;
+}
+LifetimeWitnessEvent witness_event(const Key& key, const Live& l, LifetimeWitnessKind kind,
+                                  LifetimeWitnessReason reason = LifetimeWitnessReason::none) noexcept {
+    LifetimeWitnessEvent event;
+    event.owner_hash = l.witness_owner;
+    event.instance = l.witness_instance;
+    event.id = key.second;
+    event.kind = kind;
+    event.reason = reason;
+    return event;
+}
+// Caller holds the existing World lock. No allocation, native read, clock read or callback here.
+std::uint64_t witness_append_locked(State& s, LifetimeWitnessEvent event) noexcept {
+    auto& w = s.witness;
+    if (w.latest_sequence == (std::numeric_limits<std::uint64_t>::max)()) {
+        w.sequence_exhausted = true;
+        return 0;
+    }
+    event.sequence = ++w.latest_sequence;
+    std::size_t slot{};
+    if (w.count < lifetime_witness_capacity) {
+        slot = (s.witness_first + w.count) % lifetime_witness_capacity;
+        ++w.count;
+    } else {
+        slot = s.witness_first;
+        s.witness_first = (s.witness_first + 1) % lifetime_witness_capacity;
+        witness_increment(w.overwritten, s);
+    }
+    w.events[slot] = event;
+    return event.sequence;
+}
+std::uint64_t witness_append(LifetimeWitnessEvent event) noexcept {
+    const auto error = GetLastError();
+    auto& s = state();
+    std::uint64_t sequence{};
+    try {
+        std::lock_guard lock(s.mutex);
+        sequence = witness_append_locked(s, event);
+    } catch (...) {
+        s.witness_recording_failed.store(true, std::memory_order_relaxed);
+    }
+    SetLastError(error);
+    return sequence;
+}
+void witness_epoch(std::uintptr_t base, std::uint64_t& value, bool& available) noexcept {
+    available = multiplayer::entity_destruction_epoch(base, value);
+    if (!available) value = 0;
+}
+
 std::atomic<JointSource> joint_source{};
 Physics& physics() { static auto* value = new Physics; return *value; }
 std::mutex test_mutex;
@@ -199,10 +264,23 @@ Live create(std::uintptr_t base, std::uintptr_t parent, std::uintptr_t asset, co
 void move(std::uintptr_t base, const Live& l, const Matrix& matrix) {
     reinterpret_cast<void (*)(std::uintptr_t, const void*, std::uint8_t, std::uint8_t)>(base + e::move_spatial_entity)(l.entity, matrix.data(), 1, 1);
 }
-void destroy(std::uintptr_t base, const Live& l) {
+void destroy(std::uintptr_t base, const Key& key, const Live& l, LifetimeWitnessReason reason) {
     // No lock held: the shared destroy hook calls entity_destroyed back.
-    if (ptr(l.entity, 0x20) == l.context && ptr(l.entity, 0x40) == l.owner)
-        reinterpret_cast<void (*)(std::uintptr_t, std::uintptr_t)>(base + e::destroy_entity)(l.entity, l.owner);
+    const bool eligible = ptr(l.entity, 0x20) == l.context && ptr(l.entity, 0x40) == l.owner;
+    const auto error = GetLastError();
+    auto event = witness_event(key, l, eligible ? LifetimeWitnessKind::destroy_attempted : LifetimeWitnessKind::destroy_refused, reason);
+    witness_epoch(base, event.epoch_before, event.epoch_before_available);
+    const auto operation = witness_append(event);
+    SetLastError(error);
+    if (!eligible) return;
+    // Attempted means about to call, not an acknowledgement of native entry or completion.
+    reinterpret_cast<void (*)(std::uintptr_t, std::uintptr_t)>(base + e::destroy_entity)(l.entity, l.owner);
+    const auto returned_error = GetLastError();
+    event.kind = LifetimeWitnessKind::destroy_returned;
+    event.operation = operation;
+    witness_epoch(base, event.epoch_after, event.epoch_after_available);
+    witness_append(event);
+    SetLastError(returned_error);
 }
 void destroy_all(std::uintptr_t base) {
     auto& s = state();
@@ -211,7 +289,7 @@ void destroy_all(std::uintptr_t base) {
         std::lock_guard lock(s.mutex);
         old.swap(s.live);
     }
-    for (const auto& [key, l] : old) destroy(base, l);
+    for (const auto& [key, l] : old) destroy(base, key, l, LifetimeWitnessReason::level_transition);
 }
 // A blueprint by name: in a domain already known (validated each time), else looked for in every
 // loaded domain at most once a second. UI and world bundles live in child domains, so the skater's
@@ -398,12 +476,28 @@ std::string set(std::string_view owner, std::uint32_t id, std::string asset, con
 void remove(std::string_view owner, std::uint32_t id) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
-    s.wanted.erase({std::string(owner), id});
+    const Key key{std::string(owner), id};
+    if (s.wanted.erase(key)) {
+        LifetimeWitnessEvent event;
+        event.owner_hash = witness_owner(owner);
+        event.id = id;
+        event.kind = LifetimeWitnessKind::wanted_remove;
+        witness_append_locked(s, event); // Wanted changed; no native Destroy has happened here.
+    }
 }
 void clear(std::string_view owner) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
-    std::erase_if(s.wanted, [&](const auto& w) { return w.first.first == owner; });
+    const auto owner_hash = witness_owner(owner);
+    std::erase_if(s.wanted, [&](const auto& w) {
+        if (w.first.first != owner) return false;
+        LifetimeWitnessEvent event;
+        event.owner_hash = owner_hash;
+        event.id = w.first.second;
+        event.kind = LifetimeWitnessKind::wanted_clear;
+        witness_append_locked(s, event); // Request only; Live is retired by a later eligible tick.
+        return true;
+    });
 }
 Status status(std::string_view owner, std::uint32_t id) {
     auto& s = state();
@@ -441,10 +535,38 @@ std::vector<std::uintptr_t> live_entities() {
     return out;
 }
 
+LifetimeWitnessSnapshot lifetime_witness_snapshot() noexcept {
+    const auto error = GetLastError();
+    LifetimeWitnessSnapshot out;
+    try {
+        auto& s = state();
+        std::lock_guard lock(s.mutex);
+        out = s.witness;
+        for (std::size_t i = 0; i < out.count; ++i)
+            out.events[i] = s.witness.events[(s.witness_first + i) % lifetime_witness_capacity];
+        out.recording_failed = s.witness_recording_failed.load(std::memory_order_relaxed);
+        out.available = true;
+    } catch (...) {
+        out.recording_failed = true;
+    }
+    SetLastError(error);
+    return out;
+}
+
 void entity_destroyed(std::uintptr_t entity) noexcept {
     auto& s = state();
     std::lock_guard lock(s.mutex);
-    std::erase_if(s.live, [&](const auto& l) { return l.second.entity == entity; });
+    witness_increment(s.witness.notifications, s);
+    bool matched{};
+    std::erase_if(s.live, [&](const auto& l) {
+        if (l.second.entity != entity) return false;
+        matched = true;
+        witness_append_locked(s, witness_event(l.first, l.second, LifetimeWitnessKind::destroy_notification));
+        return true;
+    });
+    // No new registry walk or game-memory/epoch read in this callback. destroy_all has already
+    // swapped Live out, and direct trampoline paths need not notify us at all: unmatched is unknown.
+    if (!matched) witness_increment(s.witness.unmatched_notifications, s);
 }
 
 namespace {
@@ -517,6 +639,8 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
         if (s.context && s.context != context) {
             // The old client context took its entities with it.
             std::lock_guard lock(s.mutex);
+            for (const auto& [key, l] : s.live)
+                witness_append_locked(s, witness_event(key, l, LifetimeWitnessKind::context_clear, LifetimeWitnessReason::context_changed));
             s.live.clear();
             s.assets.clear();
             s.context = 0;
@@ -575,11 +699,17 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
         }
         std::erase_if(s.lost, [&](const auto& l) { return !wanted.contains(l.first); });
         // Gone or hidden, or a different blueprint now: taken away.
-        std::vector<Key> drop;
+        struct Drop { Key key; LifetimeWitnessReason reason; };
+        std::vector<Drop> drop;
         for (const auto& [key, l] : live) {
             const auto w = wanted.find(key);
             const bool gone = w != wanted.end() && s.lost.contains(key) && now - s.lost[key] > 1000;
-            if (w == wanted.end() || w->second.hidden || w->second.asset != l.asset || gone || !intact(l)) drop.push_back(key);
+            // Preserve the original short-circuit reads; this is the first selected reason only.
+            if (w == wanted.end()) drop.push_back({key, LifetimeWitnessReason::wanted_missing});
+            else if (w->second.hidden) drop.push_back({key, LifetimeWitnessReason::hidden});
+            else if (w->second.asset != l.asset) drop.push_back({key, LifetimeWitnessReason::asset_changed});
+            else if (gone) drop.push_back({key, LifetimeWitnessReason::attachment_lost});
+            else if (!intact(l)) drop.push_back({key, LifetimeWitnessReason::integrity_failed});
         }
         // A blueprint whose bundle streamed out: its objects come back once it resolves again.
         unsigned lookups = 4;
@@ -589,11 +719,13 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
             resolved[w.asset] = resolve(base, s.assets[w.asset], w.asset, now, lookups);
         }
         for (const auto& [key, l] : live)
-            if (const auto r = resolved.find(l.asset); r != resolved.end() && !r->second && std::find(drop.begin(), drop.end(), key) == drop.end())
-                drop.push_back(key);
-        for (const auto& key : drop) {
+            if (const auto r = resolved.find(l.asset); r != resolved.end() && !r->second &&
+                std::find_if(drop.begin(), drop.end(), [&](const auto& item) { return item.key == key; }) == drop.end())
+                drop.push_back({key, LifetimeWitnessReason::asset_unresolved});
+        for (const auto& [key, reason] : drop) {
             const auto l = live.find(key);
-            destroy(base, l->second);
+            witness_append(witness_event(key, l->second, LifetimeWitnessKind::drop_selected, reason));
+            destroy(base, key, l->second, reason);
             live.erase(l);
             std::lock_guard lock(s.mutex);
             s.live.erase(key);
@@ -625,6 +757,10 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
             made.made = now;
             ++created;
             std::lock_guard lock(s.mutex);
+            made.witness_owner = witness_owner(key.first);
+            if (s.witness_instance == (std::numeric_limits<std::uint64_t>::max)()) s.witness.instance_exhausted = true;
+            else made.witness_instance = ++s.witness_instance;
+            witness_append_locked(s, witness_event(key, made, LifetimeWitnessKind::created));
             s.live[key] = std::move(made);
         }
         if (created) note(s, std::format("{} object(s) created", created));

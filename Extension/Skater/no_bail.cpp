@@ -428,13 +428,33 @@ void action_destroyed(std::uintptr_t entity) noexcept {
     if (entity && actions.watched_entity.load(std::memory_order_acquire) == entity)
         actions.actor_destruction.fetch_add(1, std::memory_order_release);
 }
+void action_snapshot_facts(const ActionBinding& expected, const ActionBinding& captured,
+    actor_control_native::InspectionFacts* facts) noexcept {
+    if (!facts) return;
+    using Check = actor_control_native::InspectionCheck;
+    const auto compared = [](bool equal) noexcept { return equal ? Check::equal : Check::different; };
+    auto& snapshot = facts->opening_snapshot;
+    // Compare values already captured by the original path. This does not
+    // evaluate, repeat or qualify any later guard or perform native reads.
+    snapshot.owner = compared(captured.owner == expected.owner);
+    snapshot.game_context = compared(captured.game_context == expected.game_context);
+    snapshot.world = compared(captured.world == expected.world);
+    snapshot.world_state = compared(captured.world_state == expected.world_state);
+    snapshot.generation = compared(captured.world_generation == expected.world_generation);
+    snapshot.global_epoch = compared(captured.lifetime_epoch == expected.lifetime_epoch);
+    snapshot.actor_epoch = compared(captured.actor_epoch == expected.actor_epoch);
+    // These are SDK-owned destruction counters from those same bindings. No
+    // additional counter/native read or lifetime decision is made here.
+    snapshot.global_epoch_values = {expected.lifetime_epoch, captured.lifetime_epoch, true};
+}
 // Resolve outside the SDK lock and bracket the complete capture with the
 // shared destruction epoch. These endpoint fences are not an engine mutex.
 skater_action::Reason action_validate(const ActionBinding& expected, ActionBinding& live,
                                      skater_action::State& state, std::uint64_t& epoch,
                                      bool nonblocking = false,
                                      actor_control_native::Observation* observation = nullptr,
-                                     actor_context::Continuity continuity = actor_context::Continuity::native_lifetime) noexcept {
+                                      actor_context::Continuity continuity = actor_context::Continuity::native_lifetime,
+                                      actor_control_native::InspectionFacts* facts = nullptr) noexcept {
     teleport_observation::Result opening_teleport;
     if (const auto issue = action_controls(observation, &opening_teleport); issue != skater_action::Reason::none) return issue;
     auto& p = protection();
@@ -453,6 +473,7 @@ skater_action::Reason action_validate(const ActionBinding& expected, ActionBindi
         !action_capture(expected.owner, live, epoch))
         return action_check(observation, actor_observation::Phase::capture, skater_action::Reason::actor_changed);
     live.world_generation = generation;
+    action_snapshot_facts(expected, live, facts);
     if (live.actor_epoch != expected.actor_epoch)
         return action_check(observation, actor_observation::Phase::actor_epoch, skater_action::Reason::actor_destroyed);
     if (continuity == actor_context::Continuity::native_lifetime) {
@@ -3997,7 +4018,7 @@ bool inspect(std::uint64_t owner, std::uint64_t sequence, const Actor& expected,
     const auto binding = actor_binding(expected);
     ActionBinding first, second; skater_action::State observed; std::uint64_t epoch{}, after{};
     if (!cleanup) {
-        reason = action_validate(binding, first, observed, epoch, true, &observation, expected.continuity);
+        reason = action_validate(binding, first, observed, epoch, true, &observation, expected.continuity, &facts);
         if (reason != Reason::none) return false;
     } else {
         // Cancellation, an open menu, lost focus or a new protection lease
@@ -4008,6 +4029,7 @@ bool inspect(std::uint64_t owner, std::uint64_t sequence, const Actor& expected,
             reason = action_check(&observation, actor_observation::Phase::capture, Reason::actor_changed); return false;
         }
         first.world_generation = generation;
+        action_snapshot_facts(binding, first, &facts);
         const auto native_changed = [&]() noexcept {
             const bool changed = first != binding;
             (void)noted(facts.binding, !changed);

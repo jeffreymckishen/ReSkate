@@ -80,6 +80,39 @@ std::size_t count(std::string_view owner);
 // The native entities of every owner's objects in the world now (client thread).
 std::vector<std::uintptr_t> live_entities();
 
+// Internal diagnostics only. These observations grant no actor/body lifetime or cleanup authority.
+// owner_hash can collide; instance is a process-local SDK allocation label, never a native handle.
+enum class LifetimeWitnessKind : std::uint8_t {
+    created, wanted_remove, wanted_clear, context_clear, drop_selected,
+    destroy_refused, destroy_attempted, destroy_returned, destroy_notification
+};
+enum class LifetimeWitnessReason : std::uint8_t {
+    none, wanted_missing, hidden, asset_changed, attachment_lost, integrity_failed,
+    asset_unresolved, context_changed, level_transition
+};
+struct LifetimeWitnessEvent {
+    std::uint64_t sequence{}, owner_hash{}, instance{}, operation{};
+    std::uint64_t epoch_before{}, epoch_after{};
+    std::uint32_t id{};
+    LifetimeWitnessKind kind{};
+    LifetimeWitnessReason reason{};
+    bool epoch_before_available{}, epoch_after_available{};
+};
+inline constexpr std::size_t lifetime_witness_capacity = 64;
+struct LifetimeWitnessSnapshot {
+    // Oldest to newest; only [0, count) is populated. Missing/overwritten records stay unknown.
+    std::array<LifetimeWitnessEvent, lifetime_witness_capacity> events{};
+    std::uint64_t latest_sequence{}, overwritten{}, notifications{}, unmatched_notifications{};
+    std::uint32_t count{};
+    bool available{}, recording_failed{}, sequence_exhausted{}, instance_exhausted{}, counter_saturated{};
+    // Direct original-Destroy trampoline calls and other native destruction paths are not covered.
+    bool untraced_destroy_paths{true};
+};
+// Copy after releasing actor/Service locks. Takes the existing World lock; no native reads/calls.
+// A pre-call attempted event does not prove native entry. Notification is before original Destroy;
+// a returned event proves only that this SDK call returned normally, not destruction/park completion.
+LifetimeWitnessSnapshot lifetime_witness_snapshot() noexcept;
+
 // Runtime glue (client_tick.cpp, runtime_init.cpp, native_skater.cpp's destroy hook).
 void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept;
 void before_level_transition(std::uintptr_t base, unsigned next) noexcept;

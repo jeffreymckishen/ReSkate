@@ -65,6 +65,9 @@
 #include <Psapi.h>
 #include <algorithm>
 #include <cstdlib>
+#include <charconv>
+#include <string_view>
+#include <limits>
 #include <optional>
 #include <array>
 #include <cctype>
@@ -96,7 +99,10 @@ void log_follow_diagnostic(const char* kind, const char* origin, actor_control_n
         "actor_stage={} actor_phase={} actor_reason={} "
         "published={} stopped={} release_hold={} release_requested={} release_started={} fence={} park={} "
         "final_revision={} returned_revision={} binding={} closing_owner={} closing_generation={} "
-        "closing_epoch_read={} closing_epoch={}",
+        "closing_epoch_read={} closing_epoch={} "
+        "snapshot_owner={} snapshot_game_context={} snapshot_world={} snapshot_world_state={} "
+        "snapshot_generation={} snapshot_global_epoch={} snapshot_actor_epoch={} "
+        "snapshot_global_epoch_values_available={}",
         kind, state.sequence, origin, skater_action::reason_name(reason),
         body_follow_native::diagnostic_stage_name(provider.stage),
         static_cast<unsigned>(lane), lane_class,
@@ -106,15 +112,151 @@ void log_follow_diagnostic(const char* kind, const char* origin, actor_control_n
         state.fence, state.park, state.final_revision, state.returned_revision,
         follow_diagnostic_check(facts.binding),
         follow_diagnostic_check(facts.closing_owner), follow_diagnostic_check(facts.closing_generation),
-        follow_diagnostic_check(facts.closing_epoch_read), follow_diagnostic_check(facts.closing_epoch));
+        follow_diagnostic_check(facts.closing_epoch_read), follow_diagnostic_check(facts.closing_epoch),
+        follow_diagnostic_check(facts.opening_snapshot.owner), follow_diagnostic_check(facts.opening_snapshot.game_context),
+        follow_diagnostic_check(facts.opening_snapshot.world), follow_diagnostic_check(facts.opening_snapshot.world_state),
+        follow_diagnostic_check(facts.opening_snapshot.generation), follow_diagnostic_check(facts.opening_snapshot.global_epoch),
+        follow_diagnostic_check(facts.opening_snapshot.actor_epoch), facts.opening_snapshot.global_epoch_values.available);
+    const auto& epochs = facts.opening_snapshot.global_epoch_values;
+    // Only known SDK counter values are emitted. They locate a possible World
+    // epoch interval; equal/different comparisons alone cannot locate that interval.
+    if (epochs.available) logging::log(logging::Level::warning, logging::Channel::skater,
+        "Body follow first-{} SDK global epoch snapshot: sequence={} values_available=true expected={} captured={} "
+        "capture=opening_successful causal_link=unknown", kind, state.sequence, epochs.expected, epochs.captured);
+    else logging::log(logging::Level::warning, logging::Channel::skater,
+        "Body follow first-{} SDK global epoch snapshot: sequence={} values_available=false expected=unknown captured=unknown "
+        "capture=unknown causal_link=unknown", kind, state.sequence);
+}
+// Client thread only, after update_model has admitted the engine thread. This
+// state changes diagnostic frequency only; it never gates a service/native edge.
+struct FollowWorldDiagnostics {
+    bool initial_retrieved{};
+    std::uint64_t deferred_sequence{}, retrieval_sequence{};
+    bool retrieval_sequence_exhausted{};
+};
+FollowWorldDiagnostics& follow_world_diagnostics() noexcept {
+    static FollowWorldDiagnostics value;
+    return value;
+}
+const char* follow_world_kind(world_entities::LifetimeWitnessKind kind) noexcept {
+    using Kind = world_entities::LifetimeWitnessKind;
+    switch (kind) {
+    case Kind::created: return "created";
+    case Kind::wanted_remove: return "wanted_remove";
+    case Kind::wanted_clear: return "wanted_clear";
+    case Kind::context_clear: return "context_clear";
+    case Kind::drop_selected: return "drop_selected";
+    case Kind::destroy_refused: return "destroy_refused";
+    case Kind::destroy_attempted: return "destroy_attempted";
+    case Kind::destroy_returned: return "destroy_returned";
+    case Kind::destroy_notification: return "destroy_notification";
+    }
+    return "unknown";
+}
+const char* follow_world_reason(world_entities::LifetimeWitnessReason reason) noexcept {
+    using Reason = world_entities::LifetimeWitnessReason;
+    switch (reason) {
+    case Reason::none: return "none";
+    case Reason::wanted_missing: return "wanted_missing";
+    case Reason::hidden: return "hidden";
+    case Reason::asset_changed: return "asset_changed";
+    case Reason::attachment_lost: return "attachment_lost";
+    case Reason::integrity_failed: return "integrity_failed";
+    case Reason::asset_unresolved: return "asset_unresolved";
+    case Reason::context_changed: return "context_changed";
+    case Reason::level_transition: return "level_transition";
+    }
+    return "unknown";
+}
+std::string_view follow_world_counter(bool available, std::uint64_t value, std::array<char, 20>& storage) noexcept {
+    if (!available) return "unknown";
+    const auto text = std::to_chars(storage.data(), storage.data() + storage.size(), value);
+    if (text.ec != std::errc{}) return "unknown";
+    return {storage.data(), static_cast<std::size_t>(text.ptr - storage.data())};
+}
+void log_follow_world_snapshot(const char* retrieval, std::uint64_t receipt_sequence, const char* diagnostic_kind,
+    const world_entities::LifetimeWitnessSnapshot& snapshot) noexcept {
+    auto& diagnostics = follow_world_diagnostics();
+    if (diagnostics.retrieval_sequence == (std::numeric_limits<std::uint64_t>::max)())
+        diagnostics.retrieval_sequence_exhausted = true;
+    else ++diagnostics.retrieval_sequence;
+    std::array<char, 20> retrieval_storage{}, receipt_storage{};
+    const auto retrieval_text = follow_world_counter(!diagnostics.retrieval_sequence_exhausted,
+        diagnostics.retrieval_sequence, retrieval_storage);
+    const auto receipt_text = follow_world_counter(receipt_sequence != 0, receipt_sequence, receipt_storage);
+    logging::log(logging::Level::warning, logging::Channel::skater,
+        "Body follow World snapshot: retrieval={} retrieval_sequence={} retrieval_sequence_exhausted={} "
+        "follow_receipt_sequence_available={} follow_receipt_sequence={} follow_diagnostic_kind={} available={} count={} capacity={} "
+        "latest_event_sequence={} overwritten={} notifications={} unmatched_notifications={} recording_failed={} "
+        "sequence_exhausted={} instance_exhausted={} counter_saturated={} untraced_destroy_paths={} "
+        "order=world_mutex_record_order capture_time_relation=unknown causal_link=unknown",
+        retrieval, retrieval_text, diagnostics.retrieval_sequence_exhausted, receipt_sequence != 0, receipt_text, diagnostic_kind,
+        snapshot.available, snapshot.count, world_entities::lifetime_witness_capacity,
+        snapshot.latest_sequence, snapshot.overwritten, snapshot.notifications, snapshot.unmatched_notifications,
+        snapshot.recording_failed, snapshot.sequence_exhausted, snapshot.instance_exhausted,
+        snapshot.counter_saturated, snapshot.untraced_destroy_paths);
+    const auto count = (std::min)(static_cast<std::size_t>(snapshot.count), world_entities::lifetime_witness_capacity);
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto& event = snapshot.events[i];
+        std::array<char, 20> before{}, after{};
+        const auto before_text = follow_world_counter(event.epoch_before_available, event.epoch_before, before);
+        const auto after_text = follow_world_counter(event.epoch_after_available, event.epoch_after, after);
+        logging::log(logging::Level::warning, logging::Channel::skater,
+            "Body follow World event: retrieval={} retrieval_sequence={} follow_receipt_sequence={} event_sequence={} kind={} reason={} "
+            "sdk_owner_hash={} sdk_id={} sdk_instance={} operation={} epoch_before_available={} epoch_before={} "
+            "epoch_after_available={} epoch_after={} native_entry=unknown native_completion=unknown causal_link=unknown",
+            retrieval, retrieval_text, receipt_text, event.sequence, follow_world_kind(event.kind), follow_world_reason(event.reason),
+            event.owner_hash, event.id, event.instance, event.operation, event.epoch_before_available, before_text,
+            event.epoch_after_available, after_text);
+    }
+}
+void initialize_follow_world_diagnostics() noexcept {
+    const auto saved = GetLastError();
+    auto& diagnostics = follow_world_diagnostics();
+    if (!diagnostics.initial_retrieved) {
+        diagnostics.initial_retrieved = true;
+        // Initial safe client-thread retrieval before this SDK update/plugin tick.
+        // Prior native/plugin-initialization work may exist: this is neither an
+        // actor-admission snapshot nor guaranteed to precede a fault. No receipt
+        // is known here; the log renders its placeholder as unknown.
+        const auto snapshot = world_entities::lifetime_witness_snapshot();
+        log_follow_world_snapshot("initial_client_tick_before_sdk_update", 0, "unknown", snapshot);
+    }
+    SetLastError(saved);
 }
 void drain_follow_diagnostics() noexcept {
     const auto saved = GetLastError();
     body_follow_service::StopDiagnostic stop;
     body_follow_service::CleanupDiagnostic cleanup;
     body_follow_service::take_diagnostics(stop, cleanup);
-    // take_diagnostics has released its lock. No SDK lock spans formatting or
-    // logging. A cleanup refusal can be ordinary pending work, not a fault.
+    // take_diagnostics has released its lock. The World getter takes only the
+    // World mutex. No actor/Service/Runtime lock spans retrieval or formatting.
+    // Retrieval is later than diagnostic latching, not a simultaneous witness.
+    const auto retrieve = [](std::uint64_t sequence, const char* kind) noexcept {
+        auto& diagnostics = follow_world_diagnostics();
+        // Service sequences increase without reuse and refuse at exhaustion.
+        // This bounded high-water mark controls logging frequency only.
+        if (!sequence || sequence <= diagnostics.deferred_sequence) return;
+        diagnostics.deferred_sequence = sequence;
+        const auto snapshot = world_entities::lifetime_witness_snapshot();
+        log_follow_world_snapshot("first_deferred_follow_diagnostic_after_drain", sequence, kind, snapshot);
+    };
+    if (stop.available && cleanup.available && stop.state.sequence == cleanup.state.sequence) {
+        retrieve(stop.state.sequence, "stop_and_cleanup_observation");
+    } else if (stop.available && cleanup.available) {
+        // Normally both records belong to the one occupied receipt. Preserve
+        // distinct associations if that invariant ever changes; neither copy
+        // is simultaneous with its latched diagnostic or the other snapshot.
+        if (stop.state.sequence < cleanup.state.sequence) {
+            retrieve(stop.state.sequence, "stop");
+            retrieve(cleanup.state.sequence, "cleanup_observation");
+        } else {
+            retrieve(cleanup.state.sequence, "cleanup_observation");
+            retrieve(stop.state.sequence, "stop");
+        }
+    } else if (stop.available) retrieve(stop.state.sequence, "stop");
+    else if (cleanup.available) retrieve(cleanup.state.sequence, "cleanup_observation");
+    // A cleanup refusal can be ordinary pending work, not a fault.
     if (stop.available) log_follow_diagnostic("stop", body_follow_service::stop_origin_name(stop.origin),
         stop.reason, stop.state, stop.provider);
     if (cleanup.available) log_follow_diagnostic("cleanup-observation", body_follow_service::cleanup_origin_name(cleanup.origin),
@@ -727,6 +869,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
     DWORD no_thread{};
     r.engine_thread.compare_exchange_strong(no_thread, GetCurrentThreadId());
     if (r.engine_thread.load() != GetCurrentThreadId()) return;
+    initialize_follow_world_diagnostics();
     frame.valid = true;
     frame.state = state;
     frame.game_type = game_type;

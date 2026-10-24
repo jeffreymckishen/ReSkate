@@ -15,11 +15,26 @@ using Reason = skater_action::Reason;
 using Observation = actor_observation::Trace;
 using Continuity = actor_context::Continuity;
 
-// Diagnostic facts only. Unknown means the original predicate was not reached;
-// equal/different record its true/false result, including the epoch read check.
-// No native identities or values leave the existing inspection captures.
+// Diagnostic facts only. Native identities never leave the existing captures.
+// Snapshot comparisons do not report guards as evaluated. The SDK-owned global
+// destruction epoch counters below are internal diagnostic values, not addresses.
 enum class InspectionCheck : std::uint8_t { unknown, equal, different };
+struct GlobalEpochSnapshotValues {
+    std::uint64_t expected{}, captured{};
+    // Both values are unknown until the complete existing opening capture succeeds.
+    bool available{};
+};
+struct BindingSnapshotFacts {
+    // Unknown until the existing opening capture succeeds. All comparisons
+    // then use that captured binding, even if a later guard is not reached.
+    InspectionCheck owner{}, game_context{}, world{}, world_state{};
+    InspectionCheck generation{}, global_epoch{}, actor_epoch{};
+    GlobalEpochSnapshotValues global_epoch_values;
+};
 struct InspectionFacts {
+    BindingSnapshotFacts opening_snapshot;
+    // These facts record only the original predicates actually reached,
+    // including the epoch-read success check.
     InspectionCheck binding{};
     InspectionCheck closing_owner{}, closing_generation{}, closing_epoch_read{}, closing_epoch{};
 };

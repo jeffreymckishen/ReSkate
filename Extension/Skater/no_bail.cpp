@@ -1717,6 +1717,9 @@ void __fastcall footplant_tick_hook(std::uintptr_t self, std::uintptr_t out) noe
 // ---- The mover hook (1.6; a stage probe since 1.7) ----------------------------------------------------------------------------------------
 using SkaterMover = void(__fastcall*)(std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uint8_t);
 std::atomic<SkaterMover> skater_mover_original{};
+std::atomic<NoBailMoverObserver> mover_observer{};
+std::atomic<std::uintptr_t> mover_attested_base{};
+std::atomic<bool> mover_entered{};
 void __fastcall skater_mover_hook(std::uintptr_t skater, std::uintptr_t context, std::uintptr_t input, std::uint8_t flag) noexcept {
     auto& d = dark_pop();
     const auto original = skater_mover_original.load(std::memory_order_acquire);
@@ -1728,7 +1731,22 @@ void __fastcall skater_mover_hook(std::uintptr_t skater, std::uintptr_t context,
         d.mover_have.store(true, std::memory_order_relaxed);
         d.mover_captures.fetch_add(1, std::memory_order_relaxed);
     }
-    if (original) original(skater, context, input, flag);
+    if (original) {
+        mover_entered.store(true, std::memory_order_release);
+        const auto observer = mover_observer.load(std::memory_order_acquire);
+        std::uint64_t cookie{};
+        if (observer) {
+            LastError error;
+            cookie = observer({NoBailMoverEdge::before_original, skater, context, input, flag}, 0);
+        }
+        // Original stays outside observer guards and retains the existing void
+        // contract/noexcept wrapper. Exceptional exit is not a returned edge.
+        original(skater, context, input, flag);
+        if (observer) {
+            LastError error;
+            (void)observer({NoBailMoverEdge::original_returned, skater, context, input, flag}, cookie);
+        }
+    }
     if (mine) {
         float up{};
         d.stage_up[2].store(dark_pop_board_up(up) ? up : 9.0f, std::memory_order_relaxed);
@@ -1749,6 +1767,7 @@ bool start_dark_pop_mover(std::uintptr_t base) noexcept {
     auto status = hook_prepare(target, reinterpret_cast<void*>(&skater_mover_hook), &original);
     if (status == HookOk && original) {
         skater_mover_original.store(reinterpret_cast<SkaterMover>(original), std::memory_order_release);
+        mover_attested_base.store(base, std::memory_order_release);
         status = hook_enable(target);
         if (status == HookOk) {
             d.mover_hooked.store(true, std::memory_order_release);
@@ -3361,6 +3380,18 @@ RevertLanding last_revert_landing() noexcept {
 }
 
 namespace dingosdk {
+bool add_no_bail_mover_observer(NoBailMoverObserver observer) noexcept {
+    LastError error;
+    if (!observer) return false;
+    auto expected = static_cast<NoBailMoverObserver>(nullptr);
+    return mover_observer.compare_exchange_strong(expected, observer, std::memory_order_acq_rel) || expected == observer;
+}
+bool no_bail_mover_observation_available(std::uintptr_t image_base) noexcept {
+    LastError error;
+    return image_base && mover_attested_base.load(std::memory_order_acquire) == image_base &&
+        dark_pop().mover_hooked.load(std::memory_order_acquire) &&
+        skater_mover_original.load(std::memory_order_acquire) && mover_entered.load(std::memory_order_acquire);
+}
 bool add_no_bail_native_observer(NoBailNativeObserver observer) noexcept {
     LastError error;if(!observer)return false;
     auto expected=static_cast<NoBailNativeObserver>(nullptr);

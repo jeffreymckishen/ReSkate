@@ -185,7 +185,12 @@ public:
     body_query::Result body_probe_batch(std::uint64_t owner, const owned_body::Handle& h, const body_query::Request& request, unsigned allowed) override {
         return owned_bodies::probe_batch(owner, h, request, allowed);
     }
-    void body_release_all(std::uint64_t owner) override { owned_bodies::release_all(owner); }
+    void body_release_all(std::uint64_t owner) override {
+        owned_bodies::cancel_motion_refresh_probes(owner);
+        owned_bodies::release_all(owner);
+    }
+    std::string begin_motion_refresh_probe(std::uint64_t owner, std::uint64_t& sequence) override { return owned_bodies::begin_motion_refresh_probe(owner, sequence); }
+    std::string poll_motion_refresh_probe(std::uint64_t owner, std::uint64_t sequence, motion_refresh_probe::Result& out) override { return owned_bodies::poll_motion_refresh_probe(owner, sequence, out); }
     bool native_action_request(std::uint64_t owner, skater_action::Kind kind, skater_action::Handle& handle, skater_action::Reason& reason) override {
         return skater_action::request(owner, kind, handle, reason);
     }

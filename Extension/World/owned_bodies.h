@@ -1,6 +1,7 @@
 #pragma once
 #include "Engine/Game/World/body_query.h"
 #include "Engine/Game/World/sync_probe.h"
+#include "Engine/Game/World/motion_refresh_probe.h"
 #include <cstdint>
 #include <string>
 
@@ -25,6 +26,15 @@ void release_all(std::uint64_t owner) noexcept;
 // It never modifies a target, acquires a follow claim or satisfies a barrier.
 std::string begin_sync_probe(std::uint64_t owner, const owned_body::Handle&, std::uint64_t& sequence);
 std::string poll_sync_probe(std::uint64_t owner, const owned_body::Handle&, std::uint64_t sequence, body_sync_probe::Result&);
+
+// Actor-scoped diagnostic; no owned body, input lease or native command.
+// A cold begin requests only deferred clock/listener preparation and refuses;
+// callers must explicitly begin again after the existing mover is available.
+std::string begin_motion_refresh_probe(std::uint64_t owner, std::uint64_t& sequence);
+std::string poll_motion_refresh_probe(std::uint64_t owner, std::uint64_t sequence, motion_refresh_probe::Result&);
+// Idempotent owner close, including owners with no body slots. Removes pending
+// and terminal results; late callbacks cannot publish into another generation.
+void cancel_motion_refresh_probes(std::uint64_t owner) noexcept;
 
 // Private native-service bridge. These values never cross the Lua API.
 // The source owns a copy of the original measured sample, not a live pose.

@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 
 namespace test_clock {
 std::atomic<ULONGLONG> now{10000};
@@ -41,6 +42,9 @@ namespace test_facts {
 std::atomic<unsigned> model_calls{}, world_calls{}, body_calls{}, shape_calls{}, mutations{}, forbidden_links{};
 std::atomic<bool> multiplayer_active{}, inspect_initializer_lock{}, initializer_unlocked{};
 std::atomic<ULONGLONG> initializer_elapsed{};
+std::atomic<bool> motion_actor_enabled{}, motion_available{};
+dingosdk::actor_control_native::Actor motion_actor{};
+std::function<void()> motion_observe_once;
 std::function<dingosdk::BoundedLocalSurfaceProbe(const std::array<float,3>&,const std::array<float,3>&,unsigned,bool)> probe_callback;
 }
 namespace dingosdk::multiplayer {
@@ -58,6 +62,14 @@ MultiplayerModel model() {
 // read separately; none qualifies a retail actor or begins a native probe.
 namespace dingosdk::actor_control_native {
 bool observe_actor(Actor& actor) noexcept {
+    if (test_facts::motion_actor_enabled.load()) {
+        // One scripted native leaf interleaving, removed before it can recurse.
+        auto interleave = std::exchange(test_facts::motion_observe_once, {});
+        if (interleave) interleave();
+        actor = test_facts::motion_actor;
+        SetLastError(0xB015);
+        return true;
+    }
     ++test_facts::forbidden_links;
     actor = {};
     return false;
@@ -81,6 +93,10 @@ HookBatch::HookBatch() noexcept { ++test_facts::forbidden_links; }
 HookBatch::~HookBatch() { ++test_facts::forbidden_links; }
 bool start_no_bail(std::uintptr_t) noexcept { ++test_facts::forbidden_links; return false; }
 bool add_no_bail_step_listener(NoBailStepObserver) noexcept { ++test_facts::forbidden_links; return false; }
+bool add_no_bail_mover_observer(NoBailMoverObserver) noexcept { ++test_facts::forbidden_links; return false; }
+bool no_bail_mover_observation_available(std::uintptr_t base) noexcept {
+    return test_facts::motion_available.load() && test_facts::motion_actor.base == base;
+}
 BoundedLocalSurfaceProbe probe_local_surface_geometry_bounded(const std::array<float, 3>& from,
     const std::array<float, 3>& to, unsigned allowed, bool contact) {
     if(test_facts::probe_callback) return test_facts::probe_callback(from,to,allowed,contact);
@@ -210,6 +226,13 @@ public:
         test_facts::model_calls = 0; test_facts::world_calls = 0;
         test_facts::body_calls = 0; test_facts::shape_calls = 0;
         test_facts::mutations = 0; test_facts::multiplayer_active = false; test_facts::probe_callback={};
+        test_facts::motion_actor_enabled = false; test_facts::motion_available = false; test_facts::motion_actor = {};
+        test_facts::motion_observe_once = {};
+        InitializeSRWLock(&motion_probe.lock);
+        motion_probe.owner = motion_probe.sequence = motion_probe.opened = motion_probe.deadline = 0;
+        motion_probe.generation = 0; motion_probe.base = 0; motion_probe.actor = {}; motion_probe.result = {};
+        motion_probe.before = {}; motion_probe.requested = motion_probe.ready = motion_probe.inflight = false;
+        motion_probe.live = 0; for (auto& route : motion_probe.routes) route = 0;
         // Only reserve address space up to the largest used RVA; commit two
         // data pages. No retail code/data is copied or executed.
         image_ = VirtualAlloc(nullptr, e::tls_index + 0x1000, MEM_RESERVE, PAGE_NOACCESS);
@@ -226,7 +249,7 @@ public:
         const auto manager = arena.take(0x1000), list = arena.take(64), player = arena.take(0x1000);
         entity = arena.take(0x1000); const auto player_handle = arena.take(64);
         const auto collection = arena.take(64), component = arena.take(0x1000);
-        core = arena.take(0x1000); skater_context = arena.take(0x2000); rig = arena.take(0x5000);
+        core = arena.take(0x1000); skater_context = arena.take(0x2000); rig = arena.take(0x6000);
         const auto holder = arena.take(64), board = arena.take(0x1000), rig_physics = arena.take(0x1000);
         const auto board_parts = arena.take(0x1000), rig_parts = arena.take(0x3000);
         world = arena.take(0x1000); state = arena.take(0x2000);
@@ -263,6 +286,7 @@ public:
         service.context = context; service.generation = handle.generation; service.world_generation = 23;
         service.eligible = true; service.tick_at = test_clock::now; service.hooked = true;
         service.api.base = base; service.api.world = world_read;
+        clock_world.store(world_read, std::memory_order_release);
         service.api.body_valid = body_valid_read; service.api.shape_valid = shape_valid_read;
         service.api.allocate = forbidden_allocate; service.api.capsule = forbidden_capsule;
         service.api.motion = forbidden_integer; service.api.inverse_mass = forbidden_scalar;
@@ -838,6 +862,190 @@ void sync_routes_freeze_other_closures_and_saturate() {
     service.probe_live = 0;
 }
 
+// Constructed native leaves exercise the actual actor-scoped collector. These
+// cases do not execute retail motion or prove hook installation/retirement.
+class MotionFixture : public Fixture {
+public:
+    std::uintptr_t packet_owner{}, packets{}, input{};
+    MotionFixture() {
+        test_facts::forbidden_links = 0;
+        service.slots = {}; service.hooked = false;
+        auto& actor = test_facts::motion_actor;
+        actor.base = base; actor.client = client; actor.entity = entity; actor.core = core;
+        actor.context = skater_context; actor.rig = rig; actor.game_context = context;
+        actor.world = world; actor.world_state = state; actor.world_generation = 23;
+        actor.lifetime_epoch = 31; actor.actor_epoch = 0;
+        test_facts::motion_actor_enabled = true; test_facts::motion_available = true;
+        motion_probe.ready = true; motion_probe.base = base;
+        for (const auto* prefix : {&ma::rebuild_root, &ma::refresh_caches, &ma::refresh_packets,
+            &n::packet_a_writer, &n::packet_b_writer, &n::packet_tail_writer}) {
+            const auto page = (base + prefix->rva) & ~std::uintptr_t{4095};
+            check(VirtualAlloc(reinterpret_cast<void*>(page), 4096, MEM_COMMIT, PAGE_READWRITE) != nullptr,
+                "motion prefix sparse fixture page failed");
+            put(base + prefix->rva, prefix->bytes);
+        }
+        packet_owner = arena.take(0x300); packets = arena.take(0x600); input = arena.take(64);
+        put(rig + n::packet_owner, packet_owner); put(packet_owner + n::packet_array, packets);
+        const mp::Matrix identity{1,0,0,0, 0,1,0,0, 0,0,1,0, 2,3,4,1};
+        put(rig + ma::root, identity); put(rig + ma::inverse, identity);
+        for (const auto offset : ma::caches) put(rig + offset, identity);
+        for (std::size_t i = 0; i < 4; ++i) {
+            put(packets + i*n::packet_stride + n::transform, identity);
+            put(packets + i*n::packet_stride + n::pending, std::uint32_t{1});
+        }
+        put(input, std::array<float,4>{7,8,9,1});
+    }
+    ~MotionFixture() { test_facts::motion_actor_enabled = false; }
+    std::uint64_t arm() {
+        std::uint64_t sequence{};
+        SetLastError(0x1234);
+        check(begin_motion_refresh_probe(owner, sequence).empty() && sequence, "actual motion begin refused constructed actor/clock");
+        check(GetLastError() == 0x1234, "motion begin changed LastError");
+        return sequence;
+    }
+    NoBailMoverEvent event(NoBailMoverEdge edge = NoBailMoverEdge::before_original) const {
+        return {edge, rig, skater_context, input, 0xA5};
+    }
+    std::uint64_t before() {
+        SetLastError(0xCA11);
+        const auto cookie = motion_observer(event(), 0);
+        check(GetLastError() == 0xCA11, "motion pre observer changed LastError");
+        return cookie;
+    }
+    void after(std::uint64_t cookie) {
+        SetLastError(0xCA12);
+        (void)motion_observer(event(NoBailMoverEdge::original_returned), cookie);
+        check(GetLastError() == 0xCA12, "motion post observer changed LastError");
+    }
+};
+void motion_zero_body_begin_and_completed_record() {
+    MotionFixture f;
+    const auto sequence = f.arm();
+    check(!f.before() && motion_route_count(sequence, MotionRoute::rejected) == 1,
+        "same armed native epoch was admitted as a later mover");
+    f.step(); const auto cookie = f.before(); check(cookie != 0, "later exact mover did not create a cookie");
+    auto changed = load<mp::Matrix>(f.rig + ma::root); changed[12] = 12;
+    put(f.rig + ma::root, changed); put(f.packets + n::transform, changed);
+    f.after(cookie);
+    mp::Result out;
+    check(poll_motion_refresh_probe(owner, sequence, out).empty() && out.status == mp::Status::pending &&
+        out.record.present && !out.client_revalidated && out.confirmed_epoch == mp::Epoch{},
+        "normal-return record claimed later-client confirmation at the same epoch");
+    check(out.record.input == std::array<float,4>{7,8,9,1} && out.record.flag == 0xA5 &&
+        out.record.unchanged_forwarding && out.record.before.root[12] == 2 && out.record.after.root[12] == 12 &&
+        out.record.before_epoch == out.record.after_epoch && motion_newer(out.record.before_epoch, out.armed_epoch),
+        "actual motion record lost copied input/flag/endpoints/epoch qualification");
+    f.step();
+    check(poll_motion_refresh_probe(owner, sequence, out).empty() && out.status == mp::Status::observed &&
+        out.record.present && out.client_revalidated && motion_newer(out.confirmed_epoch, out.record.after_epoch),
+        "later actual client observation did not confirm the copied normal-return record");
+    const auto frozen = out;
+    test_facts::motion_actor.world += 64; test_clock::now += 2000;
+    check(poll_motion_refresh_probe(owner, sequence, out).empty() && out.status == frozen.status &&
+        out.elapsed_ms == frozen.elapsed_ms && out.confirmed_epoch == frozen.confirmed_epoch,
+        "terminal diagnostic was silently refreshed from changed native state");
+    check(std::none_of(service.slots.begin(), service.slots.end(), [](const Slot& s) { return s.attempted; }),
+        "actor-scoped observation required or reserved a body");
+}
+void motion_refusals_close_generation_and_read_bounds() {
+    MotionFixture f; std::uint64_t sequence{};
+    check(!begin_motion_refresh_probe(0, sequence).empty() && !sequence, "zero owner armed a motion probe");
+    test_facts::motion_available = false;
+    check(!begin_motion_refresh_probe(owner, sequence).empty(), "unseen/unavailable mover relay was admitted");
+    test_facts::motion_available = true;
+    put(f.base + ma::rebuild_root.rva, std::uint8_t{0});
+    check(!begin_motion_refresh_probe(owner, sequence).empty(), "changed helper source prefix was admitted");
+    put(f.base + ma::rebuild_root.rva, ma::rebuild_root.bytes);
+    sequence = f.arm(); std::uint64_t blocked{};
+    check(!begin_motion_refresh_probe(owner+1, blocked).empty() && !blocked, "second owner replaced a pending probe");
+    f.step(); const auto cookie = f.before(); check(cookie != 0, "motion pre admission failed");
+    check(!f.before(), "nested original invocation overwrote the selected mover cookie");
+    cancel_motion_refresh_probes(owner+1);
+    mp::Result out;
+    check(!poll_motion_refresh_probe(owner+1, sequence, out).empty(), "foreign owner read a motion probe");
+    cancel_motion_refresh_probes(owner); f.after(cookie);
+    check(!poll_motion_refresh_probe(owner, sequence, out).empty() && !motion_probe.live.load(),
+        "owner close without bodies left a pollable record or live callback generation");
+    const auto next = f.arm(); check(next != sequence, "cancel reused a generation");
+    f.after(cookie);
+    check(poll_motion_refresh_probe(owner, next, out).empty() && !out.record.present,
+        "late original return published into replacement generation");
+    f.step();
+    auto invalid = f.event(); invalid.input = 1;
+    check(!motion_observer(invalid, 0) && motion_route_count(next, MotionRoute::rejected) == 1,
+        "unreadable input was dereferenced/admitted rather than refused");
+}
+void motion_clock_packet_identity_expiry_and_cap() {
+    MotionFixture f; auto sequence = f.arm(); f.step();
+    auto cookie = f.before(); check(cookie != 0, "motion before failed before epoch change");
+    f.step(); f.after(cookie);
+    check(!motion_probe.result.record.present && motion_route_count(sequence, MotionRoute::rejected) == 1,
+        "native epoch change inside original was accepted");
+    cookie = f.before(); check(cookie != 0, "retry after refused native edge failed");
+    put(f.packet_owner + n::packet_array, f.packets + 16); f.after(cookie);
+    check(!motion_probe.result.record.present, "changed O/P packet chain was accepted");
+    put(f.packet_owner + n::packet_array, f.packets);
+    cookie = f.before(); check(cookie != 0, "fresh endpoint pre failed"); f.after(cookie);
+    check(motion_probe.result.record.present, "valid copied endpoint was not retained");
+    test_clock::now = motion_probe.deadline + 7;
+    mp::Result out;
+    check(poll_motion_refresh_probe(owner, sequence, out).empty() && out.status == mp::Status::expired &&
+        out.record.present && !out.client_revalidated && out.confirmed_epoch == mp::Epoch{} && out.elapsed_ms == 1007,
+        "expiry widened/clamped the deadline or erased a separate native-return record");
+    test_clock::now = 10000; service.tick_at = test_clock::now; f.step();
+    sequence = f.arm(); auto other = f.event(); other.rig += 64;
+    for (unsigned i = 0; i < mp::callback_limit + 20; ++i) (void)motion_observer(other, 0);
+    check(poll_motion_refresh_probe(owner, sequence, out).empty() && out.status == mp::Status::expired &&
+        out.routing.entries == mp::callback_limit && out.routing.other == mp::callback_limit &&
+        out.routing.limit_reached && !out.record.present, "fixed callback cap failed to close without widening reads");
+    sequence = f.arm();
+    test_facts::motion_actor.world += 64;
+    check(poll_motion_refresh_probe(owner, sequence, out).empty() && out.status == mp::Status::invalidated &&
+        !out.client_revalidated && !out.record.present, "changed actor/world retained a live request");
+    test_facts::motion_actor.world -= 64; sequence = f.arm(); f.step();
+    cookie = f.before(); check(cookie != 0, "packet-client-check pre failed"); f.after(cookie); f.step();
+    put(f.packet_owner + n::packet_array, f.packets + 16);
+    check(poll_motion_refresh_probe(owner, sequence, out).empty() && out.status == mp::Status::invalidated &&
+        out.record.present && !out.client_revalidated,
+        "client confirmation ignored a changed copied-packet allocation chain");
+}
+void motion_try_lock_cold_setup_and_stale_routes() {
+    MotionFixture f; auto sequence = f.arm();
+    AcquireSRWLockExclusive(&motion_probe.lock);
+    std::thread callback([&] { (void)motion_observer(f.event(), 0); }); callback.join();
+    ReleaseSRWLockExclusive(&motion_probe.lock);
+    check(motion_route_count(sequence, MotionRoute::entries) == 1 && motion_route_count(sequence, MotionRoute::dropped) == 1,
+        "busy collector lock blocked or hid the bounded callback loss");
+    const auto old = sequence;
+    cancel_motion_refresh_probes(owner); sequence = f.arm();
+    (void)motion_route(old, MotionRoute::rejected);
+    check(motion_route_count(sequence, MotionRoute::rejected) == 0, "old route increment crossed generation");
+    cancel_motion_refresh_probes(owner); motion_probe.ready = false;
+    std::uint64_t pending{};
+    check(!begin_motion_refresh_probe(owner, pending).empty() && !pending && motion_probe.requested &&
+        !service.initialization_requested && !motion_probe.sequence,
+        "cold actor probe allocated/armed a body producer instead of requesting read-only preparation");
+    tick(f.base, f.client, false);
+    check(!motion_probe.requested && !motion_probe.sequence, "ineligible tick retained a cold motion preparation request");
+    tick(f.base, f.client, true);
+    check(!motion_probe.ready && !motion_probe.sequence, "eligibility restoration automatically armed a motion probe");
+}
+void motion_record_arrives_during_client_poll() {
+    MotionFixture f; const auto sequence = f.arm(); f.step();
+    test_facts::motion_observe_once = [&] {
+        const auto cookie = f.before(); check(cookie != 0, "interleaved real collector pre failed");
+        f.after(cookie); f.step();
+        put(f.packet_owner + n::packet_array, f.packets + 16);
+    };
+    mp::Result out;
+    check(poll_motion_refresh_probe(owner, sequence, out).empty() && out.status == mp::Status::pending &&
+        out.record.present && !out.client_revalidated,
+        "poll confirmed a newly arrived record without its saved O/P validation snapshot");
+    check(poll_motion_refresh_probe(owner, sequence, out).empty() && out.status == mp::Status::invalidated &&
+        out.record.present && !out.client_revalidated,
+        "next client poll failed to reject the interleaved copied-packet chain change");
+}
+
 template<class F> void run(const char* name, F function, unsigned expected_links=0) {
     function();
     check(test_facts::mutations.load() == 0, "source path invoked a native mutator/allocator");
@@ -864,6 +1072,11 @@ int main() {
         run("sync_routes_wrapper_selection_and_suppression",sync_routes_distinguish_wrapper_and_record_paths,1);
         run("sync_routes_try_lock_expiry_and_generation_freeze",sync_routes_account_lock_loss_and_freeze_expiry);
         run("sync_routes_terminal_paths_and_saturation",sync_routes_freeze_other_closures_and_saturate);
+        run("motion_zero_body_begin_and_completed_record",motion_zero_body_begin_and_completed_record);
+        run("motion_refusals_close_generation_and_read_bounds",motion_refusals_close_generation_and_read_bounds);
+        run("motion_clock_packet_identity_expiry_and_cap",motion_clock_packet_identity_expiry_and_cap);
+        run("motion_try_lock_cold_setup_and_stale_routes",motion_try_lock_cold_setup_and_stale_routes);
+        run("motion_record_arrives_during_client_poll",motion_record_arrives_during_client_poll);
         std::cout << cases << " actual-Service cases, " << checks << " checks passed; native mutations "
                   << test_facts::mutations.load() << '\n';
         return 0;

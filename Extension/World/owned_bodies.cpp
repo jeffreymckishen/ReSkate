@@ -9,6 +9,7 @@
 #include "Engine/Game/Build/20260929/rigid_bodies.h"
 #include "Engine/Game/Build/20260929/skater_state.h"
 #include "Engine/Game/Build/20260929/sync_probe.h"
+#include "Engine/Game/Build/20260929/motion_refresh_probe.h"
 #include "Engine/Game/World/body_hit_identity.h"
 #include "Engine/Game/World/body_contact_read.h"
 #include "Extension/Multiplayer/Session/session.h"
@@ -130,6 +131,10 @@ struct Service {
 // a function-local singleton, allocate, format text, call Lua or wait for a lock.
 Service service;
 Clock clock_feed;
+// Shared read-only clock setup need not install the owned-body synchronizer
+// or create a capsule. The client publishes only the checked world reader.
+std::atomic<World> clock_world{};
+void motion_tick(std::uintptr_t base, bool ready) noexcept;
 void sync_capture_routes(SyncProbe& probe) noexcept;
 static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
 struct LastError { DWORD value = GetLastError(); ~LastError() { SetLastError(value); } };
@@ -268,8 +273,9 @@ bool capture(Anchor& a) noexcept {
 void physics_step(const NoBailSkater& owner, float seconds, bool) noexcept {
     const auto sequence = clock_feed.sequence.fetch_add(1, std::memory_order_acq_rel) + 1;
     std::uintptr_t context{}, world{}, state{};
-    if (!calibrated(seconds) || !peek(owner.entity + r::entity_context, context) || !pointer(context) ||
-        !native_world(service.api.world, context, world) || !peek(world + r::world_state, state) || !pointer(state) ||
+    const auto world_call = clock_world.load(std::memory_order_acquire);
+    if (!world_call || !calibrated(seconds) || !peek(owner.entity + r::entity_context, context) || !pointer(context) ||
+        !native_world(world_call, context, world) || !peek(world + r::world_state, state) || !pointer(state) ||
         !TryAcquireSRWLockExclusive(&clock_feed.lock)) return;
     auto& f = clock_feed;
     if (f.owner.entity != owner.entity || f.owner.core != owner.core || f.owner.context != owner.context || f.owner.rig != owner.rig ||
@@ -430,6 +436,7 @@ bool initialize() noexcept {
     if (service.hook_attempted) return service.hooked.load(std::memory_order_acquire);
     service.hook_attempted = true;
     if (!resolve(service.base, service.api)) return false;
+    clock_world.store(service.api.world, std::memory_order_release);
     const auto init = hook_initialize(); if (init != HookOk && init != HookAlreadyInitialized) return false;
     void* original{}; auto* target = reinterpret_cast<void*>(service.base + r::synchronizer.rva);
     if (hook_prepare(target, reinterpret_cast<void*>(&synchronize_hook), &original) != HookOk || !original) return false;
@@ -564,6 +571,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
     {
         Locked lock(service.lock);
         service.base = base; service.client = client; service.tick_at = GetTickCount64(); service.eligible = ready;
+        motion_tick(base, eligible());
         if (service.probe.sequence && service.probe.result.status == body_sync_probe::Status::pending && service.tick_at >= service.probe.deadline) {
             const auto losses = service.probe_losses.load(std::memory_order_acquire);
             if ((losses >> 32) == service.probe.sequence) service.probe.result.dropped = static_cast<std::uint32_t>(losses);
@@ -729,6 +737,7 @@ bool try_borrow_source(std::uint64_t owner, const MeasuredSource& source, Source
 }
 
 #include "owned_body_sync_probe.inl"
+#include "owned_body_motion_refresh_probe.inl"
 
 body_query::Result probe_batch(std::uint64_t owner, const Handle& handle, const body_query::Request& request, unsigned allowance) noexcept {
     LastError error;
@@ -885,6 +894,7 @@ std::string acknowledge(std::uint64_t owner, const Handle& handle, std::uint64_t
 }
 void release_all(std::uint64_t owner) noexcept {
     LastError error;
+    cancel_motion_refresh_probes(owner);
     if (GetCurrentThreadId() != service.thread) return;
     Locked lock(service.lock);
     if (owner && service.probe.owner == owner && service.probe.result.status == body_sync_probe::Status::pending) {

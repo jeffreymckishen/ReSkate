@@ -1,4 +1,5 @@
 #include "plugin_api.h"
+#include "Engine/Game/World/motion_refresh_probe.h"
 #include "lua.h"
 #include "lualib.h"
 #include <charconv>
@@ -13,11 +14,14 @@ using namespace owned_body;
 constexpr char handle_type[] = "reskate.world.physics.body";
 constexpr char epoch_type[] = "reskate.world.physics.epoch";
 constexpr char sync_probe_type[] = "reskate.world.physics.sync_probe";
+constexpr char motion_refresh_probe_type[] = "reskate.world.physics.motion_refresh_probe";
 constexpr char hit_body_type[] = "reskate.world.physics.hit_body";
 struct BodyValue { std::uint64_t owner{}; Handle handle{}; };
 struct EpochValue { std::uint64_t owner{}; Handle handle{}; Sample sample{}; };
 // The numeric sequence is private authority, inseparable from this VM and body.
 struct SyncProbeValue { std::uint64_t owner{}; Handle handle{}; std::uint64_t sequence{}; };
+// An actor-scoped diagnostic request, never an SDK body or a submit epoch.
+struct MotionRefreshProbeValue { std::uint64_t owner{}, sequence{}; };
 // Equality only inside one returned batch. This is not a usable owned-body handle,
 // native identity, feature identity, or claim about the body's motion.
 struct HitBodyValue { std::uint64_t owner{}, batch{}; std::uint32_t ordinal{}; };
@@ -141,6 +145,109 @@ template<std::size_t N> void push_values(lua_State* L, const std::array<float, N
     lua_createtable(L, static_cast<int>(N), 0);
     for (std::size_t i = 0; i < N; ++i) { lua_pushnumber(L, values[i]); lua_rawseti(L, -2, static_cast<int>(i + 1)); }
 }
+const char* motion_refresh_status(motion_refresh_probe::Status status) noexcept {
+    switch (status) {
+    case motion_refresh_probe::Status::pending: return "pending";
+    case motion_refresh_probe::Status::observed: return "observed";
+    case motion_refresh_probe::Status::expired: return "expired";
+    case motion_refresh_probe::Status::invalidated: return "invalidated";
+    }
+    return nullptr;
+}
+bool motion_refresh_epoch(const motion_refresh_probe::Epoch& epoch) noexcept {
+    // actor_epoch is a destruction counter whose valid initial value is zero.
+    return epoch.world_generation && epoch.lifetime_epoch && epoch.serial &&
+        std::isfinite(epoch.time) && epoch.time >= 0 && calibrated(epoch.seconds);
+}
+bool motion_refresh_identity(const motion_refresh_probe::Epoch& a, const motion_refresh_probe::Epoch& b) noexcept {
+    return a.world_generation == b.world_generation && a.lifetime_epoch == b.lifetime_epoch && a.actor_epoch == b.actor_epoch;
+}
+bool motion_refresh_values(const motion_refresh_probe::Endpoints& endpoints) noexcept {
+    if (!finite_values(endpoints.root) || !finite_values(endpoints.inverse)) return false;
+    for (const auto& matrix : endpoints.caches) if (!finite_values(matrix)) return false;
+    for (const auto& matrix : endpoints.packets) if (!finite_values(matrix)) return false;
+    return true;
+}
+bool motion_refresh_result(const motion_refresh_probe::Result& out) noexcept {
+    if (!motion_refresh_status(out.status) || !motion_refresh_epoch(out.armed_epoch) ||
+        !std::isfinite(out.elapsed_ms) || out.elapsed_ms < 0 ||
+        out.routing.entries > motion_refresh_probe::callback_limit ||
+        out.routing.limit_reached != (out.routing.entries == motion_refresh_probe::callback_limit)) return false;
+    const auto& record = out.record;
+    if (record.present) {
+        if (!record.unchanged_forwarding || !finite_values(record.input) ||
+            !motion_refresh_epoch(record.before_epoch) || !motion_refresh_identity(record.before_epoch, out.armed_epoch) ||
+            record.before_epoch.serial <= out.armed_epoch.serial || record.before_epoch.time <= out.armed_epoch.time ||
+            record.after_epoch != record.before_epoch || !motion_refresh_values(record.before) ||
+            !motion_refresh_values(record.after)) return false;
+    } else if (record.unchanged_forwarding || record.flag || record.input != std::array<float, 4>{} ||
+        record.before_epoch != motion_refresh_probe::Epoch{} || record.after_epoch != motion_refresh_probe::Epoch{} ||
+        record.before != motion_refresh_probe::Endpoints{} || record.after != motion_refresh_probe::Endpoints{}) return false;
+    if (out.status == motion_refresh_probe::Status::observed) {
+        return record.present && out.client_revalidated && motion_refresh_epoch(out.confirmed_epoch) &&
+            motion_refresh_identity(out.confirmed_epoch, out.armed_epoch) &&
+            out.confirmed_epoch.serial > record.after_epoch.serial && out.confirmed_epoch.time > record.after_epoch.time &&
+            out.elapsed_ms < motion_refresh_probe::lifetime_ms;
+    }
+    // Terminal non-observed results may retain a present native-return record.
+    // Other routing counters are independent lower bounds, not a sum of entries.
+    return !out.client_revalidated && out.confirmed_epoch == motion_refresh_probe::Epoch{};
+}
+void push_motion_refresh_epoch(lua_State* L, const motion_refresh_probe::Epoch& epoch) {
+    lua_createtable(L, 0, 6);
+    text_number(L, epoch.world_generation); lua_setfield(L, -2, "world_generation");
+    text_number(L, epoch.lifetime_epoch); lua_setfield(L, -2, "lifetime_epoch");
+    text_number(L, epoch.actor_epoch); lua_setfield(L, -2, "actor_epoch");
+    text_number(L, epoch.serial); lua_setfield(L, -2, "serial");
+    lua_pushnumber(L, epoch.time); lua_setfield(L, -2, "time");
+    lua_pushnumber(L, epoch.seconds); lua_setfield(L, -2, "seconds");
+}
+void push_motion_refresh_endpoints(lua_State* L, const motion_refresh_probe::Endpoints& endpoints) {
+    lua_createtable(L, 0, 5);
+    push_values(L, endpoints.root); lua_setfield(L, -2, "root");
+    push_values(L, endpoints.inverse); lua_setfield(L, -2, "inverse");
+    lua_createtable(L, static_cast<int>(endpoints.caches.size()), 0);
+    for (std::size_t i = 0; i < endpoints.caches.size(); ++i) {
+        push_values(L, endpoints.caches[i]); lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    lua_setfield(L, -2, "caches");
+    lua_createtable(L, static_cast<int>(endpoints.packets.size()), 0);
+    for (std::size_t i = 0; i < endpoints.packets.size(); ++i) {
+        push_values(L, endpoints.packets[i]); lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    lua_setfield(L, -2, "packets");
+    lua_createtable(L, static_cast<int>(endpoints.flags.size()), 0);
+    for (std::size_t i = 0; i < endpoints.flags.size(); ++i) {
+        lua_pushnumber(L, endpoints.flags[i]); lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    lua_setfield(L, -2, "flags");
+}
+void push_motion_refresh_result(lua_State* L, const motion_refresh_probe::Result& out) {
+    lua_createtable(L, 0, 7);
+    lua_pushstring(L, motion_refresh_status(out.status)); lua_setfield(L, -2, "status");
+    push_motion_refresh_epoch(L, out.armed_epoch); lua_setfield(L, -2, "armed_epoch");
+    push_motion_refresh_epoch(L, out.confirmed_epoch); lua_setfield(L, -2, "confirmed_epoch");
+    lua_pushboolean(L, out.client_revalidated); lua_setfield(L, -2, "client_revalidated");
+    lua_pushnumber(L, out.elapsed_ms); lua_setfield(L, -2, "elapsed_ms");
+    lua_createtable(L, 0, 8);
+    lua_pushboolean(L, out.record.present); lua_setfield(L, -2, "present");
+    lua_pushboolean(L, out.record.unchanged_forwarding); lua_setfield(L, -2, "unchanged_forwarding");
+    lua_pushnumber(L, out.record.flag); lua_setfield(L, -2, "flag");
+    push_values(L, out.record.input); lua_setfield(L, -2, "input");
+    push_motion_refresh_epoch(L, out.record.before_epoch); lua_setfield(L, -2, "before_epoch");
+    push_motion_refresh_epoch(L, out.record.after_epoch); lua_setfield(L, -2, "after_epoch");
+    push_motion_refresh_endpoints(L, out.record.before); lua_setfield(L, -2, "before");
+    push_motion_refresh_endpoints(L, out.record.after); lua_setfield(L, -2, "after");
+    lua_setfield(L, -2, "record");
+    lua_createtable(L, 0, 6);
+    lua_pushnumber(L, out.routing.entries); lua_setfield(L, -2, "entries");
+    lua_pushnumber(L, out.routing.matching); lua_setfield(L, -2, "matching");
+    lua_pushnumber(L, out.routing.other); lua_setfield(L, -2, "other");
+    lua_pushnumber(L, out.routing.rejected); lua_setfield(L, -2, "rejected");
+    lua_pushnumber(L, out.routing.dropped); lua_setfield(L, -2, "dropped");
+    lua_pushboolean(L, out.routing.limit_reached); lua_setfield(L, -2, "limit_reached");
+    lua_setfield(L, -2, "routing");
+}
 }
 
 struct PhysicsApi {
@@ -245,6 +352,33 @@ struct PhysicsApi {
             lua_rawseti(L, -2, static_cast<int>(i + 1));
         }
         lua_setfield(L, -2, "records"); return 1;
+    }
+    static int begin_motion_refresh_probe(lua_State* L) {
+        auto& p = sync_plugin(L);
+        if (lua_gettop(L) != 0) luaL_error(L, "begin_motion_refresh_probe takes no arguments");
+        if (p.sync_probe_starts_ >= 1) return fail(L, "asked to begin passive probes more than once in one tick");
+        ++p.sync_probe_starts_;
+        // Allocate before backend admission; a failed Lua allocation cannot
+        // leave an admitted request without its only owning opaque handle.
+        auto* probe = new (lua_newuserdata(L, sizeof(MotionRefreshProbeValue))) MotionRefreshProbeValue{p.instance(), 0};
+        luaL_getmetatable(L, motion_refresh_probe_type); lua_setmetatable(L, -2);
+        const auto why = p.services_.game().begin_motion_refresh_probe(p.instance(), probe->sequence);
+        if (!why.empty()) { lua_pop(L, 1); return fail(L, why); }
+        if (!probe->sequence) { lua_pop(L, 1); return fail(L, "motion refresh probe did not return an owned request"); }
+        return 1;
+    }
+    static int poll_motion_refresh_probe(lua_State* L) {
+        auto& p = sync_plugin(L);
+        if (lua_gettop(L) != 1) luaL_error(L, "poll_motion_refresh_probe takes one opaque probe");
+        const auto probe = *static_cast<const MotionRefreshProbeValue*>(luaL_checkudata(L, 1, motion_refresh_probe_type));
+        if (probe.owner != p.instance()) luaL_error(L, "motion refresh probe belongs to another plugin instance");
+        if (p.sync_probe_polls_ >= 8) return fail(L, "asked to poll passive probes more than 8 times in one tick");
+        ++p.sync_probe_polls_;
+        motion_refresh_probe::Result out;
+        const auto why = p.services_.game().poll_motion_refresh_probe(p.instance(), probe.sequence, out);
+        if (!why.empty()) return fail(L, why);
+        if (!motion_refresh_result(out)) return fail(L, "motion refresh probe returned invalid observations");
+        push_motion_refresh_result(L, out); return 1;
     }
     static int submit(lua_State* L) {
         auto& p = plugin(L); const auto b = body(L, p, 1);
@@ -376,12 +510,14 @@ struct PhysicsApi {
 };
 void install_physics_api(Plugin&, lua_State* L) {
     metatable(L, handle_type); metatable(L, epoch_type); metatable(L, sync_probe_type);
+    metatable(L, motion_refresh_probe_type);
     luaL_newmetatable(L, hit_body_type); lua_pushstring(L, "locked"); lua_setfield(L, -2, "__metatable");
     lua_pushcfunction(L, hit_body_equal, "hit body equality"); lua_setfield(L, -2, "__eq"); lua_setreadonly(L, -1, true); lua_pop(L, 1);
     lua_getfield(L, -1, "world"); lua_setreadonly(L, -1, false);
     add_functions(L, "physics", {{"create", PhysicsApi::create}, {"read", PhysicsApi::read}, {"submit", PhysicsApi::submit},
         {"receipt", PhysicsApi::receipt}, {"acknowledge", PhysicsApi::acknowledge}, {"release", PhysicsApi::release}, {"probe_batch", PhysicsApi::probe_batch},
-        {"begin_sync_probe", PhysicsApi::begin_sync_probe}, {"poll_sync_probe", PhysicsApi::poll_sync_probe}});
+        {"begin_sync_probe", PhysicsApi::begin_sync_probe}, {"poll_sync_probe", PhysicsApi::poll_sync_probe},
+        {"begin_motion_refresh_probe", PhysicsApi::begin_motion_refresh_probe}, {"poll_motion_refresh_probe", PhysicsApi::poll_motion_refresh_probe}});
     lua_setreadonly(L, -1, true); lua_pop(L, 1);
 }
 } // namespace dingosdk::plugins

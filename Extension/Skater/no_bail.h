@@ -5,6 +5,20 @@
 namespace dingosdk {
 bool start_no_bail(std::uintptr_t image_base) noexcept;
 bool no_bail_available() noexcept;
+// Independent passive observer on the existing mover relay. The same fixed
+// observer/cookie is retained across each actual original call. No lease or
+// resource is held by this seam; removal is deliberately not an API here.
+enum class NoBailMoverEdge : std::uint8_t { before_original, original_returned };
+struct NoBailMoverEvent {
+    NoBailMoverEdge edge{};
+    std::uintptr_t rig{}, context{}, input{};
+    std::uint8_t flag{};
+};
+using NoBailMoverObserver = std::uint64_t (*)(const NoBailMoverEvent&, std::uint64_t cookie) noexcept;
+bool add_no_bail_mover_observer(NoBailMoverObserver observer) noexcept;
+// Requires the same fingerprint-attested relay and an actual hook entry.
+// Queued HookBatch setup or general NoBail readiness alone is insufficient.
+bool no_bail_mover_observation_available(std::uintptr_t image_base) noexcept;
 // Publish from the validated local client tick. Returns owner availability even
 // when both controls are off. Manual protection expires if ticks stop arriving.
 bool update_no_bail(std::uintptr_t client, std::uintptr_t entity, bool manual,

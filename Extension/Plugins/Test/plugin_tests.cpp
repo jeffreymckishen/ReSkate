@@ -14,6 +14,7 @@
 #include "Engine/Game/BMX/bmx_interaction.h"
 #include "Engine/Game/BMX/equipment_switch.h"
 #include "Engine/Game/Input/input_lease_policy.h"
+#include "Engine/Game/World/motion_refresh_probe.h"
 #include "Extension/BMX/bmx_world_transform.h"
 #include "Extension/BMX/bmx_collision_envelope.h"
 #include <algorithm>
@@ -272,6 +273,80 @@ struct FakeGame final : Game {
         }
         out.observed_epoch=out.records.back().epoch;++out.observed_epoch.serial;out.observed_epoch.time+=out.observed_epoch.seconds;
     }
+    // Constructed actor observations exercise only the real Host binding. They
+    // are not native actor identity, callback routing or consumption evidence.
+    struct MotionRefreshProbe {
+        std::uint64_t owner{}, sequence{};
+        double admitted_ms{}, deadline_ms{};
+        dingosdk::motion_refresh_probe::Result result{};
+    } motion_refresh;
+    dingosdk::motion_refresh_probe::Epoch motion_refresh_actor{
+        9007199254740995ULL, 9007199254740997ULL, 0, 9007199254741001ULL,
+        10.0, static_cast<float>(owned_body::native_seconds)};
+    std::uint64_t motion_refresh_sequence{9007199254740994ULL};
+    double motion_refresh_now_ms{1000};
+    unsigned motion_refresh_starts{}, motion_refresh_polls{}, motion_refresh_cancels{};
+    bool motion_refresh_actor_available{true}, motion_refresh_zero_sequence{};
+    std::string motion_refresh_begin_error, motion_refresh_poll_error;
+    std::string begin_motion_refresh_probe(std::uint64_t owner, std::uint64_t& sequence) override {
+        ++motion_refresh_starts; sequence = 0;
+        if (!motion_refresh_begin_error.empty()) return motion_refresh_begin_error;
+        if (!owner || !motion_refresh_actor_available) return "qualified current actor unavailable";
+        if (motion_refresh.sequence && motion_refresh.result.status == dingosdk::motion_refresh_probe::Status::pending)
+            return "actor observer occupied";
+        if (motion_refresh_sequence == std::numeric_limits<std::uint64_t>::max()) return "observer sequence exhausted";
+        motion_refresh = {};
+        motion_refresh.owner = owner; motion_refresh.sequence = ++motion_refresh_sequence;
+        motion_refresh.admitted_ms = motion_refresh_now_ms;
+        motion_refresh.deadline_ms = motion_refresh_now_ms + dingosdk::motion_refresh_probe::lifetime_ms;
+        motion_refresh.result.armed_epoch = motion_refresh_actor;
+        sequence = motion_refresh_zero_sequence ? 0 : motion_refresh.sequence;
+        return {};
+    }
+    std::string poll_motion_refresh_probe(std::uint64_t owner, std::uint64_t sequence,
+        dingosdk::motion_refresh_probe::Result& out) override {
+        ++motion_refresh_polls; out = {};
+        if (!sequence || motion_refresh.owner != owner || motion_refresh.sequence != sequence)
+            return "foreign or stale actor observation";
+        if (!motion_refresh_poll_error.empty()) return motion_refresh_poll_error;
+        // Fixture facts are controlled by the test. This leaf does not model
+        // callback collection, actor refresh, native expiry or confirmation.
+        out = motion_refresh.result;
+        return {};
+    }
+    void cancel_motion_refresh_probe(std::uint64_t owner) {
+        if (owner && motion_refresh.sequence && motion_refresh.owner == owner) {
+            motion_refresh = {}; ++motion_refresh_cancels;
+        }
+    }
+    void complete_motion_refresh_probe() {
+        namespace m = dingosdk::motion_refresh_probe;
+        auto& out = motion_refresh.result;
+        out.status = m::Status::observed; out.client_revalidated = true; out.elapsed_ms = 25;
+        auto& record = out.record;
+        record.present = record.unchanged_forwarding = true;
+        record.flag = 0xa5; record.input = {.125f, -.25f, .5f, 1};
+        record.before_epoch = out.armed_epoch;
+        ++record.before_epoch.serial; record.before_epoch.time += record.before_epoch.seconds;
+        record.after_epoch = record.before_epoch;
+        out.confirmed_epoch = record.after_epoch;
+        ++out.confirmed_epoch.serial; out.confirmed_epoch.time += out.confirmed_epoch.seconds;
+        const auto matrix = [](float position) -> m::Matrix {
+            return {1,0,0,0, 0,1,0,0, 0,0,1,0, position,6,7,1};
+        };
+        for (auto* endpoints : {&record.before, &record.after}) {
+            endpoints->root = matrix(5); endpoints->inverse = matrix(-5);
+            for (std::size_t i = 0; i < endpoints->caches.size(); ++i)
+                endpoints->caches[i] = matrix(20 + static_cast<float>(i));
+            for (std::size_t i = 0; i < endpoints->packets.size(); ++i) {
+                endpoints->packets[i] = matrix(40 + static_cast<float>(i));
+                endpoints->flags[i] = 0x80000000u + static_cast<std::uint32_t>(i);
+            }
+        }
+        // These are independent lower bounds, not an additive partition or a
+        // bound on dropped counts. actor_epoch zero is an intentional valid case.
+        out.routing = {128, 200, 201, 202, 203, true};
+    }
     bool test_body_release_refused{};
     std::string test_body_create_refusal;
     unsigned body_create_calls{}, body_read_calls{};
@@ -404,6 +479,7 @@ struct FakeGame final : Game {
         return {};
     }
     void body_release_all(std::uint64_t owner) override {
+        cancel_motion_refresh_probe(owner); // No owned-body prerequisite; repeated close is idempotent.
         release_order.emplace_back(owner, "body");
         body_releases.push_back(owner);
         if (sync_probe.owner==owner && sync_probe.result.status==dingosdk::body_sync_probe::Status::pending)
@@ -7810,6 +7886,7 @@ void bmx_lua_spawn_uses_owned_chassis_and_measured_part_placement() {
 }
 
 #include "measured_contact_host_fixture.inc"
+#include "motion_refresh_host_fixture.inc"
 
 int main() {
     unsigned skipped = 0;
@@ -7834,6 +7911,7 @@ int main() {
         run(sync_probe_permissions_client_phase_and_transport_are_enforced);
         run(sync_probe_binding_rejects_malformed_backend_facts);
         run(sync_probe_terminal_partial_facts_and_body_release_remain_distinct);
+        run(motion_refresh_host_fixture_v1);
         run(the_tracked_passive_sync_trial_runs_once_and_keeps_observation_separate);
         run(the_tracked_passive_sync_routes_trial_copies_validated_route_counts);
         run(native_actions_keep_opaque_requests_and_observed_receipts_distinct);

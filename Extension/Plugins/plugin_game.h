@@ -3,6 +3,7 @@
 #include "Engine/Core/Json/json.h"
 #include "Engine/Game/World/body_query.h"
 #include "Engine/Game/World/sync_probe.h"
+#include "Engine/Game/World/motion_refresh_probe.h"
 #include "Engine/Game/Skater/native_action.h"
 #include "Engine/Game/Skater/native_recovery.h"
 #include "Engine/Game/Input/native_input_trace.h"
@@ -278,6 +279,9 @@ public:
     virtual std::string body_acknowledge(std::uint64_t, const owned_body::Handle&, std::uint64_t) { return unavailable; }
     virtual std::string body_release(std::uint64_t, const owned_body::Handle&) { return unavailable; }
     virtual void body_release_all(std::uint64_t) {}
+    // Actor-scoped copied diagnostics do not require an owned body.
+    virtual std::string begin_motion_refresh_probe(std::uint64_t, std::uint64_t&) { return unavailable; }
+    virtual std::string poll_motion_refresh_probe(std::uint64_t, std::uint64_t, motion_refresh_probe::Result&) { return unavailable; }
     // One-shot native equipment requests. The VM owns opaque receipts; queued,
     // offered and selected are distinct from a later observed committed state.
     virtual bool native_action_request(std::uint64_t, skater_action::Kind, skater_action::Handle&, skater_action::Reason& reason) {

@@ -67,7 +67,7 @@ the actual Host case passed 21 scenarios and 2048 authored/COM comparisons with
 zero driving calls. The earlier 50 ms math-fixture failure remains archived;
 the unchanged rerun passed without increasing budgets.
 
-The fresh `BMX_LuaSpawn_20261023_v2` game trial now confirms a recognizable
+The earlier `BMX_LuaSpawn_20261023_v2` game trial confirmed a recognizable
 Lua-driven bike portion rendered at the left edge of the scene. It was clipped
 and elevated; a later image shows no bike there. This is native visual progress,
 not a verified eight-part render, successful chassis creation or a mounted ride.
@@ -86,12 +86,32 @@ No riding, tricks, rider alignment, fall recovery or 9.5 likeness is established
 The fourteen-path generic contact measurement checkpoint `2a98eb9c` passed
 Release, all 43 focused CTests (15.54 s), and the separate server configuration
 test (0.47 s) on its first build/test attempt. Its `5CC87656` runtime and
-`D149BD35` launcher are built offline and were not deployed for the visual trial.
-Native contact measurements, positive actor exclusion and wheel-force composition
-remain unqualified. The separate private first-use SDK setup/result-breadcrumb
-proposal passed 22 Host scenarios, 2048 comparisons and 11 Service cases/274
-checks. Root integration and a new native trial remain pending; those private
-checks do not qualify the live game behavior.
+`D149BD35` launcher were not deployed for that earlier visual trial. Native
+contact measurements, positive actor exclusion and wheel-force composition
+remain unqualified.
+
+`43e6d1ef` then moved requested first-use generic producer setup outside the Lua
+callback and service lock, retaining the original readiness and VM limits.
+Full Release, six focused CTests and the plugin suite passed on the first attempt:
+11 Service cases/274 checks and 22 Host scenarios/2048 comparisons, with zero
+native mutations in the Service fixture and zero driving calls in the Host fixture.
+
+The fresh `BMX_LuaSpawn_20261023_v3` native diagnostic used runtime `7F33A210`
+and launcher `D149BD35`. Its first create returned the exact preallocation
+readiness refusal; one separate explicit retry returned a body userdata. Lua
+adopted 143 advancing measured chassis samples and submitted all eight visual
+transforms for each before the two-metre envelope closed the diagnostic. The
+release API returned true and the adapter recorded `cleanup_unknown=false`.
+No 50 ms watchdog or plugin-budget error appears in this v3 runtime log.
+
+This proves a bounded native chassis observation milestone through the Lua API.
+The count records adopted measurements and accepted visual submissions, not 143
+archived snapshots or all-eight-part rendering. Release acceptance is not a later
+native parking, destruction or reuse witness. The [checkpoint](judging/checkpoints/2026-10-23-lua-stock-switching.md#native-chassis-after-deferred-setup)
+pins the fresh identity, result arities and raw C:/E: evidence. The earlier v2
+failure remains archived; its cause and cleanup are not resolved retrospectively.
+Mounted riding, rider alignment, contacts, forces, tricks, fall recovery and the
+requested 9.5 likeness remain unqualified.
 
 ## Where the implementation belongs
 

@@ -279,8 +279,74 @@ first-use SDK setup/create-read-release result proposal passed 22 Host scenarios
 2048 comparisons and 11 Service cases/274 checks with zero native mutations.
 Its [private receipt](../../../../build/bmx/owned-body-deferred-initialization-proposal-v1/receipt.json)
 has SHA-256 `54B409454607E8C0F291A5F4D62943821AF3F315B73DC13E6B613CC4E9FAD5B1`.
-Root integration and a new native trial remain pending. These private tests
-establish no mounted riding, tricks, fall recovery or 9.5 likeness.
+Those private tests preceded integration `43e6d1ef` and the bounded native
+chassis result below. They do not independently establish native gameplay.
+
+## Native chassis after deferred setup
+
+Seven-path source `43e6d1ef555698bd64cf3c5fb355ac3e98fa5d5d` moves requested
+generic producer initialization to a later eligible SDK tick, outside the Lua
+callback and service lock. It queues no owner, definition or body operation;
+a later explicit create still requires the original fresh anchor and clock.
+Setup does not refresh old readiness and failure remains sticky. The original
+50 ms VM budget is unchanged. Full Release and the six focused CTests passed
+on the first attempt (0.30 s), followed by plugins 1/1 (5.32 s test time).
+The integrated fixtures report 11 Service cases/274 checks with zero native
+mutations and 22 Host scenarios/2048 comparisons with zero driving calls.
+Fifteen optional plugin fixtures were absent. These tests alone are not native
+successful-hook or body evidence.
+
+Fresh package `BMX_LuaSpawn_20261023_v3` used runtime
+`7F33A210396719301B6A3843D93D0AA7F62F59C196A2F3CE3E0C16E60611988B`
+and matched launcher
+`D149BD35EFA00756EE1BD9A8484AD227FFDB50245C083FE62479E7A55CB25E64`.
+PID 55440 / creation FILETIME `134372787447790207` was bound to the isolated
+supported game and loaded runtime. These binaries were built from the reviewed
+source before the source commit; their compiled Git stamp alone does not name
+the later commit. Keep this body result separate from the earlier `DEB56DE0`
+visual evidence and the `9005C913` stock switching regression.
+
+The first protected create returned `(nil, "waiting for a fresh qualified 60 Hz
+physics step")`: `pcall_ok=true`, arity 2, first value nil and `body_returned=false`.
+This exact known refusal precedes slot reservation; it does not distinguish
+queued setup, anchor capture or clock qualification. One separate explicit
+readiness retry returned a userdata with arity 1. The latest read returned a
+table with arity 1. Lua adopted 143 valid advancing measured chassis samples,
+with all eight visual transform submissions accepted for each, then stopped
+because the body left the two-metre spawn envelope. This is an aggregate
+adoption/submission count, not 143 archived native snapshots or render receipts.
+Stored serial `5452` is the last adopted within-envelope measurement, not the
+later out-of-envelope read that triggered the stop.
+
+Release returned one boolean true. Final status is `closed`,
+`body_release_attempted=true`, `body_release_accepted=true`,
+`visual_remove_requested=true` and `cleanup_unknown=false`. These are the API
+and Lua adapter results; a later native parked witness, destruction, slot reuse
+and complete visual teardown were not observed. The seven saved images confirm
+the readiness/retry/final UI states, but do not show all eight parts rendered
+or a continuous body trajectory. No 50 ms watchdog or plugin-budget error
+appears in the saved v3 log. No HID/controller input, contact probe, submitted
+force, mounted rider, trick or recovery action was used. There is no gameplay
+likeness score.
+
+Raw files are retained in
+`C:\Users\Jeffr\Desktop\reskate\build\bmx\lua-bike-spawn-native-v3` and identically
+archived at `E:\RESKATE DEV\reskate\artifacts\lua-bike-spawn-native-v3`.
+Screenshots are under `E:\RESKATE DEV\reskate\screenshots\lua-bike-spawn-native-v3`.
+The [integrated execution](../../../../build/bmx/deferred-initialization-integration-v1/execution.json)
+binds the reviewed source and binaries. The [independent native outcome audit](../../../../build/bmx/actor-exclusion-proposal-v1/native-spawn-package-v3-independent-outcome-audit-v1.json),
+SHA-256 `651BBAE50B0C08FDEF5BEEE192BCD4B6FBE34CCF754BA7F099FF472C4CE1B217`,
+pins all raw files and screenshots. Key raw pins are storage
+`497283E2CFB58B38B35CD9E899D029261F586142DA1F9704CE693B684852D78D`
+and closure `3679D945806151D55779051DFB09F60067BB153B2A13719625FCACE7E1E86808`.
+A [second raw-result review](../../../../build/bmx/actor-exclusion-proposal-v1/spawn-v3-raw-review.json)
+independently agrees on the arities and proof limits.
+
+Closure records normal shutdown, fresh zero Skate processes and manifest
+withdrawal leaving zero active spawn manifests. All eleven C:/E: raw files and
+seven screenshot hashes match. This bounded result does not establish the cause or cleanup of
+the earlier v2 failure, broad switching reliability, mounted riding, rider
+alignment, contact/force composition, fall recovery or the requested 9.5 likeness.
 
 ## Remaining checks
 

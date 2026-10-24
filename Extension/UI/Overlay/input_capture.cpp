@@ -1851,7 +1851,7 @@ extern "C" void DingoSDKOverlaySetGrindStickTurn(bool on, float x, float y_add, 
     dingosdk::native_input_pulse::PublicationScope publication;
     if (!publication.owns()) return;
     auto& turn = dingosdk::overlay::detail::grind_stick_turn();
-    const auto until = GetTickCount64() + dingosdk::overlay::detail::stick_lease;
+    const auto until = on ? GetTickCount64() + dingosdk::overlay::detail::stick_lease : 0;
     bool changed = turn.x.exchange(x, std::memory_order_relaxed) != x;
     changed = (turn.y_add.exchange(y_add, std::memory_order_relaxed) != y_add) || changed;
     changed = (turn.y_scale.exchange(y_scale, std::memory_order_relaxed) != y_scale) || changed;
@@ -1873,7 +1873,7 @@ extern "C" void DingoSDKOverlaySetGrindStickLean(bool on, float x, float y) noex
     auto& lean = dingosdk::overlay::detail::grind_stick_lean();
     const auto safe_x = x == x ? x : 0.0f;
     const auto safe_y = y == y ? y : 0.0f;
-    const auto until = GetTickCount64() + dingosdk::overlay::detail::stick_lease;
+    const auto until = on ? GetTickCount64() + dingosdk::overlay::detail::stick_lease : 0;
     bool changed = lean.x.exchange(safe_x, std::memory_order_relaxed) != safe_x;
     changed = (lean.y.exchange(safe_y, std::memory_order_relaxed) != safe_y) || changed;
     changed = (lean.until.exchange(until, std::memory_order_relaxed) != until) || changed;

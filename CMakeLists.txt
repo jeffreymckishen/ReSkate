@@ -552,6 +552,24 @@ if(DINGOSDK_BUILD_PLUGIN_TESTS)
             add_test(NAME input_lease_capture_native_${scenario} COMMAND dingosdk_input_lease_capture_native_tests ${scenario})
             set_tests_properties(input_lease_capture_native_${scenario} PROPERTIES TIMEOUT 15)
         endforeach()
+        # Exercise the actual overlay setters and report service, with only
+        # constructed providers and a deterministic wall clock. The wrapper
+        # includes input_capture.cpp once; do not add a second object for it.
+        add_executable(dingosdk_input_grind_publication_tests
+            Engine/Game/Input/Test/input_grind_publication_tests.cpp
+            Engine/Game/Input/Test/input_grind_publication_overlay.cpp
+            Engine/Game/Input/Test/input_grind_publication_unavailable.cpp
+            Extension/UI/Overlay/scripted_pad.cpp
+            Extension/Skater/native_input_pulse.cpp)
+        target_include_directories(dingosdk_input_grind_publication_tests PRIVATE "${PROJECT_SOURCE_DIR}" "${PROJECT_BINARY_DIR}/generated")
+        target_include_directories(dingosdk_input_grind_publication_tests SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/External/imgui")
+        target_compile_definitions(dingosdk_input_grind_publication_tests PRIVATE
+            NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+        target_compile_options(dingosdk_input_grind_publication_tests PRIVATE /W4 /WX /Gy /Gw)
+        target_link_options(dingosdk_input_grind_publication_tests PRIVATE /OPT:REF)
+        target_link_libraries(dingosdk_input_grind_publication_tests PRIVATE dingosdk_logging dingosdk_json dxguid)
+        add_test(NAME input_grind_publication COMMAND dingosdk_input_grind_publication_tests)
+        set_tests_properties(input_grind_publication PROPERTIES TIMEOUT 15)
     endif()
     enable_testing()
     # The plugin host apart from the game: manifests, the reskate API, storage, modules, hot reload,

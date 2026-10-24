@@ -640,6 +640,7 @@ void publication_atomic() {
 }
 }
 
+#ifndef DINGOSDK_CAPTURE_NATIVE_NO_MAIN
 int main(int argc, char** argv) {
     if (argc != 2) { std::cerr << "one named capture scenario is required\n"; return 2; }
     const std::string_view name(argv[1]);
@@ -676,3 +677,4 @@ int main(int argc, char** argv) {
     else { std::cerr << "unknown capture scenario: " << name << '\n'; return 2; }
     std::cout << "input_lease_capture_native " << name << " checks=" << fixture::checks << " native_actions=0\n";
 }
+#endif

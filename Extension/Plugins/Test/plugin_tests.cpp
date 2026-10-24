@@ -595,6 +595,9 @@ struct FakeGame final : Game {
     std::map<std::pair<std::string, std::uint32_t>, std::pair<std::string, std::array<float, 16>>> entities;
     std::map<std::string, std::array<Vec3,2>> test_entity_boxes;
     std::uint32_t test_entity_fail_id{};
+    bool test_forbid_blueprint_enumeration{};
+    unsigned test_blueprint_enumerations{}, test_bounds_lookups{};
+    std::vector<std::string> test_bounds_names;
     std::string entity_set(std::string_view plugin, std::uint32_t id, std::string_view asset, const std::array<float, 16>& m, bool hidden,
                            std::optional<EntityAttach> attach, bool solid) override {
         if (id == test_entity_fail_id) return "constructed part failure";
@@ -608,11 +611,14 @@ struct FakeGame final : Game {
     }
     void entity_remove(std::string_view plugin, std::uint32_t id) override { entities.erase({std::string(plugin), id}); }
     std::optional<std::array<Vec3, 2>> entity_bounds(std::string_view blueprint) override {
+        ++test_bounds_lookups; test_bounds_names.emplace_back(blueprint);
         if (const auto found = test_entity_boxes.find(std::string(blueprint)); found != test_entity_boxes.end()) return found->second;
         if (blueprint != "World/Props/TrashCan_01") return std::nullopt;
         return std::array<Vec3, 2>{Vec3{-0.3f, 0, -0.3f}, Vec3{0.3f, 0.9f, 0.3f}};
     }
     std::vector<std::string> entity_blueprints(std::string_view prefix, bool meshes_only) override {
+        ++test_blueprint_enumerations;
+        if (test_forbid_blueprint_enumeration) return {};
         std::vector<std::string> out;
         for (const auto* name : {"World/Props/Bench_01", "World/Props/TrashCan_01", "World/Vehicles/Car_01"})
             if (std::string_view(name).starts_with(prefix) && (!meshes_only || entity_bounds(name))) out.emplace_back(name);
@@ -6356,6 +6362,7 @@ void bmx_lua_spawn_uses_owned_chassis_and_measured_part_placement() {
         reskate.on("unload",function() bike:stop("unload") end)
     )";
     const auto assets = [](TestEnvironment& e) {
+        e.fake.test_forbid_blueprint_enumeration=true;
         e.local_skater = SkaterState{{1,2,3}, .3f, 0,0,false,0};
         e.fake.focus_now = {true,false,true};
         constexpr auto radius = static_cast<float>(dingosdk::bmx::geometry::wheel_radius);
@@ -6375,6 +6382,14 @@ void bmx_lua_spawn_uses_owned_chassis_and_measured_part_placement() {
             !e.fake.native_action_requests && !e.fake.native_recovery_requests,
             "spawn diagnostics must never drive the rider, input, contacts or body");
     };
+    const auto bounded_ticks = [](Host& h, TestEnvironment& e, int count) {
+        for (int tick=0;tick<count;++tick) {
+            const auto before=e.fake.test_bounds_lookups;
+            ticks(h,e,1);
+            check(e.fake.test_bounds_lookups-before<=1,"preflight made more than one exact bounds lookup in a tick");
+            check(!e.fake.test_blueprint_enumerations,"spawn attempted forbidden global asset enumeration");
+        }
+    };
     unsigned scenarios=0;
     {
         auto actual=files;
@@ -6382,20 +6397,20 @@ void bmx_lua_spawn_uses_owned_chassis_and_measured_part_placement() {
         actual["plugin/main.lua"]=contents(root/"bike-spawn-trial/plugin/main.lua");
         TestEnvironment e; assets(e); e.panels_open=true; e.shown="bike-spawn-inert";
         Host h(e,Side::client); h.apply({package("bike-spawn-inert",actual)});
-        ticks(h,e,60); running(h,"bike-spawn-inert",e);
+        bounded_ticks(h,e,60); running(h,"bike-spawn-inert",e);
         check(!e.fake.body_creates && e.fake.entities.empty() && e.fake.calls.empty(),
             "exact trial page and 60 menu rebuilds remain inert before Arm");
         check(std::any_of(e.panels.begin(),e.panels.end(),[](const auto& p){return p.title=="Lua Bike Spawn Trial";}),
             "exact trial page builds");
         e.fake.focus_now.interface_open=true;
         e.actions={plugin_ui::Action{"bike-spawn-inert","Lua Bike Spawn Trial","spawn",false}};
-        ticks(h,e,1);check(!e.fake.body_creates && e.fake.entities.empty(),"actual menu Arm cannot spawn while menu is open");
+        bounded_ticks(h,e,1);check(!e.fake.body_creates && e.fake.entities.empty(),"actual menu Arm cannot spawn while menu is open");
         e.panels_open=false;e.fake.focus_now.interface_open=false;
-        ticks(h,e,2);running(h,"bike-spawn-inert",e);
+        bounded_ticks(h,e,9);running(h,"bike-spawn-inert",e);
         check(e.fake.body_creates==1 && e.fake.entities.size()==8,"exact menu entry creates one measured chassis after close");
-        e.fake.body_producer_step();ticks(h,e,1);
+        e.fake.body_producer_step();bounded_ticks(h,e,1);
         e.panels_open=true;e.fake.focus_now.interface_open=true;
-        ticks(h,e,1);
+        bounded_ticks(h,e,1);
         check(e.fake.body_release_calls==1 && e.fake.entities.empty(),"reopening actual menu stops unmounted trial");
         h.apply({}); // SDK storage flushes on VM shutdown; do not read an older ledger.
         const auto receipt=Json::parse(contents(e.storage_root()/"bike-spawn-inert/storage.json"));
@@ -6403,6 +6418,9 @@ void bmx_lua_spawn_uses_owned_chassis_and_measured_part_placement() {
             receipt["lua_bike_spawn_v1"]["visual_updates"]==Json(2) &&
             receipt["lua_bike_spawn_v1"]["last_measurement"]["serial"]==Json("101"),
             "exact page writes measured spawn receipt after release");
+        check(e.logged("Lua bike API") && receipt["lua_bike_api_marker_v3"]["event"]==Json("after") &&
+            receipt["lua_bike_api_marker_v3"]["operation"]==Json("release"),
+            "actual trial source keeps before/after API breadcrumbs through release and storage flush");
         no_driving(e); ++scenarios;
     }
     for (unsigned scenario=0; scenario<13; ++scenario) {
@@ -6415,45 +6433,45 @@ void bmx_lua_spawn_uses_owned_chassis_and_measured_part_placement() {
         if (scenario==11) e.fake.test_body_create_refusal="partial native body creation retained in quarantine; allocation retry prohibited";
         if (scenario==12) e.fake.test_body_create_refusal="waiting for a fresh qualified 60 Hz physics step";
         Host h(e,Side::client); h.apply({package(id,files)}); running(h,id,e);
-        ticks(h,e,3); check(!e.fake.body_creates && e.fake.entities.empty(),"startup must not spawn");
+        bounded_ticks(h,e,3); check(!e.fake.body_creates && e.fake.entities.empty(),"startup must not spawn");
         check(h.run_console("bike-spawn"),"explicit request reaches actual Lua");
         if (scenario==1) {
-            ticks(h,e,303);
+            bounded_ticks(h,e,303);
             check(state(h,e)["phase"]==Json("closed") && !e.fake.body_creates && e.fake.entities.empty(),"missing asset times out without allocation");
         } else if (scenario==2 || scenario==3) {
-            ticks(h,e,2);
+            bounded_ticks(h,e,9);
             const auto result=state(h,e);
             check(result["phase"]==Json("closed") && !e.fake.body_creates && e.fake.entities.empty(),"mismatched mesh, prefix setter failure or clock refusal cleans requested visuals without body retry: "+result.dump());
-            ticks(h,e,10); check(!e.fake.body_creates,"no hidden body creation retry");
+            bounded_ticks(h,e,10); check(!e.fake.body_creates,"no hidden body creation retry");
         } else if (scenario>=10) {
-            ticks(h,e,2); auto result=state(h,e);
+            bounded_ticks(h,e,9); auto result=state(h,e);
             const bool warmup=scenario!=11;
             check(result["phase"]==Json(warmup ? "clock_prepared" : "cleanup_unknown") && !e.fake.body_creates && e.fake.entities.empty(),
                 "only exact preallocation readiness refusal makes a separate retry available: "+result.dump());
-            ticks(h,e,10); check(state(h,e)["creation_attempts"]==Json(1),"readiness does not silently retry");
+            bounded_ticks(h,e,10); check(state(h,e)["creation_attempts"]==Json(1),"readiness does not silently retry");
             if (scenario!=12) e.fake.test_body_create_refusal.clear();
-            check(h.run_console("bike-clock-retry"),"explicit readiness retry action"); ticks(h,e,2);result=state(h,e);
+            check(h.run_console("bike-clock-retry"),"explicit readiness retry action"); bounded_ticks(h,e,9);result=state(h,e);
             if (scenario==10) check(result["phase"]==Json("spawned") && result["creation_attempts"]==Json(2) && e.fake.body_creates==1,
                 "separate explicit request creates after explicit readiness wait");
             if (scenario==11) check(result["phase"]==Json("cleanup_unknown") && result["creation_attempts"]==Json(1) && !e.fake.body_creates,
                 "partial/unknown create can never enter readiness retry");
             if (scenario==12) {
                 check(result["phase"]==Json("closed") && result["creation_attempts"]==Json(2),"second exact readiness refusal closes the bounded trial");
-                check(h.run_console("bike-clock-retry"),"third retry refused"); ticks(h,e,2);
+                check(h.run_console("bike-clock-retry"),"third retry refused"); bounded_ticks(h,e,2);
                 check(state(h,e)["creation_attempts"]==Json(2),"only one explicit readiness retry allowed");
             }
         } else {
-            ticks(h,e,1); check(!e.fake.body_creates && e.fake.entities.size()==8,"all eight ready requests precede chassis allocation");
-            ticks(h,e,1); auto result=state(h,e);
+            bounded_ticks(h,e,8); check(!e.fake.body_creates && e.fake.entities.size()==8,"eight separate exact mesh probes precede chassis allocation");
+            bounded_ticks(h,e,1); auto result=state(h,e);
             check(result["phase"]==Json("spawned") && result["visual_updates"]==Json(1) && e.fake.body_creates==1 && e.fake.entities.size()==8,
                 "one measured chassis spawns after visual readiness: "+result.dump()+"\n"+e.all());
             auto& body=e.fake.owned.begin()->second;
             check(body.definition.count==8 && body.definition.mass==106,"authored bounded combined-body definition reached actual API");
             const auto frame=e.fake.entities.at({id,1}).second;
             if (scenario==0) {
-                ticks(h,e,1); check(state(h,e)["visual_updates"]==Json(1),"same immutable native epoch is not another visual step");
+                bounded_ticks(h,e,1); check(state(h,e)["visual_updates"]==Json(1),"same immutable native epoch is not another visual step");
                 body.sample.position[0]+=.125f; ++body.sample.epoch.serial; body.sample.epoch.time+=body.sample.epoch.seconds;
-                ticks(h,e,1); result=state(h,e);
+                bounded_ticks(h,e,1); result=state(h,e);
                 check(result["phase"]==Json("spawned") && result["visual_updates"]==Json(2) &&
                     std::abs(e.fake.entities.at({id,1}).second[12]-frame[12]-.125f)<.00001f,"actual body read moves all visuals from measured COM");
                 check(h.run_console("bike-stop"),"explicit release command");
@@ -6461,33 +6479,81 @@ void bmx_lua_spawn_uses_owned_chassis_and_measured_part_placement() {
                 check(result["phase"]==Json("closed") && result["body_release_accepted"]==Json(true) &&
                     result["visual_remove_requested"]==Json(true) && e.fake.body_release_calls==1 && body.released && e.fake.entities.empty(),
                     "release acceptance and visual removal requests are separately reported");
-                check(h.run_console("bike-spawn"),"rearm request consumed"); ticks(h,e,2);
+                check(h.run_console("bike-spawn"),"rearm request consumed"); bounded_ticks(h,e,2);
                 check(e.fake.body_creates==1 && e.fake.body_release_calls==1,"one shot does not recreate retained allocations");
             } else if (scenario==4) {
-                e.fake.focus_now={false,false,true}; ticks(h,e,1);
+                e.fake.focus_now={false,false,true}; bounded_ticks(h,e,1);
                 check(state(h,e)["phase"]==Json("closed") && body.released && e.fake.entities.empty(),"focus loss releases and removes");
             } else if (scenario==5) {
-                body.sample.position[0]+=.125f; ticks(h,e,1);
+                body.sample.position[0]+=.125f; bounded_ticks(h,e,1);
                 check(state(h,e)["phase"]==Json("closed") && body.released && e.fake.entities.empty(),"mutable pose in identical epoch is refused");
             } else if (scenario==6) {
                 body.sample.epoch.serial=9007199254740994ULL; body.sample.epoch.time+=body.sample.epoch.seconds;
-                ticks(h,e,1); check(state(h,e)["serial"]==Json("9007199254740994"),"epoch serial above 2^53 stays exact");
-                ++body.sample.epoch.serial; body.sample.epoch.time+=body.sample.epoch.seconds; ticks(h,e,1);
+                bounded_ticks(h,e,1); check(state(h,e)["serial"]==Json("9007199254740994"),"epoch serial above 2^53 stays exact");
+                ++body.sample.epoch.serial; body.sample.epoch.time+=body.sample.epoch.seconds; bounded_ticks(h,e,1);
                 check(state(h,e)["serial"]==Json("9007199254740995") && state(h,e)["visual_updates"]==Json(3),"adjacent large serials remain distinct");
             } else if (scenario==7) {
                 e.fake.test_body_release_refused=true; check(h.run_console("bike-stop"),"constructed unknown release");
                 result=state(h,e);
                 check(result["phase"]==Json("cleanup_unknown") && result["body"]==Json(true) &&
                     result["cleanup_unknown"]==Json(true) && !body.released && e.fake.entities.empty(),"unknown park retains explicit ownership debt");
-                ticks(h,e,10); check(h.run_console("bike-stop") && h.run_console("bike-spawn"),"retry remains inert");
+                bounded_ticks(h,e,10); check(h.run_console("bike-stop") && h.run_console("bike-spawn"),"retry remains inert");
                 check(e.fake.body_release_calls==1 && e.fake.body_creates==1,"unknown cleanup cannot silently retry or rearm");
             } else if (scenario==8) {
                 h.apply({}); check(body.released && e.fake.body_release_calls==1 && e.fake.entities.empty(),"active unload requests release exactly once before VM cleanup");
             } else if (scenario==9) {
-                ticks(h,e,8); check(state(h,e)["phase"]==Json("closed") && body.released,"stalled native observation stops before 5 second watchdog");
+                bounded_ticks(h,e,8); check(state(h,e)["phase"]==Json("closed") && body.released,"stalled native observation stops before 5 second watchdog");
             }
         }
         no_driving(e); ++scenarios;
+    }
+    for (unsigned scenario=0;scenario<7;++scenario) {
+        const auto id="bike-spawn-bounded-preflight-"+std::to_string(scenario);
+        TestEnvironment e;assets(e);
+        const auto frame=std::string(world::blueprints[0]);
+        if (scenario==0) e.fake.test_entity_boxes[frame]={Vec3{1,0,0},Vec3{0,1,1}};
+        if (scenario==1) e.fake.test_entity_boxes[frame]={Vec3{},Vec3{}};
+        if (scenario==2) e.fake.test_entity_boxes[frame]={Vec3{std::numeric_limits<float>::infinity(),0,0},Vec3{1,1,1}};
+        if (scenario==3) e.fake.test_entity_boxes.erase(std::string(world::blueprints[7]));
+        if (scenario==4) e.fake.test_entity_boxes.erase(frame);
+        if (scenario==5) e.fake.test_body_create_refusal="waiting for a fresh qualified 60 Hz physics step";
+        Host h(e,Side::client);h.apply({package(id,files)});running(h,id,e);
+        check(h.run_console("bike-spawn"),"bounded preflight Arm");
+        if (scenario<=2) {
+            bounded_ticks(h,e,1);
+            check(state(h,e)["phase"]==Json("closed") && e.fake.test_bounds_lookups==1 &&
+                !e.fake.body_creates && e.fake.entities.empty(),"malformed non-wheel bounds refuse before visuals/body");
+        } else if (scenario==3) {
+            bounded_ticks(h,e,303);
+            check(state(h,e)["phase"]==Json("closed") && !e.fake.body_creates && e.fake.entities.empty(),
+                "last missing part shares the one total preflight deadline");
+            for (unsigned part=0;part<7;++part)
+                check(std::count(e.fake.test_bounds_names.begin(),e.fake.test_bounds_names.end(),world::blueprints[part])==1,
+                    "qualified earlier parts are not repeatedly queried");
+        } else if (scenario==4) {
+            bounded_ticks(h,e,295);
+            const auto radius=static_cast<float>(dingosdk::bmx::geometry::wheel_radius);
+            e.fake.test_entity_boxes[frame]={Vec3{-.2f,-radius,-radius},Vec3{.2f,radius,radius}};
+            bounded_ticks(h,e,10);
+            check(state(h,e)["phase"]==Json("closed") && !e.fake.body_creates && e.fake.entities.empty(),
+                "late first mesh cannot reset or extend the five-second deadline for remaining parts");
+        } else if (scenario==5) {
+            bounded_ticks(h,e,9);
+            check(state(h,e)["phase"]==Json("clock_prepared") && e.fake.test_bounds_lookups==8,
+                "first preallocation refusal completed eight exact part probes");
+            e.fake.test_body_create_refusal.clear();e.fake.test_entity_boxes.erase(frame);
+            check(h.run_console("bike-clock-retry"),"separate explicit readiness retry");
+            bounded_ticks(h,e,303);
+            check(state(h,e)["phase"]==Json("closed") && state(h,e)["creation_attempts"]==Json(1) &&
+                !e.fake.body_creates && e.fake.entities.empty() && e.fake.test_bounds_names.at(8)==frame,
+                "explicit retry must requalify from first mesh and cannot reuse the prior preflight");
+        } else {
+            bounded_ticks(h,e,4);const auto probes=e.fake.test_bounds_lookups;
+            e.fake.focus_now.focused=false;bounded_ticks(h,e,1);
+            check(state(h,e)["phase"]==Json("closed") && e.fake.test_bounds_lookups==probes &&
+                !e.fake.body_creates && e.fake.entities.empty(),"focus loss stops a partial preflight before another lookup");
+        }
+        no_driving(e);++scenarios;
     }
     // Compare the Lua port with the existing authored transform mathematics.
     // The oracle is source-only C++; no legacy controller or native writer runs.

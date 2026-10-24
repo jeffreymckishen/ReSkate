@@ -32,7 +32,7 @@ function S.new(api)
     return setmetatable({api=api or reskate,phase="idle",detail="No Lua bike spawned.",used=false,
         wall=0,phase_wall=0,read_wall=0,updates=0,body_release_attempted=false,
         visual_remove_requested=false,body_release_accepted=false,cleanup_unknown=false,
-        creation_attempts=0,creation_unknown=false,clock_retried=false},Runtime)
+        creation_attempts=0,creation_unknown=false,clock_retried=false,asset_part=1},Runtime)
 end
 function Runtime:status()
     local measurement=nil
@@ -58,7 +58,7 @@ function Runtime:request()
 end
 function Runtime:retry_after_clock_warmup()
     if self.phase~="clock_prepared" or self.clock_retried then return false,"No preallocation readiness retry is available." end
-    self.clock_retried=true self.visual_requested=false self.visual_remove_requested=false
+    self.clock_retried=true self.visual_requested=false self.visual_remove_requested=false self.asset_part=1
     self.phase="armed" self.phase_wall=self.wall
     self.detail="One explicit readiness retry is armed. Close the menu."
     return true
@@ -84,17 +84,25 @@ function Runtime:stop(reason)
 end
 function Runtime:owned_measurement() return self.body,self.sample end
 function Runtime:_assets()
-    local loaded={}
-    for _,name in self.api.entities.blueprints("reskate/bmx/",true) do loaded[name]=true end
-    for _,name in G.blueprints do if not loaded[name] then return false,"waiting for loaded mesh: "..name end end
-    for _,part in {3,4} do
-        local low,high=self.api.entities.bounds(G.blueprints[part])
-        if not vec(low) or not vec(high) then return false,"waiting for wheel mesh bounds" end
+    -- Exact names avoid a cold walk of the complete native asset registry.
+    -- One lookup per tick keeps the eight-part preflight inside one deadline.
+    local part=self.asset_part
+    if part>#G.blueprints then return true end
+    local name=G.blueprints[part]
+    local low,high=self.api.entities.bounds(name)
+    if low==nil and high==nil then return false,"waiting for loaded mesh bounds: "..name end
+    if not vec(low) or not vec(high) or low.x>high.x or low.y>high.y or low.z>high.z
+        or (low.x==high.x and low.y==high.y and low.z==high.z) then
+        return nil,"invalid loaded mesh bounds: "..name
+    end
+    if part==3 or part==4 then
         local radius=math.max(high.y-low.y,high.z-low.z)*.5
         if math.abs(radius-G.wheel_radius)>.002 then
-            return nil,string.format("wheel geometry mismatch %s: measured %.6f m, Lua %.6f m",G.blueprints[part],radius,G.wheel_radius)
+            return nil,string.format("wheel geometry mismatch %s: measured %.6f m, Lua %.6f m",name,radius,G.wheel_radius)
         end
     end
+    self.asset_part+=1
+    if self.asset_part<=#G.blueprints then return false,"checked loaded mesh bounds: "..name end
     return true
 end
 function Runtime:_place(matrices)
@@ -125,11 +133,11 @@ function Runtime:_update(dt)
     end
     if not ready then self:stop("focus/menu/gameplay changed") return end
     if self.phase=="loading_assets" then
+        if self.wall-self.phase_wall>5000 then self:stop("bike asset preflight timed out") return end
         local assets,why=self:_assets()
         if assets==nil then self:stop(why) return end
         if not assets then
             self.detail=why
-            if self.wall-self.phase_wall>5000 then self:stop("bike asset preflight timed out: "..why) end
             return
         end
         local placed,why=self:_place(assert(Visual.matrices(self.root,self.rotation)))

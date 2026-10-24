@@ -237,6 +237,7 @@ struct FakeGame final : Game {
     std::map<std::uint64_t, OwnedBody> owned;
     std::vector<std::uint64_t> body_releases;
     unsigned body_creates{}, body_submissions{}, body_release_calls{};
+    unsigned body_submit_entries{};
     struct SyncProbe {
         std::uint64_t owner{},sequence{};
         owned_body::Handle handle{};
@@ -306,6 +307,7 @@ struct FakeGame final : Game {
         b->latest = b->sample; (void)b->mailbox.observe_successor(b->sample); sample = b->sample; return {};
     }
     std::string body_submit(std::uint64_t owner, const owned_body::Handle& h, const owned_body::Command& command, std::uint64_t& sequence) override {
+        ++body_submit_entries; // Count entry even when the backend rejects a zero/invalid packet.
         sequence = 0;
         auto* b = body_of(owner, h);
         if (!b || b->released || body_command_sequence == std::numeric_limits<std::uint64_t>::max() ||
@@ -4604,6 +4606,7 @@ void camera_inspector_prepares_then_explicitly_requests_a_view() {
 }
 
 #include "bmx_first_ride_import_test.inc"
+#include "passive_sync_trial_test.inc"
 
 void bmx_lua_first_ride_imports_stay_inert() {
     const auto root = std::filesystem::path(RESKATE_SOURCE_DIR);
@@ -7830,6 +7833,7 @@ int main() {
         run(sync_probe_permissions_client_phase_and_transport_are_enforced);
         run(sync_probe_binding_rejects_malformed_backend_facts);
         run(sync_probe_terminal_partial_facts_and_body_release_remain_distinct);
+        run(the_tracked_passive_sync_trial_runs_once_and_keeps_observation_separate);
         run(native_actions_keep_opaque_requests_and_observed_receipts_distinct);
         run(native_actions_check_permission_side_cancellation_and_rate);
         run(native_action_quarantine_remains_visible_until_safe_acknowledgement);

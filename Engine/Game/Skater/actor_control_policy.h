@@ -28,6 +28,22 @@ struct Snapshot {
 };
 
 class Arbiter;
+// A cooperating SDK writer can run only while no claim exists. Its marker is
+// in the same atomic word as reservation, so an idle read cannot race admission.
+// This is dispatch exclusion, not native consumption or restoration evidence.
+class IdleCall {
+public:
+    IdleCall() noexcept = default;
+    ~IdleCall() noexcept;
+    IdleCall(const IdleCall&) = delete;
+    IdleCall& operator=(const IdleCall&) = delete;
+    IdleCall(IdleCall&&) = delete;
+    IdleCall& operator=(IdleCall&&) = delete;
+    bool active() const noexcept { return arbiter_ != nullptr; }
+private:
+    friend class Arbiter;
+    Arbiter* arbiter_{};
+};
 // One original native invocation owns one cookie. It cannot be copied or moved
 // into a second return path. The service must outlive its native invocations.
 class Call {
@@ -47,7 +63,9 @@ private:
 };
 
 // This is an internal ownership gate, not an actuator or a native completion
-// detector. Qualified readers must supply the two release proofs explicitly.
+// detector. FOLLOW always requires body park and actual publisher drain. A
+// particular operation may explicitly require native consumption as well;
+// synchronous copied values need not claim native pose-history erasure.
 // A single atomic word binds phase, callbacks and barriers to one generation.
 class Arbiter {
     static constexpr unsigned required_shift = 2, pending_shift = 4, count_shift = 6, generation_shift = 14;
@@ -63,6 +81,27 @@ public:
     Arbiter(const Arbiter&) = delete;
     Arbiter& operator=(const Arbiter&) = delete;
 
+    bool enter_idle(IdleCall& call) noexcept {
+        if (call.active()) return false;
+        for (unsigned attempt = 0; attempt < attempts; ++attempt) {
+            auto word = word_.load(std::memory_order_acquire);
+            // An idle writer word has no generation and no phase/barriers.
+            if ((word & ~(static_cast<std::uint64_t>(maximum_in_flight) << count_shift)) ||
+                count(word) == maximum_in_flight) return false;
+            if (word_.compare_exchange_weak(word, word + count_unit, std::memory_order_acq_rel)) {
+                call.arbiter_ = this; return true;
+            }
+        }
+        return false;
+    }
+    bool leave_idle(IdleCall& call) noexcept {
+        if (call.arbiter_ != this) return false;
+        // Reservation requires exactly zero. This still-active marker prevents
+        // any claim generation from occupying the word until this subtraction.
+        // fetch_sub cannot strand a marker after bounded-CAS contention.
+        (void)word_.fetch_sub(count_unit, std::memory_order_acq_rel);
+        call.arbiter_ = nullptr; return true;
+    }
     bool reserve(std::uint64_t owner, Domain domain, Ticket& ticket) noexcept {
         ticket = {};
         if (!owner || !valid(domain)) return false;
@@ -97,6 +136,7 @@ public:
             auto word = current(owner, ticket);
             if (!word) return false;
             if (domain_.load(std::memory_order_acquire) == Domain::follow &&
+                required != Barrier::body_parked &&
                 required != (Barrier::native_consumed | Barrier::body_parked)) return false;
             if (phase(word) == Phase::revoking) return barriers(word, required_shift) == required;
             if (phase(word) != Phase::published) return false;
@@ -159,6 +199,13 @@ public:
         const auto word = word_.load(std::memory_order_acquire);
         if (word == reserving) return out;
         if (!word) { out.available = true; return out; }
+        if (!(word & ~(static_cast<std::uint64_t>(maximum_in_flight) << count_shift))) {
+            // Do not leak a previous claim's retained owner/domain as the
+            // identity of a generation-zero idle dispatch marker.
+            out.in_flight = count(word);
+            out.available = word_.load(std::memory_order_acquire) == word;
+            return out.available ? out : Snapshot{};
+        }
         out.ticket.generation = word >> generation_shift;
         out.owner = owner_.load(std::memory_order_acquire);
         out.domain = domain_.load(std::memory_order_acquire);
@@ -190,4 +237,5 @@ private:
     std::uint64_t next_;
 };
 inline Call::~Call() noexcept { if (arbiter_) (void)arbiter_->leave(*this); }
+inline IdleCall::~IdleCall() noexcept { if (arbiter_) (void)arbiter_->leave_idle(*this); }
 } // namespace dingosdk::actor_control

@@ -7,6 +7,7 @@
 #include "Extension/Objects/ParkEditor/park_editor_runtime.h"
 #include "network_object_runtime.h"
 #include "Extension/Profile/runtime_internal.h"
+#include "Extension/Skater/native_actions.h"
 #include "Extension/World/local_world_layers.h"
 #include <algorithm>
 #include <atomic>
@@ -623,6 +624,10 @@ std::uint32_t send_placement_teleport(std::uintptr_t manager, const profile::Pla
 }
 
 void update_position_teleport() {
+    actor_control::IdleCall writer;
+    // Denial must retain accepted work, including the original queue deadline.
+    // This marker spans the native transition constructor, call and teardown.
+    if (!skater_action::enter_motion_writer(writer)) return;
     auto& r = placements_runtime();
     bool dropped{};
     std::array<float, 3> at{};
@@ -660,6 +665,10 @@ void update_position_teleport() {
 }
 
 void update_placement_teleport() {
+    actor_control::IdleCall writer;
+    // Keep accepted object teleports pending if follow already owns motion.
+    // The existing recursive profile/queue scopes and native ABI stay intact.
+    if (!skater_action::enter_motion_writer(writer)) return;
     auto& r = placements_runtime();
     std::uint64_t token{};
     std::uint32_t request{};

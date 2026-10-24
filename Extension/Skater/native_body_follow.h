@@ -1,0 +1,98 @@
+#pragma once
+#include "actor_control.h"
+#include "Extension/World/owned_bodies.h"
+#include <array>
+#include <cstdint>
+
+namespace dingosdk::body_follow_native {
+// Caller serializes Binding access. Internal only: no address, Actor or
+// MeasuredSource is exposed to Luau.
+// The retaining service must outlive every Call and must retain any unresolved
+// Binding across VM unload. This is not a public reservation API.
+struct Binding {
+    std::uint64_t owner{}, sequence{};
+    actor_control_native::Actor actor{};
+    // Initial measurement selects a persistent exact body/allocation/world.
+    // Native motion never treats its original pose or wall age as current.
+    owned_bodies::MeasuredSource source{};
+    actor_control_native::Admission admission{};
+    bool reserved{}, published{}, stopped{};
+};
+// Out must be empty. A false result may still have reserved=true if bounded
+// abandonment failed; the caller must retain it and retry cleanup, not discard.
+bool reserve_binding(std::uint64_t owner, std::uint64_t sequence,
+    const owned_bodies::MeasuredSource&, actor_control_native::Admission,
+    Binding& out, actor_control_native::Reason& reason) noexcept;
+// Separate opt-in step. The first harmless native diagnostic can reserve/join
+// and abandon without publishing any target or incurring follow cleanup duty.
+// Publishing is not permitted by the proposal's activation scope yet.
+bool publish_binding(Binding&, actor_control_native::Reason& reason) noexcept;
+// MeasuredSource stores native ring COM position and principal-body rotation.
+// Attachment names a point relative to that COM in that principal-body basis,
+// and the root-local basis expressed in that body basis, Hamilton XYZW.
+// Lua owns attachment/mode policy; the SDK has no bike geometry or yaw policy.
+struct Attachment {
+    owned_body::Vec offset_from_com{};
+    owned_body::Quaternion root_in_body{0, 0, 0, 1};
+};
+// A NEW current-epoch measured source supplies both translation and full basis.
+// Exact supplied padding words are retained. No body borrow spans original.
+// Call remains alive through the future exact original invocation.
+struct PreparedTarget {
+    actor_control::Call call;
+    actor_control_native::Actor actor{};
+    owned_bodies::MeasuredSource source{};
+    owned_body::Sample sample{};
+    std::uint64_t owner{}, sequence{};
+    alignas(16) std::array<float, 16> value{};
+    bool ready{};
+    PreparedTarget() noexcept = default;
+    PreparedTarget(const PreparedTarget&) = delete;
+    PreparedTarget& operator=(const PreparedTarget&) = delete;
+};
+bool prepare_target(const Binding&, std::uintptr_t rig, std::uintptr_t context,
+    const std::array<float, 16>* supplied, const Attachment&,
+    PreparedTarget&, actor_control_native::Reason& reason) noexcept;
+// The future wrapper must call immediately before its forwarding edge. A
+// prepared copy never remains authority after stop, replacement or source loss.
+// This final sampled check does not create native lifetime/consumption proof.
+bool current_target(const Binding&, PreparedTarget&, actor_control_native::Reason&) noexcept;
+// Before publication this only abandons its exact admission. Afterwards it
+// revokes with the required body-park barrier. Drain remains an Arbiter duty.
+bool stop(Binding&) noexcept;
+// Captured only from the actual revoked follow claim after every accepted Call
+// drains, before its dependent owned body is released. No caller supplies a
+// qualified boolean, numeric drain token or synthetic clock floor.
+class ParkFence {
+public:
+    bool available() const noexcept { return owner_ != 0; }
+private:
+    friend bool capture_park_fence(const Binding&, ParkFence&, actor_control_native::Reason&) noexcept;
+    friend bool observe_park(const Binding&, const ParkFence&, owned_bodies::RetainedParkReceipt&,
+        actor_control_native::Reason&) noexcept;
+    friend bool park_history_matches(const Binding&, const ParkFence&, const owned_bodies::RetainedParkReceipt&) noexcept;
+    friend bool complete_stop(Binding&, const ParkFence&, const owned_bodies::RetainedParkReceipt&) noexcept;
+    friend bool completed_history_matches(const Binding&, const ParkFence&, const owned_bodies::RetainedParkReceipt&) noexcept;
+    std::uint64_t owner_{}, sequence_{};
+    actor_control_native::Actor actor_{};
+    owned_bodies::RetirementBasis basis_{};
+};
+bool capture_park_fence(const Binding&, ParkFence&, actor_control_native::Reason&) noexcept;
+// This observes only the retained body's park duty; it never satisfies a shared
+// barrier or retires a claim. Native-consumer retirement remains independent.
+bool observe_park(const Binding&, const ParkFence&, owned_bodies::RetainedParkReceipt&,
+    actor_control_native::Reason&) noexcept;
+// Immutable terminal history can remain valid after follow retirement. No age
+// refresh or repeat park is required. This is NOT current actor/input authority;
+// a recovery/action service must qualify that independently before any effect.
+bool park_history_matches(const Binding&, const ParkFence&, const owned_bodies::RetainedParkReceipt&) noexcept;
+// SDK-completed receipt identity only: the same stored opaque objects were
+// validated before actual retirement. No new World/actor freshness is required
+// merely to ACK history after a level change; this grants no action authority.
+bool completed_history_matches(const Binding&, const ParkFence&,
+    const owned_bodies::RetainedParkReceipt&) noexcept;
+// Retire only actual stopped/drained SDK ownership after matching positive
+// park. The caller also excludes any invoking edge or abnormal original return.
+// Success is SDK completion; native pose-history retirement remains unknown.
+bool complete_stop(Binding&, const ParkFence&, const owned_bodies::RetainedParkReceipt&) noexcept;
+} // namespace dingosdk::body_follow_native

@@ -80,7 +80,9 @@ public:
     // Reader supplies active/base identity and safe native manager/phase reads.
     // It must invoke no game function, profile API, logger or caller callback.
     // The getter/setter pair preserves this helper's Win32 LastError effects.
-    template<class Reader> Result observe(Reader& reader) noexcept {
+    // Existing actor observations keep their position-only queue contract.
+    // Follow admission also needs the real accepted placed-object queue.
+    template<class Reader> Result observe(Reader& reader, bool include_placement_token = false) noexcept {
         const auto saved_error = reader.get_error();
         struct Restore {
             Reader& reader;
@@ -95,7 +97,8 @@ public:
             const auto before = reader.identity();
             if (!before.active || !before.base) { result.observation = Observation::inactive; return result; }
             const auto revision = revision_;
-            bool pending = dispatch_depth_ != 0 || state_.position_teleport.has_value();
+            bool pending = dispatch_depth_ != 0 || state_.position_teleport.has_value() ||
+                (include_placement_token && state_.teleport_token != 0);
             std::uintptr_t observed_manager{};
             if (!pending) {
                 std::uintptr_t manager{};

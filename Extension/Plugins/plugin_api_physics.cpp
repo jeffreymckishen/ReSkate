@@ -15,6 +15,7 @@ constexpr char handle_type[] = "reskate.world.physics.body";
 constexpr char epoch_type[] = "reskate.world.physics.epoch";
 constexpr char sync_probe_type[] = "reskate.world.physics.sync_probe";
 constexpr char motion_refresh_probe_type[] = "reskate.world.physics.motion_refresh_probe";
+constexpr char follow_type[] = "reskate.world.physics.follow";
 constexpr char hit_body_type[] = "reskate.world.physics.hit_body";
 struct BodyValue { std::uint64_t owner{}; Handle handle{}; };
 struct EpochValue { std::uint64_t owner{}; Handle handle{}; Sample sample{}; };
@@ -22,6 +23,7 @@ struct EpochValue { std::uint64_t owner{}; Handle handle{}; Sample sample{}; };
 struct SyncProbeValue { std::uint64_t owner{}; Handle handle{}; std::uint64_t sequence{}; };
 // An actor-scoped diagnostic request, never an SDK body or a submit epoch.
 struct MotionRefreshProbeValue { std::uint64_t owner{}, sequence{}; };
+struct FollowValue { std::uint64_t owner{}; body_follow_api::Handle handle{}; };
 // Equality only inside one returned batch. This is not a usable owned-body handle,
 // native identity, feature identity, or claim about the body's motion.
 struct HitBodyValue { std::uint64_t owner{}, batch{}; std::uint32_t ordinal{}; };
@@ -248,6 +250,69 @@ void push_motion_refresh_result(lua_State* L, const motion_refresh_probe::Result
     lua_pushboolean(L, out.routing.limit_reached); lua_setfield(L, -2, "limit_reached");
     lua_setfield(L, -2, "routing");
 }
+FollowValue follow(lua_State* L, Plugin& p) {
+    if (lua_gettop(L) != 1) luaL_error(L, "an opaque follow handle is the only argument");
+    const auto value = *static_cast<const FollowValue*>(luaL_checkudata(L, 1, follow_type));
+    if (value.owner != p.instance()) luaL_error(L, "follow handle belongs to another plugin instance");
+    return value;
+}
+body_follow_api::Attachment follow_attachment(lua_State* L, int at) {
+    fields(L, at, {"offset_from_com", "root_in_body"});
+    body_follow_api::Attachment attachment;
+    attachment.offset_from_com = vec_field(L, at, "offset_from_com");
+    lua_getfield(L, at, "root_in_body"); luaL_checktype(L, -1, LUA_TTABLE);
+    if (lua_objlen(L, -1) != 4) luaL_error(L, "follow root_in_body has four Hamilton XYZW values");
+    array_fields(L, -1, 4);
+    for (int i = 0; i < 4; ++i) {
+        lua_rawgeti(L, -1, i + 1);
+        attachment.root_in_body[static_cast<std::size_t>(i)] = static_cast<float>(luaL_checknumber(L, -1));
+        lua_pop(L, 1);
+    }
+    lua_pop(L, 1);
+    if (!body_follow_api::valid(attachment))
+        luaL_error(L, "follow attachment needs a finite COM offset within +/-10m and a unit Hamilton XYZW rotation");
+    return attachment;
+}
+bool follow_receipt(const body_follow_api::Receipt& receipt, body_follow_api::Handle handle) noexcept {
+    using namespace body_follow_api;
+    if (!handle.sequence || receipt.handle.sequence != handle.sequence || !phase_name(receipt.phase) ||
+        std::string_view(skater_action::reason_name(receipt.reason)) == "invalid" ||
+        std::string_view(skater_action::reason_name(receipt.park_reason)) == "invalid" ||
+        (receipt.pending != Pending::none && receipt.pending != Pending::body_parked) ||
+        receipt.in_flight > 255 || receipt.returned_revision > receipt.final_revision ||
+        ((!receipt.final_revision) != (!receipt.final_native_epoch)) || receipt.native_retirement_known) return false;
+    if (receipt.phase == Phase::reserved &&
+        (receipt.final_revision || receipt.park_observed || receipt.pending != Pending::none)) return false;
+    if (receipt.phase == Phase::abandoned && (receipt.final_revision || receipt.in_flight || receipt.park_observed ||
+        receipt.pending != Pending::none)) return false;
+    if (receipt.phase == Phase::completed && (!receipt.park_observed || receipt.in_flight ||
+        receipt.pending != Pending::none || receipt.returned_revision != receipt.final_revision)) return false;
+    return true;
+}
+void push_follow_receipt(lua_State* L, const body_follow_api::Receipt& receipt) {
+    lua_createtable(L, 0, 15);
+    lua_pushstring(L, body_follow_api::phase_name(receipt.phase)); lua_setfield(L, -2, "phase");
+    lua_pushstring(L, skater_action::reason_name(receipt.reason)); lua_setfield(L, -2, "reason");
+    lua_pushstring(L, skater_action::reason_name(receipt.park_reason)); lua_setfield(L, -2, "park_reason");
+    text_number(L, receipt.handle.sequence); lua_setfield(L, -2, "sequence");
+    text_number(L, receipt.final_revision); lua_setfield(L, -2, "final_revision");
+    text_number(L, receipt.final_native_epoch); lua_setfield(L, -2, "final_native_epoch");
+    text_number(L, receipt.returned_revision); lua_setfield(L, -2, "returned_revision");
+    lua_createtable(L, receipt.pending == body_follow_api::Pending::body_parked ? 1 : 0, 0);
+    if (receipt.pending == body_follow_api::Pending::body_parked) { lua_pushstring(L, "body_parked"); lua_rawseti(L, -2, 1); }
+    lua_setfield(L, -2, "pending");
+    lua_pushnumber(L, receipt.in_flight); lua_setfield(L, -2, "in_flight");
+    lua_pushboolean(L, receipt.claim_known); lua_setfield(L, -2, "claim_known");
+    lua_pushboolean(L, receipt.orphaned); lua_setfield(L, -2, "orphaned");
+    lua_pushboolean(L, receipt.park_observed); lua_setfield(L, -2, "park_observed");
+    lua_pushboolean(L, receipt.native_retirement_known); lua_setfield(L, -2, "native_retirement_known");
+    lua_pushboolean(L, body_follow_api::terminal(receipt.phase)); lua_setfield(L, -2, "terminal");
+}
+int follow_result(lua_State* L, bool ok, const char* why) {
+    lua_pushboolean(L, ok);
+    if (ok) return 1;
+    lua_pushstring(L, why); return 2;
+}
 }
 
 struct PhysicsApi {
@@ -255,6 +320,68 @@ struct PhysicsApi {
         auto& p = plugin_of(L); need(L, p, "world.physics", "reskate.world.physics");
         if (p.services_.authority()) luaL_error(L, "native bodies are client phase only");
         return p;
+    }
+    static Plugin& follow_plugin(lua_State* L) {
+        auto& p = plugin(L);
+        need(L, p, "world.physics.follow", "reskate.world.physics follow");
+        return p;
+    }
+    static int reserve_follow(lua_State* L) {
+        auto& p = follow_plugin(L);
+        if (lua_gettop(L) != 2) luaL_error(L, "reserve_follow takes one owned body and one attachment");
+        const auto b = body(L, p, 1); const auto attachment = follow_attachment(L, 2);
+        if (p.follow_reserves_ >= body_follow_api::reserve_limit) return fail(L, "asked to reserve follow more than once in one tick");
+        ++p.follow_reserves_;
+        // Allocate before native admission. There is deliberately no __gc:
+        // dropping userdata cannot release or acknowledge a native claim.
+        auto* value = new (lua_newuserdata(L, sizeof(FollowValue))) FollowValue{p.instance(), {}};
+        luaL_getmetatable(L, follow_type); lua_setmetatable(L, -2);
+        body_follow_api::Reason reason{body_follow_api::Reason::unavailable};
+        const bool accepted = p.services_.game().body_follow_reserve(p.instance(), b.handle, attachment, value->handle, reason);
+        const auto reason_name = skater_action::reason_name(reason);
+        const bool valid_reason = std::string_view(reason_name) != "invalid";
+        const char* why = !valid_reason ? "follow reserve returned an invalid reason" :
+            reason == body_follow_api::Reason::none ? "follow reserve was refused" : reason_name;
+        if (!value->handle.sequence) {
+            lua_pop(L, 1);
+            return fail(L, accepted ? "follow reserve did not return owned authority" : why);
+        }
+        // A nonzero refused reservation still owns cleanup duty. Returning nil
+        // here would hide it. The second result must be checked before publish.
+        if (accepted && valid_reason && reason == body_follow_api::Reason::none) lua_pushnil(L);
+        else lua_pushstring(L, why);
+        return 2;
+    }
+    static int publish_follow(lua_State* L) {
+        auto& p = follow_plugin(L); const auto value = follow(L, p);
+        if (p.follow_publishes_ >= body_follow_api::publish_limit) return follow_result(L, false, "asked to publish follow more than once in one tick");
+        ++p.follow_publishes_;
+        body_follow_api::Reason reason{body_follow_api::Reason::unavailable};
+        const bool ok = p.services_.game().body_follow_publish(p.instance(), value.handle, reason);
+        return follow_result(L, ok, skater_action::reason_name(reason));
+    }
+    static int read_follow(lua_State* L) {
+        auto& p = follow_plugin(L); const auto value = follow(L, p);
+        if (p.follow_reads_ >= body_follow_api::read_limit) return fail(L, "asked to read follow more than 8 times in one tick");
+        ++p.follow_reads_;
+        body_follow_api::Receipt receipt;
+        if (!p.services_.game().body_follow_read(p.instance(), value.handle, receipt)) return fail(L, "follow receipt unavailable");
+        if (!follow_receipt(receipt, value.handle)) return fail(L, "follow receipt returned invalid observations");
+        push_follow_receipt(L, receipt); return 1;
+    }
+    static int stop_follow(lua_State* L) {
+        auto& p = follow_plugin(L); const auto value = follow(L, p);
+        if (p.follow_stops_ >= body_follow_api::stop_limit) return follow_result(L, false, "asked to stop follow more than once in one tick");
+        ++p.follow_stops_;
+        return follow_result(L, p.services_.game().body_follow_stop(p.instance(), value.handle), "follow cannot stop now");
+    }
+    static int acknowledge_follow(lua_State* L) {
+        auto& p = follow_plugin(L); const auto value = follow(L, p);
+        if (p.follow_acknowledgements_ >= body_follow_api::acknowledge_limit)
+            return follow_result(L, false, "asked to acknowledge follow more than once in one tick");
+        ++p.follow_acknowledgements_;
+        return follow_result(L, p.services_.game().body_follow_acknowledge(p.instance(), value.handle),
+            "follow cleanup is incomplete or receipt unavailable");
     }
     static int create(lua_State* L) {
         auto& p = plugin(L);
@@ -511,13 +638,16 @@ struct PhysicsApi {
 void install_physics_api(Plugin&, lua_State* L) {
     metatable(L, handle_type); metatable(L, epoch_type); metatable(L, sync_probe_type);
     metatable(L, motion_refresh_probe_type);
+    metatable(L, follow_type);
     luaL_newmetatable(L, hit_body_type); lua_pushstring(L, "locked"); lua_setfield(L, -2, "__metatable");
     lua_pushcfunction(L, hit_body_equal, "hit body equality"); lua_setfield(L, -2, "__eq"); lua_setreadonly(L, -1, true); lua_pop(L, 1);
     lua_getfield(L, -1, "world"); lua_setreadonly(L, -1, false);
     add_functions(L, "physics", {{"create", PhysicsApi::create}, {"read", PhysicsApi::read}, {"submit", PhysicsApi::submit},
         {"receipt", PhysicsApi::receipt}, {"acknowledge", PhysicsApi::acknowledge}, {"release", PhysicsApi::release}, {"probe_batch", PhysicsApi::probe_batch},
         {"begin_sync_probe", PhysicsApi::begin_sync_probe}, {"poll_sync_probe", PhysicsApi::poll_sync_probe},
-        {"begin_motion_refresh_probe", PhysicsApi::begin_motion_refresh_probe}, {"poll_motion_refresh_probe", PhysicsApi::poll_motion_refresh_probe}});
+        {"begin_motion_refresh_probe", PhysicsApi::begin_motion_refresh_probe}, {"poll_motion_refresh_probe", PhysicsApi::poll_motion_refresh_probe},
+        {"reserve_follow", PhysicsApi::reserve_follow}, {"publish_follow", PhysicsApi::publish_follow},
+        {"read_follow", PhysicsApi::read_follow}, {"stop_follow", PhysicsApi::stop_follow}, {"acknowledge_follow", PhysicsApi::acknowledge_follow}});
     lua_setreadonly(L, -1, true); lua_pop(L, 1);
 }
 } // namespace dingosdk::plugins

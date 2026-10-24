@@ -338,6 +338,7 @@ private:
     body_query::Budget native_casts_{}; // shared by every Lua world query, including retries
     std::uint64_t body_query_sequence_{};
     unsigned sync_probe_starts_{}, sync_probe_polls_{}; // bounded passive observation calls since the last tick
+    unsigned follow_reserves_{}, follow_publishes_{}, follow_reads_{}, follow_stops_{}, follow_acknowledgements_{};
     std::optional<float> touch_reach_;
     std::map<std::uint64_t, Contact> contacts_;
     double teleport_second_{};

@@ -254,6 +254,10 @@ bool add_no_bail_step_listener(NoBailStepObserver listener) noexcept;
 // before the game's selector picks the next state, the way the game's own contact tests record
 // theirs, so the game makes the wipeout itself; while No Bail protects the skater it is dropped like
 // any other. Expires unused after a quarter of a second.
+// True means this request was queued under the actual optional-writer scope;
+// false leaves an existing request untouched when motion is owned elsewhere.
+bool try_no_bail_request_wipeout(float magnitude) noexcept;
+// Compatibility caller that intentionally discards the publication result.
 void no_bail_request_wipeout(float magnitude) noexcept;
 void remove_no_bail_step_listener(NoBailStepObserver listener) noexcept;
 

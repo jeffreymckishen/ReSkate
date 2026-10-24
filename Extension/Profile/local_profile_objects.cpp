@@ -5,6 +5,7 @@
 #include "Extension/Objects/ParkEditor/park_editor_runtime.h"
 #include "Extension/Objects/ParkEditor/park_editor_surface.h"
 #include "Extension/Objects/ParkEditor/park_editor_picking.h"
+#include "Extension/Skater/native_actions.h"
 #include <cmath>
 #include <chrono>
 #include "Extension/World/local_world_layers.h"
@@ -85,6 +86,8 @@ bool teleport_local_skater(const std::array<float, 3>& position) {
 }
 bool teleport_local_skater_transform(const std::array<float,16>& transform) {
     std::lock_guard lock(local_runtime().native_mutex);
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer)) return false;
     auto& r = placements_runtime();
     if (!local_runtime().active || !r.teleport || !r.transition_ctor || !r.transition_destroy) return false;
     for (const auto v : transform)
@@ -118,8 +121,9 @@ bool try_local_skater_teleport_pending(bool& pending, LocalTeleportObservation& 
     teleport_observation::Result result;
     return profile_runtime::observe_local_skater_teleport(pending, observation, result);
 }
-bool profile_runtime::observe_local_skater_teleport(bool& pending, LocalTeleportObservation& observation,
-    teleport_observation::Result& result) noexcept {
+namespace {
+bool observe_local_skater_teleport_impl(bool& pending, LocalTeleportObservation& observation,
+    teleport_observation::Result& result, bool include_placement_token) noexcept {
     const auto saved_error = GetLastError();
     struct Restore { DWORD value; ~Restore() { SetLastError(value); } } restore{saved_error};
     pending = true;
@@ -146,13 +150,24 @@ bool profile_runtime::observe_local_skater_teleport(bool& pending, LocalTeleport
             }
             bool read_phase(std::uintptr_t manager, std::uint32_t& value) const noexcept { return read(manager, value); }
         } reader{runtime};
-        result = placements_runtime().teleport_queue.observe(reader);
+        result = placements_runtime().teleport_queue.observe(reader, include_placement_token);
         pending = result.pending;
         static_assert(static_cast<unsigned>(LocalTeleportObservation::queue_exhausted) ==
             static_cast<unsigned>(teleport_observation::Observation::queue_exhausted));
         observation = static_cast<LocalTeleportObservation>(result.observation);
         return result.known;
     } catch (...) { observation = LocalTeleportObservation::exception; return false; }
+}
+}
+bool profile_runtime::observe_local_skater_teleport(bool& pending, LocalTeleportObservation& observation,
+    teleport_observation::Result& result) noexcept {
+    return observe_local_skater_teleport_impl(pending, observation, result, false);
+}
+bool profile_runtime::follow_teleport_duties_idle() noexcept {
+    bool pending = true;
+    LocalTeleportObservation observation;
+    teleport_observation::Result result;
+    return observe_local_skater_teleport_impl(pending, observation, result, true) && !pending;
 }
 
 std::optional<float> local_ground_height(float x, float z, float top, float bottom) {
@@ -308,6 +323,8 @@ BoundedLocalSurfaceProbe probe_local_surface_geometry_bounded(const std::array<f
 }
 bool teleport_to_local_placed_object(std::string_view map, std::uint64_t token) {
     std::lock_guard lock(local_runtime().native_mutex);
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer)) return false;
     auto& r = placements_runtime();
     if (!local_runtime().active || !placement_session_ready() || r.map != map || r.clearing ||
         std::none_of(r.rows.begin(), r.rows.end(), [&](const auto& row) { return row.token == token; })) return false;

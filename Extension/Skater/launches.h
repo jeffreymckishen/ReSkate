@@ -5,6 +5,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include "Extension/Trainer/trainer_jump.h"
 
 // The local skater's launches into the air, for plugins: each launch as the game made it (the
 // `launch` event), and a launch's speed across, along or up from the direction of travel set by a
@@ -23,6 +24,9 @@ namespace dingosdk::launches {
 // Requires the validated build and No Bail started (its physics-step listeners).
 bool start(std::uintptr_t image_base) noexcept;
 bool available() noexcept;
+// Read-only after the actual shared motion claim has closed shape publication.
+// Only this module's exact installed callback with no shapes can be quiet.
+bool trajectory_modifier_idle(trainer::TrajectoryModifier actual) noexcept;
 
 enum class From : std::uint8_t { grind, ollie, no_comply, boneless, other };
 const char* name(From from) noexcept;

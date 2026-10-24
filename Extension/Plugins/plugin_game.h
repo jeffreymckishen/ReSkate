@@ -5,6 +5,7 @@
 #include "Engine/Game/World/sync_probe.h"
 #include "Engine/Game/World/motion_refresh_probe.h"
 #include "Engine/Game/Skater/native_action.h"
+#include "Engine/Game/Skater/body_follow_api.h"
 #include "Engine/Game/Skater/native_recovery.h"
 #include "Engine/Game/Input/native_input_trace.h"
 #include "Engine/Game/Input/game_input_pulse.h"
@@ -279,6 +280,18 @@ public:
     virtual std::string body_acknowledge(std::uint64_t, const owned_body::Handle&, std::uint64_t) { return unavailable; }
     virtual std::string body_release(std::uint64_t, const owned_body::Handle&) { return unavailable; }
     virtual void body_release_all(std::uint64_t) {}
+    // Generic local actor attachment to this VM's owned body. A false reserve
+    // can still return a nonzero cleanup handle; it must never be discarded.
+    virtual bool body_follow_reserve(std::uint64_t, const owned_body::Handle&, const body_follow_api::Attachment&,
+        body_follow_api::Handle& handle, body_follow_api::Reason& reason) {
+        handle = {}; reason = body_follow_api::Reason::unavailable; return false;
+    }
+    virtual bool body_follow_publish(std::uint64_t, body_follow_api::Handle, body_follow_api::Reason& reason) {
+        reason = body_follow_api::Reason::unavailable; return false;
+    }
+    virtual bool body_follow_read(std::uint64_t, body_follow_api::Handle, body_follow_api::Receipt&) { return false; }
+    virtual bool body_follow_stop(std::uint64_t, body_follow_api::Handle) { return false; }
+    virtual bool body_follow_acknowledge(std::uint64_t, body_follow_api::Handle) { return false; }
     // Actor-scoped copied diagnostics do not require an owned body.
     virtual std::string begin_motion_refresh_probe(std::uint64_t, std::uint64_t&) { return unavailable; }
     virtual std::string poll_motion_refresh_probe(std::uint64_t, std::uint64_t, motion_refresh_probe::Result&) { return unavailable; }

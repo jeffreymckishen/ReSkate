@@ -6,6 +6,8 @@
 #include "Engine/Game/Skater/actor_context.h"
 #include <cstdint>
 
+namespace dingosdk::owned_bodies { class RetirementBasis; class RetainedParkReceipt; }
+
 namespace dingosdk::actor_control_native {
 using State = skater_action::State;
 using Reason = skater_action::Reason;
@@ -21,6 +23,7 @@ struct Actor {
     std::uint64_t world_generation{}, lifetime_epoch{}, actor_epoch{};
     actor_control::Ticket ticket{};
     Continuity continuity{Continuity::native_lifetime};
+    actor_control::Domain domain{actor_control::Domain::equipment};
     bool operator==(const Actor&) const = default;
 };
 
@@ -45,6 +48,26 @@ bool enter(std::uint64_t owner, std::uint64_t sequence,
 // observed exact-actor retirement can retire the shared claim.
 bool retire(std::uint64_t owner, std::uint64_t sequence,
     const Actor& actor, bool duty_resolved) noexcept;
+// Follow admission uses this SAME process arbiter and native owner storage.
+// Reserve is deliberately unpublished: a service must join its independently
+// qualified body world/state before publishing. Default equipment APIs above
+// retain their original behavior and cannot retire a follow claim.
+bool reserve_follow(std::uint64_t owner, std::uint64_t sequence, Admission admission,
+    Actor& actor, Reason& reason) noexcept;
+bool publish_follow(std::uint64_t owner, std::uint64_t sequence, const Actor& actor,
+    Admission admission, Reason& reason) noexcept;
+bool abandon_follow(std::uint64_t owner, std::uint64_t sequence, const Actor& actor) noexcept;
+actor_control::Snapshot follow_snapshot(std::uint64_t owner, std::uint64_t sequence,
+    const Actor& actor) noexcept;
+// This synchronous value-copy FOLLOW owns no retained native body pointer.
+// Revoke still prevents new Calls; exact drain and positive park are required.
+bool revoke_follow(std::uint64_t owner, std::uint64_t sequence, const Actor& actor) noexcept;
+// Trusted cleanup bridge only. Existing opaque World history must match before
+// the exact stopped/drained claim is retired. No caller-supplied proof boolean
+// or native pose-history/consumer-retirement claim is accepted or produced.
+bool retire_follow(std::uint64_t owner, std::uint64_t sequence, const Actor& actor,
+    const owned_bodies::RetirementBasis&, const owned_bodies::RetainedParkReceipt&) noexcept;
+
 using Clock = actor_clock::Sample;
 // Opt-in observation only. No sample exists until a qualified native step.
 bool enable_clock(std::uint64_t owner, std::uint64_t sequence,

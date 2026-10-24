@@ -52,4 +52,10 @@ bool take_trick_launch(TrickLaunch &out) noexcept;
 // nullptr for none. Requires start_trick_heights.
 using TrajectoryModifier = void (*)(std::uintptr_t caller_rva, std::uintptr_t trajectory, float (&velocity)[3]) noexcept;
 void set_trajectory_modifier(TrajectoryModifier modifier) noexcept;
+// The same publication, with an explicit result for a provider's installed flag.
+bool try_set_trajectory_modifier(TrajectoryModifier modifier) noexcept;
+// Read-only admission observation. Call after reserving the shared motion claim,
+// so another trainer publisher cannot arm a duty between this check and publish.
+// Unknown native constants, lock contention and unfinished restoration refuse.
+bool follow_duties_idle() noexcept;
 } // namespace dingosdk::trainer

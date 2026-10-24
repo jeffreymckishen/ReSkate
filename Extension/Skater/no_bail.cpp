@@ -1,4 +1,5 @@
 #include "no_bail.h"
+#include "Extension/World/owned_bodies.h"
 #include "native_actions.h"
 #include "actor_control.h"
 #include "native_recovery.h"
@@ -110,6 +111,7 @@ struct Protection {
     bool dismount_test{};
     bool board_mount_test{};
     BoardLock board;
+    bool board_rearm{}; // pending mandatory on-board preference restoration, protected by lock
     BoardLock bmx; // independent no-bail + mount-request hold; never changes teleport preference
     BoardLock dismount; // one-shot native request, consumed only by its owner's selector
     std::atomic<bool> dismount_pending{}; // ordinary selectors avoid an exclusive SDK lock
@@ -925,6 +927,8 @@ bool reset_pending_causes(std::uintptr_t causes) noexcept {
 }
 bool filter_requests(std::uintptr_t object, std::uintptr_t Owner::* member) noexcept {
     LastError error;
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer)) return false;
     Owner owner;
     // Native collision/landing checks also write the collector inline. Reset
     // it at each consumer, after those writes, before either animation's bail
@@ -934,6 +938,8 @@ bool filter_requests(std::uintptr_t object, std::uintptr_t Owner::* member) noex
 }
 bool suppress_cause(std::uintptr_t causes, std::int32_t reason, std::uintptr_t caller) noexcept {
     LastError error;
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer)) return false;
     Owner owner;
     if (!protected_owner(causes, &Owner::causes, &owner)) return false;
     for (const auto& impact : impact_bail_calls) {
@@ -943,11 +949,13 @@ bool suppress_cause(std::uintptr_t causes, std::int32_t reason, std::uintptr_t c
     return true;
 }
 void record_cause(std::uintptr_t causes, std::int32_t reason, float magnitude) {
+    actor_control::IdleCall writer;
+    const bool optional_allowed = skater_action::enter_motion_writer(writer);
     const auto caller = reinterpret_cast<std::uintptr_t>(_ReturnAddress());
     if (causes == state_watch().causes.load(std::memory_order_acquire)) {
         skater_events::note_cause(reason, magnitude);
     }
-    const bool protect = suppress_cause(causes, reason, caller);
+    const bool protect = optional_allowed && suppress_cause(causes, reason, caller);
     // Do not force the native recovery/stumble predicate (recovery_predicate). Its
     // result is also exported to animation at +0x9e, even without a collision.
     // Stop new causes before they reach either the wipeout or runout decision;
@@ -1179,6 +1187,10 @@ constexpr std::size_t body_parts = 32;
 constexpr unsigned route_live_limit = 180;               // ticks of 601 the window stays open at most (3 s), then it is let go and logged
 bool dark_pop_air(std::uint32_t state) noexcept { return state >= 200 && state < 300; }
 struct DarkPop {
+    // A failed release cannot be turned into quiet-duty evidence by clearing
+    // its old bookkeeping flag. Only restarting this private service clears it.
+    std::atomic<bool> follow_restore_uncertain{};
+    std::atomic<unsigned> follow_restore_calls{};
     std::atomic<bool> hide_dpad{true}; // 3.1: the D-pad hidden from the game in the air
     std::atomic<bool> enabled{}, pressed{}, armed{};
     std::atomic<std::uintptr_t> board{};              // board body, published by the client tick
@@ -1308,6 +1320,27 @@ struct DarkPop {
     std::atomic<float> last_hold_blend{};
 };
 DarkPop& dark_pop() { static auto* value = new DarkPop; return *value; }
+// Restoration must still run when new optional writers are excluded. Keep its
+// already-owned native work visible until the last operation returns.
+struct DarkPopRestoreCall {
+    DarkPop& state;
+    bool counted{};
+    explicit DarkPopRestoreCall(DarkPop& value) noexcept : state(value) {
+        auto count = state.follow_restore_calls.load(std::memory_order_acquire);
+        for (unsigned attempt = 0; attempt < 64 && count < actor_control::Arbiter::maximum_in_flight; ++attempt) {
+            if (state.follow_restore_calls.compare_exchange_weak(count, count + 1, std::memory_order_acq_rel)) {
+                counted = true;
+                return;
+            }
+        }
+        state.follow_restore_uncertain.store(true, std::memory_order_release);
+    }
+    ~DarkPopRestoreCall() {
+        if (counted) (void)state.follow_restore_calls.fetch_sub(1, std::memory_order_acq_rel);
+    }
+    DarkPopRestoreCall(const DarkPopRestoreCall&) = delete;
+    DarkPopRestoreCall& operator=(const DarkPopRestoreCall&) = delete;
+};
 // The board's up axis, height part: about +1 riding normally, about -1 upside down. False if it cannot be read.
 bool dark_pop_board_up(float& up) noexcept {
     const auto board = dark_pop().board.load(std::memory_order_relaxed);
@@ -1356,14 +1389,16 @@ void dark_pop_unpatch_bit(std::uintptr_t context, bool want) noexcept {
             d.unpatch_on.store(true, std::memory_order_relaxed);
             d.unpatch_ticks.fetch_add(1, std::memory_order_relaxed);
         }
-    } else if (d.unpatch_on.exchange(false, std::memory_order_relaxed)) {
-        (void)cancel_request(context, context_signals_offset, dark_pop_unpatch_mask);
+    } else if (d.unpatch_on.exchange(false, std::memory_order_acq_rel)) {
+        if (!cancel_request(context, context_signals_offset, dark_pop_unpatch_mask))
+            d.follow_restore_uncertain.store(true, std::memory_order_release);
     }
 }
 void dark_pop_hold_window(bool want) noexcept;
 // Closes the placement window: the hold let go, and the B bit cleared if it is up.
 void dark_pop_window_off(std::uintptr_t selector) noexcept {
     auto& d = dark_pop();
+    DarkPopRestoreCall restore(d);
     d.x_want.store(false, std::memory_order_relaxed);
     dark_pop_hold_window(false);
     if (!d.unpatch_on.load(std::memory_order_relaxed)) return;
@@ -1388,6 +1423,8 @@ std::atomic<PlacementEntry> placement_original{};
 std::uint64_t __fastcall placement_entry(std::uintptr_t self, std::uintptr_t arg, std::uintptr_t r8, std::uintptr_t r9) noexcept {
     auto& d = dark_pop();
     const auto original = placement_original.load(std::memory_order_acquire);
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer)) return original ? original(self, arg, r8, r9) : 0;
     bool mine = false;
     if (d.enabled.load(std::memory_order_relaxed)) {
         std::uintptr_t context{};
@@ -1607,11 +1644,13 @@ bool dark_pop_request_attach(std::uint32_t bone, std::uintptr_t skater, unsigned
 // new apply requests on every hold tick) is requested once on the same bone, in case the request outlives the tick.
 void dark_pop_hold_window(bool want) noexcept {
     auto& d = dark_pop();
-    if (d.hold_want.exchange(want, std::memory_order_relaxed) == want || want) return;
-    const auto skater = d.attach_skater.exchange(0, std::memory_order_relaxed);
-    if (skater && d.attach_requests.load(std::memory_order_relaxed) &&
-        dark_pop_request_attach(d.attach_bone.load(std::memory_order_relaxed), skater, foot_attach_release_mode))
-        d.releases.fetch_add(1, std::memory_order_relaxed);
+    if (d.hold_want.exchange(want, std::memory_order_acq_rel) == want || want) return;
+    const auto skater = d.attach_skater.exchange(0, std::memory_order_acq_rel);
+    if (skater && d.attach_requests.load(std::memory_order_relaxed)) {
+        if (dark_pop_request_attach(d.attach_bone.load(std::memory_order_relaxed), skater, foot_attach_release_mode))
+            d.releases.fetch_add(1, std::memory_order_relaxed);
+        else d.follow_restore_uncertain.store(true, std::memory_order_release);
+    }
 }
 // ---- Feet-only hold: the footplant tick with its orientation held (1.6) --------------------------------------------------------------------------------
 // Read from both exes (1.3): state 601's per-tick controller (old 0x4435e40, now 0x4803ea0) is the same function
@@ -1698,6 +1737,8 @@ bool feet_clear_attach(std::uintptr_t self) noexcept {
 void __fastcall footplant_tick_hook(std::uintptr_t self, std::uintptr_t out) noexcept {
     auto& d = dark_pop();
     const auto original = footplant_tick_original.load(std::memory_order_acquire);
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer)) { if (original) original(self, out); return; }
     if (d.enabled.load(std::memory_order_relaxed)) {
         std::uintptr_t context{};
         const auto want = d.context.load(std::memory_order_relaxed);
@@ -1821,6 +1862,8 @@ bool start_dark_pop_feet(std::uintptr_t base) noexcept {
 std::uint64_t __fastcall placement_update(std::uintptr_t self, std::uintptr_t arg, std::uintptr_t r8, std::uintptr_t r9) noexcept {
     auto& d = dark_pop();
     const auto original = placement_update_original.load(std::memory_order_acquire);
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer)) return original ? original(self, arg, r8, r9) : 0;
     bool mine = false, active_before = false;
     std::uintptr_t context{};
     if (d.enabled.load(std::memory_order_relaxed) && d.hold.load(std::memory_order_relaxed) &&
@@ -2061,12 +2104,16 @@ void dark_pop_before(std::uintptr_t selector, std::uint32_t current) noexcept {
             if (hide_contacts || hide_jump) {
                 std::uint32_t mask = (hide_contacts ? context_contact_bits : 0u) | (hide_jump ? context_jump_fired_bit : 0u);
                 if (hide_contacts && contacts > d.hold_contacts_max.load(std::memory_order_relaxed)) d.hold_contacts_max.store(contacts, std::memory_order_relaxed);
+                // Publish the saved inputs before either write: the first can
+                // succeed even when the second refuses its native address.
+                if (d.hold_restore.load(std::memory_order_relaxed))
+                    d.follow_restore_uncertain.store(true, std::memory_order_release);
+                d.hold_context.store(held.context, std::memory_order_relaxed);
+                d.hold_saved_contacts.store(hide_contacts ? contacts : 0u, std::memory_order_relaxed);
+                d.hold_saved_word.store(word, std::memory_order_relaxed);
+                d.hold_mask.store(mask, std::memory_order_relaxed);
+                d.hold_restore.store(true, std::memory_order_release);
                 if ((!hide_contacts || dark_pop_write_u32(held.context + context_contacts_offset, 0u)) && dark_pop_write_u32(held.context + 0x13c4, word & ~mask)) {
-                    d.hold_context.store(held.context, std::memory_order_relaxed);
-                    d.hold_saved_contacts.store(hide_contacts ? contacts : 0u, std::memory_order_relaxed);
-                    d.hold_saved_word.store(word, std::memory_order_relaxed);
-                    d.hold_mask.store(mask, std::memory_order_relaxed);
-                    d.hold_restore.store(true, std::memory_order_relaxed);
                     if (hide_contacts) d.hold_blocks.fetch_add(1, std::memory_order_relaxed);
                     if (hide_jump) d.stay_clears.fetch_add(1, std::memory_order_relaxed);
                 }
@@ -2262,37 +2309,44 @@ void dark_pop_before(std::uintptr_t selector, std::uint32_t current) noexcept {
     dark_pop_hold_window(landing);
 }
 // After the original selector (and No Bail's wipeout swap); returns the state to use.
-std::uint32_t dark_pop_after(std::uintptr_t selector, std::uint32_t current, std::uint32_t chosen) noexcept {
+std::uint32_t dark_pop_after(std::uintptr_t selector, std::uint32_t current, std::uint32_t chosen,
+    bool optional_writer) noexcept {
     auto& d = dark_pop();
-    if (!d.enabled.load(std::memory_order_relaxed)) {
-        d.pop_until.store(0, std::memory_order_relaxed);
-        return chosen;
-    }
-    const auto now = GetTickCount64();
-    const bool armed = d.armed.load(std::memory_order_relaxed);
-    const bool popping = now < d.pop_until.load(std::memory_order_relaxed);
+    DarkPopRestoreCall restore(d);
+    // Restore already-owned transient inputs even after disable or exclusion.
+    // No new optional Dark Pop work may bypass the accepted writer scope.
     // 2.3 hold the flight: the contact inputs cleared before this decision go back as they were.
-    if (d.hold_restore.exchange(false, std::memory_order_relaxed)) {
+    if (d.hold_restore.exchange(false, std::memory_order_acq_rel)) {
         const auto context = d.hold_context.load(std::memory_order_relaxed);
         std::uint32_t word{};
         if (context) {
             const auto mask = d.hold_mask.load(std::memory_order_relaxed);
-            if (mask & context_contact_bits) (void)dark_pop_write_u32(context + context_contacts_offset, d.hold_saved_contacts.load(std::memory_order_relaxed));
-            if (read(context + 0x13c4, word)) (void)dark_pop_write_u32(context + 0x13c4, word | (d.hold_saved_word.load(std::memory_order_relaxed) & mask));
-        }
+            bool restored = !(mask & context_contact_bits) ||
+                dark_pop_write_u32(context + context_contacts_offset, d.hold_saved_contacts.load(std::memory_order_relaxed));
+            restored = read(context + 0x13c4, word) &&
+                dark_pop_write_u32(context + 0x13c4, word | (d.hold_saved_word.load(std::memory_order_relaxed) & mask)) && restored;
+            if (!restored) d.follow_restore_uncertain.store(true, std::memory_order_release);
+        } else d.follow_restore_uncertain.store(true, std::memory_order_release);
     }
     // 601 route: the bits raised before this decision come down whatever it was.
-    if (d.route_on.exchange(false, std::memory_order_relaxed)) {
+    if (d.route_on.exchange(false, std::memory_order_acq_rel)) {
         Owner raised;
         if (local_owner(selector, &Owner::selector, &raised)) {
-            (void)cancel_request(raised.context, context_route_a_offset, context_route_a_mask);
-            (void)cancel_request(raised.context, context_route_b_offset, context_route_b_mask);
-        }
+            const bool first = cancel_request(raised.context, context_route_a_offset, context_route_a_mask);
+            const bool second = cancel_request(raised.context, context_route_b_offset, context_route_b_mask);
+            if (!first || !second) d.follow_restore_uncertain.store(true, std::memory_order_release);
+        } else d.follow_restore_uncertain.store(true, std::memory_order_release);
     }
-    if (d.hold_landing_up.exchange(false, std::memory_order_relaxed)) {
+    if (d.hold_landing_up.exchange(false, std::memory_order_acq_rel)) {
         Owner held;
-        if (local_owner(selector, &Owner::selector, &held)) (void)cancel_request(held.context, context_landing_hold_offset, context_landing_hold_mask);
+        if (!local_owner(selector, &Owner::selector, &held) ||
+            !cancel_request(held.context, context_landing_hold_offset, context_landing_hold_mask))
+            d.follow_restore_uncertain.store(true, std::memory_order_release);
     }
+    if (!optional_writer || !d.enabled.load(std::memory_order_relaxed)) return chosen;
+    const auto now = GetTickCount64();
+    const bool armed = d.armed.load(std::memory_order_relaxed);
+    const bool popping = now < d.pop_until.load(std::memory_order_relaxed);
     // Leaving 601: note where to, and let the window go.
     if (d.route_live.load(std::memory_order_relaxed) && current == route_physics_state && chosen != route_physics_state) {
         d.route_live.store(false, std::memory_order_relaxed);
@@ -2661,20 +2715,31 @@ std::uint32_t choose_state(std::uintptr_t selector, std::uint32_t current) {
     if(native_observer){LastError error;native_cookie=native_observer(
         {NoBailNativePhase::selector_before_sdk,selector,current,0},0);}
     { LastError error; action_observe(selector); }
+    actor_control::IdleCall optional_writer;
+    const bool optional_allowed = skater_action::enter_motion_writer(optional_writer);
     {
         LastError error;
         hold_off_board(selector, current);
-        dark_pop_before(selector, current);
+        if (optional_allowed) dark_pop_before(selector, current);
+        else dark_pop_window_off(selector);
     }
     // A wipeout asked for (no_bail_request_wipeout): its cause goes in as the game's contact tests
     // record theirs, and the pick is Wipeout, as some of those tests return it directly.
     bool force_wipeout{};
-    if (auto& wanted = wanted_wipeout(); wanted.until.load(std::memory_order_acquire) &&
+    if (auto& wanted = wanted_wipeout(); optional_allowed && wanted.until.load(std::memory_order_acquire) &&
         selector == state_watch().selector.load(std::memory_order_acquire)) {
         LastError error;
-        if (const auto until = wanted.until.exchange(0, std::memory_order_acq_rel); GetTickCount64() < until)
+        std::uint64_t until{};
+        float magnitude{};
+        auto& p = protection();
+        if (TryAcquireSRWLockExclusive(&p.lock)) {
+            until = wanted.until.exchange(0, std::memory_order_acq_rel);
+            magnitude = wanted.magnitude.load(std::memory_order_relaxed);
+            ReleaseSRWLockExclusive(&p.lock);
+        }
+        if (GetTickCount64() < until)
             if (const auto causes = state_watch().causes.load(std::memory_order_acquire); causes && !protected_owner(selector, &Owner::selector)) {
-                record_cause(causes, wanted_wipeout_reason, wanted.magnitude.load(std::memory_order_relaxed));
+                record_cause(causes, wanted_wipeout_reason, magnitude);
                 force_wipeout = true;
             }
     }
@@ -2696,7 +2761,7 @@ std::uint32_t choose_state(std::uintptr_t selector, std::uint32_t current) {
         next = wipeout_physics_state;
     }
     auto chosen = filtered && next == wipeout_physics_state && protected_owner(selector, &Owner::selector) ? current : next;
-    chosen = dark_pop_after(selector, current, chosen);
+    chosen = dark_pop_after(selector, current, chosen, optional_allowed);
     action_selection(mount, native_next, chosen, mount_restored);
     action_selection(dismount, native_next, chosen, dismount_restored);
     fast_probe_record(selector, current, next, chosen);
@@ -2719,10 +2784,12 @@ std::uint32_t choose_state(std::uintptr_t selector, std::uint32_t current) {
     return chosen;
 }
 void skeleton_response(std::uintptr_t rig, float seconds, bool wipeout) {
+    actor_control::IdleCall writer;
+    const bool optional_allowed = skater_action::enter_motion_writer(writer);
     const bool incoming_third = wipeout;
     // The state post-update can raise another request after the selector ran.
     // Filter at this consumer, then let native constraints and recovery run.
-    if (filter_requests(rig, &Owner::rig)) wipeout = false;
+    if (optional_allowed && filter_requests(rig, &Owner::rig)) wipeout = false;
     const auto observer = protection().step_observer.load(std::memory_order_acquire);
     std::array<NoBailStepObserver, no_bail_step_listener_slots> listeners{};
     bool any = observer != nullptr;
@@ -2778,6 +2845,8 @@ bool clear_contact_output(std::uintptr_t contacts) noexcept {
 }
 void filter_contact_animation(std::uintptr_t core) noexcept {
     LastError error;
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer)) return;
     Owner owner;
     std::uint32_t state{};
     if (!protected_owner(core, &Owner::core, &owner) || !read(owner.context + 0x1414, state)) return;
@@ -2795,11 +2864,13 @@ void filter_contact_animation(std::uintptr_t core) noexcept {
         (void)cancel_request(owner.context, body_contact_context_offset, body_contact_context_mask);
 }
 void publish_animation(std::uintptr_t core) {
+    actor_control::IdleCall writer;
+    const bool optional_allowed = skater_action::enter_motion_writer(writer);
     // Animation also reads requests without consulting the cause collector.
     // Clear flags and pending causes before native publication, including
     // its early recovery query and cause export. Leave the native query result
     // unchanged: forcing it true used to put the skater into a stumbling state.
-    (void)filter_requests(core, &Owner::core);
+    if (optional_allowed) (void)filter_requests(core, &Owner::core);
     const auto native_observer=protection().native_observer.load(std::memory_order_acquire);
     std::uint64_t native_cookie{};
     if(native_observer){LastError error;native_cookie=native_observer(
@@ -2807,7 +2878,7 @@ void publish_animation(std::uintptr_t core) {
     protection().publish_original(core);
     if(native_observer){LastError error;(void)native_observer(
         {NoBailNativePhase::publisher_original_returned,core,0,0},native_cookie);}
-    filter_contact_animation(core);
+    if (optional_allowed) filter_contact_animation(core);
     // Sample the game's own failed-landing/runout result at its publication
     // boundary. It may be true for only one physics frame, between mode ticks.
     // Counting its rising edge retains that event without forcing a native bail
@@ -2935,13 +3006,18 @@ bool update_no_bail(std::uintptr_t client, std::uintptr_t entity, bool manual,
     LastError error;
     auto& p = protection();
     Lease next;
-    const bool available = p.ready.load(std::memory_order_acquire) && resolve(client, entity, next.owner);
+    bool available = p.ready.load(std::memory_order_acquire) && resolve(client, entity, next.owner);
     if (available) {
         const auto now = GetTickCount64();
         next.manual_until = manual ? now + 500 : 0;
         next.flight_until = flying ? flight_expires : 0;
     }
     AcquireSRWLockExclusive(&p.lock);
+    actor_control::IdleCall writer;
+    if (available && next.active(GetTickCount64()) && !p.actions.motion_claim.enter_idle(writer)) {
+        ReleaseSRWLockExclusive(&p.lock);
+        return false;
+    }
     p.lease = available ? next : Lease{};
     ReleaseSRWLockExclusive(&p.lock);
     return available;
@@ -2961,6 +3037,8 @@ bool update_bmx_protection(std::uintptr_t client, std::uintptr_t entity, bool ac
     // A failed refresh clears this feature's lease immediately. No previous owner's
     // protection survives loading/replacement; other protection slots are untouched.
     AcquireSRWLockExclusive(&p.lock);
+    actor_control::IdleCall writer;
+    if (accepted && active && !p.actions.motion_claim.enter_idle(writer)) accepted = false;
     p.bmx = accepted && active ? next : BoardLock{};
     ReleaseSRWLockExclusive(&p.lock);
     return accepted;
@@ -2979,7 +3057,8 @@ bool request_bmx_dismount(std::uintptr_t client, std::uintptr_t entity) noexcept
     }
     AcquireSRWLockExclusive(&p.lock);
     const auto now = GetTickCount64();
-    accepted = accepted && !p.actions.legacy_inflight && p.actions.motion_claim.publication_allowed() &&
+    actor_control::IdleCall writer;
+    accepted = accepted && !p.actions.legacy_inflight && p.actions.motion_claim.enter_idle(writer) &&
         now >= p.dismount.until && now >= p.board_mount.until;
     if (accepted) { p.dismount = next; p.dismount_pending.store(true, std::memory_order_release); }
     ReleaseSRWLockExclusive(&p.lock);
@@ -3009,7 +3088,8 @@ bool request_bmx_board_mount(std::uintptr_t client, std::uintptr_t entity) noexc
     const auto now = GetTickCount64();
     if ((p.board.owner.entity == entity && now < p.board.until) ||
         (p.bmx.owner.entity == entity && now < p.bmx.until)) accepted = false;
-    accepted = accepted && !p.actions.legacy_inflight && p.actions.motion_claim.publication_allowed() &&
+    actor_control::IdleCall writer;
+    accepted = accepted && !p.actions.legacy_inflight && p.actions.motion_claim.enter_idle(writer) &&
         now >= p.dismount.until && now >= p.board_mount.until;
     if (accepted) { p.board_mount = next; p.board_mount_pending.store(true, std::memory_order_release); }
     ReleaseSRWLockExclusive(&p.lock);
@@ -3042,27 +3122,30 @@ void update_board_lock(std::uintptr_t client, std::uintptr_t entity, bool locked
     LastError error;
     auto& p = protection();
     if (!p.ready.load(std::memory_order_acquire)) return;
-    static bool rearm{}; // client tick only
     if (locked) {
         // The owner does not resolve while a teleport is under way: the last one stands
         // until it expires.
         BoardLock next;
-        if (resolve(client, entity, next.owner)) {
-            next.until = GetTickCount64() + 500;
-            AcquireSRWLockExclusive(&p.lock);
-            p.board = next;
-            ReleaseSRWLockExclusive(&p.lock);
-        }
-        rearm = true;
+        const bool resolved = resolve(client, entity, next.owner);
+        if (resolved) next.until = GetTickCount64() + 500;
+        AcquireSRWLockExclusive(&p.lock);
+        if (resolved) p.board = next;
+        p.board_rearm = true;
+        ReleaseSRWLockExclusive(&p.lock);
         return;
     }
     AcquireSRWLockExclusive(&p.lock);
     p.board = {};
+    const bool rearm = p.board_rearm;
     ReleaseSRWLockExclusive(&p.lock);
     // Released: teleports that keep the skater's own choice (the SDK's /tp) put it on the
     // board again. Once the skater resolves, outside a teleport.
     Owner owner;
-    if (rearm && resolve(client, entity, owner) && set_teleport_on_board(owner.component)) rearm = false;
+    if (rearm && resolve(client, entity, owner) && set_teleport_on_board(owner.component)) {
+        AcquireSRWLockExclusive(&p.lock);
+        p.board_rearm = false;
+        ReleaseSRWLockExclusive(&p.lock);
+    }
 }
 void clear_no_bail() noexcept {
     auto& p = protection();
@@ -3128,7 +3211,15 @@ void set_no_bail_step_observer(NoBailStepObserver observer) noexcept {
 }
 void dark_pop_update(bool enabled, std::uintptr_t board, bool unpatch, bool hold, bool one_press,
     unsigned route_stay, unsigned route_guard, bool keep_speed, bool catch_dismount, bool feet, bool adaptive, bool catch_timeout, float pop_strength, bool hold_landing, bool dark_exit, bool full_flight, bool hold_flight, unsigned stay_physical, bool early_physics, bool reaim, bool hide_dpad) noexcept {
+    LastError error;
+    auto& p = protection();
     auto& d = dark_pop();
+    actor_control::IdleCall writer;
+    AcquireSRWLockExclusive(&p.lock);
+    if (enabled && !p.actions.motion_claim.enter_idle(writer)) {
+        ReleaseSRWLockExclusive(&p.lock);
+        return;
+    }
     d.hide_dpad.store(hide_dpad, std::memory_order_relaxed);
     d.reaim.store(reaim, std::memory_order_relaxed);
     d.early_physics.store(early_physics, std::memory_order_relaxed);
@@ -3149,13 +3240,23 @@ void dark_pop_update(bool enabled, std::uintptr_t board, bool unpatch, bool hold
     d.unpatch.store(unpatch, std::memory_order_relaxed);
     d.hold.store(hold, std::memory_order_relaxed);
     d.board.store(enabled ? board : 0, std::memory_order_relaxed);
-    d.enabled.store(enabled, std::memory_order_relaxed);
+    d.enabled.store(enabled, std::memory_order_release);
+    ReleaseSRWLockExclusive(&p.lock);
 }
 void dark_pop_publish_bodies(const std::uintptr_t* parts, std::size_t count) noexcept {
+    LastError error;
+    auto& p = protection();
     auto& d = dark_pop();
     const auto n = std::min(count, body_parts);
+    actor_control::IdleCall writer;
+    AcquireSRWLockExclusive(&p.lock);
+    if (n && !p.actions.motion_claim.enter_idle(writer)) {
+        ReleaseSRWLockExclusive(&p.lock);
+        return;
+    }
     for (std::size_t i = 0; i < body_parts; ++i) d.parts[i].store(i < n && parts ? parts[i] : 0, std::memory_order_relaxed);
     d.part_count.store(static_cast<unsigned>(n), std::memory_order_relaxed);
+    ReleaseSRWLockExclusive(&p.lock);
 }
 DarkPopLast dark_pop_last() noexcept {
     auto& d = dark_pop();
@@ -3289,10 +3390,23 @@ std::size_t fast_probe_drain(FastProbeRow* rows, std::size_t capacity) noexcept 
     f.tail.store(tail, std::memory_order_release);
     return count;
 }
-void no_bail_request_wipeout(float magnitude) noexcept {
+bool try_no_bail_request_wipeout(float magnitude) noexcept {
+    LastError error;
+    auto& p = protection();
     auto& wanted = wanted_wipeout();
+    actor_control::IdleCall writer;
+    AcquireSRWLockExclusive(&p.lock);
+    if (!p.actions.motion_claim.enter_idle(writer)) {
+        ReleaseSRWLockExclusive(&p.lock);
+        return false;
+    }
     wanted.magnitude.store(magnitude, std::memory_order_relaxed);
     wanted.until.store(GetTickCount64() + 250, std::memory_order_release);
+    ReleaseSRWLockExclusive(&p.lock);
+    return true;
+}
+void no_bail_request_wipeout(float magnitude) noexcept {
+    (void)try_no_bail_request_wipeout(magnitude);
 }
 bool add_no_bail_step_listener(NoBailStepObserver listener) noexcept {
     if (!listener) return false;
@@ -3411,6 +3525,44 @@ bool register_motion_guard(MotionGuard guard) noexcept {
 }
 bool motion_publication_allowed() noexcept {
     return protection().actions.motion_claim.publication_allowed();
+}
+bool enter_motion_writer(actor_control::IdleCall& call) noexcept {
+    LastError error;
+    return protection().actions.motion_claim.enter_idle(call);
+}
+bool follow_no_bail_duties_idle() noexcept {
+    LastError error;
+    auto& p = protection();
+    // This observation is valid only after reservation has closed new optional
+    // writers. An idle preflight would race their next accepted publication.
+    const auto opening = p.actions.motion_claim.snapshot();
+    if (!opening.available || !opening.ticket || opening.domain != actor_control::Domain::follow ||
+        opening.phase == actor_control::Phase::idle || !TryAcquireSRWLockShared(&p.lock)) return false;
+    const auto now = GetTickCount64();
+    auto& a = p.actions;
+    const auto& d = dark_pop();
+    const bool idle = p.ready.load(std::memory_order_acquire) && a.ready && a.world_contract &&
+        now >= a.tick_at && now - a.tick_at < offer_timeout_ms && !a.legacy_inflight && !a.ledger.active() &&
+        !p.lease.active(now) && !p.board.until && !p.board.owner.entity && !p.board_rearm &&
+        now >= p.bmx.until && now >= p.dismount.until && now >= p.board_mount.until &&
+        !(p.dismount_pending.load(std::memory_order_acquire) && !p.dismount.until) &&
+        !(p.board_mount_pending.load(std::memory_order_acquire) && !p.board_mount.until) &&
+        now >= wanted_wipeout().until.load(std::memory_order_acquire) &&
+        !d.enabled.load(std::memory_order_acquire) && !d.follow_restore_uncertain.load(std::memory_order_acquire) &&
+        !d.follow_restore_calls.load(std::memory_order_acquire) &&
+        !d.armed.load(std::memory_order_acquire) && !d.route_on.load(std::memory_order_acquire) &&
+        !d.route_live.load(std::memory_order_acquire) && !d.hold_restore.load(std::memory_order_acquire) &&
+        !d.hold_landing_up.load(std::memory_order_acquire) && !d.unpatch_on.load(std::memory_order_acquire) &&
+        !d.x_want.load(std::memory_order_acquire) && !d.hold_want.load(std::memory_order_acquire) &&
+        !d.attach_skater.load(std::memory_order_acquire) && !d.launch_pending.load(std::memory_order_acquire) &&
+        !d.flight_live.load(std::memory_order_acquire) && !d.guard_left.load(std::memory_order_acquire) &&
+        now >= d.pop_until.load(std::memory_order_acquire);
+    const bool restored = !d.follow_restore_calls.load(std::memory_order_acquire) &&
+        !d.follow_restore_uncertain.load(std::memory_order_acquire);
+    const auto closing = a.motion_claim.snapshot();
+    ReleaseSRWLockShared(&p.lock);
+    return idle && restored && closing.available && closing.owner == opening.owner && closing.ticket == opening.ticket &&
+        closing.domain == opening.domain && closing.phase == opening.phase;
 }
 void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
     LastError error;
@@ -3571,11 +3723,12 @@ void release_all(std::uint64_t owner) noexcept {
 namespace dingosdk::actor_control_native {
 namespace {
 Actor captured_actor(const ActionBinding& binding, actor_control::Ticket ticket,
-    Continuity continuity = Continuity::native_lifetime) noexcept {
+    Continuity continuity = Continuity::native_lifetime,
+    actor_control::Domain domain = actor_control::Domain::equipment) noexcept {
     const auto& o = binding.owner;
     return {protection().base, o.client, o.entity, o.player, o.handle, o.component, o.core, o.context,
         o.selector, o.causes, o.rig, binding.game_context, binding.world, binding.world_state,
-        binding.world_generation, binding.lifetime_epoch, binding.actor_epoch, ticket, continuity};
+        binding.world_generation, binding.lifetime_epoch, binding.actor_epoch, ticket, continuity, domain};
 }
 ActionBinding actor_binding(const Actor& actor) noexcept {
     return context_binding(actor);
@@ -3584,7 +3737,8 @@ bool owned_locked(std::uint64_t owner, std::uint64_t sequence, const Actor& acto
     const auto& a = protection().actions;
     return actor_context::valid(actor.continuity) && owner && sequence && a.claim_owner == owner && a.claim_sequence == sequence &&
         a.claimed_actor == actor && actor.ticket &&
-        a.motion_claim.owns(owner, actor.ticket, actor_control::Domain::equipment);
+        (actor.domain == actor_control::Domain::equipment || actor.domain == actor_control::Domain::follow) &&
+        a.motion_claim.owns(owner, actor.ticket, actor.domain);
 }
 }
 
@@ -3670,6 +3824,147 @@ bool acquire(std::uint64_t owner, std::uint64_t sequence, Admission admission,
     return accepted;
 }
 
+bool reserve_follow(std::uint64_t owner, std::uint64_t sequence, Admission admission,
+    Actor& actor, Reason& reason) noexcept {
+    constexpr auto continuity = Continuity::native_lifetime;
+    LastError error; actor = {}; reason = Reason::none;
+    if (!owner || !sequence) { reason = Reason::invalid_owner; return false; }
+    if (!admission || !actor_context::valid(continuity)) { reason = Reason::unavailable; return false; }
+    auto& p = protection(); auto& a = p.actions;
+    actor_control::Ticket ticket;
+    // Reserve before provider inspection. A cooperating motion provider sees
+    // the admission and cannot publish while this capture is in progress.
+    if (!a.motion_claim.reserve(owner, actor_control::Domain::follow, ticket)) {
+        reason = Reason::busy; return false;
+    }
+    ActionBinding expected;
+    AcquireSRWLockShared(&p.lock);
+    const auto ready = a.ready && GetCurrentThreadId() == a.client_thread;
+    expected = a.published;
+    ReleaseSRWLockShared(&p.lock);
+    if (ready) a.watched_entity.store(expected.owner.entity, std::memory_order_release);
+    ActionBinding live; skater_action::State state; std::uint64_t epoch{}, after{};
+    reason = ready ? action_validate(expected, live, state, epoch, false, nullptr, continuity) : Reason::unavailable;
+    if (reason == Reason::none && !admission(state))
+        reason = Reason::unsupported_state;
+    // Equipment request bits belong to the game; this path neither inserts nor clears them.
+    AcquireSRWLockExclusive(&p.lock);
+    const auto now = GetTickCount64();
+    if (reason == Reason::none && action_protection_locked(live.owner, now)) reason = Reason::protection_conflict;
+    if (reason == Reason::none && (a.legacy_inflight || (p.dismount.until && now < p.dismount.until) ||
+        (p.board_mount.until && now < p.board_mount.until))) reason = Reason::busy;
+    const bool published_matches = a.published == expected;
+    if (reason == Reason::none && (!a.ready || !published_matches ||
+        !multiplayer::entity_destruction_epoch(p.base, after) || after != epoch)) reason = Reason::actor_changed;
+    bool accepted{};
+    if (reason == Reason::none) {
+        const auto captured = captured_actor(live, ticket, continuity, actor_control::Domain::follow);
+        const auto current = a.motion_claim.snapshot();
+        if (current.available && current.owner == owner && current.ticket == ticket &&
+            current.domain == actor_control::Domain::follow && current.phase == actor_control::Phase::admitting) {
+            a.claim_owner = owner; a.claim_sequence = sequence;
+            a.claimed_actor = captured; actor = captured; accepted = true;
+        } else reason = Reason::motion_owned;
+    }
+    if (!accepted) {
+        (void)a.motion_claim.abandon(owner, ticket);
+        if (!a.ledger.active() && !a.claim_owner) a.watched_entity.store(0, std::memory_order_release);
+    }
+    ReleaseSRWLockExclusive(&p.lock);
+    return accepted;
+}
+
+
+namespace {
+void clear_follow_locked(std::uint64_t owner, const Actor& actor) noexcept {
+    auto& a = protection().actions;
+    if (a.claim_owner != owner || a.claimed_actor != actor) return;
+    a.claimed_actor = {}; a.claim_owner = a.claim_sequence = 0;
+    if (!a.ledger.active()) a.watched_entity.store(0, std::memory_order_release);
+}
+}
+bool publish_follow(std::uint64_t owner, std::uint64_t sequence, const Actor& actor,
+    Admission admission, Reason& reason) noexcept {
+    LastError error; reason = Reason::unavailable;
+    if (!admission || actor.domain != actor_control::Domain::follow ||
+        actor.continuity != Continuity::native_lifetime) return false;
+    Actor live; State state;
+    if (!inspect(owner, sequence, actor, live, state, reason) || !admission(state)) {
+        if (reason == Reason::none) reason = Reason::unsupported_state;
+        return false;
+    }
+    auto& p = protection(); auto& a = p.actions;
+    if (!TryAcquireSRWLockExclusive(&p.lock)) { reason = Reason::unavailable; return false; }
+    std::uint64_t epoch{};
+    const auto current = a.motion_claim.snapshot();
+    const bool ready = owned_locked(owner, sequence, actor) && a.ready &&
+        GetCurrentThreadId() == a.client_thread && a.published == actor_binding(actor) &&
+        current.available && current.owner == owner && current.ticket == actor.ticket &&
+        current.domain == actor_control::Domain::follow && current.phase == actor_control::Phase::admitting &&
+        multiplayer::entity_destruction_epoch(actor.base, epoch) && epoch == actor.lifetime_epoch;
+    const bool published = ready && a.motion_claim.publish(owner, actor.ticket);
+    ReleaseSRWLockExclusive(&p.lock);
+    reason = published ? Reason::none : Reason::unavailable;
+    return published;
+}
+bool abandon_follow(std::uint64_t owner, std::uint64_t sequence, const Actor& actor) noexcept {
+    LastError error;
+    if (actor.domain != actor_control::Domain::follow) return false;
+    auto& p = protection(); auto& a = p.actions;
+    if (!TryAcquireSRWLockExclusive(&p.lock)) return false;
+    const bool abandoned = owned_locked(owner, sequence, actor) && a.motion_claim.abandon(owner, actor.ticket);
+    if (abandoned) clear_follow_locked(owner, actor);
+    ReleaseSRWLockExclusive(&p.lock);
+    return abandoned;
+}
+actor_control::Snapshot follow_snapshot(std::uint64_t owner, std::uint64_t sequence,
+    const Actor& actor) noexcept {
+    LastError error; auto& p = protection();
+    if (actor.domain != actor_control::Domain::follow || !TryAcquireSRWLockShared(&p.lock)) return {};
+    const auto out = owned_locked(owner, sequence, actor) ? p.actions.motion_claim.snapshot() : actor_control::Snapshot{};
+    ReleaseSRWLockShared(&p.lock);
+    return out;
+}
+bool revoke_follow(std::uint64_t owner, std::uint64_t sequence, const Actor& actor) noexcept {
+    LastError error; auto& p = protection();
+    if (actor.domain != actor_control::Domain::follow || !TryAcquireSRWLockShared(&p.lock)) return false;
+    constexpr auto required = actor_control::Barrier::body_parked;
+    const bool revoked = owned_locked(owner, sequence, actor) &&
+        p.actions.motion_claim.revoke(owner, actor.ticket, required);
+    ReleaseSRWLockShared(&p.lock);
+    return revoked;
+}
+
+bool retire_follow(std::uint64_t owner, std::uint64_t sequence, const Actor& actor,
+    const owned_bodies::RetirementBasis& basis, const owned_bodies::RetainedParkReceipt& receipt) noexcept {
+    LastError error;
+    if (actor.domain != actor_control::Domain::follow || actor.continuity != Continuity::native_lifetime ||
+        basis.native_world() != actor.world || basis.native_state() != actor.world_state ||
+        !owned_bodies::matches_retained_park(owner, basis, receipt)) return false;
+    Actor live; State state; Reason reason;
+    if (!inspect(owner, sequence, actor, live, state, reason, true) || live != actor) return false;
+    auto& p = protection(); auto& a = p.actions;
+    if (!TryAcquireSRWLockExclusive(&p.lock)) return false;
+    const auto claim = a.motion_claim.snapshot();
+    std::uint64_t epoch{};
+    const bool exact = owned_locked(owner, sequence, actor) && p.base == actor.base &&
+        a.world_generation == actor.world_generation &&
+        a.watched_entity.load(std::memory_order_acquire) == actor.entity &&
+        a.actor_destruction.load(std::memory_order_acquire) == actor.actor_epoch &&
+        multiplayer::entity_destruction_epoch(actor.base, epoch) && epoch == actor.lifetime_epoch &&
+        claim.available && claim.owner == owner && claim.ticket == actor.ticket &&
+        claim.domain == actor_control::Domain::follow && claim.phase == actor_control::Phase::revoking &&
+        claim.required == actor_control::Barrier::body_parked && claim.in_flight == 0;
+    const bool retired = exact && a.motion_claim.satisfy(owner, actor.ticket, actor_control::Barrier::body_parked) &&
+        a.motion_claim.retire(owner, actor.ticket);
+    if (retired) {
+        if (a.clock_enabled_ticket.load(std::memory_order_acquire) == actor.ticket.generation)
+            a.clock_enabled_ticket.store(0, std::memory_order_release);
+        clear_follow_locked(owner, actor);
+    }
+    ReleaseSRWLockExclusive(&p.lock);
+    return retired;
+}
 bool inspect(std::uint64_t owner, std::uint64_t sequence, const Actor& expected,
     Actor& actor, State& state, Reason& reason, bool cleanup) noexcept {
     Observation observation;
@@ -3729,7 +4024,7 @@ bool inspect(std::uint64_t owner, std::uint64_t sequence, const Actor& expected,
     if (!unchanged) {
         reason = action_check(&observation, actor_observation::Phase::final_lifetime, Reason::native_lifetime_changed); return false;
     }
-    actor = expected.continuity == Continuity::observed_context ? expected : captured_actor(first, expected.ticket);
+    actor = expected.continuity == Continuity::observed_context ? expected : captured_actor(first, expected.ticket, expected.continuity, expected.domain);
     if (actor != expected) {
         actor = {}; reason = action_check(&observation, actor_observation::Phase::identity, Reason::actor_changed); return false;
     }
@@ -3763,7 +4058,7 @@ bool enter(std::uint64_t owner, std::uint64_t sequence,
 bool retire(std::uint64_t owner, std::uint64_t sequence,
     const Actor& actor, bool duty_resolved) noexcept {
     LastError error; auto& p = protection(); auto& a = p.actions;
-    if (!actor_context::valid(actor.continuity)) return false;
+    if (actor.domain != actor_control::Domain::equipment || !actor_context::valid(actor.continuity)) return false;
     std::uint64_t epoch{};
     const bool exact_retired = !duty_resolved &&
         a.watched_entity.load(std::memory_order_acquire) == actor.entity &&

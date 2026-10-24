@@ -34,32 +34,57 @@ void equipment_and_follow_share_one_gate() {
     require(!gate.publication_allowed() && gate.owns(8, follow, c::Domain::follow), "follow admission remains reserved");
     require(gate.abandon(8, follow) && gate.publication_allowed(), "failed follow admission explicitly abandons own token");
 }
-void release_requires_original_return_and_two_distinct_proofs() {
+void release_requires_original_drain_and_body_park() {
     c::Arbiter gate; c::Ticket ticket, other;
     c::Call original, overlapping;
     require(gate.reserve(17, c::Domain::follow, ticket) && gate.publish(17, ticket), "follow admitted");
     require(!gate.enter(18, ticket, original) && !original.active(), "wrong VM cannot enter callback");
     require(gate.enter(17, ticket, original) && gate.enter(17, ticket, overlapping), "two original invocations enter");
     require(!gate.enter(17, ticket, original), "same cookie cannot enter twice");
-    const auto required = c::Barrier::native_consumed | c::Barrier::body_parked;
+    const auto required = c::Barrier::body_parked;
     require(!gate.revoke(17, ticket) && !gate.revoke(17, ticket, c::Barrier::native_consumed) &&
-        !gate.revoke(17, ticket, c::Barrier::body_parked), "follow cannot omit either explicit native/body proof");
+        !gate.revoke(17, ticket, static_cast<c::Barrier>(4)),
+        "follow cannot omit body park or request unknown proof bits");
     require(gate.revoke(17, ticket, required), "release stops new entries before waiting");
     c::Call late;
     require(!gate.enter(17, ticket, late) && !late.active(), "revoked generation cannot enter new native call");
     require(!gate.retire(17, ticket), "pending proofs and originals hold publication gate");
-    require(gate.satisfy(17, ticket, c::Barrier::native_consumed), "qualified native readback recorded");
-    require(!gate.retire(17, ticket), "native proof alone does not retire colliders");
+    require(!gate.satisfy(17, ticket, c::Barrier::native_consumed), "native history consumption is not a prepaid or fabricated SDK proof");
+    require(!gate.retire(17, ticket), "missing body park and native calls retain ownership");
     require(gate.leave(original) && !original.active(), "one original return leaves once");
     require(!gate.leave(original) && gate.snapshot().in_flight == 1, "duplicate return cannot subtract another original");
     require(gate.satisfy(17, ticket, c::Barrier::body_parked), "independent body park proof recorded");
-    require(!gate.retire(17, ticket), "both proofs cannot bypass outstanding native call");
+    require(!gate.retire(17, ticket), "positive body park cannot bypass outstanding native call");
     require(!gate.reserve(19, c::Domain::equipment, other), "other VM stays blocked through release barrier");
     require(gate.leave(overlapping) && gate.retire(17, ticket), "only all conditions retire");
-    require(gate.publication_allowed(), "actual quiescence opens legacy gate");
+    require(gate.publication_allowed(), "exact SDK drain and park open legacy gate");
     require(gate.reserve(19, c::Domain::equipment, other), "later native action admitted");
     require(!gate.satisfy(17, ticket, required) && !gate.retire(17, ticket), "old proof cannot retire new action");
     require(gate.abandon(19, other), "later action can abandon");
+}
+void stronger_follow_keeps_its_explicit_native_barrier() {
+    c::Arbiter gate; c::Ticket ticket;
+    c::Call original;
+    constexpr auto both = c::Barrier::native_consumed | c::Barrier::body_parked;
+    require(gate.reserve(57, c::Domain::follow, ticket) && gate.publish(57, ticket), "stronger follow admitted");
+    require(gate.enter(57, ticket, original), "stronger follow original entered");
+    require(gate.revoke(57, ticket, both), "explicit stronger native/body contract remains supported");
+    const auto initial = gate.snapshot();
+    require(initial.available && initial.required == both && initial.pending == both && initial.in_flight == 1,
+        "stronger follow retains both actual pending barriers and original");
+    require(!gate.revoke(57, ticket, c::Barrier::body_parked), "repeated revoke cannot weaken an explicit stronger contract");
+    require(gate.revoke(57, ticket, both), "same stronger revoke is idempotent");
+    require(gate.satisfy(57, ticket, c::Barrier::body_parked) && !gate.retire(57, ticket), "body park cannot bypass stronger native debt or original");
+    require(gate.snapshot().pending == c::Barrier::native_consumed, "only explicitly supplied body proof cleared");
+    require(gate.leave(original) && !gate.retire(57, ticket), "drain alone cannot erase explicitly required native proof");
+    require(!gate.satisfy(58, ticket, c::Barrier::native_consumed), "foreign owner cannot discharge stronger native proof");
+    require(gate.satisfy(57, ticket, c::Barrier::native_consumed) && gate.retire(57, ticket), "both explicit stronger proofs and drain retire exact claim");
+    c::Ticket reverse;
+    require(gate.reserve(57, c::Domain::follow, reverse) && reverse.generation > ticket.generation && gate.publish(57, reverse), "stronger proof test uses later exact generation");
+    require(gate.revoke(57, reverse, both), "second stronger contract accepted");
+    require(gate.satisfy(57, reverse, c::Barrier::native_consumed) && !gate.retire(57, reverse), "native proof alone cannot replace mandatory body park");
+    require(gate.snapshot().pending == c::Barrier::body_parked, "stronger pending body proof remains exact");
+    require(gate.satisfy(57, reverse, c::Barrier::body_parked) && gate.retire(57, reverse), "stronger proofs can arrive in either order");
 }
 void proof_scope_and_raii() {
     c::Arbiter gate, wrong_gate; c::Ticket ticket;
@@ -71,8 +96,8 @@ void proof_scope_and_raii() {
         c::Call native;
         require(gate.enter(27, ticket, native), "RAII native call");
         require(!wrong_gate.leave(native) && native.active(), "wrong arbiter cannot consume cookie");
-        const auto required = c::Barrier::native_consumed | c::Barrier::body_parked;
-        require(gate.revoke(27, ticket, required), "follow requires both release barriers");
+        const auto required = c::Barrier::body_parked;
+        require(gate.revoke(27, ticket, required), "follow requires its body-park release barrier");
         require(!gate.revoke(27, ticket, c::Barrier::none), "required proofs cannot be weakened on repeated revoke");
         require(gate.revoke(27, ticket, required), "same revoke is idempotent");
         require(!gate.satisfy(28, ticket, c::Barrier::body_parked), "wrong VM cannot satisfy barrier");
@@ -81,8 +106,8 @@ void proof_scope_and_raii() {
     }
     require(gate.snapshot().in_flight == 0, "original scope return decrements exact native generation");
     require(!gate.retire(27, ticket), "scope return alone is no body park proof");
-    require(gate.satisfy(27, ticket, c::Barrier::body_parked) && !gate.retire(27, ticket), "body park cannot stand in for native consumption");
-    require(gate.satisfy(27, ticket, c::Barrier::native_consumed) && gate.retire(27, ticket), "explicit remaining proof retires");
+    require(!gate.satisfy(27, ticket, c::Barrier::native_consumed), "SDK completion does not claim native history retirement");
+    require(gate.satisfy(27, ticket, c::Barrier::body_parked) && gate.retire(27, ticket), "actual call drain and positive body park retire SDK ownership");
 }
 void capacity_and_generation_exhaustion() {
     c::Arbiter gate; c::Ticket ticket;
@@ -92,7 +117,7 @@ void capacity_and_generation_exhaustion() {
     c::Call excess;
     require(!gate.enter(37, ticket, excess) && !excess.active(), "callback count cannot overflow into generation");
     require(gate.snapshot().in_flight == c::Arbiter::maximum_in_flight, "callback saturation preserves exact count");
-    const auto required = c::Barrier::native_consumed | c::Barrier::body_parked;
+    const auto required = c::Barrier::body_parked;
     require(gate.revoke(37, ticket, required), "saturated claim can revoke");
     for (auto& call : calls) require(gate.leave(call), "bounded slot returns");
     require(gate.satisfy(37, ticket, required) && gate.retire(37, ticket), "all saturated calls and release proofs retire");
@@ -129,7 +154,8 @@ static_assert(!std::is_copy_constructible_v<c::Arbiter> && !std::is_move_constru
 }
 int main() {
     equipment_and_follow_share_one_gate();
-    release_requires_original_return_and_two_distinct_proofs();
+    release_requires_original_drain_and_body_park();
+    stronger_follow_keeps_its_explicit_native_barrier();
     proof_scope_and_raii();
     capacity_and_generation_exhaustion();
     simultaneous_domains_contend_on_actual_core();

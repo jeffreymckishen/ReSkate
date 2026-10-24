@@ -83,6 +83,9 @@ struct Slot {
     std::size_t made{};
     bool attempted{}, body_observed{}, active{}, retained{}, quarantined{}, creation_failed{};
     AllocationProgress allocation{};
+    std::uint64_t release_hold{};
+    bool release_requested{};
+    std::uint64_t parked_ms{}; // immutable successful retained park; never slot reuse
     Sample latest{};
     Mailbox mailbox{};
 };
@@ -117,6 +120,7 @@ struct Service {
     DWORD thread{};
     bool eligible{};
     std::uint64_t generation{}, world_generation{}, tick_at{}, command_sequence{};
+    std::uint64_t release_generation{}; // process lifetime, never wraps
     SyncProbe probe{};
     std::uint32_t probe_generation{};
     // High32 is the immutable probe generation, low32 a bounded loss count.
@@ -391,8 +395,12 @@ void retire(Slot& s, bool may_park) noexcept {
         sync_capture_routes(service.probe);
     }
     s.mailbox.cancel();
+    // A dependent native service owns release ordering, including VM unload.
+    // Retain active SDK allocation state for its cleanup-only basis capture.
+    if (s.release_hold) { s.release_requested = true; return; }
     const bool parked = may_park && park(s);
     s.active = false; s.retained = true; s.quarantined = s.allocation.quarantine(parked); s.latest = {};
+    s.parked_ms = s.quarantined ? 0 : GetTickCount64();
     // No qualified native destructor exists. This slot is never recycled and its old
     // handles are never adopted by another owner, even after a level reload.
 }
@@ -403,7 +411,7 @@ bool command_clock(const Slot& s, Epoch& out) noexcept {
 void produce(NativeHandle* incoming_pointer, std::uintptr_t wrapper) noexcept {
     if (!service.hooked.load(std::memory_order_acquire) || !TryAcquireSRWLockExclusive(&service.lock)) return;
     for (auto& s : service.slots) {
-        if (!s.active || !s.mailbox.pending) continue;
+        if (!s.active || s.release_requested || !s.mailbox.pending) continue;
         if (GetTickCount64() >= s.mailbox.deadline) { Command ignored; (void)s.mailbox.consume(s.mailbox.command.epoch, GetTickCount64(), ignored); continue; }
         if (std::find(s.anchor.wrappers.begin(), s.anchor.wrappers.end(), wrapper) == s.anchor.wrappers.end()) continue;
         NativeHandle incoming{}; Epoch current{};
@@ -475,10 +483,12 @@ bool ring(const Slot& s, std::uintptr_t offset, Ring& header, V4& value) noexcep
     for (float v : value) if (!std::isfinite(v) || std::abs(v) > 1000000) return false;
     return true;
 }
-// Native reads only. Queries use this path without publishing latest or observing receipts.
-bool observe(const Slot& s, Sample& out) noexcept {
+// Callers select their admission edge. Both paths use the same bounded native
+// ring/layout checks; neither publishes latest or observes mailbox receipts.
+template<class Qualify>
+bool observe_checked(const Slot& s, Sample& out, Qualify qualify) noexcept {
     Epoch before{}; before.world = service.world_generation; before.body = s.handle.generation;
-    if (!fresh(s) || !clock(s.anchor, before)) return false;
+    if (!qualify(s) || !clock(s.anchor, before)) return false;
     const std::array<std::uintptr_t, 4> offsets{r::position_ring, r::rotation_ring, r::velocity_ring, r::spin_ring};
     std::array<Ring, 4> headers{}; std::array<V4, 4> values{};
     for (std::size_t i = 0; i < offsets.size(); ++i) if (!ring(s, offsets[i], headers[i], values[i])) return false;
@@ -504,13 +514,37 @@ bool observe(const Slot& s, Sample& out) noexcept {
             !peek(inverse_source + std::uintptr_t{s.body.index} * 4, inverse_again) || inverse_again != inverse) return false;
     }
     Epoch after{}; after.world = service.world_generation; after.body = s.handle.generation;
-    if (!fresh(s) || !clock(s.anchor, after) || after != before) return false;
+    if (!qualify(s) || !clock(s.anchor, after) || after != before) return false;
     out = {}; out.epoch = after;
     for (std::size_t i = 0; i < 3; ++i) { out.position[i] = values[0][i]; out.velocity[i] = values[2][i]; out.angular_velocity[i] = values[3][i]; }
     out.rotation = {values[1][1], values[1][2], values[1][3], values[1][0]};
     out.mass = 1.f / inverse;
     for (std::size_t i = 0; i < 3; ++i) out.inertia[i] = 1.f / (inverse * ratio[i]);
     return true;
+}
+// Caller holds service.lock. This is the native callback admission, not the
+// client API: fresh()/eligible()/capture() can query a model or block.
+bool callback_source_current(const Slot& s) noexcept {
+    const auto now = GetTickCount64();
+    if (!service.hooked.load(std::memory_order_acquire) || service.api.base != service.base ||
+        !service.eligible || now < service.tick_at || now - service.tick_at >= 250 ||
+        !s.active || s.retained || s.quarantined || s.release_requested || !producer_owner(s, s.body)) return false;
+    std::uintptr_t generations{}, again{}, state{}; std::uint32_t generation{}, after{};
+    const auto offset = std::uintptr_t{s.body.index} * sizeof(std::uint32_t);
+    return peek(s.body.world + r::world_state, state) && state == s.anchor.state &&
+        peek(s.body.world + r::world_body_generations, generations) && pointer(generations) &&
+        peek(generations + offset, generation) && generation == s.body.generation &&
+        producer_owner(s, s.body) &&
+        peek(s.body.world + r::world_body_generations, again) && again == generations &&
+        peek(generations + offset, after) && after == generation &&
+        peek(s.body.world + r::world_state, state) && state == s.anchor.state;
+}
+bool observe_callback(const Slot& s, Sample& out) noexcept {
+    return observe_checked(s, out, [](const Slot& slot) noexcept { return callback_source_current(slot); });
+}
+// Client API retains its original full client/model admission checks.
+bool observe(const Slot& s, Sample& out) noexcept {
+    return observe_checked(s, out, [](const Slot& slot) noexcept { return fresh(slot); });
 }
 bool sample(Slot& s, Sample& out) noexcept {
     if (!observe(s, out)) return false;
@@ -650,7 +684,7 @@ std::string read(std::uint64_t owner, const Handle& handle, Sample& out) noexcep
     try {
         if (!eligible()) return "body observation unavailable in this client phase";
         Locked lock(service.lock); auto* s = lookup(owner, handle);
-        if (!s || !s->active || s->retained || s->quarantined) return "body owner or generation unavailable";
+        if (!s || !s->active || s->retained || s->quarantined || s->release_requested) return "body owner or generation unavailable";
         if (!sample(*s, out)) return "body snapshot or native epoch changed; no sample published";
         return {};
     } catch (...) { return "native body observation failed closed"; }
@@ -662,7 +696,7 @@ bool capture_source(std::uint64_t owner, const Handle& handle, MeasuredSource& o
         if (!eligible()) return false;
         Locked lock(service.lock);
         auto* s = lookup(owner, handle);
-        if (!s || !s->active || s->retained || s->quarantined || !producer_owner(*s, s->body)) return false;
+        if (!s || !s->active || s->retained || s->quarantined || s->release_requested || !producer_owner(*s, s->body)) return false;
         Epoch before{}; before.world = service.world_generation; before.body = handle.generation;
         std::uint64_t observed{};
         if (!clock(s->anchor, before, &observed)) return false;
@@ -684,6 +718,39 @@ bool capture_source(std::uint64_t owner, const Handle& handle, MeasuredSource& o
         return true;
     } catch (...) { return false; }
 }
+bool try_measure_source(std::uint64_t owner, const MeasuredSource& identity, MeasuredSource& out) noexcept {
+    LastError error;
+    // Refuse aliases before clearing output: a persistent identity must not be
+    // silently overwritten with a newer pose by an in-place refresh call.
+    if (&identity == &out) return false;
+    out = {};
+    if (!owner || owner != identity.owner_ || !TryAcquireSRWLockShared(&service.lock)) return false;
+    struct Unlock { ~Unlock() { ReleaseSRWLockShared(&service.lock); } } unlock;
+    const auto* s = lookup(owner, identity.handle_);
+    if (!s || service.base != identity.base_ || service.world != identity.world_ ||
+        service.state != identity.state_ || service.world_generation != identity.world_generation_ ||
+        s->anchor.world != identity.world_ || s->anchor.state != identity.state_ ||
+        s->body.world != identity.world_ || s->body.index != identity.body_index_ ||
+        s->body.generation != identity.body_generation_ || !callback_source_current(*s)) return false;
+    Epoch before{}; before.world = service.world_generation; before.body = s->handle.generation;
+    std::uint64_t observed{};
+    if (!clock(s->anchor, before, &observed)) return false;
+    Sample measured{};
+    if (!observe_callback(*s, measured) || measured.epoch != before) return false;
+    Epoch after{}; after.world = service.world_generation; after.body = s->handle.generation;
+    std::uint64_t observed_after{};
+    if (!callback_source_current(*s) || !clock(s->anchor, after, &observed_after) ||
+        after != before || observed_after != observed) return false;
+    const auto now = GetTickCount64();
+    if (!observed || now < observed || now - observed >= command_lifetime_ms ||
+        now < service.tick_at || now - service.tick_at >= 250) return false;
+    // The old immutable measurement selected identity only. Its timestamps and
+    // pose are not restamped; this is a separate, newly observed value.
+    MeasuredSource value = identity;
+    value.sample_ = measured; value.clock_observed_ms_ = observed; value.captured_ms_ = now;
+    out = value;
+    return true;
+}
 SourceBorrow::~SourceBorrow() {
     LastError error;
     if (held_) ReleaseSRWLockShared(&service.lock);
@@ -703,7 +770,7 @@ const MeasuredSource* SourceBorrow::get() const noexcept {
         service.base != source.base_ || service.world != source.world_ || service.state != source.state_ ||
         service.world_generation != source.world_generation_) return nullptr;
     const auto* s = lookup(source.owner_, source.handle_);
-    if (!s || !s->active || s->retained || s->quarantined ||
+    if (!s || !s->active || s->retained || s->quarantined || s->release_requested ||
         s->body.world != source.world_ || s->anchor.world != source.world_ || s->anchor.state != source.state_ ||
         s->body.index != source.body_index_ || s->body.generation != source.body_generation_ ||
         source.sample_.epoch.world != source.world_generation_ ||
@@ -725,6 +792,27 @@ const MeasuredSource* SourceBorrow::get() const noexcept {
         finished - service.tick_at >= 250) return nullptr;
     return &source;
 }
+const MeasuredSource* SourceBorrow::current() const noexcept {
+    LastError error;
+    const auto* source = get();
+    if (!source) return nullptr;
+    const auto* s = lookup(source->owner_, source->handle_);
+    Epoch before{}; before.world = source->world_generation_; before.body = source->handle_.generation;
+    std::uint64_t observed{};
+    Sample measured{};
+    if (!s || !callback_source_current(*s) || !clock(s->anchor, before, &observed) ||
+        before != source->sample_.epoch || observed != source->clock_observed_ms_ ||
+        !observe_callback(*s, measured) || !body_query::same_sample(measured, source->sample_)) return nullptr;
+    Epoch after{}; after.world = source->world_generation_; after.body = source->handle_.generation;
+    std::uint64_t observed_after{};
+    if (!get() || !callback_source_current(*s) || !clock(s->anchor, after, &observed_after) ||
+        after != before || observed_after != observed) return nullptr;
+    const auto finished = GetTickCount64();
+    if (finished < source->captured_ms_ || finished < source->clock_observed_ms_ ||
+        finished - source->clock_observed_ms_ >= command_lifetime_ms ||
+        finished < service.tick_at || finished - service.tick_at >= 250) return nullptr;
+    return &source_;
+}
 bool try_borrow_source(std::uint64_t owner, const MeasuredSource& source, SourceBorrow& out) noexcept {
     LastError error;
     if (out.held_) return false;
@@ -734,6 +822,201 @@ bool try_borrow_source(std::uint64_t owner, const MeasuredSource& source, Source
     out.held_ = false; out.source_ = {}; out.thread_ = 0;
     ReleaseSRWLockShared(&service.lock);
     return false;
+}
+
+bool acquire_release_hold(std::uint64_t owner, const MeasuredSource& source, BodyReleaseHold& out) noexcept {
+    LastError error;
+    if (out.available() || !owner || owner != source.owner_ || !eligible() ||
+        !TryAcquireSRWLockExclusive(&service.lock)) return false;
+    struct Unlock { ~Unlock() { ReleaseSRWLockExclusive(&service.lock); } } unlock;
+    auto* s = lookup(owner, source.handle_);
+    if (!s || s->release_hold || s->release_requested || !callback_source_current(*s) ||
+        service.release_generation == std::numeric_limits<std::uint64_t>::max() || source.base_ != service.base ||
+        source.world_generation_ != service.world_generation || source.world_ != s->anchor.world ||
+        source.state_ != s->anchor.state || source.body_index_ != s->body.index ||
+        source.body_generation_ != s->body.generation || !source.clock_observed_ms_ ||
+        source.captured_ms_ < source.clock_observed_ms_) return false;
+    Epoch before{}; before.world = service.world_generation; before.body = s->handle.generation;
+    std::uint64_t observed{};
+    Sample measured{};
+    if (!clock(s->anchor, before, &observed) || before != source.sample_.epoch ||
+        observed != source.clock_observed_ms_ || !observe_callback(*s, measured) ||
+        !body_query::same_sample(measured, source.sample_)) return false;
+    Epoch after{}; after.world = service.world_generation; after.body = s->handle.generation;
+    std::uint64_t observed_after{};
+    if (!callback_source_current(*s) || !clock(s->anchor, after, &observed_after) ||
+        after != before || observed_after != observed) return false;
+    const auto finished = GetTickCount64();
+    if (finished < source.captured_ms_ || finished < observed ||
+        finished - observed >= command_lifetime_ms || finished < service.tick_at ||
+        finished - service.tick_at >= 250) return false;
+    BodyReleaseHold value;
+    value.owner_ = owner; value.id_ = ++service.release_generation;
+    value.world_generation_ = service.world_generation; value.handle_ = s->handle;
+    value.base_ = service.base; value.world_ = s->anchor.world; value.state_ = s->anchor.state;
+    value.body_index_ = s->body.index; value.body_generation_ = s->body.generation;
+    s->release_hold = value.id_;
+    out = value;
+    return true;
+}
+bool release_requested(std::uint64_t owner, const BodyReleaseHold& hold, bool& out) noexcept {
+    LastError error; out = false;
+    if (!owner || owner != hold.owner_ || !hold.id_ || !TryAcquireSRWLockShared(&service.lock)) return false;
+    struct Unlock { ~Unlock() { ReleaseSRWLockShared(&service.lock); } } unlock;
+    const auto* s = lookup(owner, hold.handle_);
+    if (service.base != hold.base_ || service.world_generation != hold.world_generation_ ||
+        service.world != hold.world_ || service.state != hold.state_ ||
+        !s || s->release_hold != hold.id_ || s->anchor.world != hold.world_ ||
+        s->anchor.state != hold.state_ || s->body.world != hold.world_ ||
+        s->body.index != hold.body_index_ || s->body.generation != hold.body_generation_) return false;
+    out = s->release_requested;
+    return true;
+}
+bool release_body_hold(std::uint64_t owner, BodyReleaseHold& hold) noexcept {
+    LastError error;
+    if (!owner || owner != hold.owner_ || !hold.id_ || !TryAcquireSRWLockExclusive(&service.lock)) return false;
+    struct Unlock { ~Unlock() { ReleaseSRWLockExclusive(&service.lock); } } unlock;
+    auto* s = lookup(owner, hold.handle_);
+    if (!s || s->release_hold != hold.id_ || s->anchor.world != hold.world_ ||
+        s->anchor.state != hold.state_ || s->body.world != hold.world_ ||
+        s->body.index != hold.body_index_ || s->body.generation != hold.body_generation_) return false;
+    // No callback into an actor service and no native write under this lock.
+    // The trusted holder already established its actual release precondition.
+    s->release_hold = 0;
+    hold = {};
+    return true;
+}
+
+bool request_held_release(std::uint64_t owner, const BodyReleaseHold& hold) noexcept {
+    LastError error;
+    if (!owner || owner != hold.owner_ || !hold.id_ || !TryAcquireSRWLockExclusive(&service.lock)) return false;
+    struct Unlock { ~Unlock() { ReleaseSRWLockExclusive(&service.lock); } } unlock;
+    auto* s = lookup(owner, hold.handle_);
+    if (!s || s->release_hold != hold.id_ || s->anchor.world != hold.world_ ||
+        s->anchor.state != hold.state_ || s->body.world != hold.world_ ||
+        s->body.index != hold.body_index_ || s->body.generation != hold.body_generation_) return false;
+    s->release_requested = true;
+    s->mailbox.cancel();
+    return true;
+}
+
+bool capture_retirement_basis(std::uint64_t owner, const MeasuredSource& source, RetirementBasis& out) noexcept {
+    LastError error;
+    if (out.available() || !owner || owner != source.owner_ || !eligible() ||
+        !TryAcquireSRWLockShared(&service.lock)) return false;
+    struct Unlock { ~Unlock() { ReleaseSRWLockShared(&service.lock); } } unlock;
+    const auto* s = lookup(owner, source.handle_);
+    if (!s || !s->active || s->retained || s->quarantined || !fresh(*s) ||
+        source.base_ != service.base || source.world_generation_ != service.world_generation ||
+        source.world_ != s->anchor.world || source.state_ != s->anchor.state ||
+        source.body_index_ != s->body.index || source.body_generation_ != s->body.generation ||
+        !s->made || s->made != s->definition.count || s->made > maximum_capsules) return false;
+    RetirementBasis value;
+    value.epoch_.world = service.world_generation; value.epoch_.body = s->handle.generation;
+    std::uint64_t observed{};
+    if (!clock(s->anchor, value.epoch_, &observed)) return false;
+    value.owner_ = owner; value.handle_ = s->handle; value.world_generation_ = service.world_generation;
+    value.base_ = service.base; value.world_ = s->anchor.world; value.state_ = s->anchor.state;
+    value.body_ = {s->body.world, s->body.index, s->body.generation}; value.made_ = s->made;
+    for (std::size_t i = 0; i < s->made; ++i)
+        value.shapes_[i] = {s->shapes[i].world, s->shapes[i].index, s->shapes[i].generation};
+    Epoch after{}; after.world = service.world_generation; after.body = s->handle.generation;
+    std::uint64_t observed_after{};
+    if (!fresh(*s) || !clock(s->anchor, after, &observed_after) || after != value.epoch_ || observed_after != observed) return false;
+    const auto finished = GetTickCount64();
+    if (!observed || finished < observed || finished - observed >= command_lifetime_ms) return false;
+    value.captured_ms_ = finished; out = value; return true;
+}
+
+bool observe_retained_park(std::uint64_t owner, const RetirementBasis& basis, RetainedParkReceipt& out) noexcept {
+    LastError error;
+    if (out.available() || !owner || owner != basis.owner_ || !eligible() ||
+        !TryAcquireSRWLockShared(&service.lock)) return false;
+    struct Unlock { ~Unlock() { ReleaseSRWLockShared(&service.lock); } } unlock;
+    const auto* s = lookup(owner, basis.handle_);
+    const auto identity = [&] {
+        if (!s || s->active || !s->retained || s->quarantined || !s->parked_ms ||
+            s->parked_ms < basis.captured_ms_ || basis.base_ != service.base ||
+            basis.world_generation_ != service.world_generation || basis.world_ != s->anchor.world ||
+            basis.state_ != s->anchor.state || basis.body_.world != s->body.world ||
+            basis.body_.index != s->body.index || basis.body_.generation != s->body.generation ||
+            !basis.made_ || basis.made_ != s->made || s->made > maximum_capsules || !fresh(*s)) return false;
+        for (std::size_t i = 0; i < s->made; ++i)
+            if (basis.shapes_[i].world != s->shapes[i].world || basis.shapes_[i].index != s->shapes[i].index ||
+                basis.shapes_[i].generation != s->shapes[i].generation) return false;
+        return true;
+    };
+    if (!identity()) return false;
+    Epoch before{}; before.world = service.world_generation; before.body = s->handle.generation;
+    std::uint64_t observed{};
+    if (!clock(s->anchor, before, &observed) || before.serial <= basis.epoch_.serial ||
+        before.time <= basis.epoch_.time || observed <= basis.captured_ms_ || observed <= s->parked_ms) return false;
+    std::uintptr_t categories{}, collides{}, dynamics{};
+    std::uint32_t dynamic_word{};
+    const auto word = std::uintptr_t{s->body.index >> 5} * sizeof(std::uint32_t);
+    const auto bit = 1U << (s->body.index & 31U);
+    if (!peek(s->anchor.state + r::shape_categories, categories) || !pointer(categories) ||
+        !peek(s->anchor.state + r::shape_collides, collides) || !pointer(collides) ||
+        !peek(s->anchor.state + r::dynamic_bits, dynamics) || !pointer(dynamics) ||
+        !peek(dynamics + word, dynamic_word) || (dynamic_word & bit)) return false;
+    Ring linear_header, angular_header; V4 linear{}, angular{}, force{}, torque{};
+    std::uintptr_t force_source{}, torque_source{};
+    if (!ring(*s, r::velocity_ring, linear_header, linear) || linear != V4{} ||
+        !ring(*s, r::spin_ring, angular_header, angular) || angular != V4{} ||
+        !array4(s->anchor.state, r::pending_force, s->body.index, force, force_source) || force != V4{} ||
+        !array4(s->anchor.state, r::pending_torque, s->body.index, torque, torque_source) || torque != V4{}) return false;
+    for (unsigned pass = 0; pass < 2; ++pass) {
+        for (std::size_t i = 0; i < s->made; ++i) {
+            std::uint32_t category{}, collision{};
+            const auto offset = std::uintptr_t{s->shapes[i].index} * sizeof(std::uint32_t);
+            if (!peek(categories + offset, category) || category || !peek(collides + offset, collision) || collision ||
+                !shape_current(*s, i)) return false;
+        }
+        std::uintptr_t again{}; std::uint32_t bits{}; Ring header; V4 value{};
+        if (!peek(s->anchor.state + r::shape_categories, again) || again != categories ||
+            !peek(s->anchor.state + r::shape_collides, again) || again != collides ||
+            !peek(s->anchor.state + r::dynamic_bits, again) || again != dynamics ||
+            !peek(dynamics + word, bits) || bits != dynamic_word ||
+            !ring(*s, r::velocity_ring, header, value) || header != linear_header || value != linear ||
+            !ring(*s, r::spin_ring, header, value) || header != angular_header || value != angular ||
+            !array4(s->anchor.state, r::pending_force, s->body.index, value, again) || again != force_source || value != force ||
+            !array4(s->anchor.state, r::pending_torque, s->body.index, value, again) || again != torque_source || value != torque ||
+            !identity()) return false;
+    }
+    Epoch after{}; after.world = service.world_generation; after.body = s->handle.generation;
+    std::uint64_t observed_after{};
+    if (!identity() || !clock(s->anchor, after, &observed_after) || after != before || observed_after != observed) return false;
+    const auto finished = GetTickCount64();
+    if (finished < observed || finished - observed >= command_lifetime_ms) return false;
+    RetainedParkReceipt value; value.basis_ = basis; value.observed_epoch_ = before;
+    value.parked_ms_ = s->parked_ms; value.observed_ms_ = observed;
+    out = value; return true;
+}
+
+bool matches_retained_park(std::uint64_t owner, const RetirementBasis& basis, const RetainedParkReceipt& receipt) noexcept {
+    LastError error;
+    if (!owner || owner != basis.owner_ || !receipt.available() ||
+        !TryAcquireSRWLockShared(&service.lock)) return false;
+    struct Unlock { ~Unlock() { ReleaseSRWLockShared(&service.lock); } } unlock;
+    const auto* s = lookup(owner, basis.handle_);
+    const auto& recorded = receipt.basis_;
+    if (!s || s->body.world != basis.body_.world || s->body.index != basis.body_.index ||
+        s->body.generation != basis.body_.generation || s->made != basis.made_ || s->made > maximum_capsules) return false;
+    for (std::size_t i = 0; i < s->made; ++i)
+        if (s->shapes[i].world != basis.shapes_[i].world || s->shapes[i].index != basis.shapes_[i].index ||
+            s->shapes[i].generation != basis.shapes_[i].generation) return false;
+    // No fresh retirement observation or timestamp refresh. Fresh actor/input
+    // authority is separate from this immutable, irreversible terminal history.
+    return !s->active && s->retained && !s->quarantined && s->parked_ms == receipt.parked_ms_ &&
+        s->parked_ms >= basis.captured_ms_ && basis.base_ == service.base &&
+        basis.world_generation_ == service.world_generation && basis.world_ == s->anchor.world && basis.state_ == s->anchor.state &&
+        basis.owner_ == recorded.owner_ && basis.handle_ == recorded.handle_ && basis.world_generation_ == recorded.world_generation_ &&
+        basis.base_ == recorded.base_ && basis.world_ == recorded.world_ && basis.state_ == recorded.state_ &&
+        basis.body_ == recorded.body_ && basis.shapes_ == recorded.shapes_ && basis.made_ == recorded.made_ &&
+        basis.epoch_ == recorded.epoch_ && basis.captured_ms_ == recorded.captured_ms_ &&
+        receipt.observed_epoch_.world == basis.epoch_.world && receipt.observed_epoch_.body == basis.epoch_.body &&
+        receipt.observed_epoch_.serial > basis.epoch_.serial && receipt.observed_epoch_.time > basis.epoch_.time &&
+        receipt.observed_ms_ > s->parked_ms && receipt.observed_ms_ > basis.captured_ms_;
 }
 
 #include "owned_body_sync_probe.inl"
@@ -750,7 +1033,7 @@ body_query::Result probe_batch(std::uint64_t owner, const Handle& handle, const 
         Locked lock(service.lock);
         const auto* selected = lookup(owner, handle);
         const auto& canonical = request.observation; const auto& requested_epoch = canonical.epoch;
-        if (!selected || !selected->active || selected->retained || selected->quarantined || !fresh(*selected) ||
+        if (!selected || !selected->active || selected->retained || selected->quarantined || selected->release_requested || !fresh(*selected) ||
             !body_query::same_sample(canonical, selected->latest) || requested_epoch.world != service.world_generation ||
             requested_epoch.body != selected->handle.generation) {
             failed.failure = body_query::Failure::observation_changed; return failed;
@@ -761,7 +1044,7 @@ body_query::Result probe_batch(std::uint64_t owner, const Handle& handle, const 
         std::size_t excluded_count = 1; owners[0] = selected;
         for (std::size_t i = 0; i < request.exclusions; ++i) {
             const auto* other = lookup(owner, request.excluded[i]);
-            if (!other || !other->active || other->retained || other->quarantined || !fresh(*other) ||
+            if (!other || !other->active || other->retained || other->quarantined || other->release_requested || !fresh(*other) ||
                 !selected->anchor.same(other->anchor)) { failed.failure = body_query::Failure::observation_changed; return failed; }
             if (std::find(owners.begin(), owners.begin() + excluded_count, other) == owners.begin() + excluded_count)
                 owners[excluded_count++] = other;
@@ -853,7 +1136,7 @@ std::string submit(std::uint64_t owner, const Handle& handle, const Command& com
     try {
         if (!eligible()) return "body commands require the current local client phase";
         Locked lock(service.lock); auto* s = lookup(owner, handle);
-        if (!s || !s->active || s->retained || s->quarantined || !fresh(*s)) return "body owner or generation changed";
+        if (!s || !s->active || s->retained || s->quarantined || s->release_requested || !fresh(*s)) return "body owner or generation changed";
         Epoch current{};
         if (!command_clock(*s, current) || current != s->latest.epoch) return "measured native body epoch expired";
         if (service.command_sequence == std::numeric_limits<std::uint64_t>::max() ||
@@ -871,7 +1154,7 @@ std::string receipt(std::uint64_t owner, const Handle& handle, std::uint64_t sel
         if (s->mailbox.pending && GetTickCount64() >= s->mailbox.deadline) {
             Command ignored; (void)s->mailbox.consume(s->mailbox.command.epoch, GetTickCount64(), ignored);
         }
-        if (s->active && !s->quarantined && s->mailbox.needs_successor()) { Sample observed; (void)sample(*s, observed); }
+        if (s->active && !s->quarantined && !s->release_requested && s->mailbox.needs_successor()) { Sample observed; (void)sample(*s, observed); }
         if (!s->mailbox.find(selected, out)) return "body receipt sequence unavailable for this owner and generation";
         out.retained = s->retained; out.quarantined = s->quarantined; return {};
     } catch (...) { return "native body receipt failed closed"; }
@@ -881,6 +1164,10 @@ std::string release(std::uint64_t owner, const Handle& handle) noexcept {
     try {
         if (GetCurrentThreadId() != service.thread) return "body release is client phase only";
         Locked lock(service.lock); auto* s = lookup(owner, handle); if (!s) return "body owner or generation unavailable";
+        if (s->release_hold) {
+            retire(*s, false); // request only; held dependent allocation is not parked
+            return "body release deferred while native dependent work remains";
+        }
         if (!s->retained) retire(*s, eligible() && fresh(*s));
         return s->quarantined ? "body retained in quarantine; fresh owner unavailable, no native destruction attempted" : std::string{};
     } catch (...) { return "native body release failed closed"; }

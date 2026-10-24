@@ -44,6 +44,7 @@
 #include "Extension/World/world_entities.h"
 #include "Extension/Skater/client_source_spawn.h"
 #include "Extension/Skater/native_actions.h"
+#include "Extension/Skater/native_body_follow_service.h"
 #include "Extension/Skater/native_recovery.h"
 #include "Extension/Skater/native_input_trace.h"
 #include "Extension/Skater/native_input_pulse.h"
@@ -1296,7 +1297,10 @@ void update_model(std::uintptr_t client, TickState& frame) {
     dingosdk::native_input_pulse::tick(r.base, client,
         !r.observer_failed && named_context_ready && !debug_busy && !r.requests.loading() &&
         !r.debug_model.noclip && !r.debug_model.free_camera);
-    if (r.observer_failed) return; // Keep the bounded restore/telemetry path available after catalog failure.
+    if (r.observer_failed) {
+        dingosdk::body_follow_service::tick(false);
+        return; // Keep bounded restoration available after catalog failure.
+    }
     {
         // Every tick, not at the 500 ms customization pace: the item grids follow the highlight.
         DINGO_PROFILE_ZONE("tick/item browser");
@@ -1305,6 +1309,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
     {
         DINGO_PROFILE_ZONE("tick/plugins");
         dingosdk::owned_bodies::tick(r.base, client, named_context_ready && !debug_busy && !r.requests.loading());
+        dingosdk::body_follow_service::tick(named_context_ready && !debug_busy && !r.requests.loading());
         dingosdk::plugins::on_client_tick();
         dingosdk::plugins::tick_plugin_settings();
     }

@@ -54,6 +54,7 @@
 #include "Extension/Travel/local_location_travel.h"
 #include "Extension/World/world_entities.h"
 #include "Extension/World/owned_bodies.h"
+#include "Extension/Skater/native_body_follow_service.h"
 #include "Extension/Skater/bone_cam.h"
 #include "Extension/Skater/pad_flight.h"
 #include "Extension/Skater/trick_feed.h"
@@ -186,8 +187,66 @@ public:
         return owned_bodies::probe_batch(owner, h, request, allowed);
     }
     void body_release_all(std::uint64_t owner) override {
+        // Stop native follow admission before body cleanup can request release.
+        // The retaining service owns unresolved duty after the VM disappears.
+        body_follow_service::release_all(owner);
         owned_bodies::cancel_motion_refresh_probes(owner);
         owned_bodies::release_all(owner);
+    }
+    bool body_follow_reserve(std::uint64_t owner, const owned_body::Handle& body,
+        const body_follow_api::Attachment& attachment, body_follow_api::Handle& handle, body_follow_api::Reason& reason) override {
+        handle = {}; reason = body_follow_api::Reason::unavailable;
+        if (!owner) { reason = body_follow_api::Reason::invalid_owner; return false; }
+        if (!body_follow_api::valid(attachment)) return false;
+        owned_bodies::MeasuredSource source;
+        if (!owned_bodies::capture_source(owner, body, source)) return false;
+        const body_follow_native::Attachment native_attachment{attachment.offset_from_com, attachment.root_in_body};
+        body_follow_service::Handle native_handle;
+        const bool accepted = body_follow_service::reserve(owner, body, source, native_attachment,
+            body_follow_api::eligible, native_handle, reason);
+        // A partially acquired reservation keeps a cleanup handle on refusal.
+        handle.sequence = native_handle.sequence;
+        return accepted;
+    }
+    bool body_follow_publish(std::uint64_t owner, body_follow_api::Handle handle, body_follow_api::Reason& reason) override {
+        return body_follow_service::publish(owner, {handle.sequence}, reason);
+    }
+    bool body_follow_read(std::uint64_t owner, body_follow_api::Handle handle, body_follow_api::Receipt& out) override {
+        out = {};
+        body_follow_service::Receipt native;
+        if (!body_follow_service::read(owner, {handle.sequence}, native)) return false;
+        body_follow_api::Phase phase;
+        switch (native.phase) {
+        case body_follow_service::Phase::reserved: phase = body_follow_api::Phase::reserved; break;
+        case body_follow_service::Phase::following: phase = body_follow_api::Phase::following; break;
+        case body_follow_service::Phase::stopping: phase = body_follow_api::Phase::stopping; break;
+        case body_follow_service::Phase::retained: phase = body_follow_api::Phase::retained; break;
+        case body_follow_service::Phase::abandoned: phase = body_follow_api::Phase::abandoned; break;
+        case body_follow_service::Phase::completed: phase = body_follow_api::Phase::completed; break;
+        default: return false;
+        }
+        body_follow_api::Pending pending;
+        switch (native.pending) {
+        case actor_control::Barrier::none: pending = body_follow_api::Pending::none; break;
+        case actor_control::Barrier::body_parked: pending = body_follow_api::Pending::body_parked; break;
+        default: return false; // Do not silently reinterpret the older dual-barrier contract.
+        }
+        out.handle = handle; out.phase = phase; out.pending = pending;
+        out.reason = native.reason; out.park_reason = native.park_reason;
+        out.final_revision = native.final_revision; out.final_native_epoch = native.final_native_epoch;
+        out.returned_revision = native.returned_revision; out.in_flight = native.in_flight;
+        out.claim_known = native.claim_known; out.orphaned = native.orphaned;
+        out.park_observed = native.park_observed; out.native_retirement_known = native.native_retirement_known;
+        return true;
+    }
+    bool body_follow_stop(std::uint64_t owner, body_follow_api::Handle handle) override {
+        return body_follow_service::stop(owner, {handle.sequence});
+    }
+    bool body_follow_acknowledge(std::uint64_t owner, body_follow_api::Handle handle) override {
+        // Each internal ACK repeats its own exact live/history checks. A Lua
+        // receipt, phase string or boolean is never accepted as authority.
+        return body_follow_service::acknowledge_abandoned(owner, {handle.sequence}) ||
+            body_follow_service::acknowledge_completed(owner, {handle.sequence});
     }
     std::string begin_motion_refresh_probe(std::uint64_t owner, std::uint64_t& sequence) override { return owned_bodies::begin_motion_refresh_probe(owner, sequence); }
     std::string poll_motion_refresh_probe(std::uint64_t owner, std::uint64_t sequence, motion_refresh_probe::Result& out) override { return owned_bodies::poll_motion_refresh_probe(owner, sequence, out); }
@@ -901,11 +960,11 @@ public:
     std::string skater_push(std::string_view, const Vec3& velocity) override {
         if (!::dingosdk::skater_push::valid(velocity)) return "a push is horizontal (y 0) and at most 120 m/s";
         if (!competition_stock_physics()) return std::string("a push ") + needs_stock_physics;
-        ::dingosdk::skater_push::request(velocity);
+        if (!::dingosdk::skater_push::try_request(velocity)) return "skater motion is owned by another action";
         return {};
     }
     std::string skater_push_wait(std::string_view) override {
-        ::dingosdk::skater_push::wait();
+        if (!::dingosdk::skater_push::try_wait()) return "skater motion is owned by another action";
         return {};
     }
     std::string skater_push_reset(std::string_view) override {
@@ -914,10 +973,14 @@ public:
     }
     std::string skater_hold(std::string_view plugin, bool on) override {
         if (on && !competition_stock_physics()) return std::string("a hold ") + needs_stock_physics;
-        if (on) hold_owner_ = plugin;
-        else if (hold_owner_ != plugin) return {};
-        else hold_owner_.clear();
-        ::dingosdk::skater_push::hold(on);
+        if (on) {
+            if (!::dingosdk::skater_push::try_hold(true)) return "skater motion is owned by another action";
+            hold_owner_ = plugin;
+        } else if (hold_owner_ != plugin) return {};
+        else {
+            (void)::dingosdk::skater_push::try_hold(false);
+            hold_owner_.clear();
+        }
         return {};
     }
     void remove_throwdown_mode(std::string_view plugin, std::string_view id) override {
@@ -936,13 +999,13 @@ public:
     std::string cruise(std::string_view, float speed, bool may_slow) override {
         if (speed > 0 && multiplayer_session_active() && !session_boosts_allowed()) return "the host has turned boosts off";
         if (speed > 0 && multiplayer::local_throwdown_active()) return "not while a throwdown runs";
-        set_plugin_cruise(speed, may_slow);
+        if (!try_set_plugin_cruise(speed, may_slow)) return "skater motion is owned by another action";
         return {};
     }
     std::string set_velocity(std::string_view, const Vec3& velocity, bool add) override {
         if (multiplayer_session_active() && !session_boosts_allowed()) return "the host has turned boosts off";
         if (multiplayer::local_throwdown_active() && !competition_stock_physics()) return "not while a throwdown runs";
-        set_plugin_velocity(velocity, add);
+        if (!try_set_plugin_velocity(velocity, add)) return "skater motion is owned by another action";
         return {};
     }
     std::string hide_pad(std::string_view plugin, const PadHidden& h) override {
@@ -962,7 +1025,8 @@ public:
     }
     std::string wipeout(float force) override {
         if (multiplayer::local_throwdown_active()) return "not while a throwdown runs";
-        no_bail_request_wipeout(std::clamp(force, 0.5f, 3.0f));
+        if (!try_no_bail_request_wipeout(std::clamp(force, 0.5f, 3.0f)))
+            return "skater motion is owned by another action";
         return {};
     }
     // ---- audio ---------------------------------------------------------------------------------------

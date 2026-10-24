@@ -388,6 +388,7 @@ void Plugin::tick(double dt_ms) {
     raycasts_ = 0;
     native_casts_ = {};
     sync_probe_starts_ = sync_probe_polls_ = 0;
+    follow_reserves_ = follow_publishes_ = follow_reads_ = follow_stops_ = follow_acknowledgements_ = 0;
     const double now = services_.now_ms();
     std::vector<int> due;
     for (const auto& [id, timer] : timers_)

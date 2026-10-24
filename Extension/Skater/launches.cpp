@@ -1,6 +1,7 @@
 #include "launches.h"
 #include "client_source_spawn_internal.h"
 #include "no_bail.h"
+#include "native_actions.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/memory.h"
 #include "Engine/Game/Build/addresses.h"
@@ -50,8 +51,13 @@ struct Control {
     std::array<std::optional<Shape>, kinds> shapes;
     std::vector<Launch> launches; // under mutex
 };
+std::atomic<Control*> published_control{};
 Control& control() {
-    static auto* value = new Control; // process lifetime: hooks may call in until exit
+    static auto* value = [] {
+        auto* created = new Control; // process lifetime: hooks may call in until exit
+        published_control.store(created, std::memory_order_release);
+        return created;
+    }();
     return *value;
 }
 std::int64_t qpc_now() noexcept {
@@ -183,7 +189,10 @@ void modify_launch(std::uintptr_t caller_rva, std::uintptr_t, float (&v)[3]) noe
 // The step listener and the launch hook, from the first use on.
 void listen(Control& c) {
     if (!c.listening.load(std::memory_order_acquire) && add_no_bail_step_listener(&on_step)) c.listening.store(true, std::memory_order_release);
-    if (!c.modifying.exchange(true)) trainer::set_trajectory_modifier(&modify_launch);
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer)) return;
+    if (!c.modifying.load(std::memory_order_acquire) && trainer::try_set_trajectory_modifier(&modify_launch))
+        c.modifying.store(true, std::memory_order_release);
 }
 } // namespace
 
@@ -200,6 +209,17 @@ bool start(std::uintptr_t image_base) noexcept {
     return true;
 }
 bool available() noexcept { return control().started.load(std::memory_order_acquire); }
+bool trajectory_modifier_idle(trainer::TrajectoryModifier actual) noexcept {
+    client_source::detail::SourceLastError error;
+    if (actual != &modify_launch) return false;
+    auto* c = published_control.load(std::memory_order_acquire);
+    if (!c) return false;
+    // The mutex protects actual optional shapes. An allocation, a cached count
+    // or a provider's requested state is not a substitute for these slots.
+    std::unique_lock lock(c->mutex, std::try_to_lock);
+    if (!lock) return false;
+    return std::none_of(c->shapes.begin(), c->shapes.end(), [](const auto& shape) { return shape.has_value(); });
+}
 
 const char* name(From from) noexcept {
     switch (from) {
@@ -219,6 +239,8 @@ std::optional<From> from_name(std::string_view name) noexcept {
 std::string shape(std::string_view owner, From from, std::optional<Shape> s) {
     auto& c = control();
     if (!c.started.load(std::memory_order_acquire)) return "launches are unavailable for this game build";
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer) && s) return "skater motion is owned by another action";
     std::lock_guard lock(c.mutex);
     const auto kind = static_cast<std::size_t>(from);
     if (!c.shaper[kind].empty() && c.shaper[kind] != owner) return c.shaper[kind] + " shapes " + name(from) + " launches";

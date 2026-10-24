@@ -1,4 +1,5 @@
 #include "skater_push.h"
+#include "native_actions.h"
 #include <Windows.h>
 #include <algorithm>
 #include <atomic>
@@ -16,30 +17,57 @@ struct Delivery {
     std::atomic<bool> held{};
     void clear() noexcept { pending.reset(); until = 0; }
 };
-Delivery& delivery() { static auto* value = new Delivery; return *value; }
+std::atomic<Delivery*> published_delivery{};
+Delivery& delivery() {
+    static auto* value = [] {
+        auto* created = new Delivery;
+        published_delivery.store(created, std::memory_order_release);
+        return created;
+    }();
+    return *value;
+}
 } // namespace
 bool valid(const Vec3& velocity) noexcept {
     return std::all_of(velocity.begin(), velocity.end(), [](float n) { return std::isfinite(n); }) && velocity[1] == 0.f &&
            std::hypot(velocity[0], velocity[2]) <= max_speed + .001f;
 }
 void request(const Vec3& velocity) noexcept {
+    (void)try_request(velocity);
+}
+bool try_request(const Vec3& velocity) noexcept {
+    const bool arming = valid(velocity);
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer) && arming) return false;
     auto& d = delivery();
     std::lock_guard lock(d.mutex);
     d.clear();
-    if (valid(velocity)) { d.pending = velocity; d.until = GetTickCount64() + 2000; }
+    if (arming) { d.pending = velocity; d.until = GetTickCount64() + 2000; }
+    return true;
 }
 void wait() noexcept {
+    (void)try_wait();
+}
+bool try_wait() noexcept {
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer)) return false;
     auto& d = delivery();
     std::lock_guard lock(d.mutex);
     const auto now = GetTickCount64();
     if (d.pending && now < d.until) d.until = now + 2000;
+    return true;
 }
 void reset() noexcept {
     auto& d = delivery();
     std::lock_guard lock(d.mutex);
     d.clear();
 }
-void hold(bool on) noexcept { delivery().held.store(on, std::memory_order_release); }
+void hold(bool on) noexcept { (void)try_hold(on); }
+bool try_hold(bool on) noexcept {
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer) && on) return false;
+    delivery().held.store(on, std::memory_order_release);
+    return true;
+}
 bool holding() noexcept { return delivery().held.load(std::memory_order_acquire); }
 bool pending() noexcept {
     auto& d = delivery();
@@ -59,5 +87,18 @@ void accepted(const Vec3& velocity) noexcept {
     auto& d = delivery();
     std::lock_guard lock(d.mutex);
     if (d.pending && *d.pending == velocity) d.clear();
+}
+bool follow_duties_idle() noexcept {
+    const auto error = GetLastError();
+    struct RestoreError { DWORD value; ~RestoreError() { SetLastError(value); } } restore{error};
+    // Admission must not initialize an unobserved singleton or clear an expired
+    // request. The owning request/physics paths resolve the actual queue.
+    auto* d = published_delivery.load(std::memory_order_acquire);
+    // No Delivery has ever been published: all fields are still the known
+    // empty defaults. The already reserved Arbiter excludes every arming path;
+    // a concurrent read-only construction cannot create pending work.
+    if (!d) return true;
+    std::unique_lock lock(d->mutex, std::try_to_lock);
+    return lock && !d->held.load(std::memory_order_acquire) && !d->pending.has_value();
 }
 } // namespace dingosdk::skater_push

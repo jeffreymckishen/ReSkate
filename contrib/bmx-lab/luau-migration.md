@@ -122,12 +122,21 @@ retains its one explicit readiness retry and proof limits.
 
 The general permissioned Lua input lease/capture expansion passed full Release
 and 105 focused CTests on its first composed attempt; fifteen optional plugin
-fixtures were absent. Its new runtime has not yet been deployed or exercised
-for native capture. The next in-game check is a bounded capture/release trial,
-followed by connecting the Lua control policy, rider attachment and equipment
-lifecycle. Pure Lua input integration and generic actor-exclusion qualification
-are delegated separately; mounted switching, alignment and fall recovery remain
-unfinished. See the [input checkpoint](judging/checkpoints/2026-10-23-lua-stock-switching.md#lua-input-lease-and-capture-build).
+fixtures were absent. The later bounded native trial failed before capture:
+its observation lease was revoked for `interference` before any admitted fresh
+sample. A separately admitted controller run completed 301 neutral reports;
+that does not prove capture or native consumption. The [native refusal](judging/checkpoints/2026-10-23-lua-stock-switching.md#native-input-capture-refusal)
+retains both attempts, known cleanup and the unproved cause.
+
+Generic passive synchronization observation is committed as `5e0c732`; its
+corrected full Release and 105 selected CTests passed after an initial
+test-fixture link failure. A separate eleven-path Lua input composition passed
+the normal Host suite in 5.22 seconds, checking inert imports and construction.
+Neither result qualifies native rider attachment or activates riding. Actual
+force-stop, rider-follow and parking providers remain unbound, and actor-safe
+wheel contacts remain unavailable. The [source checkpoints](judging/checkpoints/2026-10-23-lua-stock-switching.md#passive-observer-and-lua-input-composition)
+keep these offline results separate from gameplay. Mounted switching, alignment,
+fall recovery and the requested likeness remain unfinished.
 
 The [general input API guide](../plugin-input-lease.md) describes the new
 permissions, source identity, capture and cleanup contracts. Preserve existing
@@ -220,7 +229,9 @@ replace the physical prototype; implemented contracts still require native proof
    original selected XInput stream with an opaque source epoch, fresh-observation
    ordinals and renewable ownership. Capture waits for a later raw-neutral
    observation and retains cleanup duties until a qualified neutral handoff.
-   Its build and regression tests passed, but native capture/release is untested.
+   Build and regression tests passed; the native trial stopped at observation
+   lease revocation, before any fresh sample or capture. Successful native
+   capture/release remains unqualified.
    This input source is not physical-device, actor or body authority; the Lua
    mod must join the actual independent ownership and body observations.
 

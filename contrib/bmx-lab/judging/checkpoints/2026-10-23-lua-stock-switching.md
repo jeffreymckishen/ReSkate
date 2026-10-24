@@ -379,18 +379,69 @@ were absent. The [execution receipt](../../../../build/bmx/input-capture-integra
 binds the frozen source, logs and binaries. These are 105 selected CTest passes,
 not the entire repository suite or native input evidence.
 
-The built runtime `8F6B51B6` and matched launcher `573BD3BF` have not yet been
-deployed. The isolated game evidence above remains on `7F33A210` / `D149BD35`;
-native input capture and neutral release remain untested. All BMX behavior
-stays in Lua; native changes provide only the general API support required by
-that mod. The immediate next check is bounded native capture/release, before
-connecting Lua controls to rider attachment and mount/dismount cleanup.
-Mounted bike/skateboard switching, rider alignment and fall recovery remain
-unfinished, and BMX Streets likeness remains unscored.
+The built runtime `8F6B51B6` and matched launcher `573BD3BF` were later deployed
+for the bounded input trial below. Earlier chassis and ground-ray evidence
+remains bound to `7F33A210` / `D149BD35`; it is not evidence for the newer build.
+All BMX behavior stays in Lua, with only required general API support in native
+code. Mounted switching, alignment, fall recovery and likeness remain unqualified.
 
 The [general API guide](../../../plugin-input-lease.md) documents the input
 contract. Existing scripting behavior stays intact; the new BMX mod supplies
 the bike policy.
+
+## Native input capture refusal
+
+The [isolated v2 trial](../../../../build/bmx/input-capture-native-v2/) did not
+achieve its 150ms capture target. The first driver attempt timed out at its
+60-second start gate before Arm or GO, with zero scheduled reports. Its real
+bootstrap input, final neutral release and disconnect remain recorded. A
+separately admitted second attempt completed 301 scheduled neutral reports
+and exited zero, with final neutral release and disconnect.
+
+Lua nevertheless recorded `warming` then `revoked / interference`, zero fresh
+samples and no capture request or reservation. The terminal source was released,
+lease acknowledgement succeeded and cleanup was known. This is not a completed
+capture release: the explicit release booleans were false for the already
+terminal lease, and no capture acknowledgement occurred. Saved wall timestamps
+place closure about 2.4 seconds before GO; this ordering does not identify the
+revoking caller or establish an exact cross-clock cause.
+
+Normal shutdown, process absence and manifest withdrawal were recorded. The
+[closure](../../../../build/bmx/input-capture-native-v2/closure.json) and
+[independent refusal audit](../../../../build/bmx/input-capture-native-v2/independent-native-refusal-audit.json)
+retain that failed outcome. Forty-three files, including five screenshots,
+were subsequently verified and archived on E:. Driver submission does not prove
+capture, stock-control blocking, native consumption or mounted gameplay.
+
+Separate [source inspection](../../../../build/bmx/input-lease-native-refusal-review-v1/findings.md)
+identified a disabled-grind expiry update that can falsely revoke a lease;
+its occurrence in this native trial remains unproved. The first private
+[regression build](../../../../build/bmx/input-lease-native-refusal-review-v1/execution/attempt-1/execution.json)
+compiled three candidate translation units with warnings as errors, then
+failed linking 23 missing symbols. Baseline execution and tests did not run;
+the corrected link proposal is pending. No native fix or successful retry
+is claimed.
+
+## Passive observer and Lua input composition
+
+The fifteen-path generic passive synchronization observer is committed as
+`5e0c732`. Its first full build failed at a test fixture with two missing
+symbols; the successor adds only those test leaves. The corrected full Release
+then passed plugins 1/1 and 104 relevant CTests, preserving the existing Host
+registrations and adding four observer groups. Fifteen optional fixtures were
+absent. The [execution receipt](../../../../build/bmx/passive-observer-integration-v2/execution.json)
+retains both attempts. Native observation and rider-root writes were not run.
+
+The separate eleven-path Lua input composition passed its normal plugin
+build and CTest 1/1 in 5.22 seconds. Its new Host case imports and constructs
+independent input objects with and without lease/capture permissions, ticks
+and unloads them without calling the ten input API callbacks. Existing
+regressions remain registered; fifteen optional fixtures were absent. The
+[Lua execution receipt](../../../../build/bmx/lua-input-promotion-integration-v1/execution.json)
+is an inert import/construction result, not native control or riding proof.
+The mod entry point and permissions are unchanged. Force-stop, rider-follow
+and parking providers remain unbound; actor exclusion remains unavailable.
+Gameplay stays inactive and BMX Streets likeness remains unscored.
 
 ## Remaining checks
 

@@ -19,6 +19,7 @@ enum class DiagnosticStage : std::uint8_t {
 };
 struct Diagnostic {
     DiagnosticStage stage{DiagnosticStage::not_attempted}, actor_stage{DiagnosticStage::not_attempted};
+    std::uint8_t supplied_failed_lane{16}; // Unknown unless an existing finite check failed.
     // Last actor operation actually evaluated by this provider call. A later
     // non-actor stage does not turn a qualified inspection into a failed one.
     actor_control_native::Observation actor;

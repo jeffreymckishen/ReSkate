@@ -89,13 +89,17 @@ const char* follow_diagnostic_check(actor_control_native::InspectionCheck value)
 void log_follow_diagnostic(const char* kind, const char* origin, actor_control_native::Reason reason,
     const body_follow_service::DiagnosticState& state, const body_follow_native::Diagnostic& provider) noexcept {
     const auto& facts = provider.facts;
+    const auto lane = provider.supplied_failed_lane;
+    const auto* lane_class = lane >= 16 ? "unknown" : lane % 4 == 3 ? "fourth" : "xyz";
     logging::log(logging::Level::warning, logging::Channel::skater,
-        "Body follow first-{}: sequence={} origin={} public_reason={} stage={} actor_stage={} actor_phase={} actor_reason={} "
+        "Body follow first-{}: sequence={} origin={} public_reason={} stage={} supplied_failed_lane={} supplied_lane_class={} "
+        "actor_stage={} actor_phase={} actor_reason={} "
         "published={} stopped={} release_hold={} release_requested={} release_started={} fence={} park={} "
         "final_revision={} returned_revision={} binding={} closing_owner={} closing_generation={} "
         "closing_epoch_read={} closing_epoch={}",
         kind, state.sequence, origin, skater_action::reason_name(reason),
         body_follow_native::diagnostic_stage_name(provider.stage),
+        static_cast<unsigned>(lane), lane_class,
         body_follow_native::diagnostic_stage_name(provider.actor_stage),
         actor_observation::phase_name(provider.actor.phase), skater_action::reason_name(provider.actor.reason),
         state.published, state.stopped, state.release_hold, state.release_requested, state.release_started,

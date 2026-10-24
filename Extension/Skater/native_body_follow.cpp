@@ -186,10 +186,15 @@ bool prepare_target(const Binding& binding, std::uintptr_t rig, std::uintptr_t c
     at(diagnostic, DiagnosticStage::supplied_copy);
     if (!memory::peek(reinterpret_cast<std::uintptr_t>(supplied), out.value)) return false;
     at(diagnostic, DiagnosticStage::supplied_finite);
-    for (std::size_t lane = 0; lane < out.value.size(); ++lane) if (!std::isfinite(out.value[lane])) {
-        diagnostic.supplied_failed_lane = static_cast<std::uint8_t>(lane);
-        return false;
-    }
+    // Validate XYZ only; keep all supplied SIMD fourth words without rewriting them.
+    for (std::size_t row = 0; row < 4; ++row)
+        for (std::size_t component = 0; component < 3; ++component) {
+            const auto lane = row * 4 + component;
+            if (!std::isfinite(out.value[lane])) {
+                diagnostic.supplied_failed_lane = static_cast<std::uint8_t>(lane);
+                return false;
+            }
+        }
     at(diagnostic, DiagnosticStage::measure);
     if (!owned_bodies::try_measure_source(binding.owner, binding.source, out.source) ||
         (at(diagnostic, DiagnosticStage::measured_allocation), !out.source.same_allocation(binding.source))) return false;

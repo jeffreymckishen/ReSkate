@@ -78,6 +78,7 @@ All scenarios begin/end neutral, finish within6s and leave virtual D-pad/menu bu
 
 | Scenario | Inputs requested | Required starting state / evidence boundary |
 |---|---|---|
+| `neutral-follow` | All scheduled buttons, sticks and triggers remain zero through6000ms (301 reports at50Hz) | Bounded neutral device for the first500ms of Lua follow selected-source acquisition. Verify source acquisition and follow separately; this submits no bike movement or switch request. |
 | `native-y` | Neutral240ms, North/Y200ms, release through3.6s | Fresh isolated NativeOnly session, observer already armed, zero BMX activity. A **virtual North** comparison, not a physical-controller baseline. |
 | `native-b` | Neutral240ms, B200ms, release through1.2s | One ordinary Back/Brake pulse in the observed isolated game state. Menu closure and input consumption require a separate screen observation. |
 | `ground-pump` | Neutral240ms, A to1000ms, coast to1200ms, LS Y=-0.7 for300ms, release and settle to3200ms | Already mounted on clear supported ground. Checks the direct pump channel; reports alone do not establish force submission or handling quality. |
@@ -85,6 +86,8 @@ All scenarios begin/end neutral, finish within6s and leave virtual D-pad/menu bu
 | `equipment-switch` | LB prehold, LB+Y200ms, release, settle to4.4s | Ordinary Ride session with the current equipment-switch path. Excluded from NativeOnly isolation. |
 | `bunnyhop-tailwhip` | A pedal, release, rear stick back340ms then forward80ms, neutral, both triggers+rear stick right180ms | Already mounted, clear ground. Rear-flick hop and tailwhip-right request use the current mapper. Airborne eligibility and completion remain unknown. |
 | `quickhop-barspin` | A pedal, release, R3 quick hop120ms, neutral, LB+rear stick back180ms | Already mounted. R3 and left-barspin request use the current mapper. An insufficient hop may refuse the trick. |
+
+For neutral-follow, only the scheduled timeline is all neutral. The unchanged mandatory bootstrap still sends one raw left-stick X unit before its two exact-zero readback samples; device attachment and the SDK constructor update also precede the timeline. The scenario name does not mean the entire process lifetime is free of active input. The existing ownership, foreground, Escape, dependency, slot, nonce, lateness and cleanup checks still apply. Six seconds of submitted neutral reports do not establish the game's selected source, a Lua lease, follow publication, safe switching or gameplay quality.
 
 The bindings come from `Engine/Game/Input/bmx_input_sample.h` and `Engine/Game/BMX/bmx_input.h`: A pedals, B brakes, R3 requests quick hop, LB+rear-back selects left barspin, and both triggers+rear-right selects right tailwhip. Left stick is available for steering; right stick controls rear gestures. These tests do not change either stick mapping. No arbitrary external timeline, unbounded hold, replay loop or synthetic native state is accepted.
 

@@ -74,6 +74,7 @@ def scenarios() -> dict[str, tuple[Event, ...]]:
     # Timelines request inputs only. Starting equipment, grounded/airborne state,
     # animation, controller slot selection and consumption are separate evidence.
     return {
+        "neutral-follow": (Event(0, NEUTRAL), Event(6000, NEUTRAL)),
         "native-y": (Event(0, NEUTRAL), Event(240, State(Y)), Event(440, NEUTRAL), Event(3600, NEUTRAL)),
         "native-b": (Event(0, NEUTRAL), Event(240, State(B)), Event(440, NEUTRAL), Event(1200, NEUTRAL)),
         # Requires a separately verified mounted rider on flat supported ground.

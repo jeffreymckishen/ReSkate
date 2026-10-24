@@ -119,6 +119,35 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(report["elapsed_ms"],20)
         self.assertEqual(backend.states[-1],h.NEUTRAL)
 
+    def test_neutral_follow_exact_timeline_reports_and_fake_cleanup(self):
+        events = h.scenarios()["neutral-follow"]
+        self.assertEqual(events, (h.Event(0, h.NEUTRAL), h.Event(6000, h.NEUTRAL)))
+        self.assertEqual(h.MAX_DURATION_MS, 6000)
+        h.validate_timeline(events)
+        clock, backend, sink = h.PreviewClock(), Backend(), Sink()
+        guard = Guard(clock)
+        result = h.run(events, guard, lambda: backend, sink, execute=True, clock=clock)
+        self.assertTrue(result["completed"])
+        self.assertIsNone(result["issue"])
+        self.assertEqual((result["report_count"], result["driver_report_count"]), (301, 301))
+        reports = [row for row in sink.rows if row["event"] == "controller_report"]
+        self.assertEqual([row["planned_ms"] for row in reports], list(range(0, 6001, 20)))
+        self.assertTrue(all(row["state"] == h.asdict(h.NEUTRAL) for row in reports))
+        self.assertTrue(all(row["raw_report_hex"] == "00" * 12 for row in reports))
+        self.assertEqual([row["planned_ms"] for row in reports if row["planned_ms"] <= 500],
+                         list(range(0, 501, 20)))
+        # Scheduled reports are neutral; the unchanged preceding bootstrap is not.
+        self.assertEqual(backend.states, [h.State(left_x=1 / 32767)] + [h.NEUTRAL] * 304)
+        self.assertEqual((backend.prime_count, backend.closed, guard.closed), (1, 1, 1))
+        self.assertTrue(result["neutral_release_succeeded"])
+        self.assertTrue(result["disconnect_succeeded"])
+        self.assertEqual(sink.rows[-2]["event"], "controller_neutral_release")
+        self.assertTrue(sink.rows[-2]["succeeded"])
+        self.assertEqual(sink.rows[-2]["state"], h.asdict(h.NEUTRAL))
+        self.assertEqual(sink.rows[-1]["event"], "controller_session_end")
+        self.assertIsNone(result["input_consumed"])
+        self.assertIsNone(result["native_quality"])
+
     def test_ground_pump_scenario_releases_holds_and_settles_without_dpad(self):
         events = h.scenarios()["ground-pump"]
         self.assertEqual(events, (h.Event(0, h.NEUTRAL), h.Event(240, h.State(h.A)),

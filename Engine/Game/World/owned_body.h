@@ -53,8 +53,18 @@ inline const char* name(Outcome value) noexcept {
     }
     return "rejected";
 }
+// SDK cleanup history, separate from the original setter outcome and observation.
+enum class CleanupDisposition { none, parked_without_successor };
+inline const char* name(CleanupDisposition value) noexcept {
+    switch (value) {
+    case CleanupDisposition::none: return "none";
+    case CleanupDisposition::parked_without_successor: return "parked_without_successor";
+    }
+    return nullptr;
+}
 struct Receipt {
     Outcome outcome{};
+    CleanupDisposition cleanup_disposition{};
     std::uint64_t sequence{};
     Epoch requested{};
     Epoch produced{};
@@ -129,7 +139,8 @@ struct Mailbox {
     bool needs_successor() const noexcept {
         for (std::size_t i = 0; i < count; ++i) {
             const auto& record = receipts[(head + i) % receipts.size()];
-            if (record.outcome == Outcome::applied && !record.successor_available) return true;
+            if (record.outcome == Outcome::applied && !record.successor_available &&
+                record.cleanup_disposition == CleanupDisposition::none) return true;
         }
         return false;
     }
@@ -180,18 +191,83 @@ struct Mailbox {
         bool attached{};
         for (std::size_t i = 0; i < count; ++i) {
             auto& record = receipts[(head + i) % receipts.size()]; const auto& produced = record.produced;
-            if (record.outcome != Outcome::applied || record.successor_available || value.epoch.world != produced.world ||
+            if (record.outcome != Outcome::applied || record.successor_available ||
+                record.cleanup_disposition != CleanupDisposition::none || value.epoch.world != produced.world ||
                 value.epoch.body != produced.body || value.epoch.serial <= produced.serial || !std::isfinite(value.epoch.time) ||
                 value.epoch.time <= produced.time || !calibrated(value.epoch.seconds)) continue;
             record.successor = value; record.successor_available = true; attached = true;
         }
         return attached;
     }
+    // Trusted World service only, after exact stopped/drained retained park.
+    // This seals cleanup ACK eligibility, not a measured successor or model result.
+    // Validate the bounded ring fully before changing any record.
+    bool seal_parked_without_successor(const Epoch& floor, const Epoch& observed) noexcept {
+        if (!failed || pending || producing || head >= receipts.size() || count > receipts.size() ||
+            !floor.world || !floor.body || !floor.serial || !std::isfinite(floor.time) || floor.time < 0 ||
+            !calibrated(floor.seconds) || observed.world != floor.world || observed.body != floor.body ||
+            observed.serial <= floor.serial || !std::isfinite(observed.time) || observed.time <= floor.time ||
+            observed.seconds != floor.seconds) return false;
+        std::uint64_t prior_sequence{}, prior_serial{}; double prior_time{};
+        for (std::size_t i = 0; i < count; ++i) {
+            const auto& record = receipts[(head + i) % receipts.size()];
+            const auto& request = record.requested; const auto& produced = record.produced;
+            // Occupied rows were reserved by submit, including rejected/expired
+            // rows with no producer. Validate them before skipping any marker.
+            if (!record.sequence || record.sequence > sequence || (i && record.sequence <= prior_sequence) ||
+                request.world != floor.world || request.body != floor.body || !request.serial ||
+                request.serial == std::numeric_limits<std::uint64_t>::max() || request.serial > floor.serial ||
+                !std::isfinite(request.time) || request.time < 0 || request.time > floor.time ||
+                !std::isfinite(request.time + request.seconds) || request.seconds != floor.seconds ||
+                (i && (request.serial <= prior_serial || request.time <= prior_time))) return false;
+            prior_sequence = record.sequence; prior_serial = request.serial; prior_time = request.time;
+            const bool produced_present = produced != Epoch{};
+            switch (record.outcome) {
+            case Outcome::applied:
+                if (!produced_present || !record.force_attempted || !record.torque_attempted) return false;
+                break;
+            case Outcome::partial:
+                if (!produced_present || (!record.force_attempted && !record.torque_attempted)) return false;
+                break;
+            case Outcome::expired:
+                if (produced_present || record.force_attempted || record.torque_attempted) return false;
+                break;
+            case Outcome::rejected:
+                // Rejection can precede consume, or follow a consumed packet
+                // whose first native setter was never attempted.
+                if (record.force_attempted || record.torque_attempted) return false;
+                break;
+            default:
+                return false; // None/queued/unknown cannot be occupied terminal rows.
+            }
+            if (produced_present && (produced.world != floor.world || produced.body != floor.body ||
+                produced.serial != request.serial + 1 || !std::isfinite(produced.time) ||
+                produced.time != request.time + request.seconds || produced.seconds != floor.seconds ||
+                produced.serial > floor.serial || produced.time > floor.time)) return false;
+            if (!name(record.cleanup_disposition) || (record.cleanup_disposition != CleanupDisposition::none &&
+                (record.outcome != Outcome::applied || record.successor_available))) return false;
+            if (record.successor_available) {
+                const auto& successor = record.successor.epoch;
+                // Keep the existing observe_successor acceptance contract;
+                // this is recorded observation history, never a new sample.
+                if (record.outcome != Outcome::applied || successor.world != produced.world ||
+                    successor.body != produced.body || successor.serial <= produced.serial ||
+                    !std::isfinite(successor.time) || successor.time <= produced.time || !calibrated(successor.seconds)) return false;
+            }
+        }
+        for (std::size_t i = 0; i < count; ++i) {
+            auto& record = receipts[(head + i) % receipts.size()];
+            if (record.outcome == Outcome::applied && !record.successor_available)
+                record.cleanup_disposition = CleanupDisposition::parked_without_successor;
+        }
+        return true;
+    }
     bool acknowledge(std::uint64_t value) noexcept {
         if (!value || !count) return false;
         const auto& record = receipts[head];
         if (record.sequence != value || record.outcome == Outcome::none || record.outcome == Outcome::queued ||
-            (record.outcome == Outcome::applied && !record.successor_available)) return false;
+            (record.outcome == Outcome::applied && !record.successor_available &&
+                record.cleanup_disposition != CleanupDisposition::parked_without_successor)) return false;
         receipts[head] = {}; head = (head + 1) % receipts.size(); --count;
         return true;
     }

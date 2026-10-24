@@ -631,7 +631,13 @@ struct PhysicsApi {
         const auto selected = lua_isnoneornil(L, 2) ? std::uint64_t{} : sequence(L, 2);
         const auto why = p.services_.game().body_receipt(p.instance(), b.handle, selected, receipt);
         if (!why.empty()) return fail(L, why);
-        lua_createtable(L, 0, 9);
+        const char* cleanup = name(receipt.cleanup_disposition);
+        if (!cleanup || (receipt.cleanup_disposition == CleanupDisposition::parked_without_successor &&
+            (receipt.outcome != Outcome::applied || receipt.successor_available || !receipt.retained ||
+                receipt.quarantined || !receipt.force_attempted || !receipt.torque_attempted)))
+            return fail(L, "body receipt cleanup disposition is invalid");
+        lua_createtable(L, 0, 10);
+        lua_pushstring(L, cleanup); lua_setfield(L, -2, "cleanup_disposition");
         lua_pushstring(L, name(receipt.outcome)); lua_setfield(L, -2, "outcome");
         text_number(L, receipt.sequence); lua_setfield(L, -2, "sequence");
         text_number(L, receipt.requested.serial); lua_setfield(L, -2, "requested_serial");

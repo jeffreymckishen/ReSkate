@@ -1013,11 +1013,10 @@ bool observe_retained_park(std::uint64_t owner, const RetirementBasis& basis, Re
     out = value; return true;
 }
 
-bool matches_retained_park(std::uint64_t owner, const RetirementBasis& basis, const RetainedParkReceipt& receipt) noexcept {
-    LastError error;
-    if (!owner || owner != basis.owner_ || !receipt.available() ||
-        !TryAcquireSRWLockShared(&service.lock)) return false;
-    struct Unlock { ~Unlock() { ReleaseSRWLockShared(&service.lock); } } unlock;
+// Both callers already hold the World lock. This checks stored terminal
+// identities only; it does not recapture an actor, clock or native allocation.
+bool matches_retained_park_locked(std::uint64_t owner, const RetirementBasis& basis, const RetainedParkReceipt& receipt) noexcept {
+    if (!owner || owner != basis.owner_ || !receipt.available()) return false;
     const auto* s = lookup(owner, basis.handle_);
     const auto& recorded = receipt.basis_;
     if (!s || s->body.world != basis.body_.world || s->body.index != basis.body_.index ||
@@ -1037,6 +1036,23 @@ bool matches_retained_park(std::uint64_t owner, const RetirementBasis& basis, co
         receipt.observed_epoch_.world == basis.epoch_.world && receipt.observed_epoch_.body == basis.epoch_.body &&
         receipt.observed_epoch_.serial > basis.epoch_.serial && receipt.observed_epoch_.time > basis.epoch_.time &&
         receipt.observed_ms_ > s->parked_ms && receipt.observed_ms_ > basis.captured_ms_;
+}
+
+bool matches_retained_park(std::uint64_t owner, const RetirementBasis& basis, const RetainedParkReceipt& receipt) noexcept {
+    LastError error;
+    if (!TryAcquireSRWLockShared(&service.lock)) return false;
+    struct Unlock { ~Unlock() { ReleaseSRWLockShared(&service.lock); } } unlock;
+    return matches_retained_park_locked(owner, basis, receipt);
+}
+
+bool seal_parked_command_cleanup(std::uint64_t owner, const RetirementBasis& basis, const RetainedParkReceipt& receipt) noexcept {
+    LastError error;
+    if (GetCurrentThreadId() != service.thread || !TryAcquireSRWLockExclusive(&service.lock)) return false;
+    struct Unlock { ~Unlock() { ReleaseSRWLockExclusive(&service.lock); } } unlock;
+    if (!matches_retained_park_locked(owner, basis, receipt)) return false;
+    auto* s = lookup(owner, basis.handle_);
+    if (!s || s->active || !s->retained || s->quarantined || !s->release_requested || s->release_hold) return false;
+    return s->mailbox.seal_parked_without_successor(basis.epoch_, receipt.observed_epoch_);
 }
 
 #include "owned_body_sync_probe.inl"

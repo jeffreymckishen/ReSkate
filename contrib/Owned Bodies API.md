@@ -90,6 +90,7 @@ The selector must be an exact string, as returned by `submit`. It returns:
 
 ```
 {outcome="none"|"queued"|"applied"|"partial"|"rejected"|"expired",
+ cleanup_disposition="none"|"parked_without_successor",
  sequence=<decimal string>, requested_serial=<string>, produced_serial=<string>,
  force_attempted=<bool>, torque_attempted=<bool>, retained=<bool>, quarantined=<bool>,
  successor=<measured sample, only when available>}
@@ -109,9 +110,23 @@ gravity; shifted controls failed. This qualifies one short linear-force burst,
 not the internal consumption boundary, angular/position timing or a closed-loop
 vehicle. Preserve modeled command history separately from measured confirmation.
 
+`cleanup_disposition` is always a string in current successful receipt tables;
+`"none"` is the default and grants no alternative ACK eligibility. Clients supporting
+an older SDK may treat a missing/nil field as `"none"`. Only the SDK can issue
+`"parked_without_successor"`, after its exact owned-body Follow binding is stopped
+and drained, its normal-return history matches, and the nonquarantined body has a
+positive retained-park receipt. Plugins cannot mint that SDK proof.
+
+With this disposition, `outcome` remains `"applied"` and `successor` remains absent.
+It permits only an explicit, once-only FIFO command-record ACK. It does not adopt a
+model result, confirm a hop or rearm, erase native pose history, or prove native
+retirement, destruction or allocation reuse. Receipt/ACK permission remains
+`"world.physics"`; existing VM/body/sequence ownership checks and budgets are unchanged.
+
 `P.acknowledge(body, receipt.sequence)` frees only the oldest terminal record, once;
-an applied command additionally requires its actual measured successor. Selecting a
-later record for inspection never permits unordered acknowledgement or waives proof.
+an applied command additionally requires its actual measured successor or the SDK's
+`"parked_without_successor"` disposition. Selecting a later record for inspection never
+permits unordered acknowledgement or waives proof.
 An acknowledged record cannot be selected again, and only its slot becomes reusable.
 Another publication cannot overwrite any retained record or reuse a submitted serial.
 The same observed body can publish N, N+1 and N+2 commands for consecutive N+1, N+2

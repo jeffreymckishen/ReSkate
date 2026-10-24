@@ -165,6 +165,8 @@ private:
     friend bool capture_retirement_basis(std::uint64_t, const MeasuredSource&, RetirementBasis&) noexcept;
     friend bool observe_retained_park(std::uint64_t, const RetirementBasis&, RetainedParkReceipt&) noexcept;
     friend bool matches_retained_park(std::uint64_t, const RetirementBasis&, const RetainedParkReceipt&) noexcept;
+    friend bool matches_retained_park_locked(std::uint64_t, const RetirementBasis&, const RetainedParkReceipt&) noexcept;
+    friend bool seal_parked_command_cleanup(std::uint64_t, const RetirementBasis&, const RetainedParkReceipt&) noexcept;
     struct Identity {
         std::uintptr_t world{};
         std::uint32_t index{}, generation{};
@@ -187,6 +189,8 @@ public:
 private:
     friend bool observe_retained_park(std::uint64_t, const RetirementBasis&, RetainedParkReceipt&) noexcept;
     friend bool matches_retained_park(std::uint64_t, const RetirementBasis&, const RetainedParkReceipt&) noexcept;
+    friend bool matches_retained_park_locked(std::uint64_t, const RetirementBasis&, const RetainedParkReceipt&) noexcept;
+    friend bool seal_parked_command_cleanup(std::uint64_t, const RetirementBasis&, const RetainedParkReceipt&) noexcept;
     RetirementBasis basis_{};
     owned_body::Epoch observed_epoch_{};
     std::uint64_t parked_ms_{}, observed_ms_{};
@@ -204,5 +208,11 @@ bool observe_retained_park(std::uint64_t, const RetirementBasis&, RetainedParkRe
 // It does not impose receipt-age limits or provide fresh actor/input authority.
 // The retaining actor service must separately qualify the current native context.
 bool matches_retained_park(std::uint64_t, const RetirementBasis&, const RetainedParkReceipt&) noexcept;
+
+// Trusted retaining service only, after its exact stop/drain/final-return and
+// completed park history. SDK-only receipt metadata; no native reads/writes,
+// new successor, receipt ACK, allocation reuse or actor authority is produced.
+// Busy or lost proof preserves every mailbox record and the caller's proof.
+bool seal_parked_command_cleanup(std::uint64_t, const RetirementBasis&, const RetainedParkReceipt&) noexcept;
 
 } // namespace dingosdk::owned_bodies

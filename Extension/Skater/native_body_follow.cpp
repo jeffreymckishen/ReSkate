@@ -329,6 +329,11 @@ bool completed_history_matches(const Binding& binding, const ParkFence& fence,
         receipt.parked_ms() >= fence.basis_.captured_ms() &&
         receipt.observed_ms() > receipt.parked_ms() && receipt.observed_ms() > fence.basis_.captured_ms();
 }
+bool seal_command_cleanup(const Binding& binding, const ParkFence& fence,
+    const owned_bodies::RetainedParkReceipt& receipt) noexcept {
+    return completed_history_matches(binding, fence, receipt) &&
+        owned_bodies::seal_parked_command_cleanup(binding.owner, fence.basis_, receipt);
+}
 bool complete_stop(Binding& binding, const ParkFence& fence,
     const owned_bodies::RetainedParkReceipt& receipt) noexcept {
     Diagnostic diagnostic;

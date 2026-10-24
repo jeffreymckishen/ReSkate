@@ -70,7 +70,7 @@ struct Service {
     std::uint64_t next_sequence{}, started{}, deadline{};
     actor_control_native::Reason reason{actor_control_native::Reason::unavailable};
     actor_control_native::Reason park_reason{actor_control_native::Reason::unavailable};
-    bool occupied{}, orphaned{}, body_release_requested{}, body_release_started{}, stop_cause_recorded{};
+    bool occupied{}, orphaned{}, body_release_requested{}, body_release_started{}, stop_cause_recorded{}, command_cleanup_sealed{};
     StopDiagnostic first_stop;
     CleanupDiagnostic first_cleanup;
     bool stop_drained{}, cleanup_drained{};
@@ -125,6 +125,13 @@ bool completed_ack_ready(const Service& s) noexcept {
         s.park_fence.available() && s.final.revision == s.returned_revision.load(std::memory_order_acquire) &&
         body_follow_native::completed_history_matches(s.binding, s.park_fence, s.park_receipt);
 }
+bool seal_completed_commands(Service& s) noexcept {
+    if (s.command_cleanup_sealed) return true;
+    if (!completed_ack_ready(s) ||
+        !body_follow_native::seal_command_cleanup(s.binding, s.park_fence, s.park_receipt)) return false;
+    s.command_cleanup_sealed = true;
+    return true;
+}
 bool abandoned_release_handed_off(const Service& s) noexcept {
     // Host-only after release_all: no target/body pointer was ever forwarded.
     // A known accepted exact World release cancelled its mailbox and retained
@@ -145,7 +152,7 @@ void acknowledge_locked(Service& s) noexcept {
     s.returned_revision.store(0, std::memory_order_release);
     s.started = s.deadline = 0;
     s.reason = s.park_reason = actor_control_native::Reason::unavailable;
-    s.orphaned = s.body_release_requested = s.body_release_started = s.stop_cause_recorded = false;
+    s.orphaned = s.body_release_requested = s.body_release_started = s.stop_cause_recorded = s.command_cleanup_sealed = false;
     s.first_stop = {}; s.first_cleanup = {}; s.stop_drained = s.cleanup_drained = false;
     // edge remains stopped_bit. next_sequence and the actual Arbiter are never
     // reset, so stale handles cannot become valid after receipt or owner reuse.
@@ -155,7 +162,9 @@ void acknowledge_orphan_locked(Service& s) noexcept {
     const auto owner = s.owner.load(std::memory_order_acquire);
     const Handle handle{s.sequence.load(std::memory_order_acquire)};
     if (!s.orphaned || !matches(s, owner, handle)) return;
-    if (completed_ack_ready(s) || abandoned_release_handed_off(s)) acknowledge_locked(s);
+    if (completed_ack_ready(s)) {
+        if (seal_completed_commands(s)) acknowledge_locked(s);
+    } else if (abandoned_release_handed_off(s)) acknowledge_locked(s);
 }
 bool quiet() noexcept {
     // Each participating publisher takes an IdleCall from the actual Arbiter.
@@ -301,7 +310,7 @@ bool acknowledge_completed(std::uint64_t owner, Handle handle) noexcept {
     LastError error; auto& s = service();
     if (!TryAcquireSRWLockExclusive(&s.lock)) return false;
     Unlock unlock{s.lock};
-    if (!matches(s, owner, handle) || !completed_ack_ready(s)) return false;
+    if (!matches(s, owner, handle) || !completed_ack_ready(s) || !seal_completed_commands(s)) return false;
     // Request/orphan/final/park fields are fulfilled terminal history here.
     // Foreign callers still cannot consume the exact owner's receipt.
     acknowledge_locked(s);
@@ -325,6 +334,7 @@ void tick(bool ready) noexcept {
     Unlock unlock{s.lock};
     if (!s.occupied) return;
     if (completed(s)) {
+        (void)seal_completed_commands(s);
         // release_all authenticated this old owner before the VM disappeared.
         // The host consumes only its same proven terminal receipt, never an
         // unknown duty or a handle transferred to a replacement VM.
@@ -399,8 +409,10 @@ void tick(bool ready) noexcept {
     if (s.edge.load(std::memory_order_acquire) != stopped_bit || s.release_hold.available() ||
         !s.body_release_requested || !s.body_release_started ||
         s.final.revision != s.returned_revision.load(std::memory_order_acquire)) return;
-    if (body_follow_native::complete_stop(s.binding, s.park_fence, s.park_receipt, diagnostic))
+    if (body_follow_native::complete_stop(s.binding, s.park_fence, s.park_receipt, diagnostic)) {
+        (void)seal_completed_commands(s);
         acknowledge_orphan_locked(s);
+    }
     else cleanup_observation(s, CleanupOrigin::complete_stop, diagnostic);
 }
 

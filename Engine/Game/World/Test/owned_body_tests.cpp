@@ -176,9 +176,12 @@ void expiry_and_release_keep_their_own_records_while_older_results_wait() {
         "release overwrote old expiry or lost its pending packet");
     check(box.oldest().outcome == Outcome::applied && !box.oldest().successor_available, "release fabricated an older successor");
 }
+#include "owned_body_cleanup_fixture.inc"
 }
 int main() {
     try {
+        parked_cleanup_preserves_applied_and_absent_successor(); cleanup_seal_refuses_inflight_domains_and_partial_ring_commit();
+        cleanup_seal_rejects_every_malformed_occupied_row_atomically(); cleanup_seal_preserves_api_terminal_ring_variants();
         definitions_are_bounded_and_have_no_gameplay_defaults(); uncertain_allocations_stay_quarantined_after_confirmed_subset_cleanup();
         commands_bound_the_combined_impulse_and_force();
         observed_predecessor_targets_only_the_next_real_callback(); owner_world_clock_and_body_changes_never_become_a_race_retry();

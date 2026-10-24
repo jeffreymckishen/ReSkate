@@ -107,6 +107,7 @@ private:
     friend bool complete_stop(Binding&, const ParkFence&, const owned_bodies::RetainedParkReceipt&) noexcept;
     friend bool complete_stop(Binding&, const ParkFence&, const owned_bodies::RetainedParkReceipt&, Diagnostic&) noexcept;
     friend bool completed_history_matches(const Binding&, const ParkFence&, const owned_bodies::RetainedParkReceipt&) noexcept;
+    friend bool seal_command_cleanup(const Binding&, const ParkFence&, const owned_bodies::RetainedParkReceipt&) noexcept;
     std::uint64_t owner_{}, sequence_{};
     actor_control_native::Actor actor_{};
     CleanupPolicy cleanup_{CleanupPolicy::actor_lifetime};
@@ -132,6 +133,9 @@ bool completed_history_matches(const Binding&, const ParkFence&,
 // Retire only actual stopped/drained SDK ownership after matching positive
 // park. The caller also excludes any invoking edge or abnormal original return.
 // Success is SDK completion; native pose-history retirement remains unknown.
+// Trusted completed Service calls only, after its final original return.
+// Metadata-only cleanup closure; original force outcome/successor stay unchanged.
+bool seal_command_cleanup(const Binding&, const ParkFence&, const owned_bodies::RetainedParkReceipt&) noexcept;
 bool complete_stop(Binding&, const ParkFence&, const owned_bodies::RetainedParkReceipt&) noexcept;
 bool complete_stop(Binding&, const ParkFence&, const owned_bodies::RetainedParkReceipt&, Diagnostic&) noexcept;
 } // namespace dingosdk::body_follow_native

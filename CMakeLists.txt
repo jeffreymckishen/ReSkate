@@ -496,6 +496,10 @@ if(DINGOSDK_BUILD_PLUGIN_TESTS)
     target_include_directories(dingosdk_input_pulse_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME input_pulse COMMAND dingosdk_input_pulse_tests)
     set_tests_properties(input_pulse PROPERTIES TIMEOUT 15)
+    add_executable(dingosdk_input_lease_tests Engine/Game/Input/Test/input_lease_tests.cpp)
+    target_include_directories(dingosdk_input_lease_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME input_lease COMMAND dingosdk_input_lease_tests)
+    set_tests_properties(input_lease PROPERTIES TIMEOUT 15)
     if(WIN32)
         add_executable(dingosdk_teleport_observation_tests
             Engine/Game/Skater/Test/teleport_observation_tests.cpp)
@@ -522,6 +526,31 @@ if(DINGOSDK_BUILD_PLUGIN_TESTS)
                 publication_deadline physical_conflict actor_clock_lost environment_guards)
             add_test(NAME game_input_pulse_${scenario} COMMAND dingosdk_game_input_pulse_tests ${scenario})
             set_tests_properties(game_input_pulse_${scenario} PROPERTIES TIMEOUT 15)
+        endforeach()
+        add_executable(dingosdk_input_lease_native_tests
+            Engine/Game/Input/Test/input_lease_native_tests.cpp Extension/Skater/native_input_pulse.cpp)
+        target_include_directories(dingosdk_input_lease_native_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+        target_compile_definitions(dingosdk_input_lease_native_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+        foreach(scenario raw_cache lanes inflight composition exclusion disconnect admission context renewal stale_source
+                ttl unload packet_continuity focus gameplay menu interference readiness clock_regression old_original
+                client_tick_stale original_failure returned_failure raw_mismatch scripted_equal null_output)
+            add_test(NAME input_lease_native_${scenario} COMMAND dingosdk_input_lease_native_tests ${scenario})
+            set_tests_properties(input_lease_native_${scenario} PROPERTIES TIMEOUT 15)
+        endforeach()
+        add_executable(dingosdk_input_lease_capture_native_tests
+            Engine/Game/Input/Test/input_lease_capture_native_tests.cpp
+            Engine/Game/Input/Test/input_publication_atomic_cases.h Extension/Skater/native_input_pulse.cpp)
+        target_include_directories(dingosdk_input_lease_capture_native_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+        target_compile_definitions(dingosdk_input_lease_capture_native_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+        foreach(scenario lifecycle staged_race staged_race_failed_write warming_race_failed_write failed_owned_write
+                original_failure original_failure_passthrough unknown_original unknown_original_stale owner_release
+                source_epoch pulse_exclusion packet_continuity older_capturing_held older_capturing_neutral
+                older_releasing_held older_releasing_neutral older_complete_held older_complete_neutral
+                long_delay_held long_delay_neutral equal_capturing_held equal_capturing_neutral equal_releasing_held
+                equal_releasing_neutral equal_complete_held equal_complete_neutral preacquire_inflight
+                postcomplete_new_call publication_atomic)
+            add_test(NAME input_lease_capture_native_${scenario} COMMAND dingosdk_input_lease_capture_native_tests ${scenario})
+            set_tests_properties(input_lease_capture_native_${scenario} PROPERTIES TIMEOUT 15)
         endforeach()
     endif()
     enable_testing()

@@ -5,9 +5,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include "overlay.h"
 #include "Engine/Game/BMX/bmx_native_input_handoff.h"
 #include "Engine/Game/BMX/bmx_human_native_handoff.h"
 #include "Engine/Game/BMX/bmx_human_native_return.h"
+namespace dingosdk::native_input_pulse { class PublicationScope; }
 namespace dingosdk::overlay::detail {
 extern thread_local unsigned overlay_input_access;
 struct OverlayInputAccess {
@@ -47,6 +49,10 @@ void keep_xinput_capture_first();
 bool install_input_capture();
 // Current competing capture/filter state for permissioned report publication.
 bool input_pulse_available() noexcept;
+// The caller owns the publication token. Aggregate filter changes count even
+// when the native callback pointer remains the same; no callback runs here.
+void set_gamepad_filter_locked(const native_input_pulse::PublicationScope& scope,
+    GamepadFilter filter, bool aggregate_changed = false) noexcept;
 // Explicit, once-per-process XInput slot0 experiment; requires fresh passive
 // NativeOnly, deferred observer arming and the private flag present at install.
 bool queue_private_native_board_input() noexcept;

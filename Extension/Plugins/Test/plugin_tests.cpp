@@ -13,6 +13,7 @@
 #include "Engine/Game/BMX/bmx_chassis_control.h"
 #include "Engine/Game/BMX/bmx_interaction.h"
 #include "Engine/Game/BMX/equipment_switch.h"
+#include "Engine/Game/Input/input_lease_policy.h"
 #include "Extension/BMX/bmx_world_transform.h"
 #include "Extension/BMX/bmx_collision_envelope.h"
 #include <algorithm>
@@ -1882,6 +1883,823 @@ void input_pulse_unload_retains_debt_before_other_actor_cleanup() {
     check(fresh_owner!=owner && !environment.fake.input_pulse_read(fresh_owner,handle,denied) &&
         !environment.fake.input_pulse_cancel(fresh_owner,handle) && !environment.fake.input_pulse_acknowledge(fresh_owner,handle),
         "reload acquired an orphaned VM's pulse authority");
+}
+
+// Real Host/Luau boundary over the portable observation broker. Source, guards,
+// and clocks below are constructed trusted facts, never live controller evidence.
+void input_lease_api_observes_only_qualified_owner_scoped_streams() {
+    namespace lease = dingosdk::input_lease;
+    struct LeaseGame final : Game {
+        lease::Broker broker{9007199254740995ULL};
+        lease::Guard guard{9007199254740997ULL, 9007199254741011ULL, true, true, true, true, true};
+        lease::Source source{2, 4294967295u, 9007199254741009ULL, 9007199254741001ULL,
+            9007199254740997ULL, 9007199254741011ULL,
+            {0xf3ff, 1, 255, -32768, 32767, -1, 1}, true, true};
+        unsigned requests{}, reads{}, renewals{}, releases{}, states{}, acknowledgements{}, explicit_pulse_requests{};
+        std::uint64_t owner{}, last_owner{};
+        lease::Handle handle{};
+        bool pulse_busy{}, zero_request_handle{}, refuse{};
+        lease::Reason refusal{lease::Reason::unavailable};
+        std::function<void(lease::Snapshot&)> alter_sample;
+        std::function<void(lease::Receipt&)> alter_receipt;
+        std::vector<std::pair<std::uint64_t, std::string>> cleanup;
+        unsigned calls() const { return requests + reads + renewals + releases + states + acknowledgements; }
+        bool denied(lease::Reason& reason) const {
+            if (!refuse) return false;
+            reason = refusal; return true;
+        }
+        bool input_lease_request(std::uint64_t who, std::uint32_t user, lease::Handle& out, lease::Reason& reason) override {
+            ++requests; last_owner = who;
+            if (denied(reason)) return false;
+            if (!broker.request(who, user, source, guard, pulse_busy, out, reason)) return false;
+            owner = who; handle = out;
+            if (zero_request_handle) out = {};
+            return true;
+        }
+        bool input_lease_read(std::uint64_t who, lease::Handle value, lease::Snapshot& out, lease::Reason& reason) override {
+            ++reads;
+            if (denied(reason) || !broker.read(who, value, guard, out, reason)) return false;
+            if (alter_sample) alter_sample(out);
+            return true;
+        }
+        bool input_lease_renew(std::uint64_t who, lease::Handle value, const lease::Snapshot& epoch, lease::Reason& reason) override {
+            ++renewals;
+            return !denied(reason) && broker.renew(who, value, epoch, guard, reason);
+        }
+        bool input_lease_release(std::uint64_t who, lease::Handle value, lease::Reason& reason) override {
+            ++releases;
+            if (denied(reason)) return false;
+            const bool ok = broker.release(who, value);
+            reason = ok ? lease::Reason::none : lease::Reason::unavailable;
+            return ok;
+        }
+        bool input_lease_state(std::uint64_t who, lease::Handle value, lease::Receipt& out, lease::Reason& reason) override {
+            ++states;
+            if (denied(reason)) return false;
+            broker.tick(guard);
+            const bool ok = broker.state(who, value, out);
+            reason = ok ? lease::Reason::none : lease::Reason::unavailable;
+            if (ok && alter_receipt) alter_receipt(out);
+            return ok;
+        }
+        bool input_lease_acknowledge(std::uint64_t who, lease::Handle value, lease::Reason& reason) override {
+            ++acknowledgements;
+            if (denied(reason)) return false;
+            const bool ok = broker.acknowledge(who, value);
+            reason = ok ? lease::Reason::none : lease::Reason::unavailable;
+            return ok;
+        }
+        void input_lease_release_all(std::uint64_t who) override {
+            cleanup.emplace_back(who, "lease"); broker.release_all(who);
+        }
+        void input_pulse_release_all(std::uint64_t who) override { cleanup.emplace_back(who, "pulse"); }
+        void input_trace_release_all(std::uint64_t who) override { cleanup.emplace_back(who, "trace"); }
+        void native_recovery_release_all(std::uint64_t who) override { cleanup.emplace_back(who, "recovery"); }
+        void native_action_release_all(std::uint64_t who) override { cleanup.emplace_back(who, "action"); }
+        void body_release_all(std::uint64_t who) override { cleanup.emplace_back(who, "body"); }
+        bool input_pulse_request(std::uint64_t, std::uint32_t, std::uint16_t,
+            game_input_pulse::Handle&, game_input_pulse::Reason& reason) override {
+            ++explicit_pulse_requests; reason = game_input_pulse::Reason::unavailable; return false;
+        }
+        void observe(lease::Handle cookie) {
+            ++guard.now_ms; source.observed_ms = guard.now_ms; ++source.observation_serial;
+            broker.observe(cookie, source, guard);
+        }
+        void observe() { observe(broker.active()); }
+    };
+    struct LeaseEnvironment final : Environment {
+        LeaseGame fake;
+        double now{1000};
+        std::vector<std::string> logs;
+        void log(LogLevel, std::string_view text) override { logs.emplace_back(text); }
+        void console(std::string_view) override {}
+        double now_ms() override { return now; }
+        std::filesystem::path storage_root() override { return scratch / "lease-storage"; }
+        bool builtin_command(std::string_view) override { return false; }
+        Game& game() override { return fake; }
+        bool logged(std::string_view part) const {
+            return std::any_of(logs.begin(), logs.end(), [&](const auto& line) { return line.find(part) != std::string::npos; });
+        }
+        std::string all() const { std::string result; for (const auto& line : logs) result += line + "\n"; return result; }
+    };
+    unsigned scenarios{};
+    const auto running_lease = [&](const Host& host, std::string_view id, const LeaseEnvironment& environment) {
+        const auto status = status_of(host, id);
+        check(status.state == "running", std::string(id) + ": " + status.state + ": " + status.reason + "\n" + environment.all());
+    };
+    const auto tick = [&](Host& host, LeaseEnvironment& environment) {
+        environment.now += 16; host.tick(16);
+    };
+    const auto main_script = [&](const std::string& id, const std::string& main) {
+        return script(id, main, R"("input.lease")");
+    };
+    {
+        ++scenarios;
+        LeaseEnvironment e; Host host(e, Side::client);
+        host.apply({script("lease-denied", R"(
+            for _,name in {"lease","lease_read","lease_renew","lease_release","lease_state","lease_acknowledge"} do
+                local ok,why=pcall(reskate.input[name],{}, {}, {})
+                assert(not ok and why:find('input.lease'),name)
+            end
+            reskate.log('all six permission first')
+        )", R"("input","input.control","skater.control")")});
+        running_lease(host, "lease-denied", e);
+        check(e.logged("all six permission first") && !e.fake.calls() && !e.fake.explicit_pulse_requests,
+            "all six source lease calls require their permission before parsing or backend work");
+    }
+    {
+        ++scenarios;
+        LeaseEnvironment e; Host host(e, Side::server);
+        host.apply({package("lease-server", {{manifest_file, manifest(R"("input.lease")", "server")}, {"plugin/main.lua", R"(
+            for _,name in {"lease","lease_read","lease_renew","lease_release","lease_state","lease_acknowledge"} do
+                local ok,why=pcall(reskate.input[name],{}, {}, {})
+                assert(not ok and why:find('client phase only'),name)
+            end
+        )"}})});
+        running_lease(host, "lease-server", e);
+        check(!e.fake.calls(), "server lease calls reached the observation backend");
+    }
+    {
+        ++scenarios;
+        LeaseEnvironment e; Host host(e, Side::client);
+        host.apply({main_script("lease-arguments", R"(
+            local P=reskate.input
+            assert(not pcall(P.lease) and not pcall(P.lease,2,nil))
+            for _,bad in {-1,4,.5,math.huge,0/0,'2',false,{}} do assert(not pcall(P.lease,bad)) end
+            local h=assert(P.lease(2))
+            assert(typeof(h)=='userdata' and getmetatable(h)=='locked')
+            assert(not pcall(function() h.sequence='1' end))
+            for _,fn in {P.lease_read,P.lease_release,P.lease_state,P.lease_acknowledge} do
+                assert(not pcall(fn) and not pcall(fn,h,nil))
+                for _,bad in {{},false,'9007199254740995',2} do assert(not pcall(fn,bad)) end
+            end
+            assert(not pcall(P.lease_renew,h) and not pcall(P.lease_renew,h,{},nil))
+            for _,bad in {{},false,'epoch',h} do assert(not pcall(P.lease_renew,h,bad)) end
+            reskate.log('arguments refused before backend')
+        )")});
+        running_lease(host, "lease-arguments", e);
+        check(e.logged("arguments refused before backend") && e.fake.requests == 1 && e.fake.calls() == 1,
+            "malformed source slots/handles/epoch/arity reached backend or consumed admission budget");
+    }
+    {
+        ++scenarios;
+        LeaseEnvironment e; Host host(e, Side::client);
+        host.apply({main_script("lease-stream", R"(
+            local P=reskate.input
+            local h=assert(P.lease(2)); local stage=0
+            local r=assert(P.lease_state(h))
+            assert(r.status=='warming' and r.observed_ms=='0' and r.last_observation=='0')
+            assert(not r.terminal and not r.source_released and not P.lease_read(h))
+            assert(not P.lease_acknowledge(h))
+            reskate.on('tick',function()
+                if stage==0 then
+                    assert(P.lease_read(h)==nil); stage=1; reskate.log('pre-cookie unavailable'); return
+                elseif stage==1 then
+                    local s=assert(P.lease_read(h))
+                    assert(typeof(s.epoch)=='userdata' and getmetatable(s.epoch)=='locked')
+                    assert(s.sequence=='9007199254740995' and s.source_epoch=='9007199254741009')
+                    assert(s.context_generation=='9007199254741011' and s.observation_serial=='9007199254741003')
+                    assert(s.observed_ms=='9007199254740999' and s.user==2 and s.packet==4294967295)
+                    assert(s.transport=='xinput' and s.source_identity=='observed_stream')
+                    assert(s.physical_device_identity=='unobserved' and s.mode=='observe' and not s.capturing and not s.report_debt)
+                    local p=s.pad
+                    assert(p.left_x==-1 and p.left_y==1 and p.right_x==-1/32768 and p.right_y==1/32767)
+                    assert(p.left_trigger==1/255 and p.right_trigger==1 and p.playstation==false)
+                    local n=0; for name,value in p.buttons do assert(type(value)=='boolean' and value,name); n+=1 end
+                    assert(n==14 and p.buttons.y and p.buttons.start and p.buttons.left_stick)
+                    local opaque=s.epoch
+                    s.sequence='1'; s.source_epoch='1'; s.observation_serial='1'; s.pad.left_x=0
+                    assert(P.lease_renew(h,opaque))
+                    local ok,why=P.lease_renew(h,opaque); assert(not ok and why=='stale_epoch')
+                    assert(not pcall(P.lease_renew,h,s))
+                    local r=assert(P.lease_state(h)); assert(r.status=='active' and r.renewals=='1')
+                    assert(not r.capturing and not r.report_debt and not r.terminal and not r.orphaned)
+                    assert(P.lease_release(h))
+                    r=assert(P.lease_state(h)); assert(r.status=='released' and r.terminal and r.source_released)
+                    assert(not r.report_debt and not r.capturing and P.lease_read(h)==nil)
+                    assert(P.lease_acknowledge(h) and P.lease_state(h)==nil)
+                    stage=2; reskate.log('qualified stream released')
+                end
+            end)
+        )")});
+        running_lease(host, "lease-stream", e);
+        e.fake.observe({}); tick(host,e); running_lease(host,"lease-stream",e);
+        check(e.logged("pre-cookie unavailable"), "a report begun before admission became readable");
+        const auto pad_before = e.fake.source.pad;
+        e.fake.observe(); tick(host,e); running_lease(host,"lease-stream",e);
+        check(e.logged("qualified stream released") && e.fake.renewals == 2 && e.fake.source.pad == pad_before &&
+            e.fake.source.packet == 4294967295u && !e.fake.explicit_pulse_requests && !e.fake.broker.active().sequence,
+            "qualified held-pad observation failed, rewrote a report or requested an actuator");
+    }
+    {
+        ++scenarios;
+        LeaseEnvironment e; Host host(e, Side::client);
+        host.apply({main_script("lease-wrong-epoch", R"(
+            local P=reskate.input; local h=assert(P.lease(2)); local stage=0; local first
+            reskate.on('tick',function()
+                if stage==0 then
+                    first=assert(P.lease_read(h)).epoch
+                    assert(P.lease_release(h) and P.lease_acknowledge(h))
+                    h=assert(P.lease(2)); stage=1
+                    local ok,why=pcall(P.lease_renew,h,first)
+                    assert(not ok and why:find('another lease'))
+                    reskate.log('wrong lease epoch blocked')
+                end
+            end)
+        )")});
+        running_lease(host,"lease-wrong-epoch",e);
+        e.fake.observe(); tick(host,e); running_lease(host,"lease-wrong-epoch",e);
+        check(e.logged("wrong lease epoch blocked") && !e.fake.renewals && e.fake.requests == 2,
+            "another lease's opaque epoch reached renewal backend");
+    }
+    {
+        ++scenarios;
+        LeaseEnvironment e; Host host(e, Side::client);
+        host.apply({main_script("lease-budget", R"(
+            local P=reskate.input
+            for i=1,4 do
+                local h=assert(P.lease(2))
+                for j=1,5 do assert(P.lease_state(h).status=='warming') end
+                assert(P.lease_release(h) and P.lease_acknowledge(h))
+            end
+            local h,why=P.lease(2); assert(h==nil and why:find('4 times'))
+            reskate.log('four admissions')
+        )")});
+        running_lease(host,"lease-budget",e);
+        check(e.logged("four admissions") && e.fake.requests == 4 && e.fake.states == 20,
+            "lease state polling consumed control budget or a fifth admission reached backend");
+        host.apply({script("lease-shared-budget", R"(
+            local P=reskate.input
+            assert(P.pulse(2,'a')==nil)
+            for i=1,3 do local h=assert(P.lease(2)); assert(P.lease_release(h) and P.lease_acknowledge(h)) end
+            local h,why=P.lease(2); assert(h==nil and why:find('4 times'))
+        )", R"("input.lease","input.control")")});
+        running_lease(host,"lease-shared-budget",e);
+        check(e.fake.requests == 7 && e.fake.explicit_pulse_requests == 1,
+            "observation leases bypassed the existing shared four-per-second control request budget");
+    }
+    {
+        ++scenarios;
+        LeaseEnvironment e; Host host(e, Side::client);
+        host.apply({main_script("lease-malformed-sample", R"(
+            local P=reskate.input; local h=assert(P.lease(2))
+            reskate.on('tick',function()
+                local s,why=P.lease_read(h)
+                assert(s==nil and why:find('invalid observations'))
+                reskate.log('malformed sample refused')
+            end)
+        )")});
+        running_lease(host,"lease-malformed-sample",e); e.fake.observe();
+        const std::vector<std::function<void(lease::Snapshot&)>> malformed{
+            [](auto& s) { ++s.handle.sequence; }, [](auto& s) { s.user=1; }, [](auto& s) { s.user=4; },
+            [](auto& s) { s.source_epoch=0; }, [](auto& s) { s.observation_serial=0; },
+            [](auto& s) { s.context_generation=0; }, [](auto& s) { s.observed_ms=0; },
+            [](auto& s) { s.observed_ms=std::numeric_limits<std::uint64_t>::max(); }
+        };
+        for (const auto& alter : malformed) {
+            ++scenarios; e.logs.clear(); e.fake.alter_sample=alter; tick(host,e); running_lease(host,"lease-malformed-sample",e);
+            check(e.logged("malformed sample refused"), "malformed backend sample became an epoch authority");
+        }
+        check(!e.fake.renewals, "malformed backend samples were allowed to renew");
+    }
+    {
+        ++scenarios;
+        LeaseEnvironment e; Host host(e, Side::client);
+        host.apply({main_script("lease-malformed-receipt", R"(
+            local P=reskate.input; local h=assert(P.lease(2))
+            reskate.on('tick',function()
+                local r,why=P.lease_state(h)
+                assert(r==nil and why:find('invalid observations'))
+                reskate.log('malformed receipt refused')
+            end)
+        )")});
+        running_lease(host,"lease-malformed-receipt",e); e.fake.observe();
+        const std::vector<std::function<void(lease::Receipt&)>> malformed{
+            [](auto& r) { ++r.handle.sequence; }, [](auto& r) { r.user=1; }, [](auto& r) { r.user=4; },
+            [](auto& r) { r.status=static_cast<lease::Status>(999); }, [](auto& r) { r.reason=static_cast<lease::Reason>(999); },
+            [](auto& r) { r.source_epoch=0; }, [](auto& r) { r.context_generation=0; },
+            [](auto& r) { r.requested_ms=0; }, [](auto& r) { r.requested_ms=std::numeric_limits<std::uint64_t>::max(); },
+            [](auto& r) { r.expires_ms=r.requested_ms; }, [](auto& r) { r.observed_ms=r.requested_ms-1; },
+            [](auto& r) { r.last_observation=0; }, [](auto& r) { r.observed_ms=r.expires_ms; },
+            [](auto& r) { r.source_released=true; }, [](auto& r) { r.status=lease::Status::released; },
+            [](auto& r) { r.status=lease::Status::warming; r.last_observation=0; }
+        };
+        for (const auto& alter : malformed) {
+            ++scenarios; e.logs.clear(); e.fake.alter_receipt=alter; tick(host,e); running_lease(host,"lease-malformed-receipt",e);
+            check(e.logged("malformed receipt refused"), "malformed backend receipt became a public observation");
+        }
+    }
+    {
+        ++scenarios;
+        LeaseEnvironment e; Host host(e,Side::client);
+        host.apply({main_script("lease-backend-refusal", R"(
+            local P=reskate.input; local h=assert(P.lease(2)); local epoch; local stage=0
+            reskate.on('tick',function()
+                if stage==0 then epoch=assert(P.lease_read(h)).epoch; stage=1; return end
+                local value,why=P.lease_read(h); assert(value==nil and why=='interference')
+                value,why=P.lease_state(h); assert(value==nil and why=='interference')
+                value,why=P.lease_renew(h,epoch); assert(value==false and why=='interference')
+                value,why=P.lease_release(h); assert(value==false and why=='interference')
+                value,why=P.lease_acknowledge(h); assert(value==false and why=='interference')
+                value,why=P.lease(2); assert(value==nil and why=='interference')
+                reskate.log('all six precise backend refusals')
+            end)
+        )")});
+        running_lease(host,"lease-backend-refusal",e); e.fake.observe(); tick(host,e);
+        running_lease(host,"lease-backend-refusal",e);
+        e.fake.refuse=true; e.fake.refusal=lease::Reason::interference;
+        tick(host,e); running_lease(host,"lease-backend-refusal",e);
+        check(e.logged("all six precise backend refusals") && e.fake.requests==2 && e.fake.reads==2 &&
+            e.fake.states==1 && e.fake.renewals==1 && e.fake.releases==1 && e.fake.acknowledgements==1,
+            "a backend refusal was dropped, retried or converted to an observation/action");
+    }
+    {
+        ++scenarios;
+        LeaseEnvironment e; e.fake.zero_request_handle=true; Host host(e,Side::client);
+        host.apply({main_script("lease-zero-handle", R"(
+            local h,why=reskate.input.lease(2)
+            assert(h==nil and why=='input lease handle unavailable')
+        )")});
+        running_lease(host,"lease-zero-handle",e);
+        const auto old_owner=e.fake.owner; host.apply({});
+        check(!e.fake.broker.active().sequence && old_owner, "invalid backend handle leaked its admitted reservation through VM unload");
+    }
+    {
+        ++scenarios;
+        LeaseEnvironment e; e.fake.refuse=true; e.fake.refusal=lease::Reason::source_unavailable; Host host(e,Side::client);
+        host.apply({main_script("lease-unavailable", R"(
+            local h,why=reskate.input.lease(2); assert(h==nil and why=='source_unavailable')
+        )")});
+        running_lease(host,"lease-unavailable",e);
+        check(e.fake.requests==1 && !e.fake.broker.active().sequence && !e.fake.explicit_pulse_requests,
+            "unavailable source fell back to a pulse, report mutation or other ownership");
+        e.fake.refusal=static_cast<lease::Reason>(999);
+        host.apply({main_script("lease-invalid-refusal", R"(
+            local h,why=reskate.input.lease(2); assert(h==nil and why=='input lease unavailable')
+        )")});
+        running_lease(host,"lease-invalid-refusal",e);
+    }
+    {
+        ++scenarios;
+        LeaseEnvironment e; Host host(e,Side::client);
+        host.apply({main_script("lease-unload", R"(
+            local h=assert(reskate.input.lease(2))
+            reskate.on('unload',function() assert(reskate.input.lease_state(h).status=='warming') end)
+        )")});
+        running_lease(host,"lease-unload",e);
+        const auto old_owner=e.fake.owner; const auto old_handle=e.fake.handle;
+        const auto original_report=e.fake.source.pad;
+        e.fake.cleanup.clear(); host.apply({});
+        check(e.fake.cleanup.size()>=6 && e.fake.cleanup[0]==std::pair{old_owner,std::string("lease")} &&
+            e.fake.cleanup[1].second=="pulse" && e.fake.cleanup[2].second=="trace" &&
+            e.fake.cleanup[3].second=="recovery" && e.fake.cleanup[4].second=="action" && e.fake.cleanup[5].second=="body",
+            "observation source release did not precede pulse/actor/body cleanup");
+        check(!e.fake.broker.active().sequence && e.fake.source.pad==original_report && !e.fake.explicit_pulse_requests,
+            "lease unload left an owner reservation or changed the native report");
+        host.apply({main_script("lease-unload", "assert(reskate.input.lease(2))")});
+        running_lease(host,"lease-unload",e);
+        const auto new_owner=e.fake.owner;
+        lease::Snapshot sample; lease::Receipt receipt; lease::Reason reason;
+        check(new_owner!=old_owner && !e.fake.broker.read(new_owner,old_handle,e.fake.guard,sample,reason) &&
+            !e.fake.broker.state(new_owner,old_handle,receipt) && !e.fake.broker.release(new_owner,old_handle) &&
+            !e.fake.broker.acknowledge(new_owner,old_handle), "reload inherited a foreign VM's old source authority");
+        check(!e.fake.broker.read(old_owner,e.fake.handle,e.fake.guard,sample,reason),
+            "stopped VM owner read its replacement's source handle");
+    }
+    for (unsigned scenario=0; scenario<5; ++scenario) {
+        ++scenarios;
+        LeaseEnvironment e; Host host(e,Side::client);
+        const std::array<const char*,5> reasons{"source_stale","deadline","source_changed","context_changed","focus_lost"};
+        const auto main=std::string(R"(
+            local P=reskate.input; local h=assert(P.lease(2))
+            reskate.on('tick',function()
+                local r=assert(P.lease_state(h))
+                assert(r.terminal and r.source_released and not r.capturing and not r.report_debt)
+                assert(r.reason==')")+reasons[scenario]+R"(')
+                assert(P.lease_read(h)==nil and P.lease_acknowledge(h))
+                reskate.log('expired or revoked without actions')
+            end)
+        )";
+        host.apply({main_script("lease-facts-"+std::to_string(scenario),main)});
+        running_lease(host,"lease-facts-"+std::to_string(scenario),e);
+        const auto unchanged=e.fake.source.pad;
+        if (scenario==0) e.fake.guard.now_ms+=101;
+        else if (scenario==1) e.fake.guard.now_ms+=250;
+        else if (scenario==2) { ++e.fake.source.epoch; e.fake.observe(); }
+        else if (scenario==3) ++e.fake.guard.context_generation;
+        else e.fake.guard.focused=false;
+        tick(host,e); running_lease(host,"lease-facts-"+std::to_string(scenario),e);
+        check(e.logged("expired or revoked without actions") && e.fake.source.pad==unchanged && !e.fake.explicit_pulse_requests,
+            "source expiry/revocation invented native actions or report debt");
+    }
+    {
+        ++scenarios;
+        LeaseEnvironment e; Host host(e,Side::client);
+        host.apply({main_script("lease-library", R"(
+            local h=assert(reskate.input.lease(2))
+            reskate.expose({opaque=function() return h end, plain=function() return {sequence='9007199254740995'} end})
+        )"), script("lease-consumer",R"(
+            reskate.on('tick',function()
+                local lib=assert(reskate.require_plugin('lease-library'))
+                assert(not pcall(lib.opaque),'raw userdata must not cross plugin VMs')
+                local plain=lib.plain(); assert(plain.sequence=='9007199254740995')
+                assert(not pcall(reskate.input.lease_read,plain),'shared descriptive numbers are not handles')
+                reskate.log('foreign VM cannot receive authority')
+            end)
+        )",R"("input.lease")")});
+        running_lease(host,"lease-library",e); running_lease(host,"lease-consumer",e);
+        tick(host,e); running_lease(host,"lease-consumer",e);
+        check(e.logged("foreign VM cannot receive authority") && !e.fake.reads,
+            "inter-plugin JSON exchange transferred opaque source authority");
+    }
+    std::cout << "input lease actual Host: " << scenarios
+        << " constructed-source scenarios, opaque owner/epoch isolation, zero native report writes; no gameplay claim\n";
+}
+
+// The public capture contract over real portable policies, with constructed
+// publication facts. No fixture write is evidence of native consumption.
+void input_lease_capture_api_keeps_publication_duty_owner_scoped() {
+    namespace lease = dingosdk::input_lease;
+    namespace capture = dingosdk::input_lease_capture;
+    struct CaptureGame final : Game {
+        lease::Broker broker{9007199254740995ULL};
+        capture::Capture capture_policy{9007199254741019ULL, 9007199254741021ULL};
+        lease::Guard guard{9007199254740997ULL, 9007199254741011ULL, true, true, true, true, true};
+        lease::Source source{2, 27, 9007199254741009ULL, 9007199254741001ULL,
+            9007199254740997ULL, 9007199254741011ULL, {0x1000}, true, true};
+        lease::Handle handle{};
+        std::uint64_t owner{}, last_owner{};
+        unsigned lease_requests{}, lease_reads{}, capture_requests{}, capture_states{}, capture_releases{}, capture_acks{};
+        unsigned fixture_buffer_writes{}, pulse_requests{};
+        bool default_native{}, orphaned{}, in_flight{};
+        std::vector<std::pair<std::uint64_t,std::string>> cleanup;
+        std::function<void(capture::Receipt&)> alter_capture;
+        std::function<void(lease::Receipt&)> alter_passive;
+        bool capture_busy() const { return capture_policy.reserved() || (capture_policy.state().phase!=capture::Phase::idle && in_flight); }
+        bool owns(std::uint64_t who, lease::Handle h) const {
+            const auto& r=capture_policy.state();
+            return who && r.phase!=capture::Phase::idle && r.key.owner==who && r.key.lease_sequence==h.sequence;
+        }
+        capture::Input input() const {
+            capture::Input in;
+            in.source_epoch=source.epoch; in.context_generation=source.context_generation;
+            in.observation_serial=source.observation_serial; in.observed_ms=source.observed_ms; in.now_ms=guard.now_ms;
+            in.user=source.user; in.raw=in.returned=source.pad;
+            in.safety={broker.accepted(owner,handle,source),guard.ready,guard.focused,guard.gameplay,guard.menu_closed,guard.interference_clear};
+            in.outer_game_poll=in.has_output=true; in.source_connected=source.connected;
+            return in;
+        }
+        bool input_lease_request(std::uint64_t who,std::uint32_t user,lease::Handle& out,lease::Reason& reason) override {
+            ++lease_requests; last_owner=who;
+            if (capture_busy()) { reason=lease::Reason::busy; return false; }
+            if (!broker.request(who,user,source,guard,false,out,reason)) return false;
+            owner=who; handle=out; return true;
+        }
+        bool input_lease_read(std::uint64_t who,lease::Handle h,lease::Snapshot& out,lease::Reason& reason) override {
+            ++lease_reads; return broker.read(who,h,guard,out,reason);
+        }
+        bool input_lease_renew(std::uint64_t who,lease::Handle h,const lease::Snapshot& epoch,lease::Reason& reason) override {
+            return broker.renew(who,h,epoch,guard,reason);
+        }
+        bool input_lease_release(std::uint64_t who,lease::Handle h,lease::Reason& reason) override {
+            const bool ok=broker.release(who,h);
+            if (ok && owns(who,h)) (void)capture_policy.release(capture_policy.state().key);
+            reason=ok?lease::Reason::none:lease::Reason::unavailable; return ok;
+        }
+        bool input_lease_state(std::uint64_t who,lease::Handle h,lease::Receipt& out,lease::Reason& reason) override {
+            broker.tick(guard);
+            const bool ok=broker.state(who,h,out);
+            if (ok && owns(who,h) && capture_busy()) { out.source_released=false; out.capture_reserved=true; }
+            if (ok && alter_passive) alter_passive(out);
+            reason=ok?lease::Reason::none:lease::Reason::unavailable; return ok;
+        }
+        bool input_lease_acknowledge(std::uint64_t who,lease::Handle h,lease::Reason& reason) override {
+            if (owns(who,h) && capture_busy()) { reason=lease::Reason::busy; return false; }
+            const bool ok=broker.acknowledge(who,h);
+            reason=ok?lease::Reason::none:lease::Reason::unavailable; return ok;
+        }
+        bool input_lease_capture_request(std::uint64_t who,lease::Handle h,const lease::Snapshot& epoch,capture::Reason& reason) override {
+            ++capture_requests;
+            if (default_native) return Game::input_lease_capture_request(who,h,epoch,reason);
+            reason=capture::Reason::authority_lost;
+            broker.tick(guard); lease::Receipt r;
+            if (!broker.state(who,h,r) || r.status!=lease::Status::active || !broker.issued(who,h,epoch) ||
+                !broker.accepted(who,h,source) || epoch.observation_serial!=source.observation_serial || epoch.pad!=source.pad) return false;
+            auto in=input(); in.safety.source_authorized=true;
+            return capture_policy.request({who,h.sequence,r.source_epoch,r.context_generation,r.user},r.expires_ms,in,false,reason);
+        }
+        bool input_lease_capture_state(std::uint64_t who,lease::Handle h,capture::Receipt& out) override {
+            ++capture_states;
+            if (default_native || !owns(who,h)) return false;
+            out=capture_policy.state(); if (alter_capture) alter_capture(out); return true;
+        }
+        bool input_lease_capture_release(std::uint64_t who,lease::Handle h) override {
+            ++capture_releases;
+            if (default_native || !owns(who,h)) return false;
+            const bool ok=capture_policy.release(capture_policy.state().key);
+            if (ok) broker.invalidate(lease::Reason::cancelled);
+            return ok;
+        }
+        bool input_lease_capture_acknowledge(std::uint64_t who,lease::Handle h) override {
+            ++capture_acks;
+            return !default_native && owns(who,h) && !in_flight && capture_policy.acknowledge(capture_policy.state().key);
+        }
+        void input_lease_release_all(std::uint64_t who) override {
+            cleanup.emplace_back(who,"capture/source");
+            if (capture_policy.state().key.owner==who && capture_policy.state().phase!=capture::Phase::idle) {
+                orphaned=true; (void)capture_policy.release(capture_policy.state().key);
+            }
+            broker.release_all(who);
+        }
+        void input_pulse_release_all(std::uint64_t who) override { cleanup.emplace_back(who,"pulse"); }
+        void input_trace_release_all(std::uint64_t who) override { cleanup.emplace_back(who,"trace"); }
+        void native_recovery_release_all(std::uint64_t who) override { cleanup.emplace_back(who,"recovery"); }
+        void native_action_release_all(std::uint64_t who) override { cleanup.emplace_back(who,"action"); }
+        void body_release_all(std::uint64_t who) override { cleanup.emplace_back(who,"body"); }
+        bool input_pulse_request(std::uint64_t,std::uint32_t,std::uint16_t,game_input_pulse::Handle&,
+            game_input_pulse::Reason& reason) override {
+            ++pulse_requests; reason=game_input_pulse::Reason::unavailable; return false;
+        }
+        void observe(lease::Pad pad={}) {
+            source.pad=pad; source.observed_ms=++guard.now_ms; ++source.observation_serial;
+            broker.observe(broker.active(),source,guard);
+        }
+        capture::Plan publish_fixture(lease::Pad pad={},bool published=true) {
+            observe(pad); const auto plan=capture_policy.plan(capture_policy.ticket(),input());
+            if (plan.suppress) { ++fixture_buffer_writes; (void)capture_policy.confirm(plan,published); }
+            return plan;
+        }
+        unsigned capture_calls() const { return capture_requests+capture_states+capture_releases+capture_acks; }
+    };
+    struct CaptureEnvironment final : Environment {
+        CaptureGame fake;
+        double now{1000}; std::vector<std::string> logs;
+        void log(LogLevel,std::string_view text) override { logs.emplace_back(text); }
+        void console(std::string_view) override {}
+        double now_ms() override { return now; }
+        std::filesystem::path storage_root() override { return scratch/"capture-storage"; }
+        bool builtin_command(std::string_view) override { return false; }
+        Game& game() override { return fake; }
+        bool logged(std::string_view part) const {
+            return std::any_of(logs.begin(),logs.end(),[&](const auto& line){return line.find(part)!=std::string::npos;});
+        }
+        std::string all() const {std::string out;for(const auto& line:logs)out+=line+"\n";return out;}
+    };
+    unsigned scenarios{};
+    const auto running_capture=[&](const Host& host,std::string_view id,const CaptureEnvironment& e) {
+        const auto s=status_of(host,id);
+        check(s.state=="running",std::string(id)+": "+s.state+": "+s.reason+"\n"+e.all());
+    };
+    const auto tick=[&](Host& host,CaptureEnvironment& e){e.now+=16;host.tick(16);};
+    const auto captured_script=[&](const std::string& id,const std::string& code) {
+        return script(id,code,R"("input.lease","input.capture")");
+    };
+    for(const auto& permissions : {std::string{},std::string(R"("input.lease")"),std::string(R"("input.capture")")}) {
+        ++scenarios; CaptureEnvironment e;Host host(e,Side::client);
+        const auto missing=permissions==R"("input.lease")"?"input.capture":"input.lease";
+        host.apply({script("capture-denied",std::string(R"(
+            for _,name in {'lease_capture','lease_capture_state','lease_release_capture','lease_acknowledge_capture'} do
+                local ok,why=pcall(reskate.input[name],{}, {}, {})
+                assert(not ok and why:find(')")+missing+R"('),name)
+            end
+        )",permissions)});
+        running_capture(host,"capture-denied",e);
+        check(!e.fake.capture_calls()&&!e.fake.lease_requests,"capture permission denial parsed arguments or reached backend");
+    }
+    {
+        ++scenarios;CaptureEnvironment e;Host host(e,Side::server);
+        host.apply({package("capture-server",{{manifest_file,manifest(R"("input.lease","input.capture")","server")},{"plugin/main.lua",R"(
+            for _,name in {'lease_capture','lease_capture_state','lease_release_capture','lease_acknowledge_capture'} do
+                local ok,why=pcall(reskate.input[name],{}, {}, {})
+                assert(not ok and why:find('client phase only'),name)
+            end
+        )"}})});
+        running_capture(host,"capture-server",e);check(!e.fake.capture_calls(),"server capture reached backend");
+    }
+    {
+        ++scenarios;CaptureEnvironment e;Host host(e,Side::client);
+        host.apply({captured_script("capture-arguments",R"(
+            local P=reskate.input;local h=assert(P.lease(2))
+            assert(not pcall(P.lease_capture) and not pcall(P.lease_capture,h))
+            assert(not pcall(P.lease_capture,h,{},nil))
+            for _,bad in {{},2,false,'epoch',h} do assert(not pcall(P.lease_capture,h,bad)) end
+            for _,fn in {P.lease_capture_state,P.lease_release_capture,P.lease_acknowledge_capture} do
+                assert(not pcall(fn) and not pcall(fn,h,nil))
+                for _,bad in {{},false,2,'handle'} do assert(not pcall(fn,bad)) end
+            end
+            assert(P.lease_capture_state(h)==nil)
+            reskate.log('no epoch no capture')
+        )")});
+        running_capture(host,"capture-arguments",e);
+        check(e.logged("no epoch no capture")&&!e.fake.capture_calls()&&e.fake.lease_requests==1,
+            "malformed capture arguments or an unadmitted handle reached backend state");
+    }
+    {
+        ++scenarios;CaptureEnvironment e;e.fake.default_native=true;Host host(e,Side::client);
+        host.apply({captured_script("capture-native-unavailable",R"(
+            local P=reskate.input;local h=assert(P.lease(2))
+            reskate.on('tick',function()
+                local epoch=assert(P.lease_read(h)).epoch
+                for _,bad in {{},false,2,'handle',epoch} do assert(not pcall(P.lease_capture,bad,epoch)) end
+                assert(not pcall(P.lease_capture,h,epoch,nil))
+                local ok,why=P.lease_capture(h,epoch);assert(ok==false and why=='unavailable')
+                assert(P.lease_capture_state(h)==nil)
+                assert(not P.lease_release_capture(h) and not P.lease_acknowledge_capture(h))
+                assert(P.lease_state(h).mode=='observe')
+                reskate.log('default capture unavailable')
+            end)
+        )")});
+        running_capture(host,"capture-native-unavailable",e);e.fake.observe();tick(host,e);
+        running_capture(host,"capture-native-unavailable",e);
+        check(e.logged("default capture unavailable")&&e.fake.capture_requests==1&&!e.fake.capture_states&&
+            !e.fake.fixture_buffer_writes&&!e.fake.pulse_requests,"default capture backend fabricated ownership or fell back to an actuator");
+    }
+    {
+        ++scenarios;CaptureEnvironment e;Host host(e,Side::client);
+        host.apply({captured_script("capture-wrong-epoch",R"(
+            local P=reskate.input;local h=assert(P.lease(2));local stage=0;local old
+            reskate.on('tick',function()
+                if stage==0 then
+                    old=assert(P.lease_read(h)).epoch
+                    assert(P.lease_release(h) and P.lease_acknowledge(h));h=assert(P.lease(2));stage=1
+                    local ok,why=pcall(P.lease_capture,h,old);assert(not ok and why:find('another lease'))
+                    reskate.log('foreign lease epoch blocked')
+                end
+            end)
+        )")});
+        running_capture(host,"capture-wrong-epoch",e);e.fake.observe();tick(host,e);running_capture(host,"capture-wrong-epoch",e);
+        check(e.logged("foreign lease epoch blocked")&&!e.fake.capture_requests,"wrong lease epoch crossed capture API owner/key boundary");
+    }
+    {
+        ++scenarios;CaptureEnvironment e;Host host(e,Side::client);
+        host.apply({captured_script("capture-stale-epoch",R"(
+            local P=reskate.input;local h=assert(P.lease(2));local stage=0;local old
+            reskate.on('tick',function()
+                if stage==0 then old=assert(P.lease_read(h)).epoch;stage=1;return end
+                local ok,why=P.lease_capture(h,old);assert(not ok and why=='authority_lost')
+                assert(P.lease_capture_state(h)==nil)
+                local current=assert(P.lease_read(h));assert(P.lease_capture(h,current.epoch))
+                ok,why=P.lease_capture(h,current.epoch);assert(not ok and why=='busy')
+                assert(P.lease_capture_state(h).phase=='waiting_neutral')
+                reskate.log('stale then replay refused');stage=2
+            end)
+        )")});
+        running_capture(host,"capture-stale-epoch",e);e.fake.observe();tick(host,e);
+        e.fake.observe();tick(host,e);running_capture(host,"capture-stale-epoch",e);
+        check(e.logged("stale then replay refused")&&e.fake.capture_requests==3&&!e.fake.fixture_buffer_writes,
+            "stale snapshot or replayed admitted epoch produced capture publication");
+    }
+    {
+        ++scenarios;CaptureEnvironment e;Host host(e,Side::client);
+        host.apply({captured_script("capture-lifecycle",R"(
+            local P=reskate.input;local h=assert(P.lease(2));local stage=0
+            reskate.on('tick',function()
+                if stage==0 then
+                    local s=assert(P.lease_read(h));assert(P.lease_capture(h,s.epoch))
+                    s.source_epoch='1';s.observation_serial='1'
+                    local r=assert(P.lease_capture_state(h))
+                    assert(r.phase=='waiting_neutral' and r.reason=='none' and not r.terminal)
+                    assert(r.sequence=='9007199254740995' and r.source_epoch=='9007199254741009')
+                    assert(r.context_generation=='9007199254741011' and r.user==2)
+                    assert(r.generation=='9007199254741020' and r.revision=='9007199254741022')
+                    assert(r.expires_ms=='9007199254741247' and r.publications=='0' and r.neutral_releases=='0')
+                    assert(r.transport=='xinput' and r.mode=='capture' and r.source_identity=='observed_stream')
+                    assert(r.physical_device_identity=='unobserved' and r.capture_scope=='selected_observed_xinput_stream')
+                    assert(r.publication_scope=='process_outer_xinput_buffer')
+                    assert(r.consumption=='unobserved' and r.semantic_completion=='unobserved')
+                    assert(not r.capturing and not r.report_debt and not r.quarantined)
+                    assert(not P.lease_acknowledge_capture(h));stage=1;return
+                elseif stage==1 then
+                    local r=assert(P.lease_capture_state(h));assert(r.phase=='capturing' and r.capturing and r.report_debt)
+                    assert(r.publications=='1' and not r.terminal)
+                    assert(P.lease_release(h))
+                    local passive=assert(P.lease_state(h))
+                    assert(passive.status=='released' and passive.terminal and not passive.source_released and passive.capture_reserved)
+                    assert(passive.mode=='observe' and not passive.capturing and not passive.report_debt)
+                    local ok,why=P.lease_acknowledge(h);assert(not ok and why=='busy')
+                    r=assert(P.lease_capture_state(h));assert(r.phase=='releasing' and r.report_debt and not r.capturing)
+                    assert(not P.lease_acknowledge_capture(h));stage=2;return
+                elseif stage==2 then
+                    local r=assert(P.lease_capture_state(h));assert(r.phase=='releasing' and r.quarantined and r.report_debt)
+                    assert(not P.lease_acknowledge_capture(h));stage=3;return
+                elseif stage==3 then
+                    local r=assert(P.lease_capture_state(h));assert(r.phase=='complete' and r.terminal and not r.report_debt)
+                    assert(r.publications=='2' and r.neutral_releases=='1' and not r.quarantined)
+                    local passive=assert(P.lease_state(h));assert(passive.source_released and not passive.capture_reserved)
+                    assert(P.lease_acknowledge(h))
+                    assert(P.lease_capture_state(h).terminal,'capture evidence outlives passive acknowledgement')
+                    assert(P.lease_acknowledge_capture(h))
+                    assert(P.lease_capture_state(h)==nil)
+                    reskate.log('capture duty resolved and acknowledged');stage=4
+                end
+            end)
+        )")});
+        running_capture(host,"capture-lifecycle",e);e.fake.observe();tick(host,e);running_capture(host,"capture-lifecycle",e);
+        const auto first=e.fake.publish_fixture();
+        check(first.suppress&&first.start&&first.pad==lease::Pad{},"constructed neutral successor did not start portable capture");
+        tick(host,e);running_capture(host,"capture-lifecycle",e);
+        const auto source_epoch=e.fake.source.epoch;++e.fake.source.epoch;
+        const auto foreign=e.fake.publish_fixture({0x1000});
+        check(!foreign.suppress,"portable cleanup rewrote a replacement observed stream");
+        tick(host,e);running_capture(host,"capture-lifecycle",e);
+        e.fake.source.epoch=source_epoch;
+        const auto release=e.fake.publish_fixture();
+        check(release.suppress&&release.release,"portable same-source neutral cleanup was not published");
+        tick(host,e);running_capture(host,"capture-lifecycle",e);
+        check(e.logged("capture duty resolved and acknowledged")&&e.fake.fixture_buffer_writes==2&&!e.fake.pulse_requests,
+            "capture lifecycle lost debt, claimed native consumption or used pulse ownership");
+    }
+    {
+        ++scenarios;CaptureEnvironment e;Host host(e,Side::client);
+        host.apply({captured_script("capture-malformed",R"(
+            local P=reskate.input;local h=assert(P.lease(2));local first=true
+            reskate.on('tick',function()
+                if first then assert(P.lease_capture(h,assert(P.lease_read(h)).epoch));first=false;return end
+                local r,why=P.lease_capture_state(h);assert(r==nil and why:find('invalid observations'))
+                reskate.log('capture malformed refused')
+            end)
+        )")});
+        running_capture(host,"capture-malformed",e);e.fake.observe();tick(host,e);e.fake.publish_fixture();
+        const std::vector<std::function<void(capture::Receipt&)>> malformed{
+            [](auto& r){++r.key.owner;},[](auto& r){++r.key.lease_sequence;},[](auto& r){++r.key.source_epoch;},
+            [](auto& r){++r.key.context_generation;},[](auto& r){r.key.user=1;},[](auto& r){r.key.user=4;},
+            [](auto& r){r.key.source_epoch=0;},[](auto& r){r.key.context_generation=0;},
+            [](auto& r){r.generation=0;},[](auto& r){r.revision=0;},[](auto& r){r.expires_ms=0;},
+            [](auto& r){r.phase=static_cast<capture::Phase>(999);},[](auto& r){r.reason=static_cast<capture::Reason>(999);},
+            [](auto& r){r.phase=capture::Phase::idle;},[](auto& r){r.debt=false;},
+            [](auto& r){r.publications=0;},[](auto& r){r.quarantined=true;},
+            [](auto& r){r.neutral_releases=r.publications+1;},
+            [](auto& r){r.phase=capture::Phase::waiting_neutral;},
+            [](auto& r){r.phase=capture::Phase::waiting_neutral;r.debt=false;},
+            [](auto& r){r.phase=capture::Phase::waiting_neutral;r.debt=false;r.publications=0;r.quarantined=true;},
+            [](auto& r){r.phase=capture::Phase::waiting_neutral;r.debt=false;r.publications=0;r.neutral_releases=1;},
+            [](auto& r){r.phase=capture::Phase::releasing;r.debt=false;},
+            [](auto& r){r.phase=capture::Phase::complete;}
+        };
+        for(const auto& alter:malformed) {
+            ++scenarios;e.logs.clear();e.fake.alter_capture=alter;tick(host,e);running_capture(host,"capture-malformed",e);
+            check(e.logged("capture malformed refused"),"malformed capture receipt became public publication evidence");
+        }
+    }
+    for(unsigned admitted=0;admitted<2;++admitted) {
+        ++scenarios;CaptureEnvironment e;Host host(e,Side::client);
+        const auto code=std::string(R"(
+            local P=reskate.input;local h=assert(P.lease(2));local first=true
+            reskate.on('tick',function()
+                if first then
+                    local epoch=assert(P.lease_read(h)).epoch
+        )")+(admitted?"assert(P.lease_capture(h,epoch))":"")+R"(
+                    first=false;return
+                end
+                local r,why=P.lease_state(h);assert(r==nil and why:find('invalid observations'))
+                reskate.log('passive capture flags refused')
+            end)
+        )";
+        host.apply({captured_script("capture-passive-flags",code)});
+        running_capture(host,"capture-passive-flags",e);e.fake.observe();tick(host,e);
+        const std::vector<std::function<void(lease::Receipt&)>> malformed{
+            [](auto& r){r.capture_reserved=true;r.source_released=true;},
+            [](auto& r){r.status=lease::Status::released;r.source_released=false;r.capture_reserved=false;},
+            [](auto& r){r.status=lease::Status::released;r.source_released=false;r.capture_reserved=true;++r.source_epoch;},
+            [](auto& r){r.status=lease::Status::released;r.source_released=false;r.capture_reserved=true;++r.context_generation;}
+        };
+        for(const auto& alter:malformed) {
+            ++scenarios;e.logs.clear();e.fake.alter_passive=alter;tick(host,e);running_capture(host,"capture-passive-flags",e);
+            check(e.logged("passive capture flags refused"),"unproven capture reservation weakened passive receipt validation");
+        }
+        if(!admitted) {
+            ++scenarios;e.logs.clear();e.fake.alter_passive=[](auto& r){r.capture_reserved=true;};
+            tick(host,e);running_capture(host,"capture-passive-flags",e);
+            check(e.logged("passive capture flags refused"),"a backend flag fabricated local capture admission");
+        }
+    }
+    {
+        ++scenarios;CaptureEnvironment e;Host host(e,Side::client);
+        host.apply({captured_script("capture-unload",R"(
+            local P=reskate.input;local h=assert(P.lease(2));local first=true
+            reskate.on('tick',function()if first then assert(P.lease_capture(h,assert(P.lease_read(h)).epoch));first=false end end)
+        )")});
+        running_capture(host,"capture-unload",e);e.fake.observe();tick(host,e);e.fake.publish_fixture();
+        const auto old_owner=e.fake.owner;const auto old_handle=e.fake.handle;
+        e.fake.cleanup.clear();host.apply({});
+        check(e.fake.orphaned&&e.fake.capture_policy.state().phase==capture::Phase::releasing&&e.fake.capture_policy.state().debt&&
+            e.fake.cleanup.size()>=6&&e.fake.cleanup[0]==std::pair{old_owner,std::string("capture/source")}&&
+            e.fake.cleanup[1].second=="pulse"&&e.fake.cleanup[2].second=="trace"&&
+            e.fake.cleanup[3].second=="recovery"&&e.fake.cleanup[4].second=="action"&&e.fake.cleanup[5].second=="body",
+            "VM close discarded capture publication debt or ran actor/body cleanup first");
+        ++e.fake.source.epoch;e.fake.publish_fixture();
+        check(e.fake.capture_policy.state().quarantined&&e.fake.capture_policy.state().debt,"replacement source retired an orphan's publication debt");
+        host.apply({captured_script("capture-unload",R"(
+            local h,why=reskate.input.lease(2);assert(h==nil and why=='busy')
+        )")});running_capture(host,"capture-unload",e);
+        const auto replacement_owner=e.fake.last_owner;capture::Receipt r;
+        check(replacement_owner!=old_owner&&!e.fake.input_lease_capture_state(replacement_owner,old_handle,r)&&
+            !e.fake.input_lease_capture_release(replacement_owner,old_handle)&&!e.fake.input_lease_capture_acknowledge(replacement_owner,old_handle),
+            "replacement VM inherited an orphan's capture key/duty");
+        check(!e.fake.pulse_requests,"capture cleanup fell back to pulse arbitration");
+    }
+    std::cout<<"input lease capture actual Host: "<<scenarios
+        <<" constructed-source/publication cases, real portable policies, no native controller/consumption/gameplay claim\n";
 }
 
 void input_trace_api_keeps_bounded_observations_opaque_and_vm_owned() {
@@ -6735,6 +7553,8 @@ int main() {
         run(input_pulse_api_keeps_report_receipts_opaque_and_owner_bound);
         run(input_pulse_api_enforces_permission_client_phase_and_shared_budget);
         run(input_pulse_unload_retains_debt_before_other_actor_cleanup);
+        run(input_lease_api_observes_only_qualified_owner_scoped_streams);
+        run(input_lease_capture_api_keeps_publication_duty_owner_scoped);
         run(the_tracked_input_pulse_fixture_loads_and_ticks_inert);
         run(the_tracked_input_pulse_fixture_bounds_and_separates_active_observations);
         run(the_private_input_trace_fixture_loads_inert_when_present);

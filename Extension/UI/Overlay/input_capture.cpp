@@ -4,6 +4,7 @@
 #include "held_input.h"
 #include "scripted_pad.h"
 #include "Extension/Skater/native_input_pulse.h"
+#include "Extension/Skater/input_publication_gate.h"
 #include "Extension/Throwdowns/throwdown_kit.h"
 #include "Engine/Game/Input/playstation_report.h"
 #include "Engine/Game/Input/bmx_input_sample.h"
@@ -98,7 +99,8 @@ struct PrivateBoardInputReport {
 };
 struct PrivateBoardReadinessCount {std::uint64_t count{},deferred{},first_ms{},last_ms{};};
 struct PrivateBoardInputBridge {
-    std::atomic<bool> bound{},requested{};
+    std::atomic<bool> bound{};
+    native_input_pulse::PublicationAtomic<bool> requested{};
     SRWLOCK lock=SRWLOCK_INIT;
     bridge_policy::Pulse pulse;
     std::array<PrivateBoardReadinessCount,static_cast<unsigned>(bridge_policy::ReadinessReason::count)> readiness_counts{};
@@ -524,7 +526,10 @@ void filter_hid(const InputCaptureHooks::HidRead& read, DWORD size) noexcept {
     const dingosdk::overlay::GamepadValues before{parsed->buttons, parsed->left_trigger, parsed->right_trigger,
         parsed->left_x, parsed->left_y, parsed->right_x, parsed->right_y};
     auto pad = before;
-    filter(hid_filter_slot, pad);
+    {
+        OverlayInputAccess access;
+        filter(hid_filter_slot, pad);
+    }
     if (pad.left_trigger == before.left_trigger && pad.right_trigger == before.right_trigger && pad.left_x == before.left_x) return;
     // Where parse_playstation_report found them: sticks (left X first), the shoulder byte (L2 0x04,
     // R2 0x08 digital bits) and the two analog triggers.
@@ -721,7 +726,12 @@ void filter_pad(bool outer, DWORD user, XINPUT_STATE* output) noexcept {
     if (!filter) return;
     auto& g = output->Gamepad;
     dingosdk::overlay::GamepadValues pad{g.wButtons, g.bLeftTrigger, g.bRightTrigger, g.sThumbLX, g.sThumbLY, g.sThumbRX, g.sThumbRY};
-    filter(static_cast<unsigned>(user), pad);
+    {
+        // A native extension can read XInput while filtering. Such reads are
+        // SDK bypasses, not a second outer game poll or recursive filter call.
+        OverlayInputAccess access;
+        filter(static_cast<unsigned>(user), pad);
+    }
     g.wButtons = pad.buttons;
     g.bLeftTrigger = pad.left_trigger;
     g.bRightTrigger = pad.right_trigger;
@@ -742,21 +752,114 @@ bool bmx_private_pad_reserved() noexcept {
         private_bmx_native_input_handoff_requested() || human_native_handoff_requested() ||
         private_board_input_bridge().requested.load(std::memory_order_acquire);
 }
+bool native_pad_authorship() noexcept;
+std::uint64_t native_pad_deadline() noexcept;
 bool input_pulse_available() noexcept {
-    return !overlay_input_access && polled_capture() == input::BmxNativeCapture::none &&
+    const auto& s = state();
+    // Client readiness alone can return on the next tick after the overlay
+    // detached or stopped. Its current lifetime must still admit publication.
+    return s.started.load() && s.input_attached.load() && !s.stop.load() && !s.failed.load() &&
+        s.window.load() && !s.selected_window_destroyed.load() &&
+        !overlay_input_access && polled_capture() == input::BmxNativeCapture::none &&
         !mode_hidden_buttons.load(std::memory_order_relaxed) &&
         !mode_held_buttons.load(std::memory_order_relaxed) &&
         !mode_input_capture_active() && !suppress_challenge_menu() &&
-        !bmx_private_pad_reserved() && !block_polled_input();
+        !bmx_private_pad_reserved() && !block_polled_input() && !overlay::interface_open() &&
+        !gamepad_filter().load(std::memory_order_acquire) && !native_pad_authorship() &&
+        !scripted_pad_active();
+}
+void set_gamepad_filter_locked(const native_input_pulse::PublicationScope& scope,
+    GamepadFilter filter, bool aggregate_changed) noexcept {
+    if (!scope.owns()) return;
+    const auto before = gamepad_filter().exchange(filter, std::memory_order_acq_rel);
+    if (before != filter || aggregate_changed) native_input_pulse::publication_changed(scope);
+}
+
+bool copy_xinput(const XINPUT_STATE* input, XINPUT_STATE& output) noexcept {
+    __try { output = *input; return true; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+// Both wrapper lanes share this derivation. Normal reports stay local until the
+// shared finalizer commits them. The explicit legacy private branch keeps its
+// live-buffer offers. Original calls and extension callbacks never hold the gate.
+DWORD finish_game_pad(native_input_pulse::Poll& poll, bool outer, DWORD user,
+    DWORD original_result, std::uint64_t original_ms, XINPUT_STATE* output) noexcept {
+    XINPUT_STATE raw_state{};
+    const bool original_output_known = original_result == ERROR_SUCCESS && output && copy_xinput(output, raw_state);
+    const auto raw_pad = original_output_known ? raw_state.Gamepad : XINPUT_GAMEPAD{};
+    const auto raw_packet = original_output_known ? raw_state.dwPacketNumber : 0;
+    if (original_output_known) note_xinput(user, raw_state);
+    note_private_bmx_original_xinput(user, original_result, original_output_known ? &raw_state : nullptr);
+    note_human_native_original(outer, user, original_result, original_output_known ? &raw_state : nullptr);
+    if (!outer) return original_result;
+
+    auto capture = input::BmxNativeCapture::all;
+    std::uint16_t hidden{};
+    bool private_reserved = true;
+    bool snapshot_known{};
+    std::uint64_t authored_deadline{};
+    std::uint64_t staged_revision{};
+    {
+        native_input_pulse::PublicationScope snapshot;
+        if (snapshot.owns()) {
+            snapshot_known = true;
+            capture = polled_capture();
+            hidden = static_cast<std::uint16_t>(mode_hidden_buttons.load(std::memory_order_relaxed) |
+                (suppress_challenge_menu() ? XINPUT_GAMEPAD_START : 0));
+            private_reserved = bmx_private_pad_reserved();
+            authored_deadline = native_pad_deadline();
+            staged_revision = native_input_pulse::publication_revision(snapshot);
+        }
+    }
+    if (snapshot_known && private_reserved) {
+        // Existing private diagnostics record their own live-buffer offers.
+        // Keep that ordering and their receipts intact; they never supply
+        // generic source or capture authority, including a neutral release.
+        if (original_output_known) {
+            if (capture != input::BmxNativeCapture::none) {
+                if (capture == input::BmxNativeCapture::interaction) filter_pad(true, user, output);
+                input::bmx_filter_native_pad(output->Gamepad, capture);
+            } else game_pad_read(user, output);
+            if (hidden) output->Gamepad.wButtons &= static_cast<WORD>(~hidden);
+            output->dwPacketNumber ^= input::bmx_native_packet_tag(capture, hidden);
+            apply_private_native_board_input(true, user, raw_pad, output);
+            apply_private_bmx_native_input_handoff(true, user, raw_packet, raw_pad, output);
+            apply_human_native_handoff(true, user, raw_packet, raw_pad, output);
+        }
+        native_input_pulse::finish_private(poll, outer, user, original_result,
+            original_ms, raw_packet, raw_pad, original_result, output, original_output_known);
+        return original_result;
+    }
+    XINPUT_STATE candidate = raw_state;
+    // Scripts compare the input revision under their own token and return only
+    // their own resulting revision. A foreign change cannot bless stale flags.
+    const bool scripted = output && staged_revision && !private_reserved && scripted_pad(user, candidate, staged_revision);
+    const auto returned_result = scripted ? ERROR_SUCCESS : original_result;
+    if (!scripted && original_output_known) {
+        if (capture != input::BmxNativeCapture::none) {
+            if (capture == input::BmxNativeCapture::interaction) filter_pad(true, user, &candidate);
+            input::bmx_filter_native_pad(candidate.Gamepad, capture);
+        } else game_pad_read(user, &candidate);
+        if (hidden) candidate.Gamepad.wButtons &= static_cast<WORD>(~hidden);
+        candidate.dwPacketNumber ^= input::bmx_native_packet_tag(capture, hidden);
+    }
+    native_input_pulse::prepare_finish(poll);
+    native_input_pulse::PublicationScope publication;
+    // A deadline can elapse without another script call to change the revision.
+    // Expired scripted success uses the same bounded stale-stage fallback.
+    if (scripted && !scripted_pad_active()) staged_revision = 0;
+    if (authored_deadline && GetTickCount64() >= authored_deadline) staged_revision = 0;
+    // If a setter changed during staging, the finalizer selects one neutral
+    // report on original success, or preserves the original transport failure.
+    return native_input_pulse::finish_staged(poll, publication, outer, user,
+        original_result, original_ms, raw_packet, raw_pad, returned_result, candidate,
+        staged_revision, output, !scripted && input_pulse_available(), original_output_known);
 }
 
 template<std::size_t I>
 DWORD WINAPI captured_front(DWORD user, XINPUT_STATE* output) {
     const auto entry_error = GetLastError();
-    const auto capture = polled_capture();
-    const auto hidden = overlay_input_access ? std::uint16_t{} : static_cast<std::uint16_t>(
-        mode_hidden_buttons.load(std::memory_order_relaxed) |
-        (suppress_challenge_menu()?XINPUT_GAMEPAD_START:0));
     const bool outer = overlay_input_access == 0;
     native_input_pulse::Poll pulse_poll;
     native_input_pulse::begin(outer, user, pulse_poll);
@@ -769,31 +872,7 @@ DWORD WINAPI captured_front(DWORD user, XINPUT_STATE* output) {
     }
     const auto original_error = GetLastError();
     const auto original_ms = GetTickCount64();
-    const auto raw_pad=result==ERROR_SUCCESS&&output?output->Gamepad:XINPUT_GAMEPAD{};
-    const auto raw_packet=result==ERROR_SUCCESS&&output?output->dwPacketNumber:0;
-    if (result == ERROR_SUCCESS && output) note_xinput(user, *output);
-    note_private_bmx_original_xinput(user,result,output);
-    note_human_native_original(outer,user,result,output);
-    // Character-room scripts cannot replace the physical source of an owned BMX/handoff poll.
-    const bool scripted = outer && output && !bmx_private_pad_reserved() && scripted_pad(user, *output);
-    const auto returned_result = scripted ? ERROR_SUCCESS : result;
-    if (!scripted && result == ERROR_SUCCESS && output) {
-        if (capture != input::BmxNativeCapture::none) {
-            if(capture==input::BmxNativeCapture::interaction)filter_pad(outer,user,output);
-            input::bmx_filter_native_pad(output->Gamepad,capture);
-        } else if (outer) game_pad_read(user,output);
-        if(hidden)output->Gamepad.wButtons &= static_cast<WORD>(~hidden);
-        // The hidden-button tag is independent, so switching BMX ownership
-        // still changes the packet while a plugin keeps buttons hidden.
-        output->dwPacketNumber ^= input::bmx_native_packet_tag(capture,hidden);
-        apply_private_native_board_input(outer,user,raw_pad,output);
-        apply_private_bmx_native_input_handoff(outer,user,raw_packet,raw_pad,output);
-        apply_human_native_handoff(outer,user,raw_packet,raw_pad,output);
-    }
-    // A scripted success is still distinct from the original source result.
-    // Every path joins the same persistent packet/publication finalizer.
-    native_input_pulse::finish(pulse_poll, outer, user, result, original_ms, raw_packet, raw_pad,
-        returned_result, output, !scripted && input_pulse_available());
+    const auto returned_result = finish_game_pad(pulse_poll, outer, user, result, original_ms, output);
     SetLastError(original_error);
     return returned_result;
 }
@@ -1166,13 +1245,21 @@ constexpr std::uint64_t dark_pop_air_lease = 120; // ms; the selector hook runs 
 constexpr WORD dark_pop_xinput_dpad = 0x0004 | 0x0002 | 0x0008; // XINPUT_GAMEPAD_DPAD_LEFT | DOWN | RIGHT
 // Whether the D-pad (Left, Down or Right, `down` = one of them is pressed in this poll) is hidden from this poll.
 bool dark_pop_hiding(bool down) noexcept {
+    native_input_pulse::PublicationScope publication;
+    if (!publication.owns()) return false;
     auto& h = dark_pop_hide();
     if (GetTickCount64() < h.until.load(std::memory_order_relaxed)) {
-        h.latched.store(down, std::memory_order_relaxed); // a press let go in the air leaves nothing to carry past the landing
+        // A press let go in the air leaves nothing to carry past the landing.
+        if (h.latched.exchange(down, std::memory_order_relaxed) != down)
+            native_input_pulse::publication_changed(publication);
         return down;
     }
     if (!h.latched.load(std::memory_order_relaxed)) return false;
-    if (!down) { h.latched.store(false, std::memory_order_relaxed); return false; }
+    if (!down) {
+        h.latched.store(false, std::memory_order_relaxed);
+        native_input_pulse::publication_changed(publication);
+        return false;
+    }
     return true;
 }
 // A PlayStation report's hat nibble: 0 up, 1 up-right, 2 right, 3 down-right, 4 down, 5 down-left, 6 left, 7 up-left,
@@ -1233,6 +1320,28 @@ struct GrindStickLean {
     std::atomic<std::uint64_t> given{0};
 };
 GrindStickLean& grind_stick_lean() { static auto* value = new GrindStickLean; return *value; }
+bool native_pad_authorship() noexcept {
+    const auto now = GetTickCount64();
+    const auto& dark = dark_pop_hide();
+    const auto& turn = grind_stick_turn();
+    const auto& lean = grind_stick_lean();
+    return now < dark.until.load(std::memory_order_relaxed) || dark.latched.load(std::memory_order_relaxed) ||
+        (turn.on.load(std::memory_order_relaxed) && now < turn.until.load(std::memory_order_relaxed)) ||
+        (lean.on.load(std::memory_order_relaxed) && now < lean.until.load(std::memory_order_relaxed));
+}
+std::uint64_t native_pad_deadline() noexcept {
+    const auto now = GetTickCount64();
+    std::uint64_t deadline{};
+    const auto remember = [&](std::uint64_t until) {
+        if (now < until && (!deadline || until < deadline)) deadline = until;
+    };
+    remember(dark_pop_hide().until.load(std::memory_order_relaxed));
+    const auto& turn = grind_stick_turn();
+    const auto& lean = grind_stick_lean();
+    if (turn.on.load(std::memory_order_relaxed)) remember(turn.until.load(std::memory_order_relaxed));
+    if (lean.on.load(std::memory_order_relaxed)) remember(lean.until.load(std::memory_order_relaxed));
+    return deadline;
+}
 void lean_grind_stick(XINPUT_GAMEPAD& pad) noexcept {
     auto& lean = grind_stick_lean();
     if (!lean.on.load(std::memory_order_relaxed) || GetTickCount64() >= lean.until.load(std::memory_order_relaxed)) return;
@@ -1260,14 +1369,10 @@ template<std::size_t I, bool Extended = false>
 DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
     const auto entry_error = GetLastError();
     const auto& hook = Extended ? input_hooks().xinput_extended[I] : input_hooks().xinput_state[I];
-    const auto capture = polled_capture();
     const bool outer = overlay_input_access == 0;
     native_input_pulse::Poll pulse_poll;
     native_input_pulse::begin(outer, user, pulse_poll);
     note_prompt_read(prompt_xinput);
-    const auto hidden = overlay_input_access ? std::uint16_t{} : static_cast<std::uint16_t>(
-        mode_hidden_buttons.load(std::memory_order_relaxed) |
-        (suppress_challenge_menu()?XINPUT_GAMEPAD_START:0));
     DWORD result;
     { // XInput exports can forward through another hooked XInput export.
         OverlayInputAccess access;
@@ -1276,31 +1381,7 @@ DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
     }
     const auto original_error = GetLastError();
     const auto original_ms = GetTickCount64();
-    const auto raw_pad=result==ERROR_SUCCESS&&output?output->Gamepad:XINPUT_GAMEPAD{};
-    const auto raw_packet=result==ERROR_SUCCESS&&output?output->dwPacketNumber:0;
-    if (result == ERROR_SUCCESS && output) note_xinput(user, *output);
-    note_private_bmx_original_xinput(user,result,output);
-    note_human_native_original(outer,user,result,output);
-    // Character-room scripts cannot replace the physical source of an owned BMX/handoff poll.
-    const bool scripted = outer && output && !bmx_private_pad_reserved() && scripted_pad(user, *output);
-    const auto returned_result = scripted ? ERROR_SUCCESS : result;
-    if (!scripted && result == ERROR_SUCCESS && output) {
-        if (capture != input::BmxNativeCapture::none) {
-            if(capture==input::BmxNativeCapture::interaction)filter_pad(outer,user,output);
-            input::bmx_filter_native_pad(output->Gamepad,capture);
-            // The game must notice the owned neutral state even for an unchanged physical packet.
-        } else if (outer) game_pad_read(user,output);
-        if(hidden)output->Gamepad.wButtons &= static_cast<WORD>(~hidden);
-        // The hidden-button tag is independent, so switching BMX ownership
-        // still changes the packet while a plugin keeps buttons hidden.
-        output->dwPacketNumber ^= input::bmx_native_packet_tag(capture,hidden);
-        apply_private_native_board_input(outer,user,raw_pad,output);
-        apply_private_bmx_native_input_handoff(outer,user,raw_packet,raw_pad,output);
-        apply_human_native_handoff(outer,user,raw_packet,raw_pad,output);
-    }
-    // Preserve original failures even when a separate script supplies success.
-    native_input_pulse::finish(pulse_poll, outer, user, result, original_ms, raw_packet, raw_pad,
-        returned_result, output, !scripted && input_pulse_available());
+    const auto returned_result = finish_game_pad(pulse_poll, outer, user, result, original_ms, output);
     SetLastError(original_error);
     return returned_result;
 }
@@ -1704,22 +1785,50 @@ namespace dingosdk::overlay {
 // A plugin's overlay dialog is up: it owns the cursor and the pad. (The old name stays until
 // every caller uses this one.)
 void set_plugin_dialog_active(bool active) noexcept { detail::state().plugin_dialog_visible.store(active); }
-bool interface_open() noexcept { return detail::interactive_visible(detail::state()); }
-void hide_game_buttons(std::uint16_t buttons) noexcept { detail::mode_hidden_buttons.store(buttons, std::memory_order_relaxed); }
+bool interface_open() noexcept {
+    const auto& s = detail::state();
+    // A requested menu and a native hub pointer already own the interaction
+    // boundary, including the interval before the next overlay render shows it.
+    return detail::interactive_visible(s) || s.hub_pointer.load() || menu_open_flag().load();
+}
+void hide_game_buttons(std::uint16_t buttons) noexcept {
+    native_input_pulse::PublicationScope publication;
+    if (!publication.owns()) return;
+    if (detail::mode_hidden_buttons.exchange(buttons, std::memory_order_relaxed) != buttons)
+        native_input_pulse::publication_changed(publication);
+}
 void capture_challenge_menu_input(bool active,bool native_panel,bool opening_key_down) noexcept {
-    detail::challenge_menu_release.store(game::owned_menu_release_latch(
-        detail::challenge_menu_release.load(std::memory_order_relaxed),active,opening_key_down),std::memory_order_relaxed);
-    detail::challenge_menu_capture.store(active,std::memory_order_relaxed);
-    detail::challenge_native_panel.store(native_panel,std::memory_order_relaxed);
+    native_input_pulse::PublicationScope publication;
+    if (!publication.owns()) return;
+    const auto release = game::owned_menu_release_latch(
+        detail::challenge_menu_release.load(std::memory_order_relaxed), active, opening_key_down);
+    bool changed = detail::challenge_menu_release.exchange(release, std::memory_order_relaxed) != release;
+    changed = (detail::challenge_menu_capture.exchange(active, std::memory_order_relaxed) != active) || changed;
+    changed = (detail::challenge_native_panel.exchange(native_panel, std::memory_order_relaxed) != native_panel) || changed;
+    if (changed) native_input_pulse::publication_changed(publication);
 }
 void hide_game_keys(std::span<const std::uint8_t> keys) noexcept {
     std::array<std::uint64_t, 4> bits{};
     for (const auto key : keys) bits[key / 64] |= std::uint64_t{1} << (key % 64);
-    for (std::size_t i = 0; i < bits.size(); ++i) detail::hidden_keys[i].store(bits[i], std::memory_order_relaxed);
+    native_input_pulse::PublicationScope publication;
+    if (!publication.owns()) return;
+    bool changed{};
+    for (std::size_t i = 0; i < bits.size(); ++i)
+        changed = (detail::hidden_keys[i].exchange(bits[i], std::memory_order_relaxed) != bits[i]) || changed;
+    if (changed) native_input_pulse::publication_changed(publication);
 }
-void hold_game_buttons(std::uint16_t held) noexcept { detail::mode_held_buttons.store(held, std::memory_order_relaxed); }
+void hold_game_buttons(std::uint16_t held) noexcept {
+    native_input_pulse::PublicationScope publication;
+    if (!publication.owns()) return;
+    if (detail::mode_held_buttons.exchange(held, std::memory_order_relaxed) != held)
+        native_input_pulse::publication_changed(publication);
+}
 void pause_game_input(bool paused) noexcept {
-    detail::mode_input_paused_until.store(paused ? GetTickCount64() + 500 : 0, std::memory_order_relaxed);
+    native_input_pulse::PublicationScope publication;
+    if (!publication.owns()) return;
+    const auto until = paused ? GetTickCount64() + 500 : 0;
+    if (detail::mode_input_paused_until.exchange(until, std::memory_order_relaxed) != until)
+        native_input_pulse::publication_changed(publication, native_input_pulse::PublicationChange::paused);
 }
 bool key_down(int virtual_key) noexcept { detail::OverlayInputAccess access; return (GetAsyncKeyState(virtual_key) & 0x8000) != 0; }
 int take_mouse_wheel() noexcept { return detail::mode_mouse_wheel.exchange(0, std::memory_order_relaxed); }
@@ -1727,7 +1836,11 @@ int take_mouse_wheel() noexcept { return detail::mode_mouse_wheel.exchange(0, st
 
 // Dark Pop: the local skater is in the air with the D-pad hide on; renewed every physics step (see DarkPopHide).
 extern "C" void DingoSDKOverlayDarkPopAir() noexcept {
-    dingosdk::overlay::detail::dark_pop_hide().until.store(GetTickCount64() + dingosdk::overlay::detail::dark_pop_air_lease, std::memory_order_relaxed);
+    dingosdk::native_input_pulse::PublicationScope publication;
+    if (!publication.owns()) return;
+    const auto until = GetTickCount64() + dingosdk::overlay::detail::dark_pop_air_lease;
+    if (dingosdk::overlay::detail::dark_pop_hide().until.exchange(until, std::memory_order_relaxed) != until)
+        dingosdk::native_input_pulse::publication_changed(publication);
 }
 // Game polls (XInput states, keystrokes, PlayStation reports) whose D-pad Dark Pop hid so far.
 extern "C" std::uint64_t DingoSDKOverlayDarkPopHidden() noexcept {
@@ -1735,12 +1848,16 @@ extern "C" std::uint64_t DingoSDKOverlayDarkPopHidden() noexcept {
 }
 // Skate 3's turn on a grind: the right stick the game's own polls see (see GrindStickTurn). Asked for again every tick.
 extern "C" void DingoSDKOverlaySetGrindStickTurn(bool on, float x, float y_add, float y_scale) noexcept {
+    dingosdk::native_input_pulse::PublicationScope publication;
+    if (!publication.owns()) return;
     auto& turn = dingosdk::overlay::detail::grind_stick_turn();
-    turn.x.store(x, std::memory_order_relaxed);
-    turn.y_add.store(y_add, std::memory_order_relaxed);
-    turn.y_scale.store(y_scale, std::memory_order_relaxed);
-    turn.until.store(GetTickCount64() + dingosdk::overlay::detail::stick_lease, std::memory_order_relaxed);
-    turn.on.store(on, std::memory_order_relaxed);
+    const auto until = GetTickCount64() + dingosdk::overlay::detail::stick_lease;
+    bool changed = turn.x.exchange(x, std::memory_order_relaxed) != x;
+    changed = (turn.y_add.exchange(y_add, std::memory_order_relaxed) != y_add) || changed;
+    changed = (turn.y_scale.exchange(y_scale, std::memory_order_relaxed) != y_scale) || changed;
+    changed = (turn.until.exchange(until, std::memory_order_relaxed) != until) || changed;
+    changed = (turn.on.exchange(on, std::memory_order_relaxed) != on) || changed;
+    if (changed) dingosdk::native_input_pulse::publication_changed(publication);
 }
 // What the game's last poll saw of the right stick (x, y) and the player's own right stick up / down.
 extern "C" void DingoSDKOverlayGrindStickSent(float* values) noexcept {
@@ -1751,11 +1868,17 @@ extern "C" void DingoSDKOverlayGrindStickSent(float* values) noexcept {
 }
 // Leaning into the ramp on a coping grind: the left stick the game's own polls see while the player's is at rest.
 extern "C" void DingoSDKOverlaySetGrindStickLean(bool on, float x, float y) noexcept {
+    dingosdk::native_input_pulse::PublicationScope publication;
+    if (!publication.owns()) return;
     auto& lean = dingosdk::overlay::detail::grind_stick_lean();
-    lean.x.store(x == x ? x : 0.0f, std::memory_order_relaxed);
-    lean.y.store(y == y ? y : 0.0f, std::memory_order_relaxed);
-    lean.until.store(GetTickCount64() + dingosdk::overlay::detail::stick_lease, std::memory_order_relaxed);
-    lean.on.store(on, std::memory_order_relaxed);
+    const auto safe_x = x == x ? x : 0.0f;
+    const auto safe_y = y == y ? y : 0.0f;
+    const auto until = GetTickCount64() + dingosdk::overlay::detail::stick_lease;
+    bool changed = lean.x.exchange(safe_x, std::memory_order_relaxed) != safe_x;
+    changed = (lean.y.exchange(safe_y, std::memory_order_relaxed) != safe_y) || changed;
+    changed = (lean.until.exchange(until, std::memory_order_relaxed) != until) || changed;
+    changed = (lean.on.exchange(on, std::memory_order_relaxed) != on) || changed;
+    if (changed) dingosdk::native_input_pulse::publication_changed(publication);
 }
 // The player's own left stick as the game's last poll had it, while the lean is on (false: it is off, read the controller).
 extern "C" bool DingoSDKOverlayGrindStickLeanRaw(float* values) noexcept {
@@ -1774,32 +1897,43 @@ extern "C" std::uint64_t DingoSDKOverlayGrindStickMirrored() noexcept {
     return dingosdk::overlay::detail::grind_stick_mirrored().load(std::memory_order_relaxed);
 }
 extern "C" void DingoSDKOverlaySetGamepadFilter(dingosdk::overlay::GamepadFilter filter) {
-    dingosdk::overlay::detail::gamepad_filter().store(filter, std::memory_order_release);
+    dingosdk::native_input_pulse::PublicationScope publication;
+    if (!publication.owns()) return;
+    dingosdk::overlay::detail::set_gamepad_filter_locked(publication, filter);
 }
 
 extern "C" void DingoSDKOverlaySetBmxInputCapture(bool active) {
     using namespace dingosdk::overlay::detail;
+    dingosdk::native_input_pulse::PublicationScope publication;
+    if (!publication.owns()) return;
     const auto& s = state();
     const bool alive = s.started.load(std::memory_order_relaxed) && !s.stop.load(std::memory_order_relaxed) &&
         !s.failed.load(std::memory_order_relaxed);
-    bmx_capture_until.store(active && alive ? GetTickCount64() + dingosdk::input::bmx_capture_lease_ms : 0,
-        std::memory_order_release);
+    const auto until = active && alive ? GetTickCount64() + dingosdk::input::bmx_capture_lease_ms : 0;
+    if (bmx_capture_until.exchange(until, std::memory_order_acq_rel) != until)
+        dingosdk::native_input_pulse::publication_changed(publication);
 }
 
 extern "C" void DingoSDKOverlaySetBmxInteractionCapture(bool active) {
     using namespace dingosdk::overlay::detail;
+    dingosdk::native_input_pulse::PublicationScope publication;
+    if (!publication.owns()) return;
     const auto& s=state();
     const bool alive=s.started.load(std::memory_order_relaxed)&&!s.stop.load(std::memory_order_relaxed)&&
         !s.failed.load(std::memory_order_relaxed);
-    bmx_interaction_until.store(active&&alive?GetTickCount64()+dingosdk::input::bmx_capture_lease_ms:0,
-        std::memory_order_release);
+    const auto until = active && alive ? GetTickCount64() + dingosdk::input::bmx_capture_lease_ms : 0;
+    if (bmx_interaction_until.exchange(until, std::memory_order_acq_rel) != until)
+        dingosdk::native_input_pulse::publication_changed(publication);
 }
 
 extern "C" void DingoSDKOverlaySetBmxQuickSwitchCapture(bool active) {
     using namespace dingosdk::overlay::detail;
+    dingosdk::native_input_pulse::PublicationScope publication;
+    if (!publication.owns()) return;
     const auto& s=state();
     const bool alive=s.started.load(std::memory_order_relaxed)&&!s.stop.load(std::memory_order_relaxed)&&
         !s.failed.load(std::memory_order_relaxed);
-    bmx_quick_switch_until.store(active&&alive?GetTickCount64()+dingosdk::input::bmx_capture_lease_ms:0,
-        std::memory_order_release);
+    const auto until = active && alive ? GetTickCount64() + dingosdk::input::bmx_capture_lease_ms : 0;
+    if (bmx_quick_switch_until.exchange(until, std::memory_order_acq_rel) != until)
+        dingosdk::native_input_pulse::publication_changed(publication);
 }

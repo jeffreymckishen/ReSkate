@@ -204,7 +204,7 @@ struct State {
     std::map<Handle,JoinCard> join_cards;
     std::string join_report; // join_card_report's last line
     MatchPanel match_panel;
-    std::atomic<bool> match_panel_open{};
+    native_input_pulse::PublicationAtomic<bool> match_panel_open{};
     std::mutex panel_input_mutex;
     MatchPanelStartInput panel_start_input;
     std::string panel_start_request;
@@ -212,7 +212,7 @@ struct State {
     std::string panel_plugin, panel_mode;
     std::uint16_t panel_buttons{};
     bool in_menu{};
-    std::atomic<bool> gameplay_input_allowed{};
+    native_input_pulse::PublicationAtomic<bool> gameplay_input_allowed{};
     bool panel_key_down{};
 
     // Borrowed native marker fields, restored when this match releases them.

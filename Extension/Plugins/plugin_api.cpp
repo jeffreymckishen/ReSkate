@@ -753,6 +753,7 @@ void Api::install(Plugin& plugin, lua_State* L) {
     install_native_actions_api(plugin, L);
     install_input_trace_api(plugin, L);
     install_input_pulse_api(plugin, L);
+    install_input_lease_api(plugin, L);
     install_services_api(plugin, L);
     install_kit_api(plugin, L);
     install_capture_api(plugin, L);

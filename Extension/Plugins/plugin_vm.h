@@ -281,6 +281,7 @@ private:
     friend struct NativeActionsApi;
     friend struct InputTraceApi;
     friend struct InputPulseApi;
+    friend struct InputLeaseApi;
     std::uint64_t instance_{};
     struct Subcommand { std::string name, args, help; };
     struct Command { std::string help; int function{}; std::vector<Subcommand> subcommands; };

@@ -3,7 +3,7 @@ namespace handoff=bmx::native_input_handoff;
 struct BmxOriginalSlot {std::uint64_t wall{};bool success{};bridge_policy::Pad raw{};DWORD packet{};};
 struct BmxHandoffInputReport {PrivateBoardInputReport result;bridge_policy::Pad original_raw;DWORD original_packet{};};
 struct PrivateBmxInputHandoff {
-    std::atomic<bool> bound{},requested{};SRWLOCK lock=SRWLOCK_INIT;
+    std::atomic<bool> bound{}; native_input_pulse::PublicationAtomic<bool> requested{};SRWLOCK lock=SRWLOCK_INIT;
     handoff::Session session;bridge_policy::Pulse pulse;bridge_policy::PacketContinuity packets;
     std::array<BmxOriginalSlot,4> original{};
     std::array<BmxHandoffInputReport,129> reports{};unsigned count{};

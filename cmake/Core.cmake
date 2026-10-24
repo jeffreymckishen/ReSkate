@@ -148,6 +148,7 @@ add_library(dingosdk_plugins STATIC
     Extension/Plugins/plugin_api_actions.cpp
     Extension/Plugins/plugin_api_input_trace.cpp
     Extension/Plugins/plugin_api_input_pulse.cpp
+    Extension/Plugins/plugin_api_input_lease.cpp
     Extension/Plugins/plugin_api_services.cpp
     Extension/Plugins/plugin_api_throwdowns.cpp
     Extension/Plugins/plugin_api_capture.cpp

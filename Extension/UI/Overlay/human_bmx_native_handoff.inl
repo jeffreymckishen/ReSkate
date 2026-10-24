@@ -2,7 +2,7 @@
 // actual-slot witnesses and per-slot persistent packet domains.
 namespace human=bmx::human_native_handoff;
 struct HumanNativeHandoff {
-    std::atomic<bool> bound{},requested{};SRWLOCK lock=SRWLOCK_INIT;
+    std::atomic<bool> bound{}; native_input_pulse::PublicationAtomic<bool> requested{};SRWLOCK lock=SRWLOCK_INIT;
     human::Intent intent;human::AdmissionWait admission_wait;human::Return reverse;bool reverse_ledger{};
     struct AdmissionAttempt {
         bool present{},inspection_attempted{},inspection_available{},owner_matches{},policy_called{},accepted{};

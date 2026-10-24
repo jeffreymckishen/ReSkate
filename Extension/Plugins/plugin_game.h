@@ -6,6 +6,8 @@
 #include "Engine/Game/Skater/native_recovery.h"
 #include "Engine/Game/Input/native_input_trace.h"
 #include "Engine/Game/Input/game_input_pulse.h"
+#include "Engine/Game/Input/input_lease.h"
+#include "Engine/Game/Input/input_lease_capture_policy.h"
 #include "Extension/AnimationStudio/anim_core.h"
 #include "Extension/Throwdowns/throwdown_kit.h"
 #include <array>
@@ -309,6 +311,36 @@ public:
     virtual bool input_pulse_cancel(std::uint64_t, game_input_pulse::Handle) { return false; }
     virtual bool input_pulse_acknowledge(std::uint64_t, game_input_pulse::Handle) { return false; }
     virtual void input_pulse_release_all(std::uint64_t) {}
+    // A continuous, selected observed XInput stream. This reserves an SDK input
+    // reader only: it does not capture reports or grant actor or rider ownership.
+    virtual bool input_lease_request(std::uint64_t, std::uint32_t, input_lease::Handle&, input_lease::Reason& reason) {
+        reason = input_lease::Reason::unavailable; return false;
+    }
+    virtual bool input_lease_read(std::uint64_t, input_lease::Handle, input_lease::Snapshot&, input_lease::Reason& reason) {
+        reason = input_lease::Reason::unavailable; return false;
+    }
+    virtual bool input_lease_renew(std::uint64_t, input_lease::Handle, const input_lease::Snapshot&, input_lease::Reason& reason) {
+        reason = input_lease::Reason::unavailable; return false;
+    }
+    virtual bool input_lease_release(std::uint64_t, input_lease::Handle, input_lease::Reason& reason) {
+        reason = input_lease::Reason::unavailable; return false;
+    }
+    virtual bool input_lease_state(std::uint64_t, input_lease::Handle, input_lease::Receipt&, input_lease::Reason& reason) {
+        reason = input_lease::Reason::unavailable; return false;
+    }
+    virtual bool input_lease_acknowledge(std::uint64_t, input_lease::Handle, input_lease::Reason& reason) {
+        reason = input_lease::Reason::unavailable; return false;
+    }
+    virtual void input_lease_release_all(std::uint64_t) {}
+    // Optional selected-stream report capture, admitted from an exact issued
+    // observation. General native route coverage decides availability.
+    virtual bool input_lease_capture_request(std::uint64_t, input_lease::Handle, const input_lease::Snapshot&,
+        input_lease_capture::Reason& reason) {
+        reason = input_lease_capture::Reason::unavailable; return false;
+    }
+    virtual bool input_lease_capture_state(std::uint64_t, input_lease::Handle, input_lease_capture::Receipt&) { return false; }
+    virtual bool input_lease_capture_release(std::uint64_t, input_lease::Handle) { return false; }
+    virtual bool input_lease_capture_acknowledge(std::uint64_t, input_lease::Handle) { return false; }
     // ---- the local skater ----------------------------------------------------------------------
     // Its physics state (100s riding, 200s in the air, 300 a wipeout, 400s grinding, 504 off the
     // board), or empty without a skater; and how many wipeouts it has had this session.

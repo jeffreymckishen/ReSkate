@@ -779,7 +779,12 @@ void render(IDXGISwapChain* presented, UINT flags) {
     // A plugin's screen look is drawn under every frame it asks for (reskate.screen.look).
     const bool look_frame = screen_look::pending();
     if (trainer_open_requested()) s.visible.store(true);
-    if (dingosdk::overlay::menu_open_flag().exchange(false)) s.visible.store(true); // `menu`, or its controller bind
+    {
+        // The pending request remains input ownership until visibility replaces it.
+        native_input_pulse::PublicationScope publication;
+        if (dingosdk::overlay::menu_open_flag().set(publication, false))
+            s.visible.set(publication, true);
+    }
     const bool menu_frame = interactive_visible(s);
     if (!menu_frame) {
         if (s.ui_was_interactive) {

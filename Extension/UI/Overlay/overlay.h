@@ -1,4 +1,5 @@
 #pragma once
+#include "Extension/Skater/input_publication_atomic.h"
 #include "Engine/Game/World/park_rotation.h"
 #include "Engine/Game/World/park_editor.h"
 #include "Engine/Game/World/world_layers.h"
@@ -688,8 +689,8 @@ inline std::atomic<bool>& menu_fullscreen_shown() {
     return value;
 }
 // `menu` (and the controller bind for it) asks for the ReSkate menu to open; the overlay takes it.
-inline std::atomic<bool>& menu_open_flag() {
-    static std::atomic<bool> value{false};
+inline native_input_pulse::PublicationAtomic<bool>& menu_open_flag() {
+    static native_input_pulse::PublicationAtomic<bool> value{false};
     return value;
 }
 // BMX reads one normalized source sample, including source-set identity and gates. The

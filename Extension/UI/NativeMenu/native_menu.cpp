@@ -1,4 +1,5 @@
 #include "native_menu.h"
+#include "Extension/Skater/input_publication_atomic.h"
 #include "native_menu_internal.h"
 #include "native_menu_dump.h"
 #include "throwdown_menu.h"
@@ -192,7 +193,7 @@ namespace {
 // seen selected with the pause menu up (GetTickCount64; 0: not now), and which.
 std::atomic<std::uint64_t> page_seen{};
 std::atomic<int> page_shown{}; // 0: Multiplayer, 1: Mod Options
-std::atomic<bool> game_in_menu{};
+native_input_pulse::PublicationAtomic<bool> game_in_menu{};
 // Returns the key of the tab the pause menu has selected (0: none of ours can be told).
 std::uint32_t restore_last_tab(const Context& context, Value menu) {
     static std::uint32_t remembered{};

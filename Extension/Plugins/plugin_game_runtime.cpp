@@ -221,6 +221,42 @@ public:
     bool input_pulse_cancel(std::uint64_t owner, game_input_pulse::Handle handle) override { return native_input_pulse::cancel(owner, handle); }
     bool input_pulse_acknowledge(std::uint64_t owner, game_input_pulse::Handle handle) override { return native_input_pulse::acknowledge(owner, handle); }
     void input_pulse_release_all(std::uint64_t owner) override { native_input_pulse::release_all(owner); }
+    bool input_lease_request(std::uint64_t owner, std::uint32_t user,
+        input_lease::Handle& handle, input_lease::Reason& reason) override {
+        return native_input_pulse::lease_request(owner, user, handle, reason);
+    }
+    bool input_lease_read(std::uint64_t owner, input_lease::Handle handle,
+        input_lease::Snapshot& snapshot, input_lease::Reason& reason) override {
+        return native_input_pulse::lease_read(owner, handle, snapshot, reason);
+    }
+    bool input_lease_renew(std::uint64_t owner, input_lease::Handle handle,
+        const input_lease::Snapshot& snapshot, input_lease::Reason& reason) override {
+        return native_input_pulse::lease_renew(owner, handle, snapshot, reason);
+    }
+    bool input_lease_release(std::uint64_t owner, input_lease::Handle handle,
+        input_lease::Reason& reason) override {
+        return native_input_pulse::lease_release(owner, handle, reason);
+    }
+    bool input_lease_state(std::uint64_t owner, input_lease::Handle handle,
+        input_lease::Receipt& receipt, input_lease::Reason& reason) override {
+        return native_input_pulse::lease_state(owner, handle, receipt, reason);
+    }
+    bool input_lease_acknowledge(std::uint64_t owner, input_lease::Handle handle,
+        input_lease::Reason& reason) override {
+        return native_input_pulse::lease_acknowledge(owner, handle, reason);
+    }
+    void input_lease_release_all(std::uint64_t owner) override { native_input_pulse::lease_release_all(owner); }
+    bool input_lease_capture_request(std::uint64_t owner, input_lease::Handle handle, const input_lease::Snapshot& snapshot,
+        input_lease_capture::Reason& reason) override { return native_input_pulse::capture_request(owner, handle, snapshot, reason); }
+    bool input_lease_capture_state(std::uint64_t owner, input_lease::Handle handle,
+        input_lease_capture::Receipt& receipt) override { return native_input_pulse::capture_state(owner, handle, receipt); }
+    bool input_lease_capture_release(std::uint64_t owner, input_lease::Handle handle) override {
+        return native_input_pulse::capture_release(owner, handle);
+    }
+    bool input_lease_capture_acknowledge(std::uint64_t owner, input_lease::Handle handle) override {
+        return native_input_pulse::capture_acknowledge(owner, handle);
+    }
+
 
     // ---- the local skater ----------------------------------------------------------------------
     std::optional<std::uint32_t> physics_state() override {

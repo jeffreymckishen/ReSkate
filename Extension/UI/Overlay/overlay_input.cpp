@@ -8,6 +8,7 @@
 #include "Engine/Game/Input/bmx_input_sample.h"
 #include "Extension/Throwdowns/throwdown_kit.h"
 #include "Engine/Game/Input/owned_menu_input.h"
+#include "Extension/Skater/input_publication_gate.h"
 
 using namespace dingosdk::overlay::detail;
 namespace dingosdk::overlay::detail {
@@ -530,14 +531,26 @@ BmxInputSample read_bmx_input(bool keyboard_fallback) noexcept {
 } // namespace dingosdk::overlay
 
 extern "C" void DingoSDKOverlaySetFreecamInputCapture(bool active) {
-    const bool previous = state().freecam_controller_active.exchange(active, std::memory_order_relaxed);
+    bool previous{};
+    {
+        dingosdk::native_input_pulse::PublicationScope publication;
+        if (!publication.owns()) return;
+        previous = state().freecam_controller_active.exchange(active, std::memory_order_relaxed);
+        if (previous != active) dingosdk::native_input_pulse::publication_changed(publication);
+    }
     if (previous != active)
         dingosdk::logging::printf(dingosdk::logging::Level::info, dingosdk::logging::Channel::input,
             "Freecam controller input capture %s.", active ? "enabled" : "disabled");
 }
 
 extern "C" void DingoSDKOverlaySetPromptInputCapture(bool active) {
-    const bool before = state().prompt_input_active.exchange(active, std::memory_order_relaxed);
+    bool before{};
+    {
+        dingosdk::native_input_pulse::PublicationScope publication;
+        if (!publication.owns()) return;
+        before = state().prompt_input_active.exchange(active, std::memory_order_relaxed);
+        if (before != active) dingosdk::native_input_pulse::publication_changed(publication);
+    }
     if (before == active) return;
     // For the log: which of the ways input can be kept from the game the game actually read
     // its controller by while it was held. All zero means it reads some other way, and the

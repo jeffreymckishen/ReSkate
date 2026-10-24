@@ -1,6 +1,8 @@
 #include "pad_hide.h"
 #include "launches.h"
 #include "Extension/UI/Overlay/overlay.h"
+#include "Extension/UI/Overlay/input_capture.h"
+#include "input_publication_gate.h"
 #include <atomic>
 #include <map>
 #include <mutex>
@@ -27,7 +29,7 @@ void filter_pad(unsigned, overlay::GamepadValues& pad) noexcept {
     if (c.l3.load(std::memory_order_acquire)) pad.buttons &= static_cast<std::uint16_t>(~0x0040u); // XINPUT_GAMEPAD_LEFT_THUMB
     if (c.r3.load(std::memory_order_acquire)) pad.buttons &= static_cast<std::uint16_t>(~0x0080u); // XINPUT_GAMEPAD_RIGHT_THUMB
 }
-void publish(Control& c) {
+void publish(Control& c, const native_input_pulse::PublicationScope& publication) {
     Hidden all;
     for (const auto& [owner, h] : c.hidden) {
         all.left_trigger = all.left_trigger || h.left_trigger;
@@ -37,13 +39,20 @@ void publish(Control& c) {
         all.left_stick_click = all.left_stick_click || h.left_stick_click;
         all.right_stick_click = all.right_stick_click || h.right_stick_click;
     }
+    const bool aggregate_changed = c.lt.load(std::memory_order_relaxed) != all.left_trigger ||
+        c.rt.load(std::memory_order_relaxed) != all.right_trigger ||
+        c.left_x.load(std::memory_order_relaxed) != all.left_x_grinding ||
+        c.right_stick.load(std::memory_order_relaxed) != all.right_stick ||
+        c.l3.load(std::memory_order_relaxed) != all.left_stick_click ||
+        c.r3.load(std::memory_order_relaxed) != all.right_stick_click;
     c.lt.store(all.left_trigger, std::memory_order_release);
     c.rt.store(all.right_trigger, std::memory_order_release);
     c.left_x.store(all.left_x_grinding, std::memory_order_release);
     c.right_stick.store(all.right_stick, std::memory_order_release);
     c.l3.store(all.left_stick_click, std::memory_order_release);
     c.r3.store(all.right_stick_click, std::memory_order_release);
-    DingoSDKOverlaySetGamepadFilter(c.hidden.empty() ? nullptr : &filter_pad);
+    overlay::detail::set_gamepad_filter_locked(publication,
+        c.hidden.empty() ? nullptr : &filter_pad, aggregate_changed);
 }
 } // namespace
 
@@ -51,18 +60,22 @@ bool available() noexcept { return launches::available(); }
 void hide(std::string_view owner, Hidden hidden) {
     if (!available()) return;
     if (hidden.left_x_grinding) (void)launches::grinding(); // the physics steps followed from now on
+    native_input_pulse::PublicationScope publication;
+    if (!publication.owns()) return;
     auto& c = control();
     std::lock_guard lock(c.mutex);
     if (hidden.any()) c.hidden.insert_or_assign(std::string(owner), hidden);
     else if (const auto found = c.hidden.find(owner); found != c.hidden.end()) c.hidden.erase(found);
-    publish(c);
+    publish(c, publication);
 }
 void release(std::string_view owner) {
+    native_input_pulse::PublicationScope publication;
+    if (!publication.owns()) return;
     auto& c = control();
     std::lock_guard lock(c.mutex);
     if (const auto found = c.hidden.find(owner); found != c.hidden.end()) {
         c.hidden.erase(found);
-        publish(c);
+        publish(c, publication);
     }
 }
 }

@@ -6,6 +6,37 @@
 #include <Windows.h>
 
 namespace dingosdk::body_follow_service {
+const char* stop_origin_name(StopOrigin origin) noexcept {
+    switch (origin) {
+    case StopOrigin::reserve_binding: return "reserve_binding";
+    case StopOrigin::reserve_hold: return "reserve_hold";
+    case StopOrigin::reserve_clock: return "reserve_clock";
+    case StopOrigin::publish_binding: return "publish_binding";
+    case StopOrigin::publish_closing: return "publish_closing";
+    case StopOrigin::explicit_stop: return "explicit_stop";
+    case StopOrigin::owner_release: return "owner_release";
+    case StopOrigin::release_query: return "release_query";
+    case StopOrigin::runtime_not_ready: return "runtime_not_ready";
+    case StopOrigin::tick_expired: return "tick_expired";
+    case StopOrigin::dispatch_unreturned: return "dispatch_unreturned";
+    case StopOrigin::dispatch_expired: return "dispatch_expired";
+    case StopOrigin::dispatch_prepare: return "dispatch_prepare";
+    case StopOrigin::dispatch_current: return "dispatch_current";
+    case StopOrigin::dispatch_forwarding_expired: return "dispatch_forwarding_expired";
+    }
+    return "unknown";
+}
+const char* cleanup_origin_name(CleanupOrigin origin) noexcept {
+    switch (origin) {
+    case CleanupOrigin::capture_fence: return "capture_fence";
+    case CleanupOrigin::observe_park: return "observe_park";
+    case CleanupOrigin::complete_stop: return "complete_stop";
+    case CleanupOrigin::release_query: return "release_query";
+    case CleanupOrigin::release_hold: return "release_hold";
+    case CleanupOrigin::body_release: return "body_release";
+    }
+    return "unknown";
+}
 namespace {
 constexpr std::uint64_t lease_ms = 3000;
 constexpr unsigned stopped_bit = 1, invoking_bit = 2;
@@ -40,6 +71,9 @@ struct Service {
     actor_control_native::Reason reason{actor_control_native::Reason::unavailable};
     actor_control_native::Reason park_reason{actor_control_native::Reason::unavailable};
     bool occupied{}, orphaned{}, body_release_requested{}, body_release_started{}, stop_cause_recorded{};
+    StopDiagnostic first_stop;
+    CleanupDiagnostic first_cleanup;
+    bool stop_drained{}, cleanup_drained{};
 };
 // Initialized with the runtime, before any existing native hook is enabled.
 // The native dispatch path must not allocate on its first invocation.
@@ -53,9 +87,22 @@ bool matches(const Service& s, std::uint64_t owner, Handle handle) noexcept {
     return s.occupied && owner && owner == s.binding.owner && handle.sequence &&
         handle.sequence == s.binding.sequence;
 }
-void stop_locked(Service& s, actor_control_native::Reason reason) noexcept {
+DiagnosticState diagnostic_state(const Service& s) noexcept {
+    return {s.binding.sequence, s.final.revision, s.returned_revision.load(std::memory_order_acquire),
+        s.binding.published, s.binding.stopped, s.release_hold.available(), s.body_release_requested,
+        s.body_release_started, s.park_fence.available(), s.park_receipt.available()};
+}
+void cleanup_observation(Service& s, CleanupOrigin origin, const body_follow_native::Diagnostic& provider) noexcept {
+    if (s.first_cleanup.available) return;
+    s.first_cleanup = {diagnostic_state(s), origin, s.park_reason, provider, true};
+}
+void stop_locked(Service& s, actor_control_native::Reason reason, StopOrigin origin,
+    const body_follow_native::Diagnostic& provider = {}) noexcept {
     s.edge.fetch_or(stopped_bit, std::memory_order_acq_rel);
-    if (!s.stop_cause_recorded) { s.reason = reason; s.stop_cause_recorded = true; }
+    if (!s.stop_cause_recorded) {
+        s.reason = reason; s.stop_cause_recorded = true;
+        s.first_stop = {diagnostic_state(s), origin, reason, provider, true};
+    }
     if (s.binding.published || s.orphaned) s.body_release_requested = true;
     if (s.release_hold.available() && s.body_release_requested)
         (void)owned_bodies::request_held_release(s.binding.owner, s.release_hold);
@@ -99,6 +146,7 @@ void acknowledge_locked(Service& s) noexcept {
     s.started = s.deadline = 0;
     s.reason = s.park_reason = actor_control_native::Reason::unavailable;
     s.orphaned = s.body_release_requested = s.body_release_started = s.stop_cause_recorded = false;
+    s.first_stop = {}; s.first_cleanup = {}; s.stop_drained = s.cleanup_drained = false;
     // edge remains stopped_bit. next_sequence and the actual Arbiter are never
     // reset, so stale handles cannot become valid after receipt or owner reuse.
     s.occupied = false;
@@ -126,6 +174,19 @@ bool valid_attachment(const body_follow_native::Attachment& value) noexcept {
 }
 }
 
+void take_diagnostics(StopDiagnostic& stop, CleanupDiagnostic& cleanup) noexcept {
+    LastError error; stop = {}; cleanup = {};
+    auto& s = service();
+    if (!TryAcquireSRWLockExclusive(&s.lock)) return;
+    Unlock unlock{s.lock};
+    if (s.first_stop.available && !s.stop_drained) {
+        stop = s.first_stop; s.stop_drained = true;
+    }
+    if (s.first_cleanup.available && !s.cleanup_drained) {
+        cleanup = s.first_cleanup; s.cleanup_drained = true;
+    }
+}
+
 bool reserve(std::uint64_t owner, const owned_body::Handle& body,
     const owned_bodies::MeasuredSource& expected, const body_follow_native::Attachment& attachment,
     actor_control_native::Admission admission, Handle& out, actor_control_native::Reason& reason) noexcept {
@@ -145,7 +206,7 @@ bool reserve(std::uint64_t owner, const owned_body::Handle& body,
         if (!s.binding.reserved) { s.occupied = false; s.binding = {}; return false; }
         s.owner.store(owner, std::memory_order_release);
         s.sequence.store(sequence, std::memory_order_release);
-        out.sequence = sequence; stop_locked(s, reason); return false;
+        out.sequence = sequence; stop_locked(s, reason, StopOrigin::reserve_binding); return false;
     }
     out.sequence = sequence;
     s.edge.store(0, std::memory_order_release);
@@ -153,12 +214,12 @@ bool reserve(std::uint64_t owner, const owned_body::Handle& body,
     s.sequence.store(sequence, std::memory_order_release);
     if (!quiet() || !owned_bodies::acquire_release_hold(owner, actual, s.release_hold)) {
         reason = actor_control_native::Reason::motion_owned;
-        stop_locked(s, reason); return false;
+        stop_locked(s, reason, StopOrigin::reserve_hold); return false;
     }
     s.started = GetTickCount64();
     if (s.started > std::numeric_limits<std::uint64_t>::max() - lease_ms) {
         reason = actor_control_native::Reason::expired;
-        stop_locked(s, reason); return false;
+        stop_locked(s, reason, StopOrigin::reserve_clock); return false;
     }
     s.deadline = s.started + lease_ms;
     s.reason = reason = actor_control_native::Reason::none;
@@ -175,13 +236,13 @@ bool publish(std::uint64_t owner, Handle handle, actor_control_native::Reason& r
     bool release_requested{};
     if (!owned_bodies::release_requested(owner, s.release_hold, release_requested) || release_requested ||
         !body_follow_native::publish_binding(s.binding, reason)) {
-        stop_locked(s, reason); return false;
+        stop_locked(s, reason, StopOrigin::publish_binding); return false;
     }
     const auto published_ms = GetTickCount64();
     if (s.edge.load(std::memory_order_acquire) || published_ms < s.started || published_ms >= s.deadline) {
         reason = s.edge.load(std::memory_order_acquire) ? actor_control_native::Reason::cancelled :
             actor_control_native::Reason::expired;
-        stop_locked(s, reason); return false;
+        stop_locked(s, reason, StopOrigin::publish_closing); return false;
     }
     s.reason = reason = actor_control_native::Reason::none;
     return true;
@@ -220,7 +281,7 @@ bool stop(std::uint64_t owner, Handle handle) noexcept {
     AcquireSRWLockExclusive(&s.lock);
     Unlock unlock{s.lock};
     if (!matches(s, owner, handle)) return false;
-    stop_locked(s, actor_control_native::Reason::cancelled);
+    stop_locked(s, actor_control_native::Reason::cancelled, StopOrigin::explicit_stop);
     return true;
 }
 bool acknowledge_abandoned(std::uint64_t owner, Handle handle) noexcept {
@@ -253,7 +314,7 @@ void release_all(std::uint64_t owner) noexcept {
     // Owner-wide VM cleanup applies to the current receipt for this owner;
     // unlike stop, it intentionally does not select one historical sequence.
     s.orphaned = true;
-    stop_locked(s, actor_control_native::Reason::owner_released);
+    stop_locked(s, actor_control_native::Reason::owner_released, StopOrigin::owner_release);
 }
 
 void tick(bool ready) noexcept {
@@ -273,10 +334,11 @@ void tick(bool ready) noexcept {
         release_known = owned_bodies::release_requested(s.binding.owner, s.release_hold, release_requested);
         if (release_known && release_requested) s.body_release_requested = true;
         if (!release_known || release_requested)
-            stop_locked(s, actor_control_native::Reason::owner_released);
+            stop_locked(s, actor_control_native::Reason::owner_released, StopOrigin::release_query);
     }
     if (!ready || GetTickCount64() < s.started || GetTickCount64() >= s.deadline)
-        stop_locked(s, ready ? actor_control_native::Reason::expired : actor_control_native::Reason::unavailable);
+        stop_locked(s, ready ? actor_control_native::Reason::expired : actor_control_native::Reason::unavailable,
+            ready ? StopOrigin::tick_expired : StopOrigin::runtime_not_ready);
     if (!s.binding.stopped) return;
     // Retry bounded revoke/abandon. Never drop a partially acquired claim.
     (void)body_follow_native::stop(s.binding);
@@ -299,24 +361,36 @@ void tick(bool ready) noexcept {
     }
     // An unknown exact hold/request query must not be hidden by later park.
     // Retain the token until a subsequent real query resolves that state.
-    if (!release_known) return;
+    if (!release_known) {
+        cleanup_observation(s, CleanupOrigin::release_query, {}); return;
+    }
+    body_follow_native::Diagnostic diagnostic;
     if (!s.park_fence.available() &&
-        !body_follow_native::capture_park_fence(s.binding, s.park_fence, s.park_reason)) return;
+        !body_follow_native::capture_park_fence(s.binding, s.park_fence, s.park_reason, diagnostic)) {
+        cleanup_observation(s, CleanupOrigin::capture_fence, diagnostic); return;
+    }
     if (!s.body_release_started) {
         if (s.release_hold.available() &&
-            !owned_bodies::release_body_hold(s.binding.owner, s.release_hold)) return;
+            !owned_bodies::release_body_hold(s.binding.owner, s.release_hold)) {
+            cleanup_observation(s, CleanupOrigin::release_hold, {}); return;
+        }
         const auto issue = owned_bodies::release(s.binding.owner, s.body);
-        if (!issue.empty()) return;
+        if (!issue.empty()) {
+            cleanup_observation(s, CleanupOrigin::body_release, {}); return;
+        }
         s.body_release_started = true;
     }
-    if (!body_follow_native::observe_park(s.binding, s.park_fence, s.park_receipt, s.park_reason)) return;
+    if (!body_follow_native::observe_park(s.binding, s.park_fence, s.park_receipt, s.park_reason, diagnostic)) {
+        cleanup_observation(s, CleanupOrigin::observe_park, diagnostic); return;
+    }
     // Only a normal completed original, actual stop/drain and matching park
     // can close this SDK claim. Unknown native pose history remains unknown.
     if (s.edge.load(std::memory_order_acquire) != stopped_bit || s.release_hold.available() ||
         !s.body_release_requested || !s.body_release_started ||
         s.final.revision != s.returned_revision.load(std::memory_order_acquire)) return;
-    if (body_follow_native::complete_stop(s.binding, s.park_fence, s.park_receipt))
+    if (body_follow_native::complete_stop(s.binding, s.park_fence, s.park_receipt, diagnostic))
         acknowledge_orphan_locked(s);
+    else cleanup_observation(s, CleanupOrigin::complete_stop, diagnostic);
 }
 
 bool dispatch(Original original, std::uintptr_t rig, std::uintptr_t context,
@@ -336,18 +410,21 @@ bool dispatch(Original original, std::uintptr_t rig, std::uintptr_t context,
         // A committed original without a normal return stays unresolved. A
         // later successful invocation must not overwrite that failure history.
         if (s.final.revision != s.returned_revision.load(std::memory_order_acquire)) {
-            stop_locked(s, actor_control_native::Reason::unavailable); return false;
+            stop_locked(s, actor_control_native::Reason::unavailable, StopOrigin::dispatch_unreturned); return false;
         }
         if (GetTickCount64() < s.started || GetTickCount64() >= s.deadline || s.final.revision == std::numeric_limits<std::uint64_t>::max()) {
-            stop_locked(s, actor_control_native::Reason::expired); return false;
+            stop_locked(s, actor_control_native::Reason::expired, StopOrigin::dispatch_expired); return false;
         }
-        if (!body_follow_native::prepare_target(s.binding, rig, context, supplied, s.attachment, target, s.reason) ||
-            !body_follow_native::current_target(s.binding, target, s.reason)) {
-            stop_locked(s, s.reason); return false;
+        body_follow_native::Diagnostic diagnostic;
+        StopOrigin origin{StopOrigin::dispatch_prepare};
+        if (!body_follow_native::prepare_target(s.binding, rig, context, supplied, s.attachment, target, s.reason, diagnostic) ||
+            (origin = StopOrigin::dispatch_current,
+                !body_follow_native::current_target(s.binding, target, s.reason, diagnostic))) {
+            stop_locked(s, s.reason, origin, diagnostic); return false;
         }
         const auto forwarding_ms = GetTickCount64();
         if (forwarding_ms < s.started || forwarding_ms >= s.deadline) {
-            stop_locked(s, actor_control_native::Reason::expired); return false;
+            stop_locked(s, actor_control_native::Reason::expired, StopOrigin::dispatch_forwarding_expired); return false;
         }
         unsigned idle{};
         if (!s.edge.compare_exchange_strong(idle, invoking_bit, std::memory_order_acq_rel)) return false;

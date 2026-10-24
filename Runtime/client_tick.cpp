@@ -78,6 +78,45 @@
 
 namespace dingosdk::runtime::detail {
 namespace {
+const char* follow_diagnostic_check(actor_control_native::InspectionCheck value) noexcept {
+    switch (value) {
+    case actor_control_native::InspectionCheck::unknown: return "unknown";
+    case actor_control_native::InspectionCheck::equal: return "equal";
+    case actor_control_native::InspectionCheck::different: return "different";
+    }
+    return "unknown";
+}
+void log_follow_diagnostic(const char* kind, const char* origin, actor_control_native::Reason reason,
+    const body_follow_service::DiagnosticState& state, const body_follow_native::Diagnostic& provider) noexcept {
+    const auto& facts = provider.facts;
+    logging::log(logging::Level::warning, logging::Channel::skater,
+        "Body follow first-{}: sequence={} origin={} public_reason={} stage={} actor_stage={} actor_phase={} actor_reason={} "
+        "published={} stopped={} release_hold={} release_requested={} release_started={} fence={} park={} "
+        "final_revision={} returned_revision={} binding={} closing_owner={} closing_generation={} "
+        "closing_epoch_read={} closing_epoch={}",
+        kind, state.sequence, origin, skater_action::reason_name(reason),
+        body_follow_native::diagnostic_stage_name(provider.stage),
+        body_follow_native::diagnostic_stage_name(provider.actor_stage),
+        actor_observation::phase_name(provider.actor.phase), skater_action::reason_name(provider.actor.reason),
+        state.published, state.stopped, state.release_hold, state.release_requested, state.release_started,
+        state.fence, state.park, state.final_revision, state.returned_revision,
+        follow_diagnostic_check(facts.binding),
+        follow_diagnostic_check(facts.closing_owner), follow_diagnostic_check(facts.closing_generation),
+        follow_diagnostic_check(facts.closing_epoch_read), follow_diagnostic_check(facts.closing_epoch));
+}
+void drain_follow_diagnostics() noexcept {
+    const auto saved = GetLastError();
+    body_follow_service::StopDiagnostic stop;
+    body_follow_service::CleanupDiagnostic cleanup;
+    body_follow_service::take_diagnostics(stop, cleanup);
+    // take_diagnostics has released its lock. No SDK lock spans formatting or
+    // logging. A cleanup refusal can be ordinary pending work, not a fault.
+    if (stop.available) log_follow_diagnostic("stop", body_follow_service::stop_origin_name(stop.origin),
+        stop.reason, stop.state, stop.provider);
+    if (cleanup.available) log_follow_diagnostic("cleanup-observation", body_follow_service::cleanup_origin_name(cleanup.origin),
+        cleanup.park_reason, cleanup.state, cleanup.provider);
+    SetLastError(saved);
+}
 // Development-only acknowledgement barrier. The native tick never waits or
 // sleeps: one bounded local receipt read at 4 Hz, and status writes only on
 // transitions. Rendering/loading and all ordinary tick work keep running.
@@ -1299,6 +1338,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
         !r.debug_model.noclip && !r.debug_model.free_camera);
     if (r.observer_failed) {
         dingosdk::body_follow_service::tick(false);
+        drain_follow_diagnostics();
         return; // Keep bounded restoration available after catalog failure.
     }
     {
@@ -1310,6 +1350,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
         DINGO_PROFILE_ZONE("tick/plugins");
         dingosdk::owned_bodies::tick(r.base, client, named_context_ready && !debug_busy && !r.requests.loading());
         dingosdk::body_follow_service::tick(named_context_ready && !debug_busy && !r.requests.loading());
+        drain_follow_diagnostics();
         dingosdk::plugins::on_client_tick();
         dingosdk::plugins::tick_plugin_settings();
     }

@@ -15,6 +15,40 @@ struct Receipt {
     unsigned in_flight{};
     bool claim_known{}, orphaned{}, park_observed{}, native_retirement_known{};
 };
+// Internal diagnostics, separate from Receipt and all plugin DTOs. Exactly one
+// first-stop and first-cleanup observation is retained for the current receipt.
+enum class StopOrigin : std::uint8_t {
+    reserve_binding, reserve_hold, reserve_clock, publish_binding, publish_closing,
+    explicit_stop, owner_release, release_query, runtime_not_ready, tick_expired,
+    dispatch_unreturned, dispatch_expired, dispatch_prepare, dispatch_current, dispatch_forwarding_expired
+};
+enum class CleanupOrigin : std::uint8_t { capture_fence, observe_park, complete_stop, release_query, release_hold, body_release };
+struct DiagnosticState {
+    // Stop captures these stored fields before requesting release or applying
+    // Binding::stop; cleanup captures them at the first provider refusal.
+    std::uint64_t sequence{}, final_revision{}, returned_revision{};
+    bool published{}, stopped{}, release_hold{}, release_requested{}, release_started{}, fence{}, park{};
+};
+struct StopDiagnostic {
+    DiagnosticState state;
+    StopOrigin origin{StopOrigin::runtime_not_ready};
+    actor_control_native::Reason reason{actor_control_native::Reason::unavailable};
+    body_follow_native::Diagnostic provider;
+    bool available{};
+};
+struct CleanupDiagnostic {
+    DiagnosticState state;
+    CleanupOrigin origin{CleanupOrigin::capture_fence};
+    actor_control_native::Reason park_reason{actor_control_native::Reason::unavailable};
+    body_follow_native::Diagnostic provider;
+    bool available{};
+};
+const char* stop_origin_name(StopOrigin) noexcept;
+const char* cleanup_origin_name(CleanupOrigin) noexcept;
+// Client tick only. Copies/marks at most one of each under the service lock;
+// formatting/logging happens after return. ACK/reuse may discard an undrained
+// receipt; diagnostics never block either operation or change authority.
+void take_diagnostics(StopDiagnostic&, CleanupDiagnostic&) noexcept;
 using Original = void (*)(std::uintptr_t, std::uintptr_t, const std::array<float, 16>*, std::uint8_t);
 
 // Client thread. Fixed one-slot capacity is secured before the actual claim.

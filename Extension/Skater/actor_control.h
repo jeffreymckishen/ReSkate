@@ -15,6 +15,15 @@ using Reason = skater_action::Reason;
 using Observation = actor_observation::Trace;
 using Continuity = actor_context::Continuity;
 
+// Diagnostic facts only. Unknown means the original predicate was not reached;
+// equal/different record its true/false result, including the epoch read check.
+// No native identities or values leave the existing inspection captures.
+enum class InspectionCheck : std::uint8_t { unknown, equal, different };
+struct InspectionFacts {
+    InspectionCheck binding{};
+    InspectionCheck closing_owner{}, closing_generation{}, closing_epoch_read{}, closing_epoch{};
+};
+
 // Internal native identity only. Plugins never receive these addresses. The
 // shared owner service repeats the complete local chain at each use edge.
 struct Actor {
@@ -40,6 +49,9 @@ bool inspect(std::uint64_t owner, std::uint64_t sequence, const Actor& expected,
     Actor& actor, State& state, Reason& reason, bool cleanup = false) noexcept;
 bool inspect(std::uint64_t owner, std::uint64_t sequence, const Actor& expected,
     Actor& actor, State& state, Reason& reason, Observation& observation, bool cleanup = false) noexcept;
+bool inspect(std::uint64_t owner, std::uint64_t sequence, const Actor& expected,
+    Actor& actor, State& state, Reason& reason, Observation& observation,
+    InspectionFacts& facts, bool cleanup = false) noexcept;
 bool enter(std::uint64_t owner, std::uint64_t sequence,
     const Actor& actor, actor_control::Call& call) noexcept;
 bool enter(std::uint64_t owner, std::uint64_t sequence,

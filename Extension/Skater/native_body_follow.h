@@ -5,6 +5,26 @@
 #include <cstdint>
 
 namespace dingosdk::body_follow_native {
+// Internal first-fault context. Plain copied data only; no native identities,
+// allocation, logging or additional game reads are needed to record a stage.
+enum class DiagnosticStage : std::uint8_t {
+    not_attempted, prepare_guard, enter, inspect_first, first_identity, first_admission,
+    supplied_copy, supplied_finite, measure, measured_allocation, borrow, borrow_current,
+    borrow_join, transform, borrow_recheck, inspect_closing, closing_identity, closing_admission,
+    final_source, final_published, current_guard, inspect_current, current_identity,
+    current_admission, current_source, current_published, fence_guard, fence_actor, fence_basis,
+    fence_world, fence_state, fence_closing_actor, fence_drained, park_history, park_guard,
+    park_actor, park_observe, park_closing_actor, park_drained, park_match, complete_drained,
+    complete_history, complete_actor, complete_closing_drained, complete_retire
+};
+struct Diagnostic {
+    DiagnosticStage stage{DiagnosticStage::not_attempted}, actor_stage{DiagnosticStage::not_attempted};
+    // Last actor operation actually evaluated by this provider call. A later
+    // non-actor stage does not turn a qualified inspection into a failed one.
+    actor_control_native::Observation actor;
+    actor_control_native::InspectionFacts facts;
+};
+const char* diagnostic_stage_name(DiagnosticStage) noexcept;
 // Caller serializes Binding access. Internal only: no address, Actor or
 // MeasuredSource is exposed to Luau.
 // The retaining service must outlive every Call and must retain any unresolved
@@ -53,10 +73,14 @@ struct PreparedTarget {
 bool prepare_target(const Binding&, std::uintptr_t rig, std::uintptr_t context,
     const std::array<float, 16>* supplied, const Attachment&,
     PreparedTarget&, actor_control_native::Reason& reason) noexcept;
+bool prepare_target(const Binding&, std::uintptr_t rig, std::uintptr_t context,
+    const std::array<float, 16>* supplied, const Attachment&,
+    PreparedTarget&, actor_control_native::Reason&, Diagnostic&) noexcept;
 // The future wrapper must call immediately before its forwarding edge. A
 // prepared copy never remains authority after stop, replacement or source loss.
 // This final sampled check does not create native lifetime/consumption proof.
 bool current_target(const Binding&, PreparedTarget&, actor_control_native::Reason&) noexcept;
+bool current_target(const Binding&, PreparedTarget&, actor_control_native::Reason&, Diagnostic&) noexcept;
 // Before publication this only abandons its exact admission. Afterwards it
 // revokes with the required body-park barrier. Drain remains an Arbiter duty.
 bool stop(Binding&) noexcept;
@@ -68,20 +92,27 @@ public:
     bool available() const noexcept { return owner_ != 0; }
 private:
     friend bool capture_park_fence(const Binding&, ParkFence&, actor_control_native::Reason&) noexcept;
+    friend bool capture_park_fence(const Binding&, ParkFence&, actor_control_native::Reason&, Diagnostic&) noexcept;
     friend bool observe_park(const Binding&, const ParkFence&, owned_bodies::RetainedParkReceipt&,
         actor_control_native::Reason&) noexcept;
+    friend bool observe_park(const Binding&, const ParkFence&, owned_bodies::RetainedParkReceipt&,
+        actor_control_native::Reason&, Diagnostic&) noexcept;
     friend bool park_history_matches(const Binding&, const ParkFence&, const owned_bodies::RetainedParkReceipt&) noexcept;
     friend bool complete_stop(Binding&, const ParkFence&, const owned_bodies::RetainedParkReceipt&) noexcept;
+    friend bool complete_stop(Binding&, const ParkFence&, const owned_bodies::RetainedParkReceipt&, Diagnostic&) noexcept;
     friend bool completed_history_matches(const Binding&, const ParkFence&, const owned_bodies::RetainedParkReceipt&) noexcept;
     std::uint64_t owner_{}, sequence_{};
     actor_control_native::Actor actor_{};
     owned_bodies::RetirementBasis basis_{};
 };
 bool capture_park_fence(const Binding&, ParkFence&, actor_control_native::Reason&) noexcept;
+bool capture_park_fence(const Binding&, ParkFence&, actor_control_native::Reason&, Diagnostic&) noexcept;
 // This observes only the retained body's park duty; it never satisfies a shared
 // barrier or retires a claim. Native-consumer retirement remains independent.
 bool observe_park(const Binding&, const ParkFence&, owned_bodies::RetainedParkReceipt&,
     actor_control_native::Reason&) noexcept;
+bool observe_park(const Binding&, const ParkFence&, owned_bodies::RetainedParkReceipt&,
+    actor_control_native::Reason&, Diagnostic&) noexcept;
 // Immutable terminal history can remain valid after follow retirement. No age
 // refresh or repeat park is required. This is NOT current actor/input authority;
 // a recovery/action service must qualify that independently before any effect.
@@ -95,4 +126,5 @@ bool completed_history_matches(const Binding&, const ParkFence&,
 // park. The caller also excludes any invoking edge or abnormal original return.
 // Success is SDK completion; native pose-history retirement remains unknown.
 bool complete_stop(Binding&, const ParkFence&, const owned_bodies::RetainedParkReceipt&) noexcept;
+bool complete_stop(Binding&, const ParkFence&, const owned_bodies::RetainedParkReceipt&, Diagnostic&) noexcept;
 } // namespace dingosdk::body_follow_native

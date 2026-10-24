@@ -126,6 +126,22 @@ transfer or a public proof flag. A replacement VM can reserve a fresh handle
 only after the old host cleanup succeeds; it can never adopt the old handle.
 Live owners still explicitly ACK their own completed or abandoned receipt.
 
+## Internal failure diagnostics
+
+The SDK log records the first stop separately from the first published-cleanup
+observation, using the Service's process-local, nonreused sequence. Each record
+contains its origin, reached provider stage, last evaluated actor observation
+and stored cleanup state. These records add no plugin methods or receipt fields.
+The client tick copies at most one record of each kind, then logs outside SDK
+locks. Native dispatch does not format or log messages.
+
+An unknown comparison was not evaluated. An aggregate binding mismatch does
+not identify the changed member. The first cleanup observation can be ordinary
+pending work, and later failures do not replace it. ACK or receipt reuse can
+discard an undrained record, so a missing log is not proof that no failure
+occurred. Stored flags and diagnostic stages do not prove native consumption,
+parking, retirement or successful gameplay.
+
 ## Fixed bounds and validation
 
 Per VM per plugin tick, calls reaching a well-formed handle/body argument may

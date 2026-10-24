@@ -3973,7 +3973,17 @@ bool inspect(std::uint64_t owner, std::uint64_t sequence, const Actor& expected,
 
 bool inspect(std::uint64_t owner, std::uint64_t sequence, const Actor& expected,
     Actor& actor, State& state, Reason& reason, Observation& observation, bool cleanup) noexcept {
-    LastError error; actor = {}; state = {}; reason = Reason::none; observation = {};
+    InspectionFacts facts;
+    return inspect(owner, sequence, expected, actor, state, reason, observation, facts, cleanup);
+}
+bool inspect(std::uint64_t owner, std::uint64_t sequence, const Actor& expected,
+    Actor& actor, State& state, Reason& reason, Observation& observation,
+    InspectionFacts& facts, bool cleanup) noexcept {
+    LastError error; actor = {}; state = {}; reason = Reason::none; observation = {}; facts = {};
+    const auto noted = [](InspectionCheck& fact, bool equal) noexcept {
+        fact = equal ? InspectionCheck::equal : InspectionCheck::different;
+        return equal;
+    };
     auto& p = protection(); auto& a = p.actions;
     if (!TryAcquireSRWLockShared(&p.lock)) {
         reason = action_check(&observation, actor_observation::Phase::inspect_owner_lock, Reason::unavailable); return false;
@@ -3998,7 +4008,12 @@ bool inspect(std::uint64_t owner, std::uint64_t sequence, const Actor& expected,
             reason = action_check(&observation, actor_observation::Phase::capture, Reason::actor_changed); return false;
         }
         first.world_generation = generation;
-        if (expected.continuity == Continuity::native_lifetime ? first != binding :
+        const auto native_changed = [&]() noexcept {
+            const bool changed = first != binding;
+            (void)noted(facts.binding, !changed);
+            return changed;
+        };
+        if (expected.continuity == Continuity::native_lifetime ? native_changed() :
             !actor_context::same_identity(first, binding) || generation != expected.world_generation) {
             reason = action_check(&observation, actor_observation::Phase::lifetime, Reason::native_lifetime_changed); return false;
         }
@@ -4015,11 +4030,13 @@ bool inspect(std::uint64_t owner, std::uint64_t sequence, const Actor& expected,
     if (!TryAcquireSRWLockShared(&p.lock)) {
         reason = action_check(&observation, actor_observation::Phase::final_owner_lock, Reason::unavailable); return false;
     }
-    const bool unchanged = owned_locked(owner, sequence, expected) &&
-        actor_context::generation(expected.continuity, a.world_generation, a.context_generation) == generation &&
+    const bool unchanged = noted(facts.closing_owner, owned_locked(owner, sequence, expected)) &&
+        noted(facts.closing_generation,
+            actor_context::generation(expected.continuity, a.world_generation, a.context_generation) == generation) &&
         (expected.continuity == Continuity::native_lifetime ||
             (expected.base == p.base && a.context_valid && observed_actor_fence(binding))) &&
-        multiplayer::entity_destruction_epoch(p.base, after) && after == epoch;
+        noted(facts.closing_epoch_read, multiplayer::entity_destruction_epoch(p.base, after)) &&
+        noted(facts.closing_epoch, after == epoch);
     ReleaseSRWLockShared(&p.lock);
     if (!unchanged) {
         reason = action_check(&observation, actor_observation::Phase::final_lifetime, Reason::native_lifetime_changed); return false;

@@ -52,6 +52,7 @@ dingosdk::actor_control_native::Actor motion_actor{};
 std::function<void()> motion_observe_once;
 std::function<void(unsigned)> park_shape_hook;
 std::function<dingosdk::BoundedLocalSurfaceProbe(const std::array<float,3>&,const std::array<float,3>&,unsigned,bool)> probe_callback;
+std::vector<dingosdk::body_query::QueryPreset> probe_presets; // What the Service forwarded, per counted query.
 }
 namespace dingosdk::multiplayer {
 MultiplayerModel model() {
@@ -104,7 +105,8 @@ bool no_bail_mover_observation_available(std::uintptr_t base) noexcept {
     return test_facts::motion_available.load() && test_facts::motion_actor.base == base;
 }
 BoundedLocalSurfaceProbe probe_local_surface_geometry_bounded(const std::array<float, 3>& from,
-    const std::array<float, 3>& to, unsigned allowed, bool contact) {
+    const std::array<float, 3>& to, unsigned allowed, bool contact, body_query::QueryPreset preset) {
+    test_facts::probe_presets.push_back(preset);
     if(test_facts::probe_callback) return test_facts::probe_callback(from,to,allowed,contact);
     ++test_facts::forbidden_links;return {};
 }
@@ -673,6 +675,53 @@ void service_actor_and_nearest_hit_refusals() {
     check(!out.available && out.native_casts==1 && f.calls==2,"unknown nearest hit became foreign/clear or retried");
 }
 
+// The actual Service forwards the preset to its one counted geometry query and
+// changes nothing else: the same measured-contact, owned-hit, actor and fence rules.
+void service_forwards_query_preset_without_relaxing_refusals() {
+    using body_query::QueryPreset;
+    test_facts::probe_presets.clear();
+    {
+        ContactFixture f;auto request=f.request();
+        auto out=probe_batch(owner,f.handle,request,64);
+        check(out.available && f.calls==1 && test_facts::probe_presets==std::vector<QueryPreset>{QueryPreset::camera},
+            "default Service query did not send the camera preset");
+        request.preset=QueryPreset::terrain;SetLastError(0x5150);
+        out=probe_batch(owner,f.handle,request,64);
+        check(GetLastError()==0x5150,"terrain Service query changed LastError");
+        check(out.available && out.native_casts==1 && f.calls==2 && test_facts::probe_presets.back()==QueryPreset::terrain &&
+            f.contact_options.back(),"Service dropped the terrain preset or its contact request");
+        check(out.rays[0].normal_available && out.rays[0].normal==Vec{0,1,0} && out.rays[0].surface_velocity_available &&
+            out.rays[0].surface_velocity==Vec{2.01f,0,-1},"terrain lost the measured normal or the moving surface's point motion");
+        f.normals=false;out=probe_batch(owner,f.handle,request,64);
+        check(!out.available && out.failure==body_query::Failure::contact_measurement_unavailable && out.native_casts==1 && f.calls==3,
+            "terrain admitted a required contact without a measured normal");
+        f.normals=true;
+        for(const auto preset:{QueryPreset::camera,QueryPreset::terrain}) {
+            request.preset=preset;request.exclude_local_actor=true;const auto calls=f.calls;
+            out=probe_batch(owner,f.handle,request,64);
+            check(!out.available && out.failure==body_query::Failure::local_actor_exclusion_unavailable && !out.native_casts && f.calls==calls,
+                "a preset bypassed the zero-cast actor exclusion refusal");
+        }
+        request.exclude_local_actor=false;request.preset=QueryPreset::terrain;f.hit_owned=true;
+        out=probe_batch(owner,f.handle,request,64);
+        check(!out.available && out.native_casts==1 && f.calls==4 && test_facts::probe_presets.back()==QueryPreset::terrain,
+            "terrain owned nearest hit became clear or was recast through");
+        f.hit_owned=false;
+        for(const auto unknown:{static_cast<QueryPreset>(2),static_cast<QueryPreset>(255)}) {
+            request.preset=unknown;const auto presets=test_facts::probe_presets.size();
+            out=probe_batch(owner,f.handle,request,64);
+            check(!out.available && out.failure==body_query::Failure::invalid && !out.native_casts && f.calls==4 &&
+                test_facts::probe_presets.size()==presets,"an unknown preset reached the counted geometry query");
+        }
+    }
+    ContactFixture f;auto request=f.request(2);request.preset=QueryPreset::terrain;
+    f.during_query=[&](unsigned calls) { if(calls==2) f.step(); };
+    const auto out=probe_batch(owner,f.handle,request,64);
+    check(f.calls==2 && out.native_casts==2 && !out.available && out.failure==body_query::Failure::observation_changed &&
+        out.rays[0].status==body_query::Status::unavailable && !out.rays[0].normal_available,
+        "terrain batch escaped the closing whole-batch fence");
+}
+
 void deferred_initialization_stays_outside_create_and_service_lock() {
     Fixture f;
     const auto definition=f.slot().definition;
@@ -1098,6 +1147,7 @@ int main() {
         run("service_contact_opt_in_and_read_only",service_contact_opt_in_and_read_only);
         run("service_whole_batch_contact_fences",service_whole_batch_contact_fences);
         run("service_actor_and_nearest_hit_refusals",service_actor_and_nearest_hit_refusals);
+        run("service_forwards_query_preset_without_relaxing_refusals",service_forwards_query_preset_without_relaxing_refusals);
         run("deferred_producer_initialization_without_allocation",deferred_initialization_stays_outside_create_and_service_lock,1);
         run("prepare_cold_queues_only_deferred_setup",prepare_cold_queues_only_deferred_setup);
         run("prepare_deferred_failure_is_terminal_without_retry",prepare_deferred_failure_is_terminal_without_retry,1);

@@ -257,11 +257,13 @@ LocalSurfaceProbe probe_local_surface(const std::array<float, 3>& from, const st
 }
 static BoundedLocalSurfaceProbe probe_local_surface_bounded_impl(const std::array<float, 3>& from, const std::array<float, 3>& to,
     unsigned maximum_casts, std::span<const std::array<std::uint64_t, 2>> ignored_bodies, std::uint64_t ignore_local_entity,
-    bool resolve_entity, bool measure_contact=false) {
+    bool resolve_entity, bool measure_contact=false, body_query::QueryPreset preset=body_query::QueryPreset::camera) {
     BoundedLocalSurfaceProbe result;const auto began=std::chrono::steady_clock::now();
     const auto finish=[&] {result.elapsed_microseconds=static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-began).count());return result;};
-    if(maximum_casts<1||maximum_casts>2||(!resolve_entity&&ignore_local_entity))return finish();
+    // Owner-resolving callers keep the camera filter; only geometry takes a preset.
+    if(maximum_casts<1||maximum_casts>2||(!resolve_entity&&ignore_local_entity)||
+        (resolve_entity&&preset!=body_query::QueryPreset::camera)||!editor::surface_query_filter(preset))return finish();
     std::lock_guard lock(local_runtime().native_mutex);
     auto& r = placements_runtime();
     if (!local_runtime().active || !r.context || ignored_bodies.size() > 4096) return finish();
@@ -300,7 +302,7 @@ static BoundedLocalSurfaceProbe probe_local_surface_bounded_impl(const std::arra
         ignore_local_entity ? std::span<const std::uint64_t>(ignored) : std::span<const std::uint64_t>{},
         picking.api.ready ? &surface_probe_body : nullptr) :
         editor::cast_surface_geometry_probe_bounded(api, result.surface.world, from, to, maximum_casts,
-            picking.api.ready ? &surface_probe_body : nullptr, measure_contact);
+            picking.api.ready ? &surface_probe_body : nullptr, measure_contact, preset);
     result.native_casts=cast.native_casts;result.budget_exhausted=cast.budget_exhausted;
     result.surface.available = cast.surface.available;
     result.surface.hit = cast.surface.hit;
@@ -318,8 +320,8 @@ BoundedLocalSurfaceProbe probe_local_surface_bounded(const std::array<float, 3>&
     return probe_local_surface_bounded_impl(from, to, maximum_casts, ignored_bodies, ignore_local_entity, true);
 }
 BoundedLocalSurfaceProbe probe_local_surface_geometry_bounded(const std::array<float, 3>& from, const std::array<float, 3>& to,
-    unsigned maximum_casts, bool measure_contact) {
-    return probe_local_surface_bounded_impl(from, to, maximum_casts, {}, 0, false, measure_contact);
+    unsigned maximum_casts, bool measure_contact, body_query::QueryPreset preset) {
+    return probe_local_surface_bounded_impl(from, to, maximum_casts, {}, 0, false, measure_contact, preset);
 }
 bool teleport_to_local_placed_object(std::string_view map, std::uint64_t token) {
     std::lock_guard lock(local_runtime().native_mutex);

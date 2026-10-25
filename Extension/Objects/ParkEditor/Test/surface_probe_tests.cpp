@@ -5,6 +5,7 @@
 
 namespace {
 using namespace dingosdk::editor;
+using dingosdk::body_query::QueryPreset;
 int failures{};unsigned assertions{};
 void check(bool condition, const char* message) {
     ++assertions;
@@ -174,6 +175,64 @@ int main() {
     check(!geometry.surface.available && geometry.native_casts == 1 && !geometry.budget_exhausted,
         "caught query exception retains the one attempted native call and does not retry");
     check(releases == calls - 1 && scopes == releases, "single geometry path retains native result cleanup");
+
+    // A named preset changes only the filter lane of the actual request the native
+    // ray receives. The expected masks are literals, not the production constants.
+    check(surface_query_filter(QueryPreset::camera) == 0x40080303u && surface_query_filter(QueryPreset::terrain) == 0x00000001u &&
+        !surface_query_filter(static_cast<QueryPreset>(2)) && !surface_query_filter(static_cast<QueryPreset>(255)),
+        "only the two fixed presets map to a native filter");
+    static NativeSurfaceRay seen{};
+    static unsigned seen_calls{};
+    auto preset_api = api;
+    preset_api.ray = [](std::uintptr_t world, NativeSurfaceResult* out, const NativeSurfaceRay* request, const char* label) -> void* {
+        seen = *request; ++seen_calls;
+        return api.ray(world, out, request, label);
+    };
+    const auto same_lanes = [](const NativeSurfaceRay& a, const NativeSurfaceRay& b) {
+        return a.start == b.start && a.end == b.end && a.mode == b.mode && a.tolerance == b.tolerance && a.flags == b.flags &&
+            a.allocator_vtable == b.allocator_vtable && a.allocator == b.allocator && a.ignored_bodies == b.ignored_bodies &&
+            a.padding == b.padding;
+    };
+    scenario = Scenario::hit;
+    const auto preset_calls = calls, preset_releases = releases, preset_scopes = scopes;
+    auto preset = cast_surface_geometry_probe_bounded(preset_api, 1234, from, to, 2, zero_shape);
+    const auto camera_request = seen;
+    check(preset.surface.available && preset.surface.hit && preset.native_casts == 1 && seen_calls == 1 &&
+        camera_request.filter == 0x40080303u && camera_request.mode == 0 && camera_request.tolerance == 0 && camera_request.flags == 0 &&
+        camera_request.ignored_bodies == std::array<std::uintptr_t, 5>{} && camera_request.start == std::array<float, 4>{0, 4, 0, 0},
+        "default geometry no longer sends the camera request");
+    preset = cast_surface_geometry_probe_bounded(preset_api, 1234, from, to, 2, zero_shape, false, QueryPreset::camera);
+    check(seen_calls == 2 && seen.filter == 0x40080303u && same_lanes(seen, camera_request), "explicit camera differs from the default request");
+    preset = cast_surface_geometry_probe_bounded(preset_api, 1234, from, to, 2, zero_shape, false, QueryPreset::terrain);
+    check(preset.surface.available && preset.surface.hit && preset.surface.fraction == .25f && preset.surface.position == Vec3{0, 3, 0} &&
+        preset.surface.body == SurfaceBody{1234, 0} && preset.native_casts == 1 && !preset.budget_exhausted && seen_calls == 3,
+        "terrain lost the nearest hit or spent another cast");
+    check(seen.filter == 0x00000001u && same_lanes(seen, camera_request), "terrain sent anything but mask 1 or changed another request lane");
+    preset = cast_surface_geometry_probe_bounded(preset_api, 1234, from, to, 2, nullptr, false, QueryPreset::terrain);
+    check(preset.surface.available && preset.surface.hit && preset.surface.body == SurfaceBody{} && preset.native_casts == 1 && seen_calls == 4,
+        "a terrain hit with unknown identity became clear or was recast through");
+    scenario = Scenario::null_empty_array;
+    preset = cast_surface_geometry_probe_bounded(preset_api, 1234, from, to, 2, zero_shape, true, QueryPreset::terrain);
+    check(preset.surface.available && !preset.surface.hit && !preset.surface.normal_available && preset.surface.normal == Vec3{} &&
+        preset.native_casts == 1 && seen_calls == 5 && seen.filter == 0x00000001u, "a terrain clear carried a plane or identity");
+    scenario = Scenario::bad_fraction;
+    preset = cast_surface_geometry_probe_bounded(preset_api, 1234, from, to, 2, zero_shape, false, QueryPreset::terrain);
+    check(!preset.surface.available && preset.native_casts == 1 && !preset.budget_exhausted && seen_calls == 6,
+        "a malformed terrain result became clear or was retried");
+    scenario = Scenario::hit;
+    for (const auto unknown : {static_cast<QueryPreset>(2), static_cast<QueryPreset>(255)}) {
+        preset = cast_surface_geometry_probe_bounded(preset_api, 1234, from, to, 2, zero_shape, true, unknown);
+        check(!preset.surface.available && !preset.surface.hit && !preset.native_casts && !preset.budget_exhausted,
+            "an unknown preset reported a geometry result or a native call");
+        preset = cast_surface_probe_bounded(preset_api, 1234, from, to, 2, {}, nullptr, {}, zero_shape, false, unknown);
+        check(!preset.surface.available && !preset.native_casts && !preset.budget_exhausted, "an unknown preset reached the owner-resolving copy");
+        unsigned counted{}; std::vector<SurfaceBody> discovered; SurfaceCastProbe once{true, true};
+        check(!cast_surface_once_counted(preset_api, 1234, from, to, nullptr, {}, nullptr, {}, discovered, zero_shape, &once, counted, false, unknown) &&
+            !counted && !once.available && !once.hit && discovered.empty(), "an unknown preset reached the counted native call");
+    }
+    check(seen_calls == 6 && calls - preset_calls == 6, "an unknown preset reached the native ray");
+    check(releases - preset_releases == calls - preset_calls && scopes - preset_scopes == releases - preset_releases,
+        "preset requests lost native result cleanup");
 
     static unsigned contact_calls{},contact_releases{};
     static bool invalid_normal{};

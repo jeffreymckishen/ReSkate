@@ -41,7 +41,8 @@ long, subject to a lower configured host limit. Invalid arguments raise a Lua
 error. Lists must be dense arrays; extra fields are refused.
 
 Options are `exclude_bodies = {other_owned_body, ...}`,
-`exclude_local_actor = true|false`, and `require_contact = true|false`. At most eight additional opaque body handles
+`exclude_local_actor = true|false`, `require_contact = true|false` and
+`query_preset = "camera"|"terrain"` (described below). At most eight additional opaque body handles
 are accepted. Every exclusion must still belong to this VM, its current native
 world and a fresh owned generation. The anchoring body must always be excluded.
 The native ray filter consumes owner indices, not body or shape handles, and the
@@ -91,6 +92,53 @@ accepted hit's ring headers and values are rechecked separately during the final
 whole-batch shape/body/clock fence, even when several shapes share one body.
 These remain endpoint observations; they do not pin native allocations or rule
 out same-value reuse, generation wrap, or a write after the last observation.
+
+**Query presets.** `query_preset` chooses which fixed native filter every ray in the batch sends.
+It defaults to `"camera"`, the filter the native camera ray uses and the one
+every earlier batch sent. `"terrain"` sends the game's own physics query preset
+of that name instead: one category bit, nothing else. Any other value, a number
+or a differently cased name raises a Lua error before the logical ray budget or
+any native call is spent. There is no way to pass a raw mask; the native values
+live only in the supported build's `park_editor.h`.
+
+A preset selects which shapes the native ray tests. It does not classify what a
+hit belongs to. A `"terrain"` hit is not proof that the surface is terrain,
+static, part of the map or free of the rider and board, and a `"terrain"` clear
+means only that no shape matching that one category was on the segment. The
+game's Static preset lacks the Terrain bit, so some ramps and props can be
+missed entirely; a clear is never "no collision exists". Every other rule is
+unchanged: one nearest hit per ray, the same owned-body and identity refusals,
+the same `require_contact` measurements and closing fences, and
+`exclude_local_actor = true` still returns `local_actor_exclusion_unavailable`
+before any native cast. No camera fallback or retry is made when a terrain ray
+is refused, and no zero velocity is assumed from the preset's name.
+
+A batch that names a preset gets one more field, `requested_query_preset`, on
+every result (hit, clear or refusal). It repeats the request. It is not evidence
+of which filter the native ray applied or of what was hit; `status`,
+`native_casts` and each ray's fields describe what actually ran. A batch without
+the option has exactly the earlier fields, so code that allow-lists them keeps
+working. `local_actor_excluded` stays false on a terrain refusal.
+
+```lua
+-- A read-only observation: two downward wheel rays over a floor the plugin
+-- already knows is clear, with no force, impulse or follow command.
+-- front and rear are the plugin's own wheel positions.
+local batch = reskate.world.physics.probe_batch(body, sample.epoch, {
+    {from = front + vector.create(0, .5, 0), to = front - vector.create(0, .5, 0)},
+    {from = rear + vector.create(0, .5, 0), to = rear - vector.create(0, .5, 0)},
+}, {query_preset = "terrain", require_contact = true, exclude_local_actor = false})
+if batch.status == "available" then
+    -- batch.requested_query_preset == "terrain"; each hit has a measured normal
+    -- and surface_velocity. Decide yourself whether this is the floor you expected.
+elseif batch.reason == "contact_measurement_unavailable" then
+    -- A hit lacked a measured normal or motion. Nothing was guessed.
+end
+```
+
+The preset lane is covered by source and constructed-ABI tests. No in-game
+terrain batch has been run yet: whether `"terrain"` reaches a given floor, ramp
+or prop, and whether it can return the rider's own shapes, is still unmeasured.
 
 The contact-vector roles are supported by static consumers in the one supported
 game build. The source and constructed-memory tests do not demonstrate the new

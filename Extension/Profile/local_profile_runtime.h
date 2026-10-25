@@ -14,6 +14,7 @@
 #include "Engine/Game/Profile/progression.h"
 #include "Engine/Game/Profile/object_persistence_model.h"
 #include "Engine/Game/World/park_editor.h"
+#include "Engine/Game/World/body_query.h"
 #include "Engine/Game/Input/controller_bindings.h"
 #include "Engine/Game/UI/menu_scale.h"
 #include "Engine/Core/Json/json.h"
@@ -134,8 +135,9 @@ BoundedLocalSurfaceProbe probe_local_surface_bounded(const std::array<float,3>& 
     unsigned maximum_casts,std::span<const std::array<std::uint64_t,2>> ignored_bodies={},std::uint64_t ignore_local_entity=0);
 // One geometry query, with no native owner ignore list, entity lookup or retry.
 // hit_body retains the native picking reader's shape handle; it is not a body.
+// preset picks the native filter only; an unknown value makes no native call.
 BoundedLocalSurfaceProbe probe_local_surface_geometry_bounded(const std::array<float,3>& from,const std::array<float,3>& to,
-    unsigned maximum_casts, bool measure_contact=false);
+    unsigned maximum_casts, bool measure_contact=false, body_query::QueryPreset preset=body_query::QueryPreset::camera);
 // Small allowlisted progression commands, executed on the game update thread.
 bool set_local_progression(const std::vector<std::string>& arguments);
 // Small ReSkate-owned booleans saved beside the profile under a "ReSkate."

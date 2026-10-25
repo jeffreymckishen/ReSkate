@@ -1224,7 +1224,9 @@ body_query::Result probe_batch(std::uint64_t owner, const Handle& handle, const 
             // Native ignored IDs are owner indices. Query without either list or
             // the ECS owner resolver; classify only the actual nearest hit below.
             ray_entered = true;
-            const auto counted = probe_local_surface_geometry_bounded(ray.from, ray.to, permitted, request.require_contact);
+            // The preset selects the native filter only. The nearest hit it returns
+            // still passes the same owned-body, identity, contact and fence checks.
+            const auto counted = probe_local_surface_geometry_bounded(ray.from, ray.to, permitted, request.require_contact, request.preset);
             performed += counted.native_casts; out.native_casts = counted.native_casts; out.budget_exhausted = counted.budget_exhausted;
             const auto& hit = counted.surface;
             if (!hit.available || hit.context != anchor.context || hit.world != anchor.world) return out;

@@ -72,4 +72,14 @@ inline constexpr std::array<Fingerprint, 4> surface_contracts{
      {0x25fa1d0,
       {0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xfa, 0x48, 0x8b, 0xd9,
        0x33, 0xd2, 0x48, 0x39, 0x51, 0x08, 0x48, 0x0f, 0x45, 0xd1, 0x48, 0x8b, 0xcf, 0xe8, 0xbe, 0x93}}}};
+// Query filters for that ray request (request + 0x20). The wrapper passes it through
+// 0x2664c00 to 0x2627bd0's query-category mask, and a candidate shape is tested only
+// when its categories AND this mask are nonzero. camera is the filter the native
+// camera ray sends. terrain is the game's serialized physics category query preset
+// "Terrain", category bit 0 alone. The serialized presets do not show which shapes
+// carry that bit: a terrain hit is not proof of terrain, static geometry or an
+// actor-free result, and the Static preset lacks bit 0, so some ramps and props
+// may not be tested at all.
+inline constexpr std::uint32_t camera_query_filter = 0x40080303;
+inline constexpr std::uint32_t terrain_query_filter = 0x00000001;
 }

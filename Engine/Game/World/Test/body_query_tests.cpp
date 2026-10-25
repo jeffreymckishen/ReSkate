@@ -80,6 +80,49 @@ void counts_and_discard_are_bounded() {
     out = execute(request(), 64, 1000, [](const Ray&, unsigned) { return Probe{{}, 0, true}; }, fence);
     check(out.failure == Failure::ray_limit && out.budget_exhausted, "precondition detail overrode exhausted retry allowance"); empty(out);
 }
+// A preset names a fixed native filter and nothing else. The shared core
+// refuses an unknown value before its first fence or query and otherwise keeps
+// every accounting, contact and whole-batch rule exactly as for camera.
+void query_presets_are_fixed_and_default_to_camera() {
+    static_assert(static_cast<unsigned>(QueryPreset::camera) == 0, "a zeroed request must mean camera");
+    check(Request{}.preset == QueryPreset::camera && request().preset == QueryPreset::camera, "default preset is not camera");
+    check(std::string_view(name(QueryPreset::camera)) == "camera" && std::string_view(name(QueryPreset::terrain)) == "terrain",
+        "preset names changed");
+    for (const auto unknown : {static_cast<QueryPreset>(2), static_cast<QueryPreset>(255)}) {
+        check(!name(unknown), "an unknown preset value was given a name");
+        auto bad = request(2); bad.preset = unknown;
+        check(!valid(bad, 1000), "an unknown preset value passed validation");
+        unsigned calls{}, fences{};
+        const auto out = execute(bad, 64, 1000, [&](const Ray&, unsigned) { ++calls; return Probe{{Status::clear}, 1}; },
+            [&] { ++fences; return true; });
+        check(!calls && !fences && !out.native_casts && out.failure == Failure::invalid && out.accounting_valid,
+            "an unknown preset reached a fence or the query"); empty(out);
+    }
+    const auto run = [](QueryPreset preset, std::size_t count, auto query) {
+        auto r = request(count); r.preset = preset; r.require_contact = true;
+        check(valid(r, 1000), "a fixed preset was rejected");
+        return execute(r, 64, 1000, query, [] { return true; });
+    };
+    const auto measured = [](const Ray&, unsigned) {
+        Probe out{{Status::hit, {1, 0, 3}, .5f, 1}, 1};
+        out.hit.normal = {0, 1, 0}; out.hit.surface_velocity = {2, 0, -1};
+        out.hit.normal_available = out.hit.surface_velocity_available = true;
+        return out;
+    };
+    for (const auto preset : {QueryPreset::camera, QueryPreset::terrain}) {
+        auto out = run(preset, 2, measured);
+        check(out.available && out.native_casts == 2 && out.rays[1].surface_velocity == Vec{2, 0, -1},
+            "a preset changed accepted measured hits or their motion");
+        out = run(preset, 2, [](const Ray&, unsigned) { return Probe{{Status::hit, {1, 0, 3}, .5f, 1}, 1}; });
+        check(out.failure == Failure::contact_measurement_unavailable && out.native_casts == 1,
+            "a preset admitted a hit without measurements"); empty(out);
+        unsigned calls{};
+        out = run(preset, 3, [&](const Ray& ray, unsigned allowance) { return ++calls == 2 ? Probe{{}, 1} : measured(ray, allowance); });
+        check(out.failure == Failure::unavailable && out.native_casts == 2 && calls == 2, "a preset let a partial batch escape"); empty(out);
+        out = run(preset, 1, [](const Ray&, unsigned) { return Probe{{Status::clear}, 3}; });
+        check(!out.accounting_valid && out.failure == Failure::backend, "a preset relaxed native call accounting"); empty(out);
+    }
+}
 void typed_refusal_names_are_stable() {
     check(std::string_view(name(Failure::client_phase_unavailable)) == "client_phase_unavailable", "client phase reason");
     check(std::string_view(name(Failure::local_actor_exclusion_unavailable)) == "local_actor_exclusion_unavailable", "actor exclusion reason");
@@ -391,7 +434,7 @@ void identity_address_ranges_refuse_overflow_before_callbacks() {
 }
 int main() {
     try { bounds_and_backend_geometry(); counts_and_discard_are_bounded(); every_observation_fence_invalidates_the_whole_batch(); one_budget_charges_actual_retries();
-        a_listener_epoch_does_not_freeze_canonical_body_state(); typed_refusal_names_are_stable();
+        a_listener_epoch_does_not_freeze_canonical_body_state(); typed_refusal_names_are_stable(); query_presets_are_fixed_and_default_to_camera();
         hit_association_uses_shape_and_body_domains(); unknown_hit_identity_stops_before_unsafe_body_reads();
         hit_association_rechecks_mapping_generations_and_array_heads(); every_returned_shape_body_pair_reaches_the_final_batch_fence();
         identity_address_ranges_refuse_overflow_before_callbacks();

@@ -35,6 +35,17 @@ inline const char* name(Failure value) noexcept {
     }
     return "query_unavailable";
 }
+// A fixed native query filter, chosen by name. The Build layer owns each
+// preset's native value. Choosing one selects what the native ray tests; it
+// does not classify what a hit belongs to and excludes no actor.
+enum class QueryPreset : std::uint8_t { camera, terrain };
+inline const char* name(QueryPreset value) noexcept {
+    switch (value) {
+    case QueryPreset::camera: return "camera";
+    case QueryPreset::terrain: return "terrain";
+    }
+    return nullptr; // Not a preset; callers refuse it.
+}
 struct Hit {
     Status status{};
     Vec position{};
@@ -53,6 +64,7 @@ struct Request {
     std::size_t exclusions{};
     bool exclude_local_actor{};
     bool require_contact{}; // Every hit needs qualified normal and point motion; clear stays clear.
+    QueryPreset preset{QueryPreset::camera}; // Camera is the filter every earlier caller used.
 };
 // Compare each published numeric lane exactly, including signed zero. Padding is not state.
 inline bool same_sample(const owned_body::Sample& a, const owned_body::Sample& b) noexcept {
@@ -83,7 +95,7 @@ inline bool valid(const Ray& ray, float maximum_distance) noexcept {
 }
 inline bool valid(const Request& request, float maximum_distance) noexcept {
     const auto& sample = request.observation; const auto& epoch = sample.epoch;
-    if (!request.count || request.count > maximum_rays || request.exclusions > maximum_exclusions ||
+    if (!request.count || request.count > maximum_rays || request.exclusions > maximum_exclusions || !name(request.preset) ||
         !epoch.world || !epoch.body || !epoch.serial || !std::isfinite(epoch.time) || epoch.time < 0 || !owned_body::calibrated(epoch.seconds) ||
         !owned_body::finite(sample.position, 1000000) || !owned_body::finite(sample.velocity, 100) || !owned_body::finite(sample.angular_velocity, 100) ||
         !owned_body::finite(sample.inertia, 1000000) || !std::isfinite(sample.mass) || sample.mass <= 0) return false;

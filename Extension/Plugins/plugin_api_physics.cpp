@@ -571,8 +571,22 @@ struct PhysicsApi {
             lua_rawgeti(L, 3, static_cast<int>(i + 1)); fields(L, -1, {"from", "to"});
             const auto at = lua_absindex(L, -1); request.rays[i] = {vec_field(L, at, "from"), vec_field(L, at, "to")}; lua_pop(L, 1);
         }
+        bool preset_requested{};
         if (!lua_isnoneornil(L, 4)) {
-            fields(L, 4, {"exclude_bodies", "exclude_local_actor", "require_contact"});
+            fields(L, 4, {"exclude_bodies", "exclude_local_actor", "require_contact", "query_preset"});
+            lua_getfield(L, 4, "query_preset");
+            if (!lua_isnil(L, -1)) {
+                // Only an actual string naming a fixed preset; numbers are not coerced
+                // and no raw native filter can be expressed.
+                std::size_t size{};
+                const char* text = lua_type(L, -1) == LUA_TSTRING ? lua_tolstring(L, -1, &size) : nullptr;
+                bool known{};
+                for (const auto preset : {body_query::QueryPreset::camera, body_query::QueryPreset::terrain})
+                    if (text && std::string_view(text, size) == body_query::name(preset)) { request.preset = preset; known = true; }
+                if (!known) luaL_error(L, "query_preset is \"camera\" or \"terrain\"");
+                preset_requested = true;
+            }
+            lua_pop(L, 1);
             lua_getfield(L, 4, "require_contact");
             if (!lua_isnil(L,-1)) { luaL_checktype(L,-1,LUA_TBOOLEAN); request.require_contact=lua_toboolean(L,-1)!=0; }
             lua_pop(L,1);
@@ -622,6 +636,10 @@ struct PhysicsApi {
         lua_pushvalue(L,2); lua_setfield(L,-2,"epoch");
         lua_pushboolean(L,out.available && request.exclude_local_actor); lua_setfield(L,-2,"local_actor_excluded");
         lua_pushboolean(L,out.available); lua_setfield(L,-2,"owned_bodies_excluded");
+        // Only a call that named a preset gets this field, so callers that allow-list
+        // the earlier result fields see an unchanged table. It repeats the request:
+        // native_casts and status say what ran, and nothing here says what was hit.
+        if (preset_requested) { lua_pushstring(L, body_query::name(request.preset)); lua_setfield(L, -2, "requested_query_preset"); }
         lua_createtable(L, static_cast<int>(request.count), 0);
         for (std::size_t i = 0; i < request.count; ++i) {
             const auto& hit = out.rays[i]; const bool present = out.available && hit.status == body_query::Status::hit;

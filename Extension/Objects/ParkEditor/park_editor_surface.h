@@ -5,6 +5,7 @@
 #include "Engine/Game/Build/20260929/park_editor.h"
 #include "Engine/Game/World/park_editor.h"
 #include "Engine/Game/World/body_contact_read.h"
+#include "Engine/Game/World/body_query.h"
 #include <algorithm>
 #include <optional>
 #include <span>
@@ -17,7 +18,7 @@ using SurfaceBodyReader = bool (*)(std::uintptr_t, std::uint32_t, std::uintptr_t
 // the dropper's sphere query uses the same implementation and collision filter.
 struct alignas(16) NativeSurfaceRay {
     std::array<float, 4> start{}, end{};
-    std::uint32_t filter{0x40080303}, mode{};
+    std::uint32_t filter{addr::park_editor::camera_query_filter}, mode{};
     float tolerance{};
     std::uint32_t flags{};
     std::uintptr_t allocator_vtable{}, allocator{};
@@ -30,8 +31,17 @@ struct alignas(16) NativeSurfaceResult {
     std::uint64_t padding{};
     std::array<std::uintptr_t, 4> scope{};
 };
-static_assert(offsetof(NativeSurfaceRay, ignored_bodies) == 0x40);
+static_assert(offsetof(NativeSurfaceRay, filter) == 0x20 && offsetof(NativeSurfaceRay, ignored_bodies) == 0x40);
 static_assert(offsetof(NativeSurfaceResult, scope) == 0x30 && sizeof(NativeSurfaceResult) == 0x50);
+// Only the two supported presets have a native filter. Anything else is not a
+// request this build can make, so callers refuse it before any native call.
+inline std::optional<std::uint32_t> surface_query_filter(body_query::QueryPreset preset) noexcept {
+    switch (preset) {
+    case body_query::QueryPreset::camera: return addr::park_editor::camera_query_filter;
+    case body_query::QueryPreset::terrain: return addr::park_editor::terrain_query_filter;
+    }
+    return {};
+}
 struct NativeSurfaceApi {
     std::uintptr_t (*world)(std::uintptr_t){};
     void *(*ray)(std::uintptr_t, NativeSurfaceResult *, const NativeSurfaceRay *, const char *){};
@@ -189,14 +199,17 @@ inline std::optional<Vec3> cast_surface_once_counted(const NativeSurfaceApi &api
                                              std::span<const SurfaceBody> ignored_bodies,
                                              std::vector<SurfaceBody> &discovered,
                                              SurfaceBodyReader body_reader,
-                                             SurfaceCastProbe *probe, unsigned& native_casts, bool measure_contact = false) {
+                                             SurfaceCastProbe *probe, unsigned& native_casts, bool measure_contact = false,
+                                             body_query::QueryPreset preset = body_query::QueryPreset::camera) {
     if (probe) *probe = {};
-    if (!api.ready || !api.ray || !world) return {};
+    const auto filter = surface_query_filter(preset);
+    if (!filter || !api.ready || !api.ray || !world) return {};
     for (const auto &point : {start, end})
         for (const float value : point)
             if (!std::isfinite(value) || std::abs(value) > 100000) return {};
     if (dot(sub(end, start), sub(end, start)) < 1e-10f) return {};
     NativeSurfaceRay request;
+    request.filter = *filter; // Mode, tolerance, flags and allocator lanes stay as the camera ray sends them.
     std::vector<SurfaceBody> bodies;
     for (const auto &body : ignored_bodies)
         if (body[0] == world)
@@ -287,11 +300,12 @@ inline std::optional<Vec3> cast_surface_once_counted(const NativeSurfaceApi &api
 struct BoundedSurfaceCastProbe {SurfaceCastProbe surface;unsigned native_casts{};bool budget_exhausted{};};
 inline BoundedSurfaceCastProbe cast_surface_probe_bounded(const NativeSurfaceApi& api,std::uintptr_t world,
     Vec3 start,Vec3 end,unsigned maximum_casts,std::span<const SurfaceBody> ignored_bodies={},
-    SurfaceOwner owner=nullptr,std::span<const std::uint64_t> ignored={},SurfaceBodyReader body_reader=nullptr, bool measure_contact=false) {
+    SurfaceOwner owner=nullptr,std::span<const std::uint64_t> ignored={},SurfaceBodyReader body_reader=nullptr, bool measure_contact=false,
+    body_query::QueryPreset preset=body_query::QueryPreset::camera) {
     BoundedSurfaceCastProbe out;
     // The counted copy preserves the exact existing cast arithmetic and
-    // increments immediately before api.ray. Native request contract unchanged.
-    if(maximum_casts<1||maximum_casts>2||!api.ready||!api.ray||!world)return out;
+    // increments immediately before api.ray. Only the preset's filter lane differs.
+    if(!surface_query_filter(preset)||maximum_casts<1||maximum_casts>2||!api.ready||!api.ray||!world)return out;
     for(const auto& point:{start,end})for(float value:point)
         if(!std::isfinite(value)||std::abs(value)>100000)return out;
     if(dot(sub(end,start),sub(end,start))<1e-10f)return out;
@@ -300,7 +314,7 @@ inline BoundedSurfaceCastProbe cast_surface_probe_bounded(const NativeSurfaceApi
     if(bodies.size()>4096)return out;
     for(unsigned attempt=0;attempt<maximum_casts;++attempt) {
         SurfaceCastProbe result;std::vector<SurfaceBody> discovered;
-        cast_surface_once_counted(api,world,start,end,owner,ignored,nullptr,bodies,discovered,body_reader,&result,out.native_casts,measure_contact);
+        cast_surface_once_counted(api,world,start,end,owner,ignored,nullptr,bodies,discovered,body_reader,&result,out.native_casts,measure_contact,preset);
         if(result.available){result.excluded_bodies=static_cast<unsigned>(bodies.size());out.surface=result;return out;}
         const auto before=bodies.size();
         for(const auto& body:discovered)
@@ -313,8 +327,9 @@ inline BoundedSurfaceCastProbe cast_surface_probe_bounded(const NativeSurfaceApi
 // A single nearest-hit query. Owner lookup and native owner-ID exclusions are
 // deliberately absent; callers may reject the returned hit but must not skip it.
 inline BoundedSurfaceCastProbe cast_surface_geometry_probe_bounded(const NativeSurfaceApi& api, std::uintptr_t world,
-    Vec3 start, Vec3 end, unsigned maximum_casts, SurfaceBodyReader shape_reader, bool measure_contact=false) {
-    return cast_surface_probe_bounded(api, world, start, end, maximum_casts, {}, nullptr, {}, shape_reader, measure_contact);
+    Vec3 start, Vec3 end, unsigned maximum_casts, SurfaceBodyReader shape_reader, bool measure_contact=false,
+    body_query::QueryPreset preset=body_query::QueryPreset::camera) {
+    return cast_surface_probe_bounded(api, world, start, end, maximum_casts, {}, nullptr, {}, shape_reader, measure_contact, preset);
 }
 inline std::optional<Vec3> cast_surface(const NativeSurfaceApi &api, std::uintptr_t world, Vec3 start,
                                         Vec3 end, SurfaceOwner owner = nullptr,

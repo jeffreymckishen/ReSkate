@@ -3280,6 +3280,108 @@ void body_contact_details_are_known_and_epoch_bound() {
     )");
 }
 
+// A named query preset is a request option, not a claim about the result. A call
+// without it keeps the exact earlier result fields; an explicit preset adds only
+// the echo of what was asked, on a hit, a clear and a refusal alike.
+void owned_body_batches_select_a_named_query_preset() {
+    TestEnvironment environment; Host host(environment, Side::client); auto& game = environment.fake;
+    host.apply({script("preset-no-ray", R"(
+        local ok,why=pcall(reskate.world.physics.probe_batch,{},{},{},{query_preset="terrain"})
+        assert(not ok and why:find("world.raycast"))
+        reskate.log("query preset without world.raycast denied")
+    )", R"("world.physics")"), script("preset-batch", batch_main(R"(
+        local fields={status=true,reason=true,native_casts=true,budget_exhausted=true,epoch=true,
+            local_actor_excluded=true,owned_bodies_excluded=true,rays=true}
+        local function shape(out,echo)
+            local n=0
+            for k in out do
+                n+=1
+                assert(fields[k] or (echo and k=="requested_query_preset"),"unexpected batch field "..tostring(k))
+            end
+            assert(n==(out.reason and 8 or 7)+(echo and 1 or 0),"batch field count "..n)
+            assert(out.requested_query_preset==echo,"request echo "..tostring(out.requested_query_preset))
+        end
+        reskate.console.command("preset-default","",function()
+            local out=P.probe_batch(h,epoch,rays(1))
+            assert(out.status=="available") shape(out,nil)
+            out=P.probe_batch(h,epoch,rays(1),{require_contact=false,exclude_local_actor=false})
+            assert(out.status=="available") shape(out,nil)
+        end)
+        reskate.console.command("preset-hit","",function(args)
+            local out=P.probe_batch(h,epoch,rays(2),{query_preset=args[1]})
+            assert(out.status=="available" and out.native_casts==2 and not out.local_actor_excluded) shape(out,args[1])
+            for _,r in out.rays do assert(r.status=="hit" and r.position==v(0,0,0) and r.fraction==.5 and r.motion=="unknown") end
+        end)
+        reskate.console.command("preset-clear","",function()
+            local out=P.probe_batch(h,epoch,rays(1),{query_preset="terrain",require_contact=true})
+            assert(out.status=="available") shape(out,"terrain")
+            local r=out.rays[1]
+            assert(r.status=="clear" and not r.position and not r.normal and not r.surface_velocity and not r.body and not r.motion)
+        end)
+        reskate.console.command("preset-refused","",function()
+            local out=P.probe_batch(h,epoch,rays(1),{query_preset="terrain",exclude_local_actor=true})
+            unavailable(out,"local_actor_exclusion_unavailable") shape(out,"terrain")
+            assert(out.native_casts==0 and out.local_actor_excluded==false and out.owned_bodies_excluded==false)
+        end)
+        reskate.console.command("preset-contact","",function(args)
+            local out=P.probe_batch(h,epoch,rays(1),{query_preset="terrain",require_contact=true})
+            shape(out,"terrain")
+            if args[1]=="missing" then unavailable(out,"contact_measurement_unavailable") return end
+            local r=out.rays[1]
+            assert(out.status=="available" and r.motion=="measured" and r.normal==v(0,1,0))
+            assert(r.surface_velocity_available and r.surface_velocity==v(2,0,-1),"moving measured surface lost its velocity")
+        end)
+        reskate.console.command("preset-invalid","",function()
+            for _,bad in {"Terrain","TERRAIN","static","","terrain"..string.char(0),"camera ",1,0,true,{},function() end} do
+                assert(not pcall(P.probe_batch,h,epoch,rays(1),{query_preset=bad}),"preset "..tostring(bad))
+            end
+            assert(not pcall(P.probe_batch,h,epoch,rays(1),{query_mask=1}),"raw mask option")
+            assert(not pcall(P.probe_batch,h,epoch,rays(1),{filter=1,query_preset="terrain"}),"raw filter beside a preset")
+            assert(not pcall(P.probe_batch,h,epoch,rays(1),{query_presets="terrain"}),"misspelled option")
+            assert(not pcall(P.probe_batch,h,{},rays(1),{query_preset="terrain"}),"forged epoch with a preset")
+            assert(not pcall(P.probe_batch,other,epoch,rays(1),{query_preset="terrain"}),"another body's epoch with a preset")
+            assert(not pcall(P.probe_batch,epoch,epoch,rays(1),{query_preset="terrain"}),"an epoch is not a body")
+        end)
+        reskate.log("query preset batches ready")
+    )"), R"("world.physics","world.raycast","console")")});
+    running(host, "preset-no-ray", environment); running(host, "preset-batch", environment);
+    check(environment.logged("query preset without world.raycast denied") && environment.logged("query preset batches ready") &&
+        !game.batch_calls, environment.all());
+    check(host.run_console("preset-default") && game.batch_calls == 2 && game.last_batch.preset == body_query::QueryPreset::camera,
+        "a batch without a preset changed its result fields or left camera\n" + environment.all());
+    for (const auto preset : {body_query::QueryPreset::terrain, body_query::QueryPreset::camera}) {
+        ticks(host, environment, 1); const auto calls = game.batch_calls;
+        check(host.run_console(std::string("preset-hit ") + body_query::name(preset)) && game.batch_calls == calls + 1 &&
+            game.last_batch.preset == preset, std::string("explicit preset did not reach the backend: ") + body_query::name(preset) + "\n" + environment.all());
+    }
+    ticks(host, environment, 1); game.batch_clear = true;
+    check(host.run_console("preset-clear") && game.last_batch.preset == body_query::QueryPreset::terrain && game.last_batch.require_contact,
+        "terrain clear invented geometry or lost its options\n" + environment.all());
+    game.batch_clear = false;
+    ticks(host, environment, 1); game.batch_refusal = body_query::Failure::local_actor_exclusion_unavailable;
+    auto casts = game.native_casts;
+    check(host.run_console("preset-refused") && game.last_batch.preset == body_query::QueryPreset::terrain &&
+        game.last_batch.exclude_local_actor && game.native_casts == casts,
+        "a terrain request echo became actor exclusion or spent a cast\n" + environment.all());
+    game.batch_refusal = body_query::Failure::none;
+    ticks(host, environment, 1);
+    check(host.run_console("preset-contact missing"), "terrain admitted a hit without contact measurements\n" + environment.all());
+    ticks(host, environment, 1); game.batch_contact_mode = 1;
+    check(host.run_console("preset-contact measured") && game.last_batch.preset == body_query::QueryPreset::terrain,
+        "terrain lost a measured moving contact\n" + environment.all());
+    game.batch_contact_mode = 0;
+    ticks(host, environment, 1); const auto calls = game.batch_calls; casts = game.native_casts;
+    check(host.run_console("preset-invalid") && game.batch_calls == calls && game.native_casts == casts,
+        "a rejected preset option reached the backend\n" + environment.all());
+    // Another VM's owner or a stale generation is refused with a preset set, before any cast.
+    auto request = game.last_batch; request.preset = body_query::QueryPreset::terrain;
+    const auto owner = game.owned.at(1).owner; casts = game.native_casts;
+    auto refused = game.body_probe_batch(owner + 1, {1,0}, request, 64);
+    check(!refused.available && !refused.native_casts && game.native_casts == casts, "another VM's body was queried with a preset");
+    refused = game.body_probe_batch(owner, {1,7}, request, 64);
+    check(!refused.available && !refused.native_casts && game.native_casts == casts, "a stale body generation was queried with a preset");
+}
+
 void owned_body_batches_are_permissioned_opaque_and_transactional() {
     TestEnvironment environment; Host host(environment, Side::client);
     host.apply({script("batch-no-ray", R"(
@@ -8257,6 +8359,7 @@ int main() {
         run(the_private_native_recovery_fixture_loads_inert_when_present);
         run(owned_body_batches_are_permissioned_opaque_and_transactional);
         run(body_contact_details_are_known_and_epoch_bound);
+        run(owned_body_batches_select_a_named_query_preset);
         run(owned_body_batches_share_actual_and_logical_query_limits);
         run(a_plugin_loads_ticks_runs_its_commands_and_unloads);
         run(a_permission_must_be_declared);

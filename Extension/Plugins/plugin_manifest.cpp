@@ -15,7 +15,9 @@ namespace {
 // throwdown kit (modes, documents, the native flag); "server.parks" a dedicated server's park mods
 // (reskate.server.parks, park_spawn, park_remove); "variants" choosing which of its own mod's
 // variants is in the game (reskate.package.choose). "world.physics.observe" permits bounded passive
-// synchronizer observations of an existing owned body and also requires "world.physics".
+// synchronizer observations of an existing owned body and probe_batch's opt-in passive hit metadata
+// (include_shape_categories, a read-time category mask that also needs "world.raycast"), and also
+// requires "world.physics". It grants no force, filter, exclusion or actor identity.
 // "world.physics.follow" permits a local actor to follow an owned body and
 // requires "world.physics". It grants no input or equipment-transition access.
 // A manifest's "resident" list and "variants" are

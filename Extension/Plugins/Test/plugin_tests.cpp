@@ -395,11 +395,18 @@ struct FakeGame final : Game {
     }
     int batch_contact_mode{};
     unsigned batch_available_corruptions{};
+    // Constructed category sidecars, copied in after execute like the native adapter:
+    // 1 into opted-in hits, 2 into hits even without the opt-in, 3 onto clear rows of
+    // an available result, 4 onto a refused result's first row.
+    int batch_category_mode{};
+    std::array<std::uint32_t, body_query::maximum_rays> batch_categories{};
+    std::array<bool, body_query::maximum_rays> batch_category_missing{};
     body_query::Result body_probe_batch(std::uint64_t owner, const owned_body::Handle& h, const body_query::Request& request, unsigned allowed) override {
         ++batch_calls; last_batch = request;
         if (batch_refusal != body_query::Failure::none) {
             body_query::Result out; out.count = request.count; out.failure = batch_refusal;
             out.native_casts = batch_refusal_casts; out.accounting_valid = batch_refusal_accounting_valid;
+            if (batch_category_mode == 4) { out.rays[0].status = body_query::Status::hit; out.rays[0].in_categories = 9; out.rays[0].in_categories_available = true; }
             native_casts += out.native_casts; return out;
         }
         auto* selected = body_of(owner, h);
@@ -459,6 +466,13 @@ struct FakeGame final : Game {
             if(batch_contact_mode==4)result.rays[0].normal[1]=std::numeric_limits<float>::quiet_NaN();
             if(batch_contact_mode==5)result.rays[0].normal[1]=-1;
             if(batch_contact_mode==6)result.rays[0].surface_velocity_available=false;
+        }
+        for (std::size_t i = 0; result.available && batch_category_mode >= 1 && batch_category_mode <= 3 && i < result.count; ++i) {
+            auto& hit = result.rays[i];
+            const bool copied = batch_category_mode == 3 ? hit.status == body_query::Status::clear :
+                hit.status == body_query::Status::hit && !batch_category_missing[i] &&
+                (request.include_shape_categories || batch_category_mode == 2);
+            if (copied) { hit.in_categories = batch_categories[i]; hit.in_categories_available = true; }
         }
         return result;
     }
@@ -8341,6 +8355,7 @@ void bmx_lua_spawn_uses_owned_chassis_and_measured_part_placement() {
 #include "body_follow_host_fixture.inc"
 #include "body_follow_motion_policy_host_fixture.inc"
 #include "body_command_cleanup_host_fixture.inc"
+#include "shape_categories_host_fixture.inc"
 
 int main() {
     unsigned skipped = 0;
@@ -8392,6 +8407,7 @@ int main() {
         run(owned_body_batches_are_permissioned_opaque_and_transactional);
         run(body_contact_details_are_known_and_epoch_bound);
         run(owned_body_batches_select_a_named_query_preset);
+        run(shape_categories_host_fixture_v1);
         run(owned_body_batches_share_actual_and_logical_query_limits);
         run(a_plugin_loads_ticks_runs_its_commands_and_unloads);
         run(a_permission_must_be_declared);

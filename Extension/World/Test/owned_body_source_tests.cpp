@@ -722,6 +722,86 @@ void service_forwards_query_preset_without_relaxing_refusals() {
         "terrain batch escaped the closing whole-batch fence");
 }
 
+// Optional shape categories over the actual Service: opt-in only, read after the
+// actual hit qualified and was not owned, keyed by the hit shape rather than its
+// mapped body, gated by the pinned getter bytes, and fenced before publication.
+void service_shape_categories_are_opt_in_shape_bound_and_fenced() {
+    using body_query::Failure;
+    const auto pin=[](ContactFixture& f,bool exact) {
+        // Commit only the synthetic image page that holds the pinned getter bytes.
+        const auto at=f.base+r::shape_in_categories.rva;
+        check(VirtualAlloc(reinterpret_cast<void*>(at&~std::uintptr_t{4095}),4096,MEM_COMMIT,PAGE_READWRITE)!=nullptr,
+            "getter byte page commit failed");
+        auto bytes=r::shape_in_categories.bytes;
+        if(!exact) bytes[31]=static_cast<unsigned char>(bytes[31]^0x01U);
+        put(at,bytes);
+    };
+    const auto masks=[](ContactFixture& f) {
+        put(f.categories+ContactFixture::hit_shapes[0]*4,0x80000000U);
+        put(f.categories+ContactFixture::hit_shapes[1]*4,0xffffffffU);
+        // The mapped foreign body's own index holds a decoy for a body-index read.
+        put(f.categories+ContactFixture::foreign_index*4,7U);
+    };
+    const auto none=[](const body_query::Result& out) {
+        for(const auto& hit:out.rays) if(hit.in_categories_available) return false;
+        return true;
+    };
+    {
+        ContactFixture f;masks(f);auto request=f.request(2,false);request.include_shape_categories=true;
+        auto out=probe_batch(owner,f.handle,request,64);
+        check(out.available && out.native_casts==2 && none(out),"unreadable getter bytes refused the batch or still read categories");
+        pin(f,true);request.include_shape_categories=false;
+        out=probe_batch(owner,f.handle,request,64);
+        check(out.available && out.native_casts==2 && none(out),"a default Service batch carried categories");
+        request.include_shape_categories=true;SetLastError(0x5157);
+        out=probe_batch(owner,f.handle,request,64);
+        check(GetLastError()==0x5157,"category capture changed LastError");
+        check(out.available && out.native_casts==2 && f.calls==6 &&
+            out.rays[0].in_categories_available && out.rays[0].in_categories==0x80000000U &&
+            out.rays[1].in_categories_available && out.rays[1].in_categories==0xffffffffU,
+            "the Service lost, mixed or body-indexed its hit shape categories");
+        check(out.rays[0].status==body_query::Status::hit && !out.rays[0].body,"categories minted a hit identity");
+        pin(f,false);out=probe_batch(owner,f.handle,request,64);
+        check(out.available && out.native_casts==2 && none(out),"a getter byte mismatch refused the batch or still read categories");
+        pin(f,true);request.exclude_local_actor=true;const auto calls=f.calls;
+        out=probe_batch(owner,f.handle,request,64);
+        check(!out.available && out.failure==Failure::local_actor_exclusion_unavailable && !out.native_casts && f.calls==calls && none(out),
+            "the option bypassed the zero-cast actor exclusion refusal");
+        request.exclude_local_actor=false;f.hit_owned=true;out=probe_batch(owner,f.handle,request,64);
+        check(!out.available && out.native_casts==1 && none(out),"an owned nearest hit was given a category or recast");
+    }
+    {
+        // Category-only drift while the second ray runs drops only the first value.
+        ContactFixture f;masks(f);pin(f,true);auto request=f.request(2,false);request.include_shape_categories=true;
+        const auto second=f.calls+2;
+        f.during_query=[&,second](unsigned calls) { if(calls==second) put(f.categories+ContactFixture::hit_shapes[0]*4,1U); };
+        const auto out=probe_batch(owner,f.handle,request,64);
+        check(out.available && out.native_casts==2 && !out.rays[0].in_categories_available &&
+            out.rays[1].in_categories_available && out.rays[1].in_categories==0xffffffffU,
+            "category drift refused the batch or kept a stale value");
+    }
+    {
+        // An identical copy at another address is still a replaced array.
+        ContactFixture f;masks(f);pin(f,true);auto request=f.request(2,false);request.include_shape_categories=true;
+        const auto copy=f.arena.take(capacity*4);
+        for(std::uint32_t i=0;i<capacity;++i) put(copy+i*4,load<std::uint32_t>(f.categories+i*4));
+        const auto second=f.calls+2;
+        f.during_query=[&,second,copy](unsigned calls) { if(calls==second) put(f.state+r::shape_categories,copy); };
+        const auto out=probe_batch(owner,f.handle,request,64);
+        check(out.available && !out.rays[0].in_categories_available && out.rays[1].in_categories_available,
+            "a replaced category array kept the old witness or refused the batch");
+    }
+    {
+        // Identity drift is still a whole-batch refusal, with no category at all.
+        ContactFixture f;masks(f);pin(f,true);auto request=f.request(2,false);request.include_shape_categories=true;
+        const auto second=f.calls+2;
+        f.during_query=[&,second](unsigned calls) { if(calls==second) put(f.shape_bodies+ContactFixture::hit_shapes[0]*4,body_index); };
+        const auto out=probe_batch(owner,f.handle,request,64);
+        check(!out.available && out.failure==Failure::observation_changed && out.native_casts==2 && none(out),
+            "shape identity drift became a missing category instead of a refusal");
+    }
+}
+
 void deferred_initialization_stays_outside_create_and_service_lock() {
     Fixture f;
     const auto definition=f.slot().definition;
@@ -1148,6 +1228,7 @@ int main() {
         run("service_whole_batch_contact_fences",service_whole_batch_contact_fences);
         run("service_actor_and_nearest_hit_refusals",service_actor_and_nearest_hit_refusals);
         run("service_forwards_query_preset_without_relaxing_refusals",service_forwards_query_preset_without_relaxing_refusals);
+        run("service_shape_categories_opt_in_shape_bound_and_fenced",service_shape_categories_are_opt_in_shape_bound_and_fenced);
         run("deferred_producer_initialization_without_allocation",deferred_initialization_stays_outside_create_and_service_lock,1);
         run("prepare_cold_queues_only_deferred_setup",prepare_cold_queues_only_deferred_setup);
         run("prepare_deferred_failure_is_terminal_without_retry",prepare_deferred_failure_is_terminal_without_retry,1);

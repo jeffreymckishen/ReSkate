@@ -12,6 +12,7 @@
 #include "Engine/Game/Build/20260929/motion_refresh_probe.h"
 #include "Engine/Game/World/body_hit_identity.h"
 #include "Engine/Game/World/body_contact_read.h"
+#include "Engine/Game/World/body_shape_categories.h"
 #include "Extension/Multiplayer/Session/session.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
 #include "Extension/Skater/actor_control.h"
@@ -1200,6 +1201,21 @@ body_query::Result probe_batch(std::uint64_t owner, const Handle& handle, const 
                 valid_handle(service.api.body_valid,body) && allocated(anchor.state,body.index) && world_current();
         };
         const auto read_contact = [](std::uintptr_t at, auto& value) { return peek(at,value); };
+        // Optional read-time categories, only when asked for and only while the
+        // pinned getter's bytes match this image. A mismatch leaves every value
+        // absent; it never refuses the batch. Nothing here outlives this call.
+        body_shape_categories::Sidecars<body_query::maximum_rays> categories;
+        const bool categories_readable = request.include_shape_categories &&
+            body_shape_categories::layout_qualified(service.base, read_contact);
+        // Around each category read: the same World/state and SDK world generation,
+        // the requested listener epoch and sample, and the original shape/body pair.
+        const auto hit_current = [&](const NativeHandle& shape, const NativeHandle& body) {
+            NativeHandle current; Epoch epoch{};
+            if (!world_current() || !qualify(shape, current) || current != body || !clock(anchor, epoch)) return false;
+            epoch.world = generation; epoch.body = selected->handle.generation;
+            return epoch == requested_epoch && body_query::same_sample(canonical, selected->latest) && world_current();
+        };
+        std::size_t ordinal{};
         const auto fence = [&] {
             Anchor current; Epoch epoch{};
             if (!eligible() || service.world_generation != generation || !capture(current) || !anchor.same(current) ||
@@ -1215,12 +1231,18 @@ body_query::Result probe_batch(std::uint64_t owner, const Handle& handle, const 
                 })) return false;
             for (std::size_t i=0;i<motion_count;++i)
                 if (!body_contact_read::motion_current(anchor.world,anchor.state,motions[i],read_contact,motion_body_current)) return false;
+            // Identity drift seen while capturing or rechecking a category refuses
+            // the batch and stays refused; category-only drift drops just that value.
+            if (!categories.current(read_contact, hit_current)) return false;
             Epoch after{}; after.world = generation; after.body = selected->handle.generation;
             return world_current() && clock(anchor, after) && after == requested_epoch &&
                 body_query::same_sample(canonical, selected->latest);
         };
         const auto query = [&](const body_query::Ray& ray, unsigned permitted) {
             body_query::Probe out;
+            // execute calls this once per requested ray, in order, so the count is
+            // that ray's ordinal. A category sidecar binds to it, never to a body.
+            const auto index = ordinal++;
             // Native ignored IDs are owner indices. Query without either list or
             // the ECS owner resolver; classify only the actual nearest hit below.
             ray_entered = true;
@@ -1237,6 +1259,10 @@ body_query::Result probe_batch(std::uint64_t owner, const Handle& handle, const 
             for (std::size_t i = 0; i < excluded_count; ++i)
                 if (body.world == owners[i]->body.world && body.index == owners[i]->body.index) return out;
             if (!witnesses.add({shape, body})) return out;
+            // Only after qualification and the owned exclusion above, indexed by the
+            // original shape. The value stays beside the batch; this probe never has it.
+            if (categories_readable &&
+                !categories.capture(index, anchor.world, anchor.state, shape, body, read_contact, hit_current)) return out;
             out.hit.status = body_query::Status::hit; out.hit.position = hit.position; out.hit.fraction = hit.fraction;
             out.hit.normal=hit.normal; out.hit.normal_available=hit.normal_available;
             body_contact_read::Motion motion;
@@ -1249,7 +1275,10 @@ body_query::Result probe_batch(std::uint64_t owner, const Handle& handle, const 
             // actor exclusions above remain unavailable until their own conversion is qualified.
             return out;
         };
-        return body_query::execute(request, allowance, 1000, query, fence);
+        auto result = body_query::execute(request, allowance, 1000, query, fence);
+        // Only a result that passed execute's closing fence receives categories.
+        categories.publish(request, result);
+        return result;
     } catch (...) {
         failed.native_casts = performed; failed.accounting_valid = !ray_entered;
         failed.failure = ray_entered ? body_query::Failure::query_backend_exception : body_query::Failure::query_preconditions_unavailable;

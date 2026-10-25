@@ -55,6 +55,11 @@ struct Hit {
     std::uint32_t body{};
     Vec normal{}, surface_velocity{};
     bool normal_available{}, surface_velocity_available{};
+    // Opt-in: the hit shape's InCategories DWORD as read after the hit qualified.
+    // Only a hit can carry it, and only once the batch's closing fence passed.
+    // It says nothing about an actor, a floor or collision-time filtering.
+    std::uint32_t in_categories{};
+    bool in_categories_available{};
 };
 struct Request {
     owned_body::Sample observation{};
@@ -65,6 +70,7 @@ struct Request {
     bool exclude_local_actor{};
     bool require_contact{}; // Every hit needs qualified normal and point motion; clear stays clear.
     QueryPreset preset{QueryPreset::camera}; // Camera is the filter every earlier caller used.
+    bool include_shape_categories{}; // False reads no category and adds no field.
 };
 // Compare each published numeric lane exactly, including signed zero. Padding is not state.
 inline bool same_sample(const owned_body::Sample& a, const owned_body::Sample& b) noexcept {
@@ -106,7 +112,8 @@ inline bool valid(const Request& request, float maximum_distance) noexcept {
     return true;
 }
 inline bool consistent(const Ray& ray, const Hit& hit) noexcept {
-    if (hit.status == Status::clear) return !hit.normal_available && !hit.surface_velocity_available;
+    // A clear ray hit no shape, so it has no category either.
+    if (hit.status == Status::clear) return !hit.normal_available && !hit.surface_velocity_available && !hit.in_categories_available;
     if (hit.normal_available) {
         if (!owned_body::finite(hit.normal, 1.01f)) return false;
         double norm{}; for (float lane : hit.normal) norm += double(lane)*lane;
@@ -158,6 +165,9 @@ Result execute(const Request& request, unsigned allowance, float maximum_distanc
             return finish_failure(probe.budget_exhausted ? (out.native_casts == allowance ? Failure::budget : Failure::ray_limit) :
                 out.native_casts ? Failure::unavailable : Failure::query_preconditions_unavailable);
         if (!probe.native_casts || !consistent(request.rays[i], probe.hit)) return finish_failure(Failure::backend);
+        // A probe never carries a category. The adapter copies them in only after
+        // the closing fence below, so a later downgrade cannot leave a stale value.
+        if (probe.hit.in_categories_available) return finish_failure(Failure::backend);
         if (request.require_contact && probe.hit.status == Status::hit &&
             (!probe.hit.normal_available || !probe.hit.surface_velocity_available))
             return finish_failure(Failure::contact_measurement_unavailable);

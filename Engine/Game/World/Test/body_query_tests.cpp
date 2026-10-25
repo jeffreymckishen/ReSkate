@@ -1,5 +1,6 @@
 #include "Engine/Game/World/body_query.h"
 #include "Engine/Game/World/body_hit_identity.h"
+#include "Engine/Game/World/body_shape_categories.h"
 #include <algorithm>
 #include <cstring>
 #include <functional>
@@ -410,6 +411,92 @@ void every_returned_shape_body_pair_reaches_the_final_batch_fence() {
     }
 }
 
+// Shape categories are opt-in batch metadata. They never ride a probe, attach
+// to a clear or unavailable row, or survive a refused batch. They are copied in
+// after execute's closing fence, so a downgrade there is what the result shows,
+// and asking for them changes no accounting, contact or nearest-hit rule.
+void shape_categories_attach_only_to_hits_after_the_closing_fence() {
+    using Sidecars = dingosdk::body_shape_categories::Sidecars<maximum_rays>;
+    check(!Request{}.include_shape_categories && !request().include_shape_categories && !Hit{}.in_categories_available,
+        "categories are not opt-in or a default row claims one");
+    const auto base = request();
+    Hit row{Status::clear}; row.in_categories_available = true;
+    check(!consistent(base.rays[0], row), "a clear row carried a category");
+    row = {}; row.in_categories_available = true;
+    check(!consistent(base.rays[0], row), "an unavailable row carried a category");
+    row = {Status::hit, {1, 0, 3}, .5f, 1}; row.in_categories = 0xffffffffU; row.in_categories_available = true;
+    check(consistent(base.rays[0], row), "a hit row cannot hold its category");
+    for (const auto status : {Status::hit, Status::clear}) {
+        auto selected = request(2); selected.include_shape_categories = true;
+        auto out = execute(selected, 64, 1000, [&](const Ray&, unsigned) {
+            Probe probe{{status, {1, 0, 3}, .5f, 1}, 1}; probe.hit.in_categories_available = true; return probe;
+        }, [] { return true; });
+        check(out.failure == Failure::backend && out.native_casts == 1, "a probe that carried a category was accepted"); empty(out);
+    }
+    for (unsigned variant = 0; variant < 6; ++variant) {
+        // Shapes 9 and 10 share body 57; element 57 is a decoy for a body-index read.
+        HitFixture fixture; fixture.seed_shape(10, 4, 57);
+        constexpr std::uintptr_t categories = 0x80000;
+        fixture.memory.put(HitFixture::state + 0xfe8, categories);
+        fixture.memory.put(categories + 9 * sizeof(std::uint32_t), std::uint32_t{0x80000000U});
+        fixture.memory.put(categories + 10 * sizeof(std::uint32_t), std::uint32_t{1});
+        fixture.memory.put(categories + 57 * sizeof(std::uint32_t), std::uint32_t{0xdeadbeefU});
+        auto selected = request(2); selected.include_shape_categories = variant != 5;
+        Sidecars sidecars; unsigned calls{};
+        const auto qualified = [&](const NativeHitHandle& shape, const NativeHitHandle& body) {
+            NativeHitHandle current; return fixture.resolve(shape, current) && current == body;
+        };
+        auto out = execute(selected, 64, 1000, [&](const Ray&, unsigned) {
+            const auto ordinal = calls++;
+            const NativeHitHandle shape{HitFixture::world, 9 + ordinal, 4}; NativeHitHandle body;
+            if (variant == 4 && ordinal == 1) return Probe{{}, 1};
+            check(fixture.resolve(shape, body), "fixture hit was unavailable");
+            if (selected.include_shape_categories &&
+                !sidecars.capture(ordinal, HitFixture::world, HitFixture::state, shape, body, fixture.memory, qualified)) return Probe{{}, 1};
+            return Probe{{Status::hit, {1, 0, 3}, .5f, 0}, 1};
+        }, [&] {
+            if (calls == 2 && variant == 1) fixture.memory.put(categories + 9 * sizeof(std::uint32_t), std::uint32_t{2});
+            if (calls == 2 && variant == 2) fixture.seed_shape(10, 4, 9);
+            return !(calls == 2 && variant == 3) && sidecars.current(fixture.memory, qualified);
+        });
+        sidecars.publish(selected, out);
+        switch (variant) {
+        case 0:
+            check(out.available && out.native_casts == 2 && out.rays[0].in_categories_available && out.rays[0].in_categories == 0x80000000U &&
+                out.rays[1].in_categories_available && out.rays[1].in_categories == 1, "shape-bound categories were lost or read by body index");
+            break;
+        case 1:
+            check(out.available && !out.rays[0].in_categories_available && out.rays[1].in_categories_available,
+                "publication did not reflect the closing sidecar downgrade");
+            break;
+        case 2: case 3: case 4:
+            check(!out.available && out.native_casts == 2 && (variant == 4 ? out.failure == Failure::unavailable : out.failure == Failure::observation_changed),
+                "a failed closing fence or partial batch kept its reason or casts wrong"); empty(out);
+            for (const auto& hit : out.rays) check(!hit.in_categories_available, "a refused batch published a category");
+            break;
+        case 5:
+            check(out.available && !out.rays[0].in_categories_available && !out.rays[1].in_categories_available &&
+                !fixture.memory.touched(HitFixture::state + 0xfe8), "a batch without the option read or carried categories");
+            break;
+        }
+    }
+    // Asking for categories leaves accounting, contact and nearest-hit rules alone.
+    for (const bool categories : {false, true}) {
+        auto selected = request(3); selected.include_shape_categories = categories; selected.require_contact = true;
+        unsigned calls{};
+        auto out = execute(selected, 64, 1000, [&](const Ray&, unsigned) { ++calls; return Probe{{Status::hit, {1, 0, 3}, .5f, 1}, 1}; },
+            [] { return true; });
+        check(out.failure == Failure::contact_measurement_unavailable && out.native_casts == 1 && calls == 1,
+            "the option changed the contact requirement"); empty(out);
+        selected.require_contact = false;
+        out = execute(selected, 4, 1000, [](const Ray&, unsigned allowance) { return Probe{{Status::clear}, allowance}; }, [] { return true; });
+        check(out.failure == Failure::budget && out.native_casts == 4 && out.budget_exhausted, "the option changed shared cast accounting"); empty(out);
+        out = execute(selected, 64, 1000, [](const Ray&, unsigned) { return Probe{{Status::hit, {1, 0, 3}, .5f, 1}, 2}; }, [] { return true; });
+        check(out.available && out.native_casts == 6 && out.rays[2].position == Vec{1, 0, 3} && out.rays[2].fraction == .5f &&
+            !out.rays[2].in_categories_available, "the option changed the nearest hit or invented a category");
+    }
+}
+
 void identity_address_ranges_refuse_overflow_before_callbacks() {
     const auto maximum = std::numeric_limits<std::uintptr_t>::max();
     unsigned reads{}, callbacks{}; std::uint32_t value{};
@@ -437,7 +524,7 @@ int main() {
         a_listener_epoch_does_not_freeze_canonical_body_state(); typed_refusal_names_are_stable(); query_presets_are_fixed_and_default_to_camera();
         hit_association_uses_shape_and_body_domains(); unknown_hit_identity_stops_before_unsafe_body_reads();
         hit_association_rechecks_mapping_generations_and_array_heads(); every_returned_shape_body_pair_reaches_the_final_batch_fence();
-        identity_address_ranges_refuse_overflow_before_callbacks();
+        identity_address_ranges_refuse_overflow_before_callbacks(); shape_categories_attach_only_to_hits_after_the_closing_fence();
         std::cout << "body query tests passed: " << checks << " checks\n"; return 0;
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }

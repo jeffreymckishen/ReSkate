@@ -1,5 +1,6 @@
 #pragma once
 #include "Engine/Game/Build/fingerprint.h"
+#include <array>
 #include <cstdint>
 
 // Verified native rigid-body operations for the single supported game build.
@@ -51,6 +52,16 @@ inline constexpr std::uintptr_t shape_allocated_bits = 0xf58, shape_body_indices
 // 0x25d7b10 compares a body's u32 generation in the world, not its state.
 inline constexpr std::uintptr_t world_body_generations = 0x680;
 inline constexpr std::uintptr_t shape_categories = 0xfe8, shape_collides = 0xff0, shape_owners = 0x1008;
+// Stage 6: 0x25d55d0 takes a shape handle and stores DWORD (World+28)+FE8[index]
+// through its second argument, with no index, allocation or generation check.
+// The SDK never calls it. Its bytes qualify the world_state/shape_categories
+// layout that guarded reads use for the optional in_categories hit field; a
+// mismatch disables that field only.
+inline constexpr std::uintptr_t shape_in_categories_rva = 0x25d55d0;
+inline constexpr std::array<unsigned char, 32> shape_in_categories_prefix{
+    0x48,0x8b,0x01,0x44,0x8b,0x41,0x08,0x48,0x8b,0x48,0x28,0x48,0x8b,0x81,0xe8,0x0f,
+    0x00,0x00,0x42,0x8b,0x0c,0x80,0x48,0x8b,0xc2,0x89,0x0a,0xc3,0xcc,0xcc,0xcc,0xcc};
+inline constexpr Fingerprint shape_in_categories{shape_in_categories_rva, shape_in_categories_prefix};
 // The local client/physics participant qualifies the observed producer phase;
 // it does not grant ownership of that participant or its bodies to a plugin.
 inline constexpr std::uintptr_t client_context = 8, client_phase = 0xc4;

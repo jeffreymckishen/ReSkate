@@ -99,7 +99,7 @@ Tests.cast = cast
 local function v3(a) return vector.create(a[1], a[2], a[3]) end
 local function from_vector(v) return { v.x, v.y, v.z } end
 -- A raw probe_batch result for these rays, in the shape
--- Extension/Plugins/plugin_api_physics.cpp builds it (:631-658): status,
+-- Extension/Plugins/plugin_api_physics.cpp builds it (:636-665): status,
 -- native_casts (one cast per ray here; the SDK allows count to 2 x count),
 -- budget_exhausted, the epoch it was given, both exclusion facts, and rows
 -- whose hits carry a Luau vector position and normal, the fraction, measured

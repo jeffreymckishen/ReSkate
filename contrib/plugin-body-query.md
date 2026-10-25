@@ -41,8 +41,9 @@ long, subject to a lower configured host limit. Invalid arguments raise a Lua
 error. Lists must be dense arrays; extra fields are refused.
 
 Options are `exclude_bodies = {other_owned_body, ...}`,
-`exclude_local_actor = true|false`, `require_contact = true|false` and
-`query_preset = "camera"|"terrain"` (described below). At most eight additional opaque body handles
+`exclude_local_actor = true|false`, `require_contact = true|false`,
+`query_preset = "camera"|"terrain"` and `include_shape_categories = true|false`
+(both described below). At most eight additional opaque body handles
 are accepted. Every exclusion must still belong to this VM, its current native
 world and a fresh owned generation. The anchoring body must always be excluded.
 The native ray filter consumes owner indices, not body or shape handles, and the
@@ -139,6 +140,46 @@ end
 The preset lane is covered by source and constructed-ABI tests. No in-game
 terrain batch has been run yet: whether `"terrain"` reaches a given floor, ramp
 or prop, and whether it can return the rider's own shapes, is still unmeasured.
+
+**Shape categories.** `include_shape_categories = true` asks for one optional,
+read-only number on each qualified hit: `in_categories`, the hit shape's
+InCategories mask as read after the ray, an exact whole number from 0 to
+4294967295. The option needs three permissions: `world.physics` and
+`world.raycast` as for every batch, and `world.physics.observe`, which is checked
+only when the option is true, before the logical ray budget or any native call is
+spent. Without it the call raises a Lua error; the same plugin's ordinary batches
+still run. Only an actual boolean is accepted. Leaving the option out, or `false`,
+reads no category and adds no field.
+
+`in_categories` appears only on a `status = "hit"` row of an available batch that
+asked for it. Missing means unavailable; `0` is a known empty mask. It is missing
+when the supported build's own category getter no longer has its pinned bytes,
+when the category array or element cannot be read, or when the array or value
+changed between the paired reads or before the closing fence. A clear ray never
+has one, and a refused batch has none. There is no availability flag, reason,
+native index, handle, generation or owner, and no new batch-level field.
+
+The adapter reads the value only after the nearest hit has passed the shape
+reader, the shape-to-body association and the owned-body exclusion. It indexes
+the native category array with the hit's own shape, not its mapped body, so two
+shapes of one body keep their own values. It reads the array pointer and value
+twice, between two checks of the same World/state, listener epoch and sample, and
+shape/body association, and the closing fence repeats all of that. An identity
+change found there still refuses the whole batch as
+`body_epoch_or_observation_changed`; a change to the category alone only drops
+that ray's value. Values are copied into the result after the closing fence, so a
+refused batch can never carry one. Native cast and logical ray accounting,
+contact requirements, presets and exclusions are unchanged.
+
+This is read-time evidence about one mask. It does not identify an actor, a
+floor, terrain, static geometry or support, says nothing about the filter the
+native ray applied at collision time, does not exclude the local actor and grants
+no force. The ray supplies no collision-time shape generation, so a category that
+changed before the first read, or changed and returned between reads, cannot be
+seen. A clear ray says nothing about categories beyond its own segment. There is
+no raw filter option, ignored-ID list, farther-hit search, extra native ray or
+fallback query. The field is covered by source and constructed-memory tests only;
+no in-game batch has asked for it yet.
 
 The contact-vector roles are supported by static consumers in the one supported
 game build. The source and constructed-memory tests do not demonstrate the new

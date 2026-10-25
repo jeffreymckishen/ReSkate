@@ -573,7 +573,7 @@ struct PhysicsApi {
         }
         bool preset_requested{};
         if (!lua_isnoneornil(L, 4)) {
-            fields(L, 4, {"exclude_bodies", "exclude_local_actor", "require_contact", "query_preset"});
+            fields(L, 4, {"exclude_bodies", "exclude_local_actor", "require_contact", "query_preset", "include_shape_categories"});
             lua_getfield(L, 4, "query_preset");
             if (!lua_isnil(L, -1)) {
                 // Only an actual string naming a fixed preset; numbers are not coerced
@@ -601,7 +601,12 @@ struct PhysicsApi {
                     lua_rawgeti(L, -1, static_cast<int>(i + 1)); request.excluded[i] = body(L, p, -1).handle; lua_pop(L, 1);
                 }
             }
+            lua_pop(L, 1); lua_getfield(L, 4, "include_shape_categories");
+            // Passive hit metadata: only an actual boolean, and true also needs the
+            // observation permission before any ray counter or backend work.
+            if (!lua_isnil(L, -1)) { luaL_checktype(L, -1, LUA_TBOOLEAN); request.include_shape_categories = lua_toboolean(L, -1) != 0; }
             lua_pop(L, 1);
+            if (request.include_shape_categories) need(L, p, "world.physics.observe", "reskate.world.physics.probe_batch include_shape_categories");
         }
         const float distance_limit = p.limits_.raycast_metres < 1000 ? p.limits_.raycast_metres : 1000;
         if (!body_query::valid(request, distance_limit)) luaL_error(L, "invalid ray batch: finite nonzero rays within the configured distance");
@@ -652,6 +657,8 @@ struct PhysicsApi {
                 if (hit.normal_available) { push_position(L,hit.normal); lua_setfield(L,-2,"normal"); }
                 if (hit.surface_velocity_available) { push_position(L,hit.surface_velocity); lua_setfield(L,-2,"surface_velocity"); }
                 if (hit.body) { opaque(L, HitBodyValue{p.instance(), batch, hit.body}, hit_body_type); lua_setfield(L, -2, "body"); }
+                // Only a request that opted in sees it; absent means unavailable, never zero.
+                if (request.include_shape_categories && hit.in_categories_available) { lua_pushnumber(L, hit.in_categories); lua_setfield(L, -2, "in_categories"); }
             }
             lua_rawseti(L, -2, static_cast<int>(i + 1));
         }

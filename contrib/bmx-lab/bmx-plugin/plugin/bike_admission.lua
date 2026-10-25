@@ -122,6 +122,10 @@ Admission.required={"time.now","input.focus","input.allowed","skater.get","skate
     "menu.game","json.encode","storage.get","storage.set","entities.bounds","entities.set","entities.status","entities.remove",
     "world.physics.create","world.physics.read","world.physics.release","world.physics.reserve_follow","world.physics.publish_follow",
     "world.physics.read_follow","world.physics.stop_follow","world.physics.acknowledge_follow",
+    -- Core's four force closures call these. A missing one refuses here, before
+    -- any body or Ride exists, instead of raising inside a ride. Presence only:
+    -- probe_batch still needs world.raycast at call time.
+    "world.physics.probe_batch","world.physics.submit","world.physics.receipt","world.physics.acknowledge",
     "input.pulse","input.pulse_state","input.pulse_cancel","input.pulse_acknowledge"}
 Admission.input_methods={"lease","lease_read","lease_renew","lease_state","lease_release","lease_acknowledge",
     "lease_capture","lease_capture_state","lease_release_capture","lease_acknowledge_capture"}

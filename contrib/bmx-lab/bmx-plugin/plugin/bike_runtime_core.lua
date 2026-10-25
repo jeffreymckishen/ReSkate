@@ -203,6 +203,7 @@ snapshot=function()
         follow_history_limit=16,follow_read_limit=400,
         startup={pending=T.startup_pending==true,loaded=T.startup_loaded or 0,last_module=T.startup_last,
             core_ready=T.core_ready==true,backend_ready=T.backend_ready==true,
+            ride_modules_bound=T.ride_modules_bound==true,ride_trick_adapter=T.ride_trick_adapter==true,
             core_instances=T.core_instances or 0,equipment_instances=T.equipment_instances or 0,
             source_instances=T.source_instances or 0,spawn_instances=T.spawn_instances or 0},
         geometry_scope="Original actor+3m/+0.5m spawn; COM attachment and anchor remain unqualified",
@@ -308,7 +309,7 @@ for _,method in ipairs(input_methods) do
         return table.unpack(r,2,r.n)
     end
 end
-local Identity,G
+local Identity,G,RideRuntime,ride_models
 local spawn_api={input=R.input,skater=R.skater,world={physics={}},entities={}}
 for _,method in ipairs({"create","read","release"}) do
     local name=method
@@ -394,6 +395,8 @@ local required={"time.now","input.focus","input.allowed","skater.get","skater.te
     "menu.game","json.encode","storage.get","storage.set","entities.bounds","entities.set","entities.status","entities.remove",
     "world.physics.create","world.physics.read","world.physics.release","world.physics.reserve_follow","world.physics.publish_follow",
     "world.physics.read_follow","world.physics.stop_follow","world.physics.acknowledge_follow",
+    -- The four force closures in create_ride call these; refuse at mount, not mid-ride.
+    "world.physics.probe_batch","world.physics.submit","world.physics.receipt","world.physics.acknowledge",
     "input.pulse","input.pulse_state","input.pulse_cancel","input.pulse_acknowledge"}
 local function available()
     for _,path in ipairs(required) do if not lookup(path) then return false,path end end
@@ -618,11 +621,11 @@ local function create_ride(frame)
         return table.unpack(r,2,r.n)
     end
     table.freeze(api)
+    -- Ride and its models were bound by prepare_backend from staged modules, so
+    -- this first following tick resolves no module. No trick adapter: it refuses
+    -- support that is not measured_support, which Contact never reports.
     local built=call("ride.new",function()
-        local Ride=require("./ride_runtime")
-        local Contact=require("./contact_runtime")
-        local Trick=require("./trick_runtime")
-        return Ride.new(api,{contact=Contact,tricks=Trick.new()},{body_handle=owner.body,incarnation=owner.incarnation})
+        return RideRuntime.new(api,ride_models,{body_handle=owner.body,incarnation=owner.incarnation})
     end)
     if built[1] and built.n==2 and type(built[2])=="table" then ride=built[2] end
     if not ride or not remember_ride(status_of(ride)) then
@@ -666,8 +669,10 @@ local function handoff_and_follow()
     local v=call("spawn.follow_visual",spawn.follow_visual,spawn,h[3],at)
     if not yes(v) or not clock() or not current(generation) then stop_all("initial follow visual refused or cancelled");return end
     T.reserve_attempted=true;T.reserve_unknown=true;T.reserve_at=T.now
+    -- The policy pair CE2 ran in game. callback_entry needs explicit owned_body cleanup;
+    -- it changes no lease, quota, permission or receipt shape (contrib/plugin-body-follow.md).
     local reserved=call("follow.reserve",lookup("world.physics.reserve_follow"),T.body,
-        {offset_from_com=vector.create(-G.com[1],-G.com[2],-G.com[3]),root_in_body={0,0,0,1}})
+        {offset_from_com=vector.create(-G.com[1],-G.com[2],-G.com[3]),root_in_body={0,0,0,1},cleanup="owned_body",motion_policy="callback_entry"})
     -- Adopt any returned userdata BEFORE inspecting why or cancellation.
     if reserved[1] and typeof(reserved[2])=="userdata" then T.follow=reserved[2];T.reserve_unknown=false end
     local after=clock()
@@ -801,6 +806,15 @@ function object:prepare_backend()
     local BikeSpawn=require("./bike_spawn")
     Identity=require("./lease_identity")
     G=require("./bike_geometry")
+    -- The facade stages Ride, Contact and every module they require before this
+    -- call. Binding them here keeps require off the first following tick, where
+    -- create_ride runs. Neither module calls reskate.* when it loads.
+    local Ride=require("./ride_runtime")
+    local Contact=require("./contact_runtime")
+    if type(Ride)~="table" or type(Ride.new)~="function" or type(Contact)~="table"
+        or type(Contact.decode)~="function" then return false end
+    RideRuntime=Ride;ride_models=table.freeze({contact=Contact})
+    T.ride_modules_bound=true;T.ride_trick_adapter=ride_models.tricks~=nil
     source=Source.new(input_proxy,{setup_ms=15000,capture_ms=4000,cleanup_ms=4000})
     T.source_instances=(T.source_instances or 0)+1
     spawn=BikeSpawn.new(spawn_api)

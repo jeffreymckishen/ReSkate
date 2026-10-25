@@ -73,3 +73,21 @@ manifest into a separate copy folder. Fresh or empty destinations are accepted. 
 `.bmx-qualified-ride-files-v1` manifest and its exact declared file set; unexpected files, subfolders,
 source/destination aliases and reparse paths are refused before mutation. A legacy fixture filename
 alone proves no ownership, so old copies without a manifest are refused: choose a fresh destination.
+
+Three more `bmx_lua_runner.*` tests check staging itself through `--stage-regression <case>
+<scratch-folder>`. Each case builds a two-module stand-in plugin (one module with CRLF line endings,
+plus a non-Lua note) and its destinations in `build/luau-runner/stage-regression-<case>/`, so it
+neither reads nor writes the real plugin. A case refuses to run if its folder already exists, so it
+never removes anything an earlier run left; the `bmx_lua_runner.stage_regression_reset` setup test
+clears the three folders first.
+
+- `stage_refuses_unrelated_destination`: a destination holding someone's `unrelated.lua` is refused
+  and keeps every byte, whether the file is alone, beside a file named like the fixture (the old
+  filename heuristic took that as ownership and deleted every direct `.lua` file), or dropped into a
+  real earlier copy whose manifest does not list it.
+- `stage_refuses_planted_fixture`: a source with `ride_runtime_qualified_fixture.lua` planted in it is
+  refused before any copy folder exists, and the same stand-in without the plant stages.
+- `stage_writes_exact_manifest`: a fresh stage holds exactly the stand-in's `.lua` modules byte for
+  byte, the fixture with only its gate flipped and a manifest naming exactly those three files. A
+  rerun leaves the copy identical, and a module dropped from the source leaves the copy and its
+  manifest on the next stage.

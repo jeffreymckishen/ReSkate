@@ -3,8 +3,9 @@
 // sandboxed), but this is not the plugin Host: there is no reskate API, no permission, no call or
 // tick time limit, no multiplayer and no game. A suite passes only when its run() returns whole,
 // positive cases and assertions counts; a failed assert reaches here with its message and stack.
-// --stage-qualified-ride builds the test-only copy the Ride suites need, and is the only mode that
-// writes, and then only into the copy folder it is given.
+// --stage-qualified-ride builds the test-only copy the Ride suites need, and --stage-regression checks
+// that staging against a stand-in plugin. They are the only modes that write: the first only into the
+// copy folder it is given, the second only inside a scratch folder that must not exist yet.
 #include "lua.h"
 #include "luacode.h"
 #include "lualib.h"
@@ -18,6 +19,7 @@
 #include <iterator>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -224,6 +226,10 @@ void stage_qualified_ride(const std::filesystem::path& plugin_folder, const std:
             actual.insert(entry.path().filename());
         }
         if (!actual.empty()) {
+            // A legacy copy, a mistyped folder or anyone else's files: none of it is this runner's to remove.
+            if (!actual.contains(manifest))
+                throw std::runtime_error(wanted.generic_string() + " holds files but no " + manifest.string() +
+                    " owned-file manifest, so this runner did not make it; nothing was removed: stage into a fresh folder");
             const auto text = read_text(wanted / manifest, problem);
             if (!problem.empty()) throw std::runtime_error(problem);
             std::istringstream lines(text);
@@ -264,6 +270,166 @@ void stage_qualified_ride(const std::filesystem::path& plugin_folder, const std:
     write(manifest, ownership); // Commit ownership last; a partial stage is not silently adopted.
     std::cout << "bmx_luau_tests: staged " << modules << " modules and the qualified Ride fixture in "
               << wanted.generic_string() << '\n';
+}
+
+// --stage-regression <case> <scratch-folder>: staging's refusals and manifest as CTest cases. A case
+// builds a two-module stand-in plugin and its destinations inside a scratch folder that must not exist
+// yet, so it neither reads nor writes the real plugin and never removes a file this run did not make.
+// CMake clears the scratch folders in a setup test before the cases run.
+using Inventory = std::map<std::filesystem::path, std::optional<std::string>>;
+
+// The stand-in's one gate and the fixture it must become, a CRLF module that must arrive untranslated,
+// and the bytes someone else owns.
+constexpr std::string_view regression_ride =
+    "-- stand-in for ride_runtime.lua\nlocal ACTIVATION_QUALIFIED = false\nreturn { qualified = ACTIVATION_QUALIFIED }\n";
+constexpr std::string_view regression_fixture =
+    "-- stand-in for ride_runtime.lua\nlocal ACTIVATION_QUALIFIED = true\nreturn { qualified = ACTIVATION_QUALIFIED }\n";
+constexpr std::string_view regression_math = "local force_math = {}\r\nreturn force_math\r\n";
+constexpr std::string_view regression_unrelated = "return { owner = \"someone else\" }\n";
+
+void expect(bool condition, const std::string& failure) {
+    if (!condition) throw std::runtime_error("stage regression: " + failure);
+}
+
+void make_folder(const std::filesystem::path& folder) {
+    expect(std::filesystem::create_directory(folder), folder.generic_string() + " already exists");
+}
+
+void write_file(const std::filesystem::path& file, std::string_view text) {
+    std::ofstream out(file, std::ios::binary);
+    out.write(text.data(), static_cast<std::streamsize>(text.size()));
+    out.close();
+    expect(!out.fail(), "could not write " + file.generic_string());
+}
+
+// Every direct entry by name, with a regular file's exact bytes; any other entry has none.
+Inventory inventory(const std::filesystem::path& folder) {
+    Inventory entries;
+    for (const auto& entry : std::filesystem::directory_iterator(folder)) {
+        std::optional<std::string> bytes;
+        if (entry.is_regular_file()) {
+            std::string problem;
+            bytes = read_text(entry.path(), problem);
+            expect(problem.empty(), problem);
+        }
+        entries.emplace(entry.path().filename(), std::move(bytes));
+    }
+    return entries;
+}
+
+// What ride_runtime.lua and force_math.lua stand in for, beside a note that is not a module.
+void make_stand_in(const std::filesystem::path& folder) {
+    make_folder(folder);
+    write_file(folder / "ride_runtime.lua", regression_ride);
+    write_file(folder / "force_math.lua", regression_math);
+    write_file(folder / "notes.txt", "not a module\n");
+}
+
+// Staging that must be refused for the given reason, leaving the destination exactly as it was, or
+// still absent.
+void expect_refused(const std::filesystem::path& source, const std::filesystem::path& destination, std::string_view reason) {
+    const bool existed = std::filesystem::exists(destination);
+    const auto before = existed ? inventory(destination) : Inventory{};
+    try {
+        stage_qualified_ride(source, destination);
+    } catch (const std::exception& error) {
+        const std::string message = error.what();
+        expect(message.find(reason) != std::string::npos, "staging into " + destination.generic_string() +
+            " was refused, but not because of '" + std::string(reason) + "': " + message);
+        expect(std::filesystem::exists(destination) == existed,
+            "a refused stage created or removed " + destination.generic_string());
+        expect(!existed || inventory(destination) == before, "a refused stage changed " + destination.generic_string());
+        return;
+    }
+    expect(false, "staging into " + destination.generic_string() + " was accepted; it must be refused because of '" +
+        std::string(reason) + "'");
+}
+
+// A destination this runner did not make is refused and keeps every byte: someone's Lua alone; that Lua
+// beside a file named like the fixture, which the old filename heuristic took as ownership before
+// deleting every direct .lua file; and that Lua dropped into a real earlier copy that does not list it.
+void unrelated_destination(const std::filesystem::path& scratch) {
+    const auto source = scratch / "source";
+    make_stand_in(source);
+    const auto source_before = inventory(source);
+
+    const auto alone = scratch / "unrelated-alone";
+    make_folder(alone);
+    write_file(alone / "unrelated.lua", regression_unrelated);
+    expect_refused(source, alone, "no .bmx-qualified-ride-files-v1 owned-file manifest");
+
+    const auto named = scratch / "unrelated-beside-fixture-name";
+    make_folder(named);
+    write_file(named / "unrelated.lua", regression_unrelated);
+    write_file(named / "ride_runtime_qualified_fixture.lua", "return 'not made by the runner'\n");
+    expect_refused(source, named, "no .bmx-qualified-ride-files-v1 owned-file manifest");
+
+    const auto earlier = scratch / "unrelated-in-earlier-copy";
+    stage_qualified_ride(source, earlier);
+    write_file(earlier / "unrelated.lua", regression_unrelated);
+    expect_refused(source, earlier, "unexpected or missing files");
+
+    expect(inventory(source) == source_before, "staging changed its source");
+}
+
+// A fixture planted in the plugin is refused before any copy folder exists, and the same stand-in
+// without it stages, so the plant alone is the reason.
+void planted_fixture(const std::filesystem::path& scratch) {
+    const auto planted = scratch / "planted-source";
+    make_stand_in(planted);
+    write_file(planted / "ride_runtime_qualified_fixture.lua", regression_fixture);
+    const auto planted_before = inventory(planted);
+    expect_refused(planted, scratch / "planted-copy", "belongs only in test copies");
+    expect(inventory(planted) == planted_before, "a refused stage changed its source");
+
+    const auto clean = scratch / "clean-source";
+    make_stand_in(clean);
+    stage_qualified_ride(clean, scratch / "clean-copy");
+}
+
+// A fresh stage holds exactly the stand-in's .lua modules byte for byte, the fixture with only its gate
+// flipped and a manifest naming exactly those three; a rerun, as CTest makes on every run, leaves it
+// identical; and a module dropped from the source leaves the copy and its manifest on the next stage.
+void exact_manifest(const std::filesystem::path& scratch) {
+    const auto source = scratch / "source";
+    make_stand_in(source);
+    const auto source_before = inventory(source);
+    const auto destination = scratch / "copy";
+    const Inventory staged{
+        {".bmx-qualified-ride-files-v1",
+            std::string("bmx-qualified-ride-files-v1\nforce_math.lua\nride_runtime.lua\nride_runtime_qualified_fixture.lua\n")},
+        {"force_math.lua", std::string(regression_math)},
+        {"ride_runtime.lua", std::string(regression_ride)},
+        {"ride_runtime_qualified_fixture.lua", std::string(regression_fixture)}};
+    stage_qualified_ride(source, destination);
+    expect(inventory(destination) == staged, "a fresh stage does not hold exactly the modules, the fixture and their manifest");
+    stage_qualified_ride(source, destination);
+    expect(inventory(destination) == staged, "a rerun into its own copy changed it");
+    expect(inventory(source) == source_before, "staging changed its source");
+
+    expect(std::filesystem::remove(source / "force_math.lua"), "could not drop force_math.lua from the stand-in");
+    stage_qualified_ride(source, destination);
+    const Inventory dropped{
+        {".bmx-qualified-ride-files-v1",
+            std::string("bmx-qualified-ride-files-v1\nride_runtime.lua\nride_runtime_qualified_fixture.lua\n")},
+        {"ride_runtime.lua", std::string(regression_ride)},
+        {"ride_runtime_qualified_fixture.lua", std::string(regression_fixture)}};
+    expect(inventory(destination) == dropped, "a module dropped from the source stayed in the copy or its manifest");
+}
+
+void run_stage_regression(std::string_view name, const std::filesystem::path& scratch) {
+    void (*stage_case)(const std::filesystem::path&) = nullptr;
+    if (name == "unrelated-destination") stage_case = unrelated_destination;
+    else if (name == "planted-fixture") stage_case = planted_fixture;
+    else if (name == "exact-manifest") stage_case = exact_manifest;
+    else throw std::runtime_error("the stage regression cases are unrelated-destination, planted-fixture and exact-manifest");
+    refuse_reparse_path(scratch);
+    if (std::filesystem::exists(scratch))
+        throw std::runtime_error("the stage regression scratch folder must not exist yet, so a case never removes "
+                                 "what an earlier run left: " + scratch.generic_string());
+    std::filesystem::create_directories(scratch);
+    stage_case(scratch);
+    std::cout << "bmx_luau_tests: stage regression " << name << " passed in " << scratch.generic_string() << '\n';
 }
 
 // The suite driver. Fields beyond the two counts (comparisons, native_actions and so on) are
@@ -435,9 +601,14 @@ int main(int argc, char** argv) {
             stage_qualified_ride(std::filesystem::path(arguments[1]), std::filesystem::path(arguments[2]));
             return 0;
         }
+        if (arguments.size() == 3 && arguments[0] == "--stage-regression") {
+            run_stage_regression(arguments[1], std::filesystem::path(arguments[2]));
+            return 0;
+        }
         if (arguments.size() != 2 || arguments[0].starts_with("--"))
             throw std::runtime_error("usage: bmx_luau_tests <plugin-folder> <suite-name> | --self-test <plugin-folder> | "
-                                     "--stage-qualified-ride <plugin-folder> <copy-folder>");
+                                     "--stage-qualified-ride <plugin-folder> <copy-folder> | "
+                                     "--stage-regression <case> <scratch-folder>");
         ModuleHost host{std::filesystem::path(arguments[0])};
         host.run_suite(arguments[1]);
         std::cout << "Boundary: vendored Luau with the suite's own constructed fixtures; not the plugin Host, "

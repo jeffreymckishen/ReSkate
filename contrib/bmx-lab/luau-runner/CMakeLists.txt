@@ -104,3 +104,29 @@ set_tests_properties(bmx_lua_runner.refuses_missing_suite PROPERTIES
     PASS_REGULAR_EXPRESSION "bmx_luau_tests failed: .*there is no no_such_suite_tests\\.lua")
 set_tests_properties(bmx_lua_runner.self_test bmx_lua_runner.refuses_path_name
     bmx_lua_runner.refuses_module_without_run bmx_lua_runner.refuses_missing_suite PROPERTIES TIMEOUT 60 LABELS bmx_lua_runner)
+
+# Staging's refusals and manifest. Each case fills a scratch folder of its own, which it must find
+# absent, with a two-module stand-in plugin and its destinations, so the real plugin is neither read
+# nor written and a case never removes a file it did not make. The setup test clears the three
+# folders first. They are siblings, not one parent, so cases running in parallel never race to make
+# a shared folder.
+set(luau_runner_stage_scratch "${CMAKE_CURRENT_BINARY_DIR}/stage-regression")
+add_test(NAME bmx_lua_runner.stage_regression_reset COMMAND "${CMAKE_COMMAND}" -E rm -rf
+    "${luau_runner_stage_scratch}-unrelated-destination" "${luau_runner_stage_scratch}-planted-fixture"
+    "${luau_runner_stage_scratch}-exact-manifest")
+set_tests_properties(bmx_lua_runner.stage_regression_reset PROPERTIES FIXTURES_SETUP bmx_lua_stage_regression)
+# Unrelated .lua files alone, beside a fixture-named file (the old heuristic deleted them there) and
+# inside a real earlier copy: each refused, with every byte left as it was.
+add_test(NAME bmx_lua_runner.stage_refuses_unrelated_destination COMMAND bmx_luau_tests --stage-regression
+    unrelated-destination "${luau_runner_stage_scratch}-unrelated-destination")
+# The fixture planted in the source plugin: refused before any copy folder exists.
+add_test(NAME bmx_lua_runner.stage_refuses_planted_fixture COMMAND bmx_luau_tests --stage-regression
+    planted-fixture "${luau_runner_stage_scratch}-planted-fixture")
+# A fresh stage, a rerun and a dropped module: exactly the modules, the fixture and their manifest.
+add_test(NAME bmx_lua_runner.stage_writes_exact_manifest COMMAND bmx_luau_tests --stage-regression
+    exact-manifest "${luau_runner_stage_scratch}-exact-manifest")
+set_tests_properties(bmx_lua_runner.stage_refuses_unrelated_destination bmx_lua_runner.stage_refuses_planted_fixture
+    bmx_lua_runner.stage_writes_exact_manifest PROPERTIES FIXTURES_REQUIRED bmx_lua_stage_regression)
+set_tests_properties(bmx_lua_runner.stage_regression_reset bmx_lua_runner.stage_refuses_unrelated_destination
+    bmx_lua_runner.stage_refuses_planted_fixture bmx_lua_runner.stage_writes_exact_manifest PROPERTIES
+    TIMEOUT 60 LABELS bmx_lua_runner)

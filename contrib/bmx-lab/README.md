@@ -5,6 +5,11 @@ and presentation must move into the mod, with generic SDK extensions for missing
 native capabilities. The C++ prototype and numbered tests below are historical
 comparison evidence, not a completed plugin implementation or parity claim.
 
+The October 25 [Luau native transport checkpoint](judging/checkpoints/2026-10-25-luau-native-transport.md)
+records a completed in-game controller, owned-body, zero-command and cleanup trial.
+The Lua ride gate remains off; handling, rendered alignment and BMX Streets likeness
+have not passed acceptance.
+
 The `BMX` branch includes an in-game offline prototype and a separate synthetic controls lab.
 Start with [integration-direction.md](integration-direction.md) for the source-based architecture
 review, backend boundaries, build provenance and next acceptance milestones.

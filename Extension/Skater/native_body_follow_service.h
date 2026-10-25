@@ -49,7 +49,7 @@ const char* cleanup_origin_name(CleanupOrigin) noexcept;
 // formatting/logging happens after return. ACK/reuse may discard an undrained
 // receipt; diagnostics never block either operation or change authority.
 void take_diagnostics(StopDiagnostic&, CleanupDiagnostic&) noexcept;
-using Original = void (*)(std::uintptr_t, std::uintptr_t, const std::array<float, 16>*, std::uint8_t);
+using Original = body_follow_native::NativeMotionEntry::Original;
 
 // Client thread. Fixed one-slot capacity is secured before the actual claim.
 // Source must join the supplied body to an actual same-allocation measurement.
@@ -79,4 +79,7 @@ void tick(bool ready) noexcept;
 // No SDK service/body/actor lock spans original; one native Call does span it.
 bool dispatch(Original, std::uintptr_t rig, std::uintptr_t context,
     const std::array<float, 16>* supplied, std::uint8_t flags);
+// Only the genuine wrapper can mint this live entry in production. The raw
+// overload above cannot author a callback_entry binding.
+bool dispatch(body_follow_native::NativeMotionEntry&);
 } // namespace dingosdk::body_follow_service

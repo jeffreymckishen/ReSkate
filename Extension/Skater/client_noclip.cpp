@@ -22,6 +22,16 @@
 #include <cmath>
 
 namespace dingosdk::client_source::detail {
+// This definition is private to the fingerprint-attested native wrapper TU.
+// No plugin or queued service can manufacture a current native entry.
+class MotionEntryFactory {
+public:
+    static body_follow_native::NativeMotionEntry enter(body_follow_service::Original original,
+        std::uintptr_t rig, std::uintptr_t context, const std::array<float, 16>* supplied,
+        std::uint8_t flags) noexcept {
+        return body_follow_native::NativeMotionEntry(original, rig, context, supplied, flags);
+    }
+};
 namespace {
 // Physics bodies already verified writable (a VirtualQuery each), so the
 // every-frame and every-simulation-step body reads below skip that system call.
@@ -1201,7 +1211,8 @@ bool noclip_motion_target(std::uintptr_t rig, std::uintptr_t context,
 void noclip_skater_motion(std::uintptr_t rig, std::uintptr_t context,
     const std::array<float,16>* supplied, std::uint8_t flags) {
     const auto original = source_state().motion_original.load(std::memory_order_acquire);
-    if (body_follow_service::dispatch(original, rig, context, supplied, flags)) return;
+    auto entry = MotionEntryFactory::enter(original, rig, context, supplied, flags);
+    if (body_follow_service::dispatch(entry)) return;
     actor_control::IdleCall writer;
     if (!skater_action::enter_motion_writer(writer)) {
         if (original) original(rig, context, supplied, flags);

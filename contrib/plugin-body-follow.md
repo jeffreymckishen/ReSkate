@@ -1,8 +1,10 @@
 # Generic owned-body follow API
 
 The permissioned Luau bindings and generic native service compile in the normal
-Windows Release build. Host and composed SDK tests have run with constructed
-game inputs. In-game follow remains unqualified; these tests do not establish
+Windows Release build. The motion selector passed 12 constructed Host scenarios,
+and its native support passed 44 constructed provider cases. The normal regression
+run passed all 13 selected test groups with the unchanged 50 ms VM limit.
+In-game follow remains unqualified; these tests do not establish
 mounted gameplay, airborne continuity, switching reliability or BMX Streets likeness.
 All attachment geometry, input, vehicle handling, mounting policy and equipment
 transactions belong in the Luau mod. The SDK supplies generic body/actor joining.
@@ -16,23 +18,26 @@ refuses unknown pending duties rather than silently translating their meaning.
 
 ## Permission and scope
 
-Every method needs both `world.physics` and the new `world.physics.follow`.
+Every method needs both `world.physics` and `world.physics.follow`.
 Every method is client phase only, including receipt reads and cleanup requests.
 The dedicated permission is warranted because ordinary body creation/forces do
 not authorize replacing the local actor's root transform. It grants no input
 lease/capture, controller write, equipment action, recovery, teleport, raw native
 identity or way to provide a claim/barrier/park proof.
 
-The fixed internal eligibility predicate requires a known on-foot state `504`,
+Reserve and publish use the fixed internal eligibility predicate: known on-foot state `504`,
 known ragdoll state with value `false`, and known airborne state. Either airborne
-value is allowed. That avoids an accidental grounded-only requirement at every
-callback. Whether the retail actor remains in this state through a hop has not
-been observed and must be tested before claiming usable riding.
+value is allowed. The default `native_lifetime` policy repeats the full actor and
+state inspection during each callback. The experimental `callback_entry` policy has
+the same truthful eligible start, then a separate scoped continuation contract
+described below; it does not claim continued upright state. Whether the retail
+actor supports a usable hop/ride still needs direct testing.
 
 The underlying Service has a fixed three-second lease from reservation, one
 process-wide receipt slot, and no renewal API. `publish_follow` cannot extend it.
 This API therefore supports only a bounded first-mount interval. A longer
-ride requires a separately justified lifetime policy; repeated publication or
+ride requires separate lease/lifetime work; the motion selector also
+keeps the same three-second limit. Repeated publication or
 new Lua timers must not be used to imply renewal.
 
 ## Calls
@@ -53,7 +58,7 @@ join. No Lua body sample, epoch, native address, eligibility callback or proof
 boolean substitutes for either check.
 
 The attachment table requires `offset_from_com` and `root_in_body` and accepts
-optional `cleanup`. The COM offset is finite, within +/-10 meters per axis, and
+optional `cleanup` and `motion_policy`. The COM offset is finite, within +/-10 meters per axis, and
 expressed in the measured principal-body basis. `root_in_body` is a unit Hamilton
 XYZW quaternion expressing the actor root basis in that same body basis. The
 runtime never chooses vehicle geometry or a yaw-only orientation for the mod.
@@ -65,6 +70,53 @@ unknown names, whitespace/case changes and NUL-suffixed strings are rejected
 before the reserve attempt reaches the backend. The policy is copied at reserve
 and cannot be changed by editing the attachment or a returned receipt. Both
 existing permissions and the client-phase restriction still apply.
+
+## Experimental motion selector
+
+The exact strings are `motion_policy="native_lifetime"` and
+`motion_policy="callback_entry"`. Omission or `nil` selects `native_lifetime`,
+preserving the existing cross-callback global lifetime and full State checks.
+Every non-nil value must be a string with exactly one spelling; unknown names,
+other types, whitespace/case changes and NUL suffixes are rejected before the
+backend or reserve quota. This field changes no permission, owner/opaque-handle
+boundary, source-allocation check, fixed quota, lease or SDK cleanup duty.
+
+`callback_entry` requires explicitly supplied `cleanup="owned_body"`.
+Omitted/nil cleanup and `cleanup="actor_lifetime"` are rejected; the runtime never
+silently selects another cleanup policy. The pair is copied at reserve and cannot
+be changed by editing the Lua attachment afterward.
+
+Select the experimental callback-entry behavior with both policies explicitly:
+
+```lua
+local follow, why = P.reserve_follow(body, {
+    offset_from_com = vector.create(0, 0.4, 0),
+    root_in_body = {0, 0, 0, 1},
+    cleanup = "owned_body",
+    motion_policy = "callback_entry",
+})
+```
+
+This branch includes both the binding and its native implementation. Constructed
+tests cover parsing, permissions, defaults and provider behavior; they do not
+qualify the game's callback ABI, actor lifetime or safe body reuse. Validate those
+properties in a bounded isolated game trial before relying on this policy for riding.
+
+Scoped continuation must originate at the genuine current motion wrapper on the
+same thread, exact current rig/context/original arguments, and one original-call
+commit. It rechecks current root/watched actor identity, controls and paired idle
+teleport views, protection, within-entry global observations, exact owned-body
+allocation/World/clock/source and the actual SDK claim. It neither renews the
+historical global Actor stamp nor reads optional selector/cause/trick/offboard
+state to assert continued uprightness. It grants no durable child-incarnation
+proof, additional direct root/camera writes, future native queue or extra actuation method.
+
+The receipt schema is unchanged and contains no requested-policy echo. A mod can
+record its requested string as a request; that is not evidence of a native borrow,
+return, cleanup or safe retention. The original-call argument and lifetime checks
+still require direct game validation; a passing Host scenario is not that evidence.
+
+## Cleanup authority for both motion policies
 
 `owned_body` changes only stopped cleanup, using the existing fresh owned-body/
 World checks instead of the adapter's additional old actor-lifetime rechecks.

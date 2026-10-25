@@ -12,10 +12,17 @@ enum class CleanupPolicy : std::uint8_t { actor_lifetime, owned_body };
 constexpr bool valid_cleanup(CleanupPolicy policy) noexcept {
     return policy == CleanupPolicy::actor_lifetime || policy == CleanupPolicy::owned_body;
 }
+// Selection is copied at reserve. It is not a native identity or lifetime proof.
+// The default preserves full native-lifetime continuity between callbacks.
+enum class MotionPolicy : std::uint8_t { native_lifetime, callback_entry };
+constexpr bool valid_motion_policy(MotionPolicy policy) noexcept {
+    return policy == MotionPolicy::native_lifetime || policy == MotionPolicy::callback_entry;
+}
 struct Attachment {
     owned_body::Vec offset_from_com{};
     owned_body::Quaternion root_in_body{0, 0, 0, 1};
     CleanupPolicy cleanup{CleanupPolicy::actor_lifetime};
+    MotionPolicy motion_policy{MotionPolicy::native_lifetime};
 };
 enum class Phase : std::uint8_t { reserved, following, stopping, retained, abandoned, completed };
 enum class Pending : std::uint8_t { none, body_parked };
@@ -46,7 +53,8 @@ constexpr const char* phase_name(Phase phase) noexcept {
     return nullptr;
 }
 inline bool valid(const Attachment& attachment) noexcept {
-    if (!valid_cleanup(attachment.cleanup)) return false;
+    if (!valid_cleanup(attachment.cleanup) || !valid_motion_policy(attachment.motion_policy) ||
+        (attachment.motion_policy == MotionPolicy::callback_entry && attachment.cleanup != CleanupPolicy::owned_body)) return false;
     if (!owned_body::finite(attachment.offset_from_com, 10)) return false;
     double norm{};
     for (const float lane : attachment.root_in_body) {

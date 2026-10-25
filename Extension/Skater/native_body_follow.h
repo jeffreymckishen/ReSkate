@@ -1,5 +1,6 @@
 #pragma once
 #include "actor_control.h"
+#include "native_motion_entry.h"
 #include "Engine/Game/Skater/body_follow_api.h"
 #include "Extension/World/owned_bodies.h"
 #include <array>
@@ -7,6 +8,10 @@
 
 namespace dingosdk::body_follow_native {
 using CleanupPolicy = body_follow_api::CleanupPolicy;
+enum class MotionPolicy : std::uint8_t { native_lifetime, callback_entry };
+constexpr bool valid_motion_policy(MotionPolicy policy) noexcept {
+    return policy == MotionPolicy::native_lifetime || policy == MotionPolicy::callback_entry;
+}
 // Internal first-fault context. Plain copied data only; no native identities,
 // allocation, logging or additional game reads are needed to record a stage.
 enum class DiagnosticStage : std::uint8_t {
@@ -41,6 +46,8 @@ struct Binding {
     actor_control_native::Admission admission{};
     // Selected once at reserve by the owning service; no effect on target admission.
     CleanupPolicy cleanup{CleanupPolicy::actor_lifetime};
+    // Eligible start remains unchanged. Callback continuation has no State claim.
+    MotionPolicy motion_policy{MotionPolicy::native_lifetime};
     bool reserved{}, published{}, stopped{};
 };
 // Out must be empty. A false result may still have reserved=true if bounded
@@ -60,6 +67,7 @@ struct Attachment {
     owned_body::Vec offset_from_com{};
     owned_body::Quaternion root_in_body{0, 0, 0, 1};
     CleanupPolicy cleanup{CleanupPolicy::actor_lifetime};
+    MotionPolicy motion_policy{MotionPolicy::native_lifetime};
 };
 // A NEW current-epoch measured source supplies both translation and full basis.
 // Exact supplied padding words are retained. No body borrow spans original.
@@ -70,7 +78,9 @@ struct PreparedTarget {
     owned_bodies::MeasuredSource source{};
     owned_body::Sample sample{};
     std::uint64_t owner{}, sequence{};
+    actor_control_native::FollowEntryObservation entry;
     alignas(16) std::array<float, 16> value{};
+    const NativeMotionEntry* scope{};
     bool ready{};
     PreparedTarget() noexcept = default;
     PreparedTarget(const PreparedTarget&) = delete;
@@ -82,11 +92,15 @@ bool prepare_target(const Binding&, std::uintptr_t rig, std::uintptr_t context,
 bool prepare_target(const Binding&, std::uintptr_t rig, std::uintptr_t context,
     const std::array<float, 16>* supplied, const Attachment&,
     PreparedTarget&, actor_control_native::Reason&, Diagnostic&) noexcept;
+bool prepare_target(const Binding&, const NativeMotionEntry&, const Attachment&,
+    PreparedTarget&, actor_control_native::Reason&, Diagnostic&) noexcept;
 // The future wrapper must call immediately before its forwarding edge. A
 // prepared copy never remains authority after stop, replacement or source loss.
 // This final sampled check does not create native lifetime/consumption proof.
 bool current_target(const Binding&, PreparedTarget&, actor_control_native::Reason&) noexcept;
 bool current_target(const Binding&, PreparedTarget&, actor_control_native::Reason&, Diagnostic&) noexcept;
+bool current_target(const Binding&, const NativeMotionEntry&, PreparedTarget&,
+    actor_control_native::Reason&, Diagnostic&) noexcept;
 // Before publication this only abandons its exact admission. Afterwards it
 // revokes with the required body-park barrier. Drain remains an Arbiter duty.
 bool stop(Binding&) noexcept;

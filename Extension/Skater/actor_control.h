@@ -7,6 +7,7 @@
 #include <cstdint>
 
 namespace dingosdk::owned_bodies { class RetirementBasis; class RetainedParkReceipt; }
+namespace dingosdk::body_follow_native { class NativeMotionEntry; }
 
 namespace dingosdk::actor_control_native {
 using State = skater_action::State;
@@ -50,6 +51,23 @@ struct Actor {
     actor_control::Domain domain{actor_control::Domain::equipment};
     bool operator==(const Actor&) const = default;
 };
+
+// Current-entry identity observation only. It names no durable child incarnation
+// and contains no gameplay State. The historical Actor remains the claim key.
+struct FollowEntryObservation {
+    std::uintptr_t base{}, client{}, entity{}, player{}, handle{}, component{}, core{}, context{}, rig{},
+        game_context{}, world{}, world_state{};
+    std::uint64_t epoch{}, actor_epoch{}, entry_serial{};
+    bool available{};
+    bool operator==(const FollowEntryObservation&) const = default;
+};
+bool inspect_follow_entry_identity(std::uint64_t owner, std::uint64_t sequence,
+    const Actor& claim, const body_follow_native::NativeMotionEntry&,
+    FollowEntryObservation&, Reason&, Observation&) noexcept;
+// Root-scoped lookup of actual SDK protection records. Omitted/different child
+// fields must never turn an active protection for this root into idle.
+bool follow_root_protection_clear(std::uint64_t owner, std::uint64_t sequence,
+    const Actor& claim, Reason&) noexcept;
 
 // Read-only native lifetime observation. No motion claim, watched-entity change,
 // gameplay-input admission or current actuation authority is acquired.

@@ -257,7 +257,7 @@ FollowValue follow(lua_State* L, Plugin& p) {
     return value;
 }
 body_follow_api::Attachment follow_attachment(lua_State* L, int at) {
-    fields(L, at, {"offset_from_com", "root_in_body", "cleanup"});
+    fields(L, at, {"offset_from_com", "root_in_body", "cleanup", "motion_policy"});
     body_follow_api::Attachment attachment;
     attachment.offset_from_com = vec_field(L, at, "offset_from_com");
     lua_getfield(L, at, "root_in_body"); luaL_checktype(L, -1, LUA_TTABLE);
@@ -279,6 +279,19 @@ body_follow_api::Attachment follow_attachment(lua_State* L, int at) {
         else if (cleanup != "actor_lifetime") luaL_error(L, "follow cleanup is actor_lifetime or owned_body");
     }
     lua_pop(L, 1);
+    lua_getfield(L, at, "motion_policy");
+    if (!lua_isnil(L, -1)) {
+        if (lua_type(L, -1) != LUA_TSTRING) luaL_error(L, "follow motion_policy is native_lifetime or callback_entry");
+        std::size_t length{};
+        const auto* text = lua_tolstring(L, -1, &length);
+        const std::string_view policy{text, length};
+        if (policy == "callback_entry") attachment.motion_policy = body_follow_api::MotionPolicy::callback_entry;
+        else if (policy != "native_lifetime") luaL_error(L, "follow motion_policy is native_lifetime or callback_entry");
+    }
+    lua_pop(L, 1);
+    if (attachment.motion_policy == body_follow_api::MotionPolicy::callback_entry &&
+        attachment.cleanup != body_follow_api::CleanupPolicy::owned_body)
+        luaL_error(L, "follow callback_entry requires explicit cleanup=owned_body");
     if (!body_follow_api::valid(attachment))
         luaL_error(L, "follow attachment needs a finite COM offset within +/-10m and a unit Hamilton XYZW rotation");
     return attachment;

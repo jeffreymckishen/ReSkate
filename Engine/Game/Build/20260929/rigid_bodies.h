@@ -60,6 +60,8 @@ inline constexpr std::uintptr_t player_context = 0x78, player_local = 0x45, play
 inline constexpr std::uintptr_t player_entity = 0xb8, player_handle = 0xb0;
 inline constexpr std::uintptr_t entity_context = 0x20, entity_player = 0xf8, entity_teleport = 0x7e0;
 inline constexpr std::uintptr_t entity_collection = 0x70, entity_component = 0x628;
+// Existing local player handle points to this secondary entity subobject.
+inline constexpr std::uintptr_t entity_handle_target = 8;
 inline constexpr std::uintptr_t component_collection = 0x18, component_core = 0x70;
 inline constexpr std::uintptr_t core_context = 0x3c0, core_rig = 0x438, rig_core = 0x4630;
 inline constexpr std::uintptr_t context_seconds = 0x17ec;

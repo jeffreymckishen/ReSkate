@@ -87,16 +87,44 @@ bool published(const Binding& binding) noexcept {
     return value.available && value.owner == binding.owner && value.ticket == binding.actor.ticket &&
         value.domain == actor_control::Domain::follow && value.phase == actor_control::Phase::published;
 }
+bool entry_policy(const Binding& binding) noexcept {
+    return binding.motion_policy == MotionPolicy::callback_entry && binding.cleanup == CleanupPolicy::owned_body;
+}
+bool inspect_entry_at(const Binding& binding, const NativeMotionEntry& entry,
+    actor_control_native::FollowEntryObservation& observation, actor_control_native::Reason& reason,
+    Diagnostic& diagnostic, DiagnosticStage stage) noexcept {
+    diagnostic.stage = diagnostic.actor_stage = stage;
+    diagnostic.actor = {}; diagnostic.facts = {};
+    return actor_control_native::inspect_follow_entry_identity(binding.owner, binding.sequence, binding.actor,
+        entry, observation, reason, diagnostic.actor);
+}
+bool joined(const actor_control_native::FollowEntryObservation& entry,
+    const owned_bodies::MeasuredSource& source) noexcept {
+    return entry.available && entry.world && entry.world == source.native_world() &&
+        entry.world_state && entry.world_state == source.native_state();
+}
+bool current_entry_source(std::uint64_t owner, const owned_bodies::MeasuredSource& source,
+    const actor_control_native::FollowEntryObservation& entry) noexcept {
+    owned_bodies::SourceBorrow borrow;
+    if (!owned_bodies::try_borrow_source(owner, source, borrow)) return false;
+    const auto* current = borrow.current();
+    return current && joined(entry, *current);
+}
 }
 bool reserve_binding(std::uint64_t owner, std::uint64_t sequence,
     const owned_bodies::MeasuredSource& source, actor_control_native::Admission admission,
     Binding& out, actor_control_native::Reason& reason) noexcept {
     LastError error; reason = actor_control_native::Reason::unavailable;
-    if (out.reserved || out.published || out.stopped || !body_follow_api::valid_cleanup(out.cleanup) || !owner || !sequence || !admission ||
+    if (out.reserved || out.published || out.stopped || !body_follow_api::valid_cleanup(out.cleanup) ||
+        !valid_motion_policy(out.motion_policy) ||
+        (out.motion_policy == MotionPolicy::callback_entry && out.cleanup != CleanupPolicy::owned_body) || !owner || !sequence || !admission ||
         !current_source(owner, source)) return false;
     actor_control_native::Actor actor;
     if (!actor_control_native::reserve_follow(owner, sequence, admission, actor, reason)) return false;
     out.owner = owner; out.sequence = sequence; out.actor = actor; out.source = source; out.admission = admission; out.reserved = true;
+    if (entry_policy(out) && !actor_control_native::follow_root_protection_clear(owner, sequence, actor, reason)) {
+        (void)stop(out); return false;
+    }
     // Compare actual native identities, not the independent SDK generation counters.
     if (!joined(actor, source)) {
         reason = actor_control_native::Reason::world_changed;
@@ -111,6 +139,11 @@ bool reserve_binding(std::uint64_t owner, std::uint64_t sequence,
 bool publish_binding(Binding& out, actor_control_native::Reason& reason) noexcept {
     LastError error; reason = actor_control_native::Reason::unavailable;
     if (!out.reserved || out.published || out.stopped || !out.admission) return false;
+    if (!valid_motion_policy(out.motion_policy) ||
+        (out.motion_policy == MotionPolicy::callback_entry &&
+            (!entry_policy(out) || !actor_control_native::follow_root_protection_clear(out.owner, out.sequence, out.actor, reason)))) {
+        (void)stop(out); return false;
+    }
     if (!current_source(out.owner, out.source, &out.actor) ||
         !actor_control_native::publish_follow(out.owner, out.sequence, out.actor, out.admission, reason)) {
         if (reason == actor_control_native::Reason::none) reason = actor_control_native::Reason::unavailable;
@@ -130,7 +163,7 @@ bool prepare_target(const Binding& binding, std::uintptr_t rig, std::uintptr_t c
     PreparedTarget& out, actor_control_native::Reason& reason, Diagnostic& diagnostic) noexcept {
     LastError error; reason = actor_control_native::Reason::unavailable;
     diagnostic = {}; at(diagnostic, DiagnosticStage::prepare_guard);
-    if (out.ready || out.call.active() || !binding.reserved || !binding.published || binding.stopped ||
+    if (binding.motion_policy != MotionPolicy::native_lifetime || out.ready || out.call.active() || !binding.reserved || !binding.published || binding.stopped ||
         !supplied || binding.actor.rig != rig || binding.actor.context != context ||
         !binding.admission || !owned_body::finite(attachment.offset_from_com, 10) || !body_follow_transform::unit(attachment.root_in_body) || !published(binding)) return false;
     diagnostic.stage = diagnostic.actor_stage = DiagnosticStage::enter;
@@ -183,6 +216,56 @@ bool prepare_target(const Binding& binding, std::uintptr_t rig, std::uintptr_t c
     out.ready = true; reason = actor_control_native::Reason::none;
     return true;
 }
+bool prepare_target(const Binding& binding, const NativeMotionEntry& entry, const Attachment& attachment,
+    PreparedTarget& out, actor_control_native::Reason& reason, Diagnostic& diagnostic) noexcept {
+    LastError error; reason = actor_control_native::Reason::unavailable;
+    diagnostic = {}; at(diagnostic, DiagnosticStage::prepare_guard);
+    if (!entry_policy(binding) || !entry.current() || out.ready || out.call.active() ||
+        !binding.reserved || !binding.published || binding.stopped || !binding.admission ||
+        binding.actor.rig != entry.rig() || binding.actor.context != entry.context() ||
+        !owned_body::finite(attachment.offset_from_com, 10) ||
+        !body_follow_transform::unit(attachment.root_in_body) || !published(binding)) return false;
+    diagnostic.stage = diagnostic.actor_stage = DiagnosticStage::enter;
+    if (!actor_control_native::enter(binding.owner, binding.sequence, binding.actor, out.call, diagnostic.actor)) return false;
+    actor_control_native::FollowEntryObservation first, after;
+    if (!inspect_entry_at(binding, entry, first, reason, diagnostic, DiagnosticStage::inspect_first)) return false;
+    reason = actor_control_native::Reason::unavailable;
+    at(diagnostic, DiagnosticStage::supplied_copy);
+    if (!memory::peek(reinterpret_cast<std::uintptr_t>(entry.supplied()), out.value)) return false;
+    at(diagnostic, DiagnosticStage::supplied_finite);
+    const auto failed_lane = body_follow_transform::first_nonfinite_xyz(out.value);
+    if (failed_lane != body_follow_transform::no_failed_lane) {
+        diagnostic.supplied_failed_lane = failed_lane; return false;
+    }
+    at(diagnostic, DiagnosticStage::measure);
+    if (!owned_bodies::try_measure_source(binding.owner, binding.source, out.source) ||
+        (at(diagnostic, DiagnosticStage::measured_allocation), !out.source.same_allocation(binding.source))) return false;
+    {
+        owned_bodies::SourceBorrow borrow;
+        at(diagnostic, DiagnosticStage::borrow);
+        if (!owned_bodies::try_borrow_source(binding.owner, out.source, borrow)) return false;
+        at(diagnostic, DiagnosticStage::borrow_current);
+        const auto* current = borrow.current();
+        if (!current || (at(diagnostic, DiagnosticStage::borrow_join), !joined(first, *current)) ||
+            (at(diagnostic, DiagnosticStage::transform), !body_follow_transform::transform(current->sample(),
+                attachment.offset_from_com, attachment.root_in_body, out.value))) return false;
+        out.sample = current->sample();
+        at(diagnostic, DiagnosticStage::borrow_recheck);
+        if (!borrow.current()) return false;
+    }
+    if (!inspect_entry_at(binding, entry, after, reason, diagnostic, DiagnosticStage::inspect_closing)) return false;
+    reason = actor_control_native::Reason::unavailable;
+    at(diagnostic, DiagnosticStage::closing_identity);
+    if (after != first || !entry.current()) return false;
+    at(diagnostic, DiagnosticStage::final_source);
+    if (!current_entry_source(binding.owner, out.source, after) ||
+        (at(diagnostic, DiagnosticStage::final_published), !published(binding))) return false;
+    // The old Actor is retained ONLY as the exact SDK claim/history key.
+    // New observations expire with this entry; no child stamp is renewed.
+    out.actor = binding.actor; out.owner = binding.owner; out.sequence = binding.sequence;
+    out.entry = first; out.scope = &entry; out.ready = true;
+    reason = actor_control_native::Reason::none; return true;
+}
 bool current_target(const Binding& binding, PreparedTarget& target,
     actor_control_native::Reason& reason) noexcept {
     Diagnostic diagnostic;
@@ -194,7 +277,7 @@ bool current_target(const Binding& binding, PreparedTarget& target,
     diagnostic = {}; at(diagnostic, DiagnosticStage::current_guard);
     const bool candidate = target.ready && target.call.active();
     target.ready = false;
-    if (!candidate || !binding.reserved || !binding.published || binding.stopped ||
+    if (binding.motion_policy != MotionPolicy::native_lifetime || !candidate || !binding.reserved || !binding.published || binding.stopped ||
         target.owner != binding.owner || target.sequence != binding.sequence || target.actor != binding.actor ||
         !target.source.same_allocation(binding.source) ||
         !body_query::same_sample(target.sample, target.source.sample()) || !binding.admission || !published(binding)) return false;
@@ -207,6 +290,27 @@ bool current_target(const Binding& binding, PreparedTarget& target,
         (at(diagnostic, DiagnosticStage::current_published), !published(binding))) return false;
     target.ready = true; reason = actor_control_native::Reason::none;
     return true;
+}
+bool current_target(const Binding& binding, const NativeMotionEntry& entry, PreparedTarget& target,
+    actor_control_native::Reason& reason, Diagnostic& diagnostic) noexcept {
+    LastError error; reason = actor_control_native::Reason::unavailable;
+    diagnostic = {}; at(diagnostic, DiagnosticStage::current_guard);
+    const bool candidate = target.ready && target.call.active();
+    target.ready = false;
+    if (!entry_policy(binding) || !candidate || !entry.current() || target.scope != &entry ||
+        target.entry.entry_serial != entry.serial() || !target.entry.available ||
+        !binding.reserved || !binding.published || binding.stopped || target.owner != binding.owner ||
+        target.sequence != binding.sequence || target.actor != binding.actor ||
+        !target.source.same_allocation(binding.source) ||
+        !body_query::same_sample(target.sample, target.source.sample()) || !binding.admission || !published(binding)) return false;
+    actor_control_native::FollowEntryObservation observed;
+    if (!inspect_entry_at(binding, entry, observed, reason, diagnostic, DiagnosticStage::inspect_current)) return false;
+    reason = actor_control_native::Reason::unavailable;
+    at(diagnostic, DiagnosticStage::current_identity);
+    if (observed != target.entry || !entry.current() ||
+        (at(diagnostic, DiagnosticStage::current_source), !current_entry_source(binding.owner, target.source, observed)) ||
+        (at(diagnostic, DiagnosticStage::current_published), !published(binding))) return false;
+    target.ready = true; reason = actor_control_native::Reason::none; return true;
 }
 bool stop(Binding& binding) noexcept {
     LastError error;

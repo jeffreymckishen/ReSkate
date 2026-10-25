@@ -5,6 +5,36 @@
 #include <limits>
 #include <Windows.h>
 
+namespace dingosdk::body_follow_native {
+std::atomic<std::uint64_t> NativeMotionEntry::next_serial_{};
+thread_local NativeMotionEntry* NativeMotionEntry::active_{};
+NativeMotionEntry::NativeMotionEntry(Original original, std::uintptr_t rig, std::uintptr_t context,
+    const std::array<float, 16>* supplied, std::uint8_t flags) noexcept
+    : previous_(active_), original_(original), rig_(rig), context_(context), supplied_(supplied), flags_(flags) {
+    const auto error = GetLastError();
+    thread_ = GetCurrentThreadId();
+    auto next = next_serial_.load(std::memory_order_relaxed);
+    // Contention may refuse authoring, never spin in an engine callback.
+    for (unsigned attempt = 0; attempt < 4 && next != std::numeric_limits<std::uint64_t>::max(); ++attempt) {
+        if (next_serial_.compare_exchange_weak(next, next + 1, std::memory_order_relaxed)) {
+            serial_ = next + 1;
+            break;
+        }
+    }
+    active_ = this;
+    SetLastError(error);
+}
+NativeMotionEntry::~NativeMotionEntry() {
+    if (active_ == this) active_ = previous_;
+}
+bool NativeMotionEntry::current() const noexcept {
+    const auto error = GetLastError();
+    const auto thread = GetCurrentThreadId();
+    SetLastError(error);
+    return active_ == this && !previous_ && !used_ && serial_ && original_ && supplied_ && thread_ == thread;
+}
+} // namespace dingosdk::body_follow_native
+
 namespace dingosdk::body_follow_service {
 const char* stop_origin_name(StopOrigin origin) noexcept {
     switch (origin) {
@@ -174,6 +204,9 @@ bool quiet() noexcept {
 }
 bool valid_attachment(const body_follow_native::Attachment& value) noexcept {
     if (!body_follow_api::valid_cleanup(value.cleanup)) return false;
+    if (!body_follow_native::valid_motion_policy(value.motion_policy) ||
+        (value.motion_policy == body_follow_native::MotionPolicy::callback_entry &&
+            value.cleanup != body_follow_native::CleanupPolicy::owned_body)) return false;
     if (!owned_body::finite(value.offset_from_com, 10)) return false;
     double norm{};
     for (const auto lane : value.root_in_body) {
@@ -212,6 +245,7 @@ bool reserve(std::uint64_t owner, const owned_body::Handle& body,
         !body_query::same_sample(actual.sample(), expected.sample())) return false;
     s.occupied = true; s.body = body; s.attachment = attachment;
     s.binding.cleanup = attachment.cleanup;
+    s.binding.motion_policy = attachment.motion_policy;
     const auto sequence = ++s.next_sequence;
     if (!body_follow_native::reserve_binding(owner, sequence, actual, admission, s.binding, reason)) {
         if (!s.binding.reserved) { s.occupied = false; s.binding = {}; return false; }
@@ -416,8 +450,11 @@ void tick(bool ready) noexcept {
     else cleanup_observation(s, CleanupOrigin::complete_stop, diagnostic);
 }
 
-bool dispatch(Original original, std::uintptr_t rig, std::uintptr_t context,
-    const std::array<float, 16>* supplied, std::uint8_t flags) {
+namespace {
+template<class CommitEntry>
+bool dispatch_impl(Original original, std::uintptr_t rig, std::uintptr_t context,
+    const std::array<float, 16>* supplied, std::uint8_t flags,
+    body_follow_native::NativeMotionEntry* entry, CommitEntry commit_entry) {
     LastError error;
     body_follow_native::PreparedTarget target;
     auto& s = service();
@@ -427,6 +464,10 @@ bool dispatch(Original original, std::uintptr_t rig, std::uintptr_t context,
         Unlock unlock{s.lock};
         if (!s.occupied || !s.binding.published || s.binding.stopped ||
             s.binding.actor.rig != rig || s.binding.actor.context != context) return false;
+        if (!body_follow_native::valid_motion_policy(s.binding.motion_policy)) return false;
+        const bool scoped = s.binding.motion_policy == body_follow_native::MotionPolicy::callback_entry;
+        if (scoped && (!entry || !entry->current() ||
+            s.binding.cleanup != body_follow_native::CleanupPolicy::owned_body)) return false;
         // An original still invoking is ordinary concurrent work, not evidence
         // of failure. Do not mistake its not-yet-returned revision for debt.
         if (s.edge.load(std::memory_order_acquire) & invoking_bit) return false;
@@ -440,9 +481,13 @@ bool dispatch(Original original, std::uintptr_t rig, std::uintptr_t context,
         }
         body_follow_native::Diagnostic diagnostic;
         StopOrigin origin{StopOrigin::dispatch_prepare};
-        if (!body_follow_native::prepare_target(s.binding, rig, context, supplied, s.attachment, target, s.reason, diagnostic) ||
+        const bool prepared = scoped ?
+            body_follow_native::prepare_target(s.binding, *entry, s.attachment, target, s.reason, diagnostic) :
+            body_follow_native::prepare_target(s.binding, rig, context, supplied, s.attachment, target, s.reason, diagnostic);
+        if (!prepared ||
             (origin = StopOrigin::dispatch_current,
-                !body_follow_native::current_target(s.binding, target, s.reason, diagnostic))) {
+                !(scoped ? body_follow_native::current_target(s.binding, *entry, target, s.reason, diagnostic) :
+                    body_follow_native::current_target(s.binding, target, s.reason, diagnostic)))) {
             stop_locked(s, s.reason, origin, diagnostic); return false;
         }
         const auto forwarding_ms = GetTickCount64();
@@ -450,7 +495,9 @@ bool dispatch(Original original, std::uintptr_t rig, std::uintptr_t context,
             stop_locked(s, actor_control_native::Reason::expired, StopOrigin::dispatch_forwarding_expired); return false;
         }
         unsigned idle{};
+        if (scoped && !entry->current()) return false;
         if (!s.edge.compare_exchange_strong(idle, invoking_bit, std::memory_order_acq_rel)) return false;
+        if (scoped) commit_entry();
         revision = s.final.revision + 1;
         s.final = {revision, target.source, target.value, flags};
     }
@@ -466,5 +513,14 @@ bool dispatch(Original original, std::uintptr_t rig, std::uintptr_t context,
     error.value = GetLastError();
     s.returned_revision.store(revision, std::memory_order_release);
     return true;
+}
+} // namespace
+bool dispatch(Original original, std::uintptr_t rig, std::uintptr_t context,
+    const std::array<float, 16>* supplied, std::uint8_t flags) {
+    return dispatch_impl(original, rig, context, supplied, flags, nullptr, []() noexcept {});
+}
+bool dispatch(body_follow_native::NativeMotionEntry& entry) {
+    return dispatch_impl(entry.original_, entry.rig_, entry.context_, entry.supplied_, entry.flags_, &entry,
+        [&entry]() noexcept { entry.used_ = true; });
 }
 } // namespace dingosdk::body_follow_service

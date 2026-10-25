@@ -2,10 +2,12 @@
 #include "Extension/World/owned_bodies.h"
 #include "native_actions.h"
 #include "actor_control.h"
+#include "native_motion_entry.h"
 #include "native_recovery.h"
 #include "Engine/Game/Skater/native_action_policy.h"
 #include "Engine/Game/Skater/actor_control_policy.h"
 #include "Engine/Game/Build/20260929/native_actions.h"
+#include "Engine/Game/Build/20260929/rigid_bodies.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
 #include "Extension/UI/Overlay/overlay.h"
 #include "Extension/UI/NativeMenu/throwdown_menu.h"
@@ -3761,6 +3763,129 @@ bool owned_locked(std::uint64_t owner, std::uint64_t sequence, const Actor& acto
         (actor.domain == actor_control::Domain::equipment || actor.domain == actor_control::Domain::follow) &&
         a.motion_claim.owns(owner, actor.ticket, actor.domain);
 }
+bool follow_root_ready_locked(std::uint64_t owner, std::uint64_t sequence, const Actor& claim,
+    Reason& reason) noexcept {
+    const auto& p = protection(); const auto& a = p.actions;
+    const auto now = GetTickCount64();
+    if (claim.domain != actor_control::Domain::follow || claim.continuity != Continuity::native_lifetime ||
+        !owned_locked(owner, sequence, claim) || p.base != claim.base) {
+        reason = Reason::motion_owned; return false;
+    }
+    if (!a.ready || !a.world_contract || now < a.tick_at || now - a.tick_at >= skater_action::offer_timeout_ms) {
+        reason = Reason::unavailable; return false;
+    }
+    if (a.watched_entity.load(std::memory_order_acquire) != claim.entity ||
+        a.actor_destruction.load(std::memory_order_acquire) != claim.actor_epoch) {
+        reason = Reason::actor_destroyed; return false;
+    }
+    if (a.legacy_inflight || (p.dismount.until && now < p.dismount.until) ||
+        (p.board_mount.until && now < p.board_mount.until)) {
+        reason = Reason::busy; return false;
+    }
+    if (dark_pop_protecting(now)) { reason = Reason::protection_conflict; return false; }
+    const auto clear = [&](const Owner& protected_owner, bool active) noexcept {
+        if (!active) return true;
+        if (protected_owner.client < 0x10000 || protected_owner.entity < 0x10000 ||
+            protected_owner.client > highest || protected_owner.entity > highest) {
+            reason = Reason::unavailable; return false;
+        }
+        // Either shared root half is enough to refuse an active record. A
+        // malformed/mixed record must not manufacture clearance for this actor.
+        if (protected_owner.client == claim.client || protected_owner.entity == claim.entity) {
+            reason = Reason::protection_conflict; return false;
+        }
+        return true;
+    };
+    return clear(p.lease.owner, p.lease.active(now)) && clear(p.board.owner, now < p.board.until) &&
+        clear(p.bmx.owner, now < p.bmx.until);
+}
+bool capture_follow_entry_root(const Actor& claim, FollowEntryObservation& out) noexcept {
+    namespace r = addr::rigid_bodies;
+    const auto base = protection().base;
+    unsigned phase{}, manager_offset{};
+    if (base != claim.base || pointer(claim.client) != base + addr::engine::client_vtable ||
+        !read(claim.client + r::client_phase, phase) || (phase != 13 && phase != 21) ||
+        pointer(claim.entity) != base + addr::engine::skater_entity_vtable ||
+        !read(base + addr::engine::context_player_manager_offset, manager_offset) || manager_offset > 0x1000000) return false;
+    FollowEntryObservation value;
+    value.base = base; value.client = claim.client; value.entity = claim.entity;
+    value.game_context = pointer(claim.client, r::client_context);
+    const auto manager = pointer(value.game_context, manager_offset);
+    const auto begin = pointer(manager, r::player_begin), end = pointer(manager, r::player_end);
+    if (!value.game_context || value.game_context != claim.game_context ||
+        pointer(claim.entity, r::entity_context) != value.game_context ||
+        pointer(manager) != base + addr::engine::local_player_manager_vtable ||
+        !begin || end != begin + sizeof(std::uintptr_t)) return false;
+    value.player = pointer(begin);
+    std::uint8_t local{}, remote{}, teleport{};
+    if (pointer(value.player) != base + addr::engine::local_player_vtable ||
+        pointer(value.player, r::player_context) != value.game_context ||
+        !read(value.player + r::player_local, local) || local != 1 ||
+        !read(value.player + r::player_remote, remote) || remote ||
+        pointer(value.player, r::player_entity) != claim.entity ||
+        pointer(claim.entity, r::entity_player) != value.player ||
+        !read(claim.entity + r::entity_teleport, teleport) || teleport) return false;
+    value.handle = pointer(value.player, r::player_handle);
+    const auto collection = pointer(claim.entity, r::entity_collection);
+    value.component = pointer(claim.entity, r::entity_component);
+    value.core = pointer(value.component, r::component_core);
+    value.context = pointer(value.core, r::core_context);
+    value.rig = pointer(value.core, r::core_rig);
+    if (pointer(value.handle) != claim.entity + r::entity_handle_target || pointer(collection) != claim.entity ||
+        pointer(value.component) != base + addr::engine::skater_component_vtable ||
+        pointer(value.component, r::component_collection) != collection ||
+        pointer(value.core) != base + bail_core_vtable || !value.context ||
+        pointer(value.rig) != value.context || pointer(value.rig, r::rig_core) != value.core ||
+        value.player != claim.player || value.handle != claim.player_handle || value.component != claim.component ||
+        value.core != claim.core || value.context != claim.context || value.rig != claim.rig) return false;
+    if (!action_world(value.game_context, value.world) || value.world != claim.world) return false;
+    value.world_state = pointer(value.world, r::world_state);
+    if (!value.world_state || value.world_state != claim.world_state) return false;
+    out = value;
+    return true;
+}
+}
+
+bool follow_root_protection_clear(std::uint64_t owner, std::uint64_t sequence,
+    const Actor& claim, Reason& reason) noexcept {
+    LastError error; reason = Reason::unavailable;
+    auto& p = protection();
+    if (!TryAcquireSRWLockShared(&p.lock)) return false;
+    const bool clear = follow_root_ready_locked(owner, sequence, claim, reason);
+    ReleaseSRWLockShared(&p.lock);
+    if (clear) reason = Reason::none;
+    return clear;
+}
+bool inspect_follow_entry_identity(std::uint64_t owner, std::uint64_t sequence,
+    const Actor& claim, const body_follow_native::NativeMotionEntry& entry,
+    FollowEntryObservation& out, Reason& reason, Observation& observation) noexcept {
+    LastError error; out = {}; reason = Reason::unavailable; observation = {};
+    if (!entry.current() || entry.rig() != claim.rig || entry.context() != claim.context) return false;
+    teleport_observation::Result opening_teleport;
+    if (const auto issue = action_controls(&observation, &opening_teleport); issue != Reason::none) { reason = issue; return false; }
+    if (!follow_root_protection_clear(owner, sequence, claim, reason)) return false;
+    const auto actor_epoch = protection().actions.actor_destruction.load(std::memory_order_acquire);
+    std::uint64_t epoch{}, closing{};
+    FollowEntryObservation first, second;
+    if (!multiplayer::entity_destruction_epoch(claim.base, epoch) ||
+        !capture_follow_entry_root(claim, first) || !capture_follow_entry_root(claim, second) || first != second) {
+        reason = Reason::actor_changed; observation = {actor_observation::Phase::capture, reason}; return false;
+    }
+    teleport_observation::Result closing_teleport;
+    if (const auto issue = action_controls(&observation, &closing_teleport); issue != Reason::none) { reason = issue; return false; }
+    if (!teleport_observation::same_idle(opening_teleport, closing_teleport)) {
+        reason = Reason::unavailable; observation = {actor_observation::Phase::controls_profile, reason}; return false;
+    }
+    if (!follow_root_protection_clear(owner, sequence, claim, reason) || !entry.current() ||
+        actor_epoch != claim.actor_epoch ||
+        protection().actions.actor_destruction.load(std::memory_order_acquire) != actor_epoch ||
+        !multiplayer::entity_destruction_epoch(claim.base, closing) || closing != epoch) {
+        if (reason == Reason::none) reason = Reason::native_lifetime_changed;
+        observation = {actor_observation::Phase::final_lifetime, reason}; return false;
+    }
+    first.epoch = epoch; first.actor_epoch = actor_epoch; first.entry_serial = entry.serial(); first.available = true;
+    out = first; reason = Reason::none; observation = {actor_observation::Phase::qualified, reason};
+    return true;
 }
 
 bool observe_actor(Actor& actor) noexcept {

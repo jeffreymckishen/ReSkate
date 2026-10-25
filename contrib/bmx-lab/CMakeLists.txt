@@ -27,6 +27,13 @@ foreach(target dingosdk_bmx_input_tests dingosdk_bmx_model_tests dingosdk_bmx_co
     bmx_lab_target(${target})
 endforeach()
 
+# Off by default: the BMX Lua suite runner compiles the vendored Luau, which nothing else in this
+# harness needs. It is also a project of its own; see luau-runner/README.md.
+option(RESKATE_BMX_LUAU_RUNNER "Also build and register the pure-Luau runner for the BMX plugin's Lua suites" OFF)
+if(RESKATE_BMX_LUAU_RUNNER)
+    add_subdirectory(luau-runner)
+endif()
+
 if(WIN32)
     add_executable(dingosdk_bmx_lab WIN32 bmx_lab.cpp)
     bmx_lab_target(dingosdk_bmx_lab)

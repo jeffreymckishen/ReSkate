@@ -89,6 +89,26 @@ const char* follow_diagnostic_check(actor_control_native::InspectionCheck value)
     }
     return "unknown";
 }
+void log_follow_park_fourth(const char* scope, const char* kind, std::uint64_t sequence,
+    const owned_bodies::ParkObservationDiagnostic& park) noexcept {
+    // This is the same copied diagnostic as the check/mask log, outside World
+    // locks. Numeric data is emitted only for its existing qualified read.
+    if (park.angular_fourth_available && park.lanes_known &&
+        park.check == owned_bodies::ParkObservationCheck::angular_zero)
+        logging::log(logging::Level::warning, logging::Channel::skater,
+            "Body follow {}-{} angular fourth: sequence={} park_check={} lanes_known={} failed_lanes_mask={} "
+            "angular_fourth_available=true angular_fourth_value={:.9g} angular_fourth_bits=0x{:08x} "
+            "capture=existing_qualified_angular_zero_comparison native_meaning=unknown",
+            scope, kind, sequence, owned_bodies::park_observation_check_name(park.check), park.lanes_known,
+            static_cast<unsigned>(park.failed_lanes), park.angular_fourth_value, park.angular_fourth_bits);
+    else
+        logging::log(logging::Level::warning, logging::Channel::skater,
+            "Body follow {}-{} angular fourth: sequence={} park_check={} lanes_known={} failed_lanes_mask={} "
+            "angular_fourth_available=false angular_fourth_value=unknown angular_fourth_bits=unknown "
+            "capture=unavailable native_meaning=unknown",
+            scope, kind, sequence, owned_bodies::park_observation_check_name(park.check), park.lanes_known,
+            static_cast<unsigned>(park.failed_lanes));
+}
 void log_follow_diagnostic(const char* kind, const char* origin, actor_control_native::Reason reason,
     const body_follow_service::DiagnosticState& state, const body_follow_native::Diagnostic& provider) noexcept {
     const auto& facts = provider.facts;
@@ -126,11 +146,13 @@ void log_follow_diagnostic(const char* kind, const char* origin, actor_control_n
     else logging::log(logging::Level::warning, logging::Channel::skater,
         "Body follow first-{} SDK global epoch snapshot: sequence={} values_available=false expected=unknown captured=unknown "
         "capture=unknown causal_link=unknown", kind, state.sequence);
-    if (provider.world_park.check != owned_bodies::ParkObservationCheck::not_attempted)
+    if (provider.world_park.check != owned_bodies::ParkObservationCheck::not_attempted) {
         logging::log(logging::Level::warning, logging::Channel::skater,
             "Body follow first-{} park check: sequence={} check={} lanes_known={} failed_lanes_mask={}",
             kind, state.sequence, owned_bodies::park_observation_check_name(provider.world_park.check),
             provider.world_park.lanes_known, static_cast<unsigned>(provider.world_park.failed_lanes));
+        log_follow_park_fourth("first", kind, state.sequence, provider.world_park);
+    }
 }
 // Client thread only, after update_model has admitted the engine thread. This
 // state changes diagnostic frequency only; it never gates a service/native edge.
@@ -273,7 +295,8 @@ void drain_follow_diagnostics() noexcept {
         stop.reason, stop.state, stop.provider);
     if (cleanup.available) log_follow_diagnostic("cleanup-observation", body_follow_service::cleanup_origin_name(cleanup.origin),
         cleanup.park_reason, cleanup.state, cleanup.provider);
-    if (latest.available) logging::log(logging::Level::warning, logging::Channel::skater,
+    if (latest.available) {
+        logging::log(logging::Level::warning, logging::Channel::skater,
         "Body follow latest-cleanup-observation: sequence={} origin={} public_reason={} stage={} park_check={} "
         "lanes_known={} failed_lanes_mask={} published={} stopped={} release_hold={} release_requested={} "
         "release_started={} fence={} park={} final_revision={} returned_revision={} intermediate_changes=coalesced",
@@ -284,6 +307,8 @@ void drain_follow_diagnostics() noexcept {
         latest.state.published, latest.state.stopped, latest.state.release_hold, latest.state.release_requested,
         latest.state.release_started, latest.state.fence, latest.state.park,
         latest.state.final_revision, latest.state.returned_revision);
+        log_follow_park_fourth("latest", "cleanup-observation", latest.state.sequence, latest.provider.world_park);
+    }
     SetLastError(saved);
 }
 // Development-only acknowledgement barrier. The native tick never waits or

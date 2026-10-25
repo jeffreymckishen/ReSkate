@@ -62,6 +62,11 @@ struct ParkObservationDiagnostic {
     ParkObservationCheck check{ParkObservationCheck::not_attempted};
     std::uint8_t failed_lanes{};
     bool lanes_known{};
+    // Only a failed angular_zero comparison supplies this existing-read value.
+    // A failed ring read, an earlier refusal or success leaves it unavailable.
+    bool angular_fourth_available{};
+    float angular_fourth_value{};
+    std::uint32_t angular_fourth_bits{};
     bool operator==(const ParkObservationDiagnostic&) const = default;
 };
 const char* park_observation_check_name(ParkObservationCheck) noexcept;

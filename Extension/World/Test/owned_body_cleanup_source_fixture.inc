@@ -97,13 +97,20 @@ void park_refusal(ParkedCommandFixture& p,ParkCheck expected,std::uint8_t mask=0
     RetainedParkReceipt out;
     std::array<unsigned char,sizeof(out)> before{};std::memcpy(before.data(),&out,before.size());
     ParkObservationDiagnostic diagnostic{ParkCheck::passed,15,true};
+    ParkObservationDiagnostic expected_diagnostic{expected,mask,known};
+    if(expected==ParkCheck::angular_zero && known) {
+        const auto supplied=load<V4>(park_vector_address(p,1));
+        expected_diagnostic.angular_fourth_available=true;
+        expected_diagnostic.angular_fourth_value=supplied[3];
+        expected_diagnostic.angular_fourth_bits=std::bit_cast<std::uint32_t>(supplied[3]);
+    }
     const ParkLeafCounts leaves;
     SetLastError(0xD151);
     const bool accepted=observe_retained_park(caller,p.basis,out,diagnostic);
     check(GetLastError()==0xD151,"park refusal changed LastError");
     check(!accepted && !out.available() && std::memcmp(before.data(),&out,before.size())==0,
         "park refusal published or changed output proof");
-    check(diagnostic==ParkObservationDiagnostic{expected,mask,known},"park diagnostic lost first predicate or exact lane knowledge");
+    check(diagnostic==expected_diagnostic,"park diagnostic lost first predicate, exact lanes or existing-read fourth value");
     check(authority.same(p.f.slot()),"park diagnostic changed Slot authority, latest or mailbox");
     check(test_facts::mutations.load()==0,"park diagnostic invoked a native mutator");
     if(no_native)check(test_facts::world_calls.load()==leaves.worlds && test_facts::body_calls.load()==leaves.bodies &&
@@ -235,6 +242,54 @@ void park_diagnostic_finite_lane_masks_and_first_failure() {
     ParkedCommandFixture p;put(park_vector_address(p,0),V4{1,0,0,0});
     put(park_vector_address(p,1),V4{std::bit_cast<float>(0x7FC00000U),0,0,0});
     park_refusal(p,ParkCheck::linear_zero,1,true,true);
+}
+void park_diagnostic_angular_fourth_exact_existing_read() {
+    for(const auto bits:std::array<std::uint32_t,5>{0x3F800001U,0xBF000000U,0x00800001U,0x00000000U,0x80000000U}) {
+        ParkedCommandFixture p;const float supplied=std::bit_cast<float>(bits);
+        // Nonzero X makes a failed angular comparison even when W is +/-zero.
+        put(park_vector_address(p,1),V4{.25f,0,0,supplied});
+        put(park_vector_address(p,2),V4{0,0,0,17.f});put(park_vector_address(p,3),V4{0,0,0,19.f});
+        const ParkSlotSnapshot authority(p.f.slot());const ParkLeafCounts leaves;
+        RetainedParkReceipt out;ParkObservationDiagnostic diagnostic;SetLastError(0xD161);
+        check(!observe_retained_park(owner,p.basis,out,diagnostic) && !out.available() && GetLastError()==0xD161,
+            "angular fourth diagnostic changed refusal/proof/LastError");
+        const auto expected_mask=static_cast<std::uint8_t>(supplied==0.f?1:9);
+        check(diagnostic.check==ParkCheck::angular_zero && diagnostic.lanes_known && diagnostic.failed_lanes==expected_mask &&
+            diagnostic.angular_fourth_available && diagnostic.angular_fourth_value==supplied && diagnostic.angular_fourth_bits==bits,
+            "angular fourth value/bits did not come from the failed qualified spin read");
+        check(leaves.advanced(9,4,1,3) && authority.same(p.f.slot()) && test_facts::mutations.load()==0,
+            "fourth diagnostic added validator reads or changed native/SDK authority");
+        auto different=diagnostic;different.angular_fourth_bits^=1;
+        check(!(different==diagnostic),"coalescing equality hid a changed exact fourth-lane bit pattern");
+        different=diagnostic;different.angular_fourth_available=false;
+        check(!(different==diagnostic),"coalescing equality hid fourth-lane availability change");
+    }
+    {
+        ParkedCommandFixture p;auto header=load<Ring>(p.f.state+r::spin_ring);
+        const auto stride=(std::uintptr_t{header.elements}*sizeof(V4)+63U)&~std::uintptr_t{63U};
+        const auto planes=p.f.arena.take(stride*2);header.values=planes;header.current=1;header.planes=2;
+        put(planes+body_index*sizeof(V4),V4{0,0,0,.75f});
+        put(planes+stride+body_index*sizeof(V4),V4{0,0,0,-.5f});
+        put(p.f.state+r::spin_ring,header);
+        RetainedParkReceipt out;ParkObservationDiagnostic diagnostic;
+        check(!observe_retained_park(owner,p.basis,out,diagnostic) && diagnostic.check==ParkCheck::angular_zero &&
+            diagnostic.failed_lanes==8 && diagnostic.angular_fourth_available && diagnostic.angular_fourth_value==-.5f &&
+            diagnostic.angular_fourth_bits==0xBF000000U,"fourth diagnostic read a stale rather than selected current plane");
+    }
+}
+void park_diagnostic_angular_fourth_unavailable_resets() {
+    for(unsigned fault=0;fault<4;++fault) {
+        ParkedCommandFixture p;ParkObservationDiagnostic diagnostic{ParkCheck::angular_zero,8,true};
+        diagnostic.angular_fourth_available=true;diagnostic.angular_fourth_value=42.f;diagnostic.angular_fourth_bits=0x42280000U;
+        if(fault==0)put(park_vector_address(p,1),V4{0,0,0,std::bit_cast<float>(0x7FC00000U)});
+        if(fault==1)put(park_vector_address(p,1),V4{0,0,0,std::bit_cast<float>(0x7F800000U)});
+        if(fault==2)put(park_vector_address(p,0),V4{1,0,0,0});
+        RetainedParkReceipt out;const auto expected=fault<2?ParkCheck::angular_read:fault==2?ParkCheck::linear_zero:ParkCheck::passed;
+        const bool accepted=observe_retained_park(owner,p.basis,out,diagnostic);
+        check(accepted==(fault==3) && diagnostic.check==expected && !diagnostic.angular_fourth_available &&
+            diagnostic.angular_fourth_value==0.f && diagnostic.angular_fourth_bits==0,
+            "invalid read/earlier predicate/success retained a stale angular fourth observation");
+    }
 }
 void park_diagnostic_failed_reads_leave_lanes_unknown() {
     const std::array<ParkCheck,4> expected_checks{ParkCheck::linear_read,ParkCheck::angular_read,ParkCheck::force_read,ParkCheck::torque_read};

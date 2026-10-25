@@ -21,6 +21,7 @@
 #include <intrin.h>
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <cstring>
 
 namespace dingosdk::owned_bodies {
@@ -1017,6 +1018,13 @@ bool observe_retained_park(std::uint64_t owner, const RetirementBasis& basis, Re
             diagnostic.check = check; diagnostic.lanes_known = true;
             for (std::size_t lane = 0; lane < value.size(); ++lane)
                 if (value[lane] != expected[lane]) diagnostic.failed_lanes |= static_cast<std::uint8_t>(1U << lane);
+            if (check == ParkObservationCheck::angular_zero) {
+                // ring() already qualified these finite lanes. Copy that read;
+                // do not reread a native value or infer the fourth lane's role.
+                diagnostic.angular_fourth_available = true;
+                diagnostic.angular_fourth_value = value[3];
+                diagnostic.angular_fourth_bits = std::bit_cast<std::uint32_t>(value[3]);
+            }
         }
         return true;
     };

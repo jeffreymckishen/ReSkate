@@ -1077,6 +1077,8 @@ int main() {
         run("park_diagnostic_owner_busy_occupied_output",park_diagnostic_owner_busy_and_occupied_output);
         run("park_diagnostic_identity_clock_dynamic",park_diagnostic_identity_clock_and_dynamic_guards);
         run("park_diagnostic_finite_lane_masks_first_failure",park_diagnostic_finite_lane_masks_and_first_failure);
+        run("park_diagnostic_angular_fourth_exact_existing_read",park_diagnostic_angular_fourth_exact_existing_read);
+        run("park_diagnostic_angular_fourth_unavailable_resets",park_diagnostic_angular_fourth_unavailable_resets);
         run("park_diagnostic_failed_reads_unknown",park_diagnostic_failed_reads_leave_lanes_unknown);
         run("park_diagnostic_opening_storage_masks",park_diagnostic_opening_storage_and_mask_edges);
         run("park_diagnostic_both_closing_passes",park_diagnostic_both_closing_passes_keep_fences);

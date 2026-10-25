@@ -2,7 +2,7 @@
 import ctypes
 import importlib.util
 import json
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import sys
 import struct
 import tempfile
@@ -1064,6 +1064,173 @@ class NeutralWindowTests(unittest.TestCase):
             first = next(i for i, row in enumerate(sink.rows) if row["event"] == "controller_report")
             self.assertLess(go, first)
             self.assertEqual(sink.rows[first]["elapsed_ms"], 0)
+
+
+class FakePath:
+    def __init__(self, value): self.value = PureWindowsPath(str(value))
+    def __str__(self): return str(self.value)
+    def __truediv__(self, child): return FakePath(self.value / child)
+    def __eq__(self, other): return str(self).lower() == str(other).lower()
+    @property
+    def parent(self): return FakePath(self.value.parent)
+    def is_symlink(self): return False
+    def is_junction(self): return False
+    def stat(self):
+        return types.SimpleNamespace(st_dev=1, st_ino=2, st_size=3, st_mtime_ns=4, st_ctime_ns=5)
+
+
+class Kernel:
+    def __init__(self, clock):
+        self.clock, self.calls, self.closed = clock, [], []
+        self.runtime = str(FakePath(h.EXACT_WORKSPACE) / 'build' / 'bmx-game' / 'ReSkate.dll')
+        self.target, self.foreign = 0x123456780000, 0x123456790000
+        self.entries = [self.foreign, self.target]
+        self.open_fail = self.enum_fail = self.name_fail = self.info_fail = False
+        self.required = self.name_count = None
+        self.image_size, self.base_delta, self.enum_cost = 4096, 0, 0
+        for name in ('OpenProcess', 'CloseHandle', 'GetExitCodeProcess', 'GetProcessTimes',
+                     'QueryFullProcessImageNameW', 'K32EnumProcessModulesEx',
+                     'K32GetModuleFileNameExW', 'K32GetModuleInformation'):
+            setattr(self, name, Call(getattr(self, '_' + name)))
+
+    def _OpenProcess(self, rights, inherit, pid):
+        self.calls.append(('open', rights, inherit, pid))
+        return 0 if self.open_fail else 731
+
+    def _CloseHandle(self, handle): self.closed.append(handle); return 1
+    def _GetExitCodeProcess(self, handle, code): code._obj.value = 259; return 1
+    def _GetProcessTimes(self, handle, created, *rest):
+        created._obj.dwLowDateTime, created._obj.dwHighDateTime = 456, 0
+        return 1
+    def _QueryFullProcessImageNameW(self, handle, flags, name, length):
+        name.value = str(FakePath(h.EXACT_WORKSPACE) / 'build' / 'bmx-game' / 'Skate.exe')
+        return 1
+
+    def _K32EnumProcessModulesEx(self, handle, modules, size, needed, flags):
+        self.calls.append(('enum', handle, size, flags))
+        self.clock.value += self.enum_cost
+        needed._obj.value = len(self.entries) * ctypes.sizeof(h.wintypes.HMODULE) if self.required is None else self.required
+        for index, module in enumerate(self.entries[:512]): modules[index] = module
+        return not self.enum_fail
+
+    def _K32GetModuleFileNameExW(self, handle, module, name, size):
+        self.calls.append(('name', handle, module, size))
+        if self.name_fail: return 0
+        name.value = self.runtime if module == self.target else r'C:\Windows\System32\other.dll'
+        return len(name.value) if self.name_count is None else self.name_count
+
+    def _K32GetModuleInformation(self, handle, module, info, size):
+        self.calls.append(('info', handle, module, size))
+        info._obj.lpBaseOfDll = module + self.base_delta
+        info._obj.SizeOfImage = self.image_size
+        return not self.info_fail
+
+
+class ModuleQueryTests(unittest.TestCase):
+    def context(self, kernel, clock):
+        owner = h.Owner(123, 456, str(FakePath(h.EXACT_WORKSPACE) / 'build' / 'bmx-game' / 'Skate.exe'), 'A' * 64)
+        user = types.SimpleNamespace(GetAsyncKeyState=Call(lambda key: 0),
+                                     GetForegroundWindow=Call(lambda: 1),
+                                     GetWindowThreadProcessId=Call(lambda window, pid: self.foreground(pid)))
+        dll = lambda name, **kwargs: kernel if name == 'kernel32' else user
+        return owner, patch.multiple(h, WORKSPACE=FakePath(h.EXACT_WORKSPACE), Path=FakePath,
+                                     sha256=lambda path: 'A' * 64 if str(path).endswith('ReSkate.dll') else h.GAME_SHA256), \
+            patch.object(h.ctypes, 'WinDLL', side_effect=dll), patch.object(h.time, 'monotonic', side_effect=lambda: clock.value)
+
+    @staticmethod
+    def foreground(pid): pid._obj.value = 123; return 1
+
+    def construct(self, kernel, clock):
+        owner, files, dlls, timer = self.context(kernel, clock)
+        with files, dlls, timer: return h.WindowsGuard(owner)
+
+    def test_retained_handle_stronger_rights_exact_path_image_and_x64_base(self):
+        clock = types.SimpleNamespace(value=1.0); kernel = Kernel(clock)
+        guard = self.construct(kernel, clock)
+        self.assertEqual(kernel.calls[0], ('open', 0x0410, False, 123))
+        self.assertEqual([row for row in kernel.calls if row[0] == 'enum'], [('enum', 731, 4096, 3)])
+        self.assertEqual([row for row in kernel.calls if row[0] == 'info'], [('info', 731, kernel.target, 24)])
+        self.assertEqual(guard.kernel.K32EnumProcessModulesEx.restype, h.wintypes.BOOL)
+        self.assertEqual(len(guard.kernel.K32EnumProcessModulesEx.argtypes), 5)
+        self.assertEqual(kernel.closed, [])
+        guard.close(); guard.close()
+        self.assertEqual(kernel.closed, [731])  # No HMODULE is closed.
+
+    def test_access_denial_has_no_fallback_or_resource_to_close(self):
+        clock = types.SimpleNamespace(value=1.0); kernel = Kernel(clock); kernel.open_fail = True
+        with self.assertRaises(h.Refused): self.construct(kernel, clock)
+        self.assertEqual(kernel.calls, [('open', 0x0410, False, 123)])
+        self.assertEqual(kernel.closed, [])
+
+    def test_missing_exports_or_wrong_abi_fail_before_process_open(self):
+        for name in ('K32EnumProcessModulesEx', 'K32GetModuleFileNameExW', 'K32GetModuleInformation'):
+            with self.subTest(name=name):
+                clock = types.SimpleNamespace(value=1.0); kernel = Kernel(clock); delattr(kernel, name)
+                with self.assertRaises(AttributeError): self.construct(kernel, clock)
+                self.assertEqual(kernel.calls, []); self.assertEqual(kernel.closed, [])
+        clock = types.SimpleNamespace(value=1.0); kernel = Kernel(clock)
+        class WrongInfo(ctypes.Structure): _fields_ = [('wrong', ctypes.c_uint32)]
+        with patch.object(h.WindowsGuard, 'ModuleInfo', WrongInfo), self.assertRaises(h.Refused):
+            self.construct(kernel, clock)
+        self.assertEqual(kernel.calls, [])
+
+    def test_enum_failure_empty_overflow_misalignment_or_null_entry_close_owned_handle(self):
+        for fault in ('failure', 'empty', 'overflow', 'unaligned', 'null'):
+            with self.subTest(fault=fault):
+                clock = types.SimpleNamespace(value=1.0); kernel = Kernel(clock)
+                if fault == 'failure': kernel.enum_fail = True
+                if fault == 'empty': kernel.required = 0
+                if fault == 'overflow': kernel.required = 4104
+                if fault == 'unaligned': kernel.required = 9
+                if fault == 'null': kernel.entries = [0]
+                with self.assertRaises(h.Refused): self.construct(kernel, clock)
+                self.assertEqual(kernel.closed, [731])
+                self.assertFalse(any(row[0] in ('name', 'info') for row in kernel.calls))
+
+    def test_exact_512_modules_are_bounded_and_accepted(self):
+        clock = types.SimpleNamespace(value=1.0); kernel = Kernel(clock)
+        kernel.entries = [kernel.foreign] * 511 + [kernel.target]
+        guard = self.construct(kernel, clock)
+        self.assertEqual(sum(row[0] == 'name' for row in kernel.calls), 512)
+        guard.close(); self.assertEqual(kernel.closed, [731])
+
+    def test_path_failure_truncation_absence_and_image_failure_refuse(self):
+        for fault in ('name_failure', 'truncated', 'absent', 'info_failure', 'zero_image', 'base_changed'):
+            with self.subTest(fault=fault):
+                clock = types.SimpleNamespace(value=1.0); kernel = Kernel(clock)
+                if fault == 'name_failure': kernel.name_fail = True
+                if fault == 'truncated': kernel.name_count = 32768
+                if fault == 'absent': kernel.entries = [kernel.foreign]
+                if fault == 'info_failure': kernel.info_fail = True
+                if fault == 'zero_image': kernel.image_size = 0
+                if fault == 'base_changed': kernel.base_delta = 0x100000000
+                with self.assertRaises(h.Refused): self.construct(kernel, clock)
+                self.assertEqual(kernel.closed, [731])
+
+    def test_current_query_has_no_cached_success_after_module_disappears(self):
+        clock = types.SimpleNamespace(value=1.0); kernel = Kernel(clock)
+        guard = self.construct(kernel, clock)
+        kernel.entries = [kernel.foreign]
+        with self.assertRaises(h.Refused): guard._runtime_loaded()
+        self.assertEqual(sum(row[0] == 'enum' for row in kernel.calls), 2)
+        guard.close(); self.assertEqual(kernel.closed, [731])
+
+    def test_existing_200ms_cadence_uses_query_start_not_completion(self):
+        clock = types.SimpleNamespace(value=1.0); kernel = Kernel(clock); kernel.enum_cost = .09
+        owner, files, dlls, timer = self.context(kernel, clock)
+        with files, dlls, timer:
+            guard = h.WindowsGuard(owner)
+            self.assertEqual(guard.last_modules, 1.0)
+            clock.value = 1.199; guard.check()
+            self.assertEqual(sum(row[0] == 'enum' for row in kernel.calls), 1)
+            clock.value = 1.201; guard.check()
+            self.assertEqual(sum(row[0] == 'enum' for row in kernel.calls), 2)
+            self.assertEqual(guard.last_modules, 1.201)
+            kernel.enum_fail = True; clock.value = 1.402
+            with self.assertRaises(h.Refused): guard.check()
+            self.assertEqual(guard.last_modules, 1.201)
+            guard.close()
+        self.assertEqual(kernel.closed, [731])
 
 
 if __name__ == "__main__":

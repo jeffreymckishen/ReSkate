@@ -281,6 +281,10 @@ class WindowsGuard:
     No ReadProcessMemory, writes, focus changes or OS keyboard input. Module
     enumeration confirms loaded path; disk SHA is not an in-memory image hash.
     """
+    class ModuleInfo(ctypes.Structure):
+        _fields_ = [("lpBaseOfDll", ctypes.c_void_p), ("SizeOfImage", wintypes.DWORD),
+                    ("EntryPoint", ctypes.c_void_p)]
+
     def __init__(self, owner: Owner):
         if os.name != "nt" or os.path.normcase(str(WORKSPACE)) != os.path.normcase(EXACT_WORKSPACE):
             raise Refused("Execution requires the exact authorized Windows workspace")
@@ -297,6 +301,16 @@ class WindowsGuard:
         self.kernel.GetExitCodeProcess.restype = wintypes.BOOL
         self.kernel.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
         self.kernel.QueryFullProcessImageNameW.restype = wintypes.BOOL
+        if ctypes.sizeof(wintypes.HMODULE) != 8 or ctypes.sizeof(self.ModuleInfo) != 24:
+            raise Refused("Module inspection requires the Windows x64 ABI")
+        self.kernel.K32EnumProcessModulesEx.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.HMODULE),
+                                                       wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), wintypes.DWORD]
+        self.kernel.K32EnumProcessModulesEx.restype = wintypes.BOOL
+        self.kernel.K32GetModuleFileNameExW.argtypes = [wintypes.HANDLE, wintypes.HMODULE, wintypes.LPWSTR, wintypes.DWORD]
+        self.kernel.K32GetModuleFileNameExW.restype = wintypes.DWORD
+        self.kernel.K32GetModuleInformation.argtypes = [wintypes.HANDLE, wintypes.HMODULE,
+                                                       ctypes.POINTER(self.ModuleInfo), wintypes.DWORD]
+        self.kernel.K32GetModuleInformation.restype = wintypes.BOOL
         self.user.GetForegroundWindow.restype = wintypes.HWND
         self.user.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
         self.user.GetWindowThreadProcessId.restype = wintypes.DWORD
@@ -317,7 +331,9 @@ class WindowsGuard:
         self.file_tokens = self._file_tokens()
         self.last_modules = 0.0
         try:
-            self.handle = self.kernel.OpenProcess(0x1000, False, owner.process_id)
+            # Module paths/information require QUERY_INFORMATION | VM_READ.
+            # Access denial refuses before any controller is constructed.
+            self.handle = self.kernel.OpenProcess(0x0410, False, owner.process_id)
             if not self.handle:
                 raise Refused("Owned process metadata is unavailable")
             self.check()
@@ -331,33 +347,31 @@ class WindowsGuard:
         return tuple((s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns) for s in stats)
 
     def _runtime_loaded(self):
-        class Module(ctypes.Structure):
-            _fields_ = [("dwSize", wintypes.DWORD), ("th32ModuleID", wintypes.DWORD), ("th32ProcessID", wintypes.DWORD),
-                        ("GlblcntUsage", wintypes.DWORD), ("ProccntUsage", wintypes.DWORD), ("modBaseAddr", ctypes.POINTER(ctypes.c_ubyte)),
-                        ("modBaseSize", wintypes.DWORD), ("hModule", wintypes.HMODULE), ("szModule", wintypes.WCHAR * 256),
-                        ("szExePath", wintypes.WCHAR * 260)]
-        self.kernel.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
-        self.kernel.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
-        self.kernel.Module32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(Module)]
-        self.kernel.Module32FirstW.restype = wintypes.BOOL
-        self.kernel.Module32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(Module)]
-        self.kernel.Module32NextW.restype = wintypes.BOOL
-        snapshot = self.kernel.CreateToolhelp32Snapshot(0x08 | 0x10, self.owner.process_id)
-        if snapshot == ctypes.c_void_p(-1).value:
+        # Each inspection uses this same owned process handle and a fresh list.
+        # The returned HMODULE values are borrowed; they are not CloseHandle resources.
+        modules = (wintypes.HMODULE * 512)()
+        needed = wintypes.DWORD()
+        if not self.kernel.K32EnumProcessModulesEx(self.handle, modules, ctypes.sizeof(modules),
+                                                    ctypes.byref(needed), 0x03):  # LIST_MODULES_ALL
             raise Refused("Loaded runtime module list unavailable")
-        try:
-            module = Module()
-            module.dwSize = ctypes.sizeof(Module)
-            present = self.kernel.Module32FirstW(snapshot, ctypes.byref(module))
-            for _ in range(512):
-                if not present:
-                    break
-                if os.path.normcase(module.szExePath) == os.path.normcase(str(self.runtime)) and module.modBaseSize > 0:
-                    return
-                present = self.kernel.Module32NextW(snapshot, ctypes.byref(module))
-            raise Refused("Exact isolated ReSkate.dll is not enumerated as loaded")
-        finally:
-            self.kernel.CloseHandle(snapshot)
+        if not needed.value or needed.value > ctypes.sizeof(modules) or needed.value % ctypes.sizeof(wintypes.HMODULE):
+            raise Refused("Loaded runtime module list is empty, oversized or malformed")
+        for index in range(needed.value // ctypes.sizeof(wintypes.HMODULE)):
+            module = modules[index]
+            if not module:
+                raise Refused("Loaded runtime module entry unavailable")
+            name = ctypes.create_unicode_buffer(32768)
+            length = self.kernel.K32GetModuleFileNameExW(self.handle, module, name, len(name))
+            if not length or length >= len(name):
+                raise Refused("Loaded runtime module path unavailable or truncated")
+            if os.path.normcase(name.value) != os.path.normcase(str(self.runtime)):
+                continue
+            info = self.ModuleInfo()
+            if not self.kernel.K32GetModuleInformation(self.handle, module, ctypes.byref(info), ctypes.sizeof(info)) or \
+                    not info.SizeOfImage or info.lpBaseOfDll != module:
+                raise Refused("Loaded runtime module image unavailable or changed")
+            return
+        raise Refused("Exact isolated ReSkate.dll is not enumerated as loaded")
 
     def check(self):
         if self.user.GetAsyncKeyState(0x1B) & 0x8000:

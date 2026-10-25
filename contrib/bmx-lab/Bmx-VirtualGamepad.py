@@ -70,11 +70,15 @@ class Event:
     state: State
 
 
+NEUTRAL_WINDOW = (Event(0, NEUTRAL), Event(20000, NEUTRAL))
+
+
 def scenarios() -> dict[str, tuple[Event, ...]]:
     # Timelines request inputs only. Starting equipment, grounded/airborne state,
     # animation, controller slot selection and consumption are separate evidence.
     return {
         "neutral-follow": (Event(0, NEUTRAL), Event(6000, NEUTRAL)),
+        "neutral-window-20s": NEUTRAL_WINDOW,
         "native-y": (Event(0, NEUTRAL), Event(240, State(Y)), Event(440, NEUTRAL), Event(3600, NEUTRAL)),
         "native-b": (Event(0, NEUTRAL), Event(240, State(B)), Event(440, NEUTRAL), Event(1200, NEUTRAL)),
         # Requires a separately verified mounted rider on flat supported ground.
@@ -103,8 +107,9 @@ def validate_timeline(events: tuple[Event, ...]) -> None:
     if not 2 <= len(events) <= 32 or events[0] != Event(0, NEUTRAL) or events[-1].state != NEUTRAL:
         raise Refused("Timeline requires 2..32 events with initial/final neutral")
     previous = -1
+    maximum_ms = 20000 if events == NEUTRAL_WINDOW else MAX_DURATION_MS
     for event in events:
-        if type(event.at_ms) is not int or event.at_ms <= previous or event.at_ms % PERIOD_MS or not 0 <= event.at_ms <= MAX_DURATION_MS:
+        if type(event.at_ms) is not int or event.at_ms <= previous or event.at_ms % PERIOD_MS or not 0 <= event.at_ms <= maximum_ms:
             raise Refused("Timeline must increase on20ms boundaries within6s")
         previous = event.at_ms
         state = event.state
@@ -587,6 +592,23 @@ class Ledger:
         self.stream.close()
 
 
+class NeutralWindowLedger(Ledger):
+    """Fixed budget for the exact20s neutral window; the default remains512."""
+    def __init__(self, path: Path, events: tuple[Event, ...]):
+        if events != NEUTRAL_WINDOW:
+            raise Refused("Extended ledger requires the exact20s neutral timeline")
+        validate_timeline(events)
+        super().__init__(path)
+
+    def write(self, event, **fields):
+        self.lines += 1
+        if self.lines > 1200:
+            raise Refused("Bounded ledger row limit exceeded")
+        row = dict(event=event, utc=datetime.now(timezone.utc).isoformat(), host_monotonic_ns=time.monotonic_ns(), **fields)
+        self.stream.write(json.dumps(row, allow_nan=False, separators=(",", ":")) + "\n")
+        self.stream.flush()
+
+
 def bootstrap(backend, guard, ledger, clock):
     """One explicit raw-stick LSB, then bounded exact-neutral verification.
 
@@ -748,7 +770,7 @@ def main(argv=None):
     ledger_path = inside_build(args.ledger or WORKSPACE / "build" / "bmx" / "virtual-gamepad" /
                                (datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex + ".jsonl"))
     ledger_path.parent.mkdir(parents=True, exist_ok=True)
-    ledger = Ledger(ledger_path)
+    ledger = NeutralWindowLedger(ledger_path, scenarios()[args.scenario]) if args.scenario == "neutral-window-20s" else Ledger(ledger_path)
     guard = None
     try:
         ledger.write("controller_session_start", schema=1, scenario=args.scenario, execute=args.execute,

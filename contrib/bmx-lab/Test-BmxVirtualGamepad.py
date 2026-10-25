@@ -256,7 +256,8 @@ class HarnessTests(unittest.TestCase):
         for name, events in h.scenarios().items():
             with self.subTest(name=name):
                 h.validate_timeline(events)
-                self.assertLessEqual(events[-1].at_ms, 6000)
+                if name != "neutral-window-20s":
+                    self.assertLessEqual(events[-1].at_ms, 6000)
         self.assertEqual(h.scenarios()["native-y"][1].state.buttons, h.Y)
         self.assertEqual(h.scenarios()["equipment-switch"][2].state.buttons, h.LB | h.Y)
         self.assertEqual(h.scenarios()["bunnyhop-tailwhip"][6].state, h.State(right_x=1, left_trigger=1, right_trigger=1))
@@ -863,6 +864,206 @@ class HarnessTests(unittest.TestCase):
         clock = h.PreviewClock()
         with self.assertRaises(h.Refused):
             h.run(self.short(), Guard(clock), lambda: self.fail("No device"), Sink(), clock=clock, start_gate=object())
+
+
+class NeutralWindowTests(unittest.TestCase):
+    """Fixed-window fake-clock tests; no driver import, device or game."""
+    def test_exact_fixed_window_has1001_scheduled_zero_reports_and_cleanup(self):
+        events = h.scenarios()["neutral-window-20s"]
+        self.assertEqual(events, (h.Event(0, h.NEUTRAL), h.Event(20000, h.NEUTRAL)))
+        h.validate_timeline(events)
+        clock, backend, sink = h.PreviewClock(), Backend(), Sink()
+        guard = Guard(clock)
+        result = h.run(events, guard, lambda: backend, sink, execute=True, clock=clock)
+        self.assertTrue(result["completed"])
+        self.assertEqual((result["report_count"], result["driver_report_count"]), (1001, 1001))
+        reports = [row for row in sink.rows if row["event"] == "controller_report"]
+        self.assertEqual([row["planned_ms"] for row in reports], list(range(0, 20001, 20)))
+        self.assertTrue(all(row["state"] == h.asdict(h.NEUTRAL) and row["raw_report_hex"] == "00" * 12 for row in reports))
+        self.assertEqual(backend.states[:3], [h.State(left_x=1 / 32767), h.NEUTRAL, h.NEUTRAL])
+        self.assertEqual(backend.states[3:], [h.NEUTRAL] * 1002)  # Scheduled1001 plus final release.
+        self.assertEqual((backend.prime_count, backend.closed, guard.closed), (1, 1, 1))
+        self.assertTrue(result["neutral_release_succeeded"] and result["disconnect_succeeded"])
+        self.assertIsNone(result["input_consumed"])
+        self.assertIsNone(result["native_quality"])
+
+    def test_only_exact_neutral_tuple_can_exceed_existing6s_limit(self):
+        self.assertEqual((h.PERIOD_MS, h.POLL_MS, h.MAX_LATE_MS, h.MAX_DURATION_MS), (20, 10, 120, 6000))
+        self.assertEqual((h.BOOTSTRAP_LIMIT_MS, h.START_GATE_LIMIT_MS), (1000, 60000))
+        invalid = [
+            (h.Event(0, h.NEUTRAL), h.Event(20, h.State(h.A)), h.Event(20000, h.NEUTRAL)),
+            (h.Event(0, h.NEUTRAL), h.Event(10000, h.State(right_x=1)), h.Event(20000, h.NEUTRAL)),
+            (h.Event(0, h.NEUTRAL), h.Event(20, h.State(left_trigger=1)), h.Event(20000, h.NEUTRAL)),
+            (h.Event(0, h.NEUTRAL), h.Event(20000, h.State(h.Y))),
+            (h.Event(0, h.NEUTRAL), h.Event(10000, h.NEUTRAL), h.Event(20000, h.NEUTRAL)),
+            (h.Event(0, h.NEUTRAL), h.Event(6020, h.NEUTRAL)),
+            (h.Event(0, h.NEUTRAL), h.Event(19980, h.NEUTRAL)),
+            (h.Event(0, h.NEUTRAL), h.Event(20020, h.NEUTRAL)),
+            [h.Event(0, h.NEUTRAL), h.Event(20000, h.NEUTRAL)],
+        ]
+        for events in invalid:
+            with self.subTest(events=events), self.assertRaises(h.Refused):
+                h.run(events, h.DryGuard(), lambda: self.fail("Invalid window reached backend"), Sink(), clock=h.PreviewClock())
+        self.assertEqual(h.scenarios()["neutral-follow"], (h.Event(0, h.NEUTRAL), h.Event(6000, h.NEUTRAL)))
+        old_names = {"neutral-follow", "native-y", "native-b", "ground-pump", "ground-pump-switch",
+                     "equipment-switch", "bunnyhop-tailwhip", "quickhop-barspin"}
+        self.assertEqual(set(h.scenarios()) - {"neutral-window-20s"}, old_names)
+        for name in old_names:
+            self.assertLessEqual(h.scenarios()[name][-1].at_ms, 6000)
+
+    def test_default512_and_fixed1200_ledgers_are_bounded_without_rowcap_flag(self):
+        events = h.scenarios()["neutral-window-20s"]
+        with tempfile.TemporaryDirectory(prefix="neutral-window-ledger-test-") as temporary:
+            for name, factory, limit in (("default", h.Ledger, 512),
+                                         ("window", lambda path: h.NeutralWindowLedger(path, events), 1200)):
+                path = Path(temporary) / (name + ".jsonl")
+                ledger = factory(path)
+                try:
+                    for _ in range(limit):
+                        ledger.write("bounded_test_row")
+                    with self.assertRaises(h.Refused):
+                        ledger.write("overflow_must_not_be_written")
+                finally:
+                    ledger.close()
+                rows = [json.loads(line) for line in path.read_text().splitlines()]
+                self.assertEqual(len(rows), limit)
+                self.assertTrue(all(row["event"] == "bounded_test_row" for row in rows))
+            refused = Path(temporary) / "wrong-window.jsonl"
+            with self.assertRaises(h.Refused):
+                h.NeutralWindowLedger(refused, h.scenarios()["neutral-follow"])
+            self.assertFalse(refused.exists())
+
+    def test_slow_bounded_bootstrap_and1001_reports_fit_fixed1200_budget(self):
+        class SlowNeutral(Backend):
+            reads = 0
+            def readback(self):
+                self.reads += 1
+                return dict(available=True, slot=0, neutral=self.reads >= 49,
+                            raw_report_hex="00" * 12 if self.reads >= 49 else "01" * 12)
+        events = h.scenarios()["neutral-window-20s"]
+        with tempfile.TemporaryDirectory(prefix="neutral-window-slow-test-") as temporary:
+            path = Path(temporary) / "window.jsonl"
+            ledger = h.NeutralWindowLedger(path, events)
+            clock, backend = h.PreviewClock(), SlowNeutral()
+            try:
+                ledger.write("controller_session_start")
+                result = h.run(events, Guard(clock), lambda: backend, ledger, execute=True, clock=clock)
+            finally:
+                ledger.close()
+            rows = [json.loads(line) for line in path.read_text().splitlines()]
+            self.assertTrue(result["completed"])
+            self.assertEqual((result["driver_report_count"], backend.reads), (1001, 50))
+            self.assertGreater(len(rows), 1100)
+            self.assertLessEqual(len(rows), 1200)
+            self.assertEqual(rows[-2]["event"], "controller_neutral_release")
+            self.assertEqual(rows[-1]["event"], "controller_session_end")
+
+    def test_new_window_ledger_overflow_still_releases_and_disconnects(self):
+        events = h.scenarios()["neutral-window-20s"]
+        with tempfile.TemporaryDirectory(prefix="neutral-window-overflow-test-") as temporary:
+            path = Path(temporary) / "overflow.jsonl"
+            ledger = h.NeutralWindowLedger(path, events)
+            clock, backend = h.PreviewClock(), Backend()
+            guard = Guard(clock)
+            try:
+                for _ in range(240):
+                    ledger.write("constructed_padding")
+                result = h.run(events, guard, lambda: backend, ledger, execute=True, clock=clock)
+            finally:
+                ledger.close()
+            self.assertFalse(result["completed"])
+            self.assertIn("Bounded ledger row limit", result["issue"])
+            self.assertGreater(result["report_count"], 301)
+            self.assertLess(result["report_count"], 1001)
+            self.assertEqual(len(path.read_text().splitlines()), 1200)
+            self.assertEqual((backend.states[-1], backend.closed, guard.closed), (h.NEUTRAL, 1, 1))
+            self.assertTrue(result["neutral_release_succeeded"] and result["disconnect_succeeded"])
+
+    def test_existing_abort_guards_remain_live_after6s_in_new_window(self):
+        for issue in ("Escape abort", "Owned game lost foreground", "Owned creation FILETIME changed",
+                      "Isolated game/runtime files changed", "Owned runtime module path changed"):
+            with self.subTest(issue=issue):
+                clock, backend, sink = h.PreviewClock(), Backend(), Sink()
+                guard = Guard(clock, 12.05, issue)
+                result = h.run(h.scenarios()["neutral-window-20s"], guard, lambda: backend, sink, execute=True, clock=clock)
+                self.assertFalse(result["completed"])
+                self.assertIn(issue, result["issue"])
+                self.assertGreater(result["report_count"], 301)
+                self.assertLess(result["report_count"], 1001)
+                self.assertEqual((backend.states[-1], backend.closed, guard.closed), (h.NEUTRAL, 1, 1))
+                self.assertTrue(result["neutral_release_succeeded"] and result["disconnect_succeeded"])
+
+    def test_late_or_reversed_nonfinite_clocks_abort_after6s_without_guard_relaxation(self):
+        for fault in ("late", -1, float("nan"), float("inf")):
+            with self.subTest(fault=fault):
+                class BrokenLater(h.PreviewClock):
+                    def sleep(self, seconds):
+                        super().sleep(seconds)
+                        if self.value >= 12:
+                            self.value = self.value + .2 if fault == "late" else fault
+                clock, backend, sink = BrokenLater(), Backend(), Sink()
+                guard = Guard(clock)
+                result = h.run(h.scenarios()["neutral-window-20s"], guard, lambda: backend, sink, execute=True, clock=clock)
+                self.assertFalse(result["completed"])
+                self.assertIn("120ms" if fault == "late" else "clock", result["issue"])
+                self.assertGreater(result["report_count"], 301)
+                self.assertEqual((backend.states[-1], backend.closed, guard.closed), (h.NEUTRAL, 1, 1))
+
+    def test_late_driver_failure_retains_unknown_delivery_and_still_cleans_up(self):
+        clock, backend, sink = h.PreviewClock(), Backend(fail_at=605), Sink()
+        guard = Guard(clock)
+        result = h.run(h.scenarios()["neutral-window-20s"], guard, lambda: backend, sink, execute=True, clock=clock)
+        self.assertFalse(result["completed"])
+        self.assertIn("fake driver failure", result["issue"])
+        self.assertGreater(result["report_count"], 301)
+        self.assertLess(result["report_count"], 1001)
+        self.assertIsNone(result["input_consumed"])
+        self.assertEqual((backend.states[-1], backend.closed, guard.closed), (h.NEUTRAL, 1, 1))
+
+    def test_cli_selects_extended_ledger_only_for_new_name_and_dry_run_never_imports_driver(self):
+        folder = h.WORKSPACE / "build" / "bmx"
+        real_default, real_window = h.Ledger, h.NeutralWindowLedger
+        for name, count, limit in (("neutral-window-20s", 1001, 1200), ("neutral-follow", 301, 512)):
+            with self.subTest(name=name), tempfile.TemporaryDirectory(prefix="neutral-window-cli-test-", dir=folder) as temporary:
+                path = Path(temporary) / "dry.jsonl"
+                with patch.object(h, "Ledger", wraps=real_default) as default, \
+                        patch.object(h, "NeutralWindowLedger", wraps=real_window) as window, \
+                        patch.object(h, "WindowsGuard", side_effect=AssertionError("No game inspection")), \
+                        patch.object(h, "make_vgamepad", side_effect=AssertionError("No driver import")), patch("builtins.print"):
+                    self.assertEqual(h.main(["--scenario", name, "--ledger", str(path)]), 0)
+                self.assertEqual((window.call_count, default.call_count), (1, 0) if count == 1001 else (0, 1))
+                rows = [json.loads(line) for line in path.read_text().splitlines()]
+                self.assertEqual(rows[-1]["report_count"], count)
+                self.assertLessEqual(len(rows), limit)
+                self.assertTrue(rows[0]["timing_simulated"])
+                self.assertTrue(all(row.get("driver_submitted") is not True for row in rows))
+
+    def test_actual_start_gate_binds_new_scenario_before1001_reports_with_same60s_limit(self):
+        folder = h.WORKSPACE / "build" / "bmx"
+        with tempfile.TemporaryDirectory(prefix="neutral-window-gate-test-", dir=folder) as temporary:
+            gate = h.StartGate(Path(temporary) / "gate", "a" * 32, h.Owner(123, 456, "game", "A" * 64),
+                               "neutral-window-20s", "C" * 64)
+            test = self
+            class GoSink(Sink):
+                def write(self, event, **fields):
+                    super().write(event, **fields)
+                    if event == "controller_start_gate_wait":
+                        ready = json.loads(gate.ready.read_text())
+                        test.assertEqual((ready["scenario"], ready["wait_limit_ms"]), ("neutral-window-20s", 60000))
+                        test.assertTrue(ready["neutral_bootstrap_completed"])
+                        test.assertFalse(any(row["event"] == "controller_report" for row in self.rows))
+                        pending = gate.path / "go.pending"
+                        pending.write_text(json.dumps(gate.trigger_fields()))
+                        pending.rename(gate.go)
+            clock, backend, sink = h.PreviewClock(), Backend(), GoSink()
+            result = h.run(h.scenarios()["neutral-window-20s"], Guard(clock), lambda: backend, sink,
+                           execute=True, clock=clock, start_gate=gate)
+            self.assertTrue(result["completed"])
+            self.assertEqual((result["report_count"], backend.closed, h.START_GATE_LIMIT_MS), (1001, 1, 60000))
+            go = next(i for i, row in enumerate(sink.rows) if row["event"] == "controller_start_gate_go")
+            first = next(i for i, row in enumerate(sink.rows) if row["event"] == "controller_report")
+            self.assertLess(go, first)
+            self.assertEqual(sink.rows[first]["elapsed_ms"], 0)
 
 
 if __name__ == "__main__":

@@ -56,7 +56,7 @@ The execution guard binds the exact workspace, isolated executable path, PID, cr
 
 `--start-gate <fresh-directory> --start-nonce <32-hex-characters>` is available only with `--execute`; both options are required together. The directory must not already exist and must be inside `build/bmx`. The harness creates it exclusively. It refuses existing directories, preexisting ready/go files, path escapes and reparse paths. Defaults and fixed input timelines are unchanged when these options are absent.
 
-Use this option to construct and verify the neutral controller while the game console remains open. After bootstrap, the harness writes an exclusive `ready.json` containing schema1/event `bmx_virtual_gamepad_ready`, PID, exact creation FILETIME string, executable/runtime identities, nonce, scenario, source hash and UTC. It keeps the neutral device and checks the owned process, focus and Escape every10ms while waiting up to60s. No scheduled scenario report is submitted until a valid trigger arrives. This neutral preflight wait is separate from the scenario's maximum6s duration.
+Use this option to construct and verify the neutral controller while the game console remains open. After bootstrap, the harness writes an exclusive `ready.json` containing schema1/event `bmx_virtual_gamepad_ready`, PID, exact creation FILETIME string, executable/runtime identities, nonce, scenario, source hash and UTC. It keeps the neutral device and checks the owned process, focus and Escape every10ms while waiting up to60s. No scheduled scenario report is submitted until a valid trigger arrives. This neutral preflight wait is separate from the existing maximum6s timelines and the fixed20s neutral window.
 
 The operator must read and verify the ready receipt, close the console using the supported UI tool, then write a complete temporary JSON file in that gate directory and **atomically rename** it to `go.json`. Do not create or write `go.json` in place. Its exact five fields are:
 
@@ -74,11 +74,12 @@ The PID, FILETIME string and nonce must exactly match the running harness owner 
 
 ## Fixed scenarios and current controls
 
-All scenarios begin/end neutral, finish within6s and leave virtual D-pad/menu buttons untouched. They do not alter the physical controller's D-pad mappings. Durations below are planned wall timing; the ledger records actual host times and lateness as well.
+All scenarios begin/end neutral and leave virtual D-pad/menu buttons untouched. Every existing timeline remains within6s; only the exact two-event `neutral-window-20s` timeline may run20s. Intermediate events, nonneutral reports or other longer durations do not qualify for that exception. These scenarios do not alter the physical controller's D-pad mappings. Durations below are planned wall timing; the ledger records actual host times and lateness as well.
 
 | Scenario | Inputs requested | Required starting state / evidence boundary |
 |---|---|---|
 | `neutral-follow` | All scheduled buttons, sticks and triggers remain zero through6000ms (301 reports at50Hz) | Bounded neutral device for the first500ms of Lua follow selected-source acquisition. Verify source acquisition and follow separately; this submits no bike movement or switch request. |
+| `neutral-window-20s` | Exact neutral events at0ms and20000ms;1001 scheduled zero reports at50Hz | Longer fixed reporting availability only. No movement, source eligibility, selected slot, input consumption or timing-cause inference. |
 | `native-y` | Neutral240ms, North/Y200ms, release through3.6s | Fresh isolated NativeOnly session, observer already armed, zero BMX activity. A **virtual North** comparison, not a physical-controller baseline. |
 | `native-b` | Neutral240ms, B200ms, release through1.2s | One ordinary Back/Brake pulse in the observed isolated game state. Menu closure and input consumption require a separate screen observation. |
 | `ground-pump` | Neutral240ms, A to1000ms, coast to1200ms, LS Y=-0.7 for300ms, release and settle to3200ms | Already mounted on clear supported ground. Checks the direct pump channel; reports alone do not establish force submission or handling quality. |
@@ -88,6 +89,8 @@ All scenarios begin/end neutral, finish within6s and leave virtual D-pad/menu bu
 | `quickhop-barspin` | A pedal, release, R3 quick hop120ms, neutral, LB+rear stick back180ms | Already mounted. R3 and left-barspin request use the current mapper. An insufficient hop may refuse the trick. |
 
 For neutral-follow, only the scheduled timeline is all neutral. The unchanged mandatory bootstrap still sends one raw left-stick X unit before its two exact-zero readback samples; device attachment and the SDK constructor update also precede the timeline. The scenario name does not mean the entire process lifetime is free of active input. The existing ownership, foreground, Escape, dependency, slot, nonce, lateness and cleanup checks still apply. Six seconds of submitted neutral reports do not establish the game's selected source, a Lua lease, follow publication, safe switching or gameplay quality.
+
+The20s neutral window has the same mandatory bootstrap and all the same guards. Its default CLI ledger uses a separate fixed1200-row bound, enough for1001 scheduled reports plus the bounded bootstrap, ready/go and cleanup records. All other scenarios retain the unchanged512-row ledger. No duration or ledger-cap option is exposed. This longer availability window changes no source eligibility rule and does not prove why an earlier acquisition was unavailable. The scheduled count excludes bootstrap and final neutral/disconnect as before.
 
 The bindings come from `Engine/Game/Input/bmx_input_sample.h` and `Engine/Game/BMX/bmx_input.h`: A pedals, B brakes, R3 requests quick hop, LB+rear-back selects left barspin, and both triggers+rear-right selects right tailwhip. Left stick is available for steering; right stick controls rear gestures. These tests do not change either stick mapping. No arbitrary external timeline, unbounded hold, replay loop or synthetic native state is accepted.
 

@@ -1,0 +1,7 @@
+{
+  "api": 1,
+  "name": "Stationary rider anchors",
+  "entry": "plugin/main.lua",
+  "side": "client",
+  "permissions": ["skater.read", "input", "menu", "storage"]
+}

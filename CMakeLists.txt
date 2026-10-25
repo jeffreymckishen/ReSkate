@@ -587,6 +587,37 @@ if(DINGOSDK_BUILD_PLUGIN_TESTS)
     add_test(NAME plugins COMMAND dingosdk_plugin_tests)
 endif()
 if(DINGOSDK_BUILD_PLUGIN_TESTS AND WIN32)
+    # A question must fence fresh input admission before the next UI/client poll.
+    # Reuse the capture broker fixture with only its menu provider joined to the real overlay.
+    add_executable(dingosdk_question_ownership_tests
+        Extension/UI/Overlay/Test/question_ownership_tests.cpp
+        Extension/UI/Overlay/Test/question_unavailable.cpp
+        Extension/UI/Overlay/Test/question_link_unavailable.cpp
+        Extension/UI/Overlay/message_card.cpp Extension/UI/Overlay/overlay.cpp
+        Extension/UI/Overlay/input_capture.cpp Extension/UI/Overlay/scripted_pad.cpp
+        Extension/Skater/native_input_pulse.cpp)
+    target_include_directories(dingosdk_question_ownership_tests PRIVATE
+        "${PROJECT_SOURCE_DIR}"
+        "${PROJECT_SOURCE_DIR}/Extension/UI/Overlay"
+        "${PROJECT_SOURCE_DIR}/Engine/Game/Input/Test"
+        "${PROJECT_BINARY_DIR}/generated")
+    target_include_directories(dingosdk_question_ownership_tests SYSTEM PRIVATE
+        "${PROJECT_SOURCE_DIR}/External/imgui")
+    target_compile_features(dingosdk_question_ownership_tests PRIVATE cxx_std_20)
+    target_compile_definitions(dingosdk_question_ownership_tests PRIVATE
+        NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+    target_compile_options(dingosdk_question_ownership_tests PRIVATE /W4 /WX /Gy /Gw)
+    target_link_options(dingosdk_question_ownership_tests PRIVATE /OPT:REF)
+    # State genuinely uses core ImGui support. Link its archive without propagating
+    # the production target's graphics backends into this constructed regression.
+    target_link_libraries(dingosdk_question_ownership_tests PRIVATE
+        dingosdk_logging dingosdk_json "$<TARGET_FILE:dingosdk_imgui>" dxguid)
+    add_dependencies(dingosdk_question_ownership_tests dingosdk_imgui)
+    foreach(scenario fresh_refusal other_prompt reentrant)
+        add_test(NAME question_ownership_${scenario}
+            COMMAND dingosdk_question_ownership_tests ${scenario})
+        set_tests_properties(question_ownership_${scenario} PROPERTIES TIMEOUT 15)
+    endforeach()
     # Tricks read from the score HUD's values (Extension/Skater/trick_watch.h), what plugins hear.
     add_executable(dingosdk_trick_watch_tests Extension/Skater/Test/trick_watch_tests.cpp Extension/Skater/trick_watch.cpp)
     target_include_directories(dingosdk_trick_watch_tests PRIVATE "${PROJECT_SOURCE_DIR}")

@@ -23,7 +23,8 @@ struct Question {
     std::function<void(bool)> answer;
 };
 Question question; // under the mutex
-std::atomic<bool> question_up{}, question_yes{true};
+native_input_pulse::PublicationAtomic<bool> question_up{};
+std::atomic<bool> question_yes{true};
 }
 
 void show_message(std::string title, std::string text) noexcept {
@@ -40,10 +41,12 @@ void message_dismiss() noexcept { up.store(false); }
 void ask_question(std::string label, std::string title, std::string text, std::string yes, std::string no,
                   std::function<void(bool)> answer) noexcept {
     try {
+        native_input_pulse::PublicationScope publication;
+        if (!publication.owns()) return;
         std::lock_guard lock(mutex);
         question = {std::move(label), std::move(title), std::move(text), std::move(yes), std::move(no), std::move(answer)};
         question_yes.store(true);
-        question_up.store(true);
+        (void)question_up.set(publication, true);
     } catch (...) {}
 }
 bool question_asking() noexcept { return question_up.load(); }
@@ -52,8 +55,10 @@ bool question_picked() noexcept { return question_yes.load(); }
 void question_answer(bool yes) noexcept {
     std::function<void(bool)> answer;
     {
+        native_input_pulse::PublicationScope publication;
+        if (!publication.owns()) return;
         std::lock_guard lock(mutex);
-        if (!question_up.exchange(false)) return;
+        if (!question_up.set(publication, false)) return;
         answer = std::move(question.answer);
         question.answer = nullptr;
     }

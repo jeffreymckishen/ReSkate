@@ -1,3 +1,6 @@
+#ifdef DINGOSDK_CAPTURE_NATIVE_REAL_OVERLAY_MENU
+#include "Extension/UI/Overlay/overlay.h"
+#endif
 #include "Extension/Skater/native_input_pulse.h"
 #include "Extension/Skater/native_input_pulse_environment.h"
 #include "Extension/Skater/actor_control.h"
@@ -121,7 +124,13 @@ std::uint64_t now() noexcept {
 DWORD thread() noexcept { return fixture::env.thread_override ? fixture::env.thread_override : GetCurrentThreadId(); }
 bool focused() noexcept { return fixture::env.focus; }
 bool gameplay() noexcept { return fixture::env.gameplay; }
-bool menu_closed() noexcept { return fixture::env.menu; }
+bool menu_closed() noexcept {
+#ifdef DINGOSDK_CAPTURE_NATIVE_REAL_OVERLAY_MENU
+    return fixture::env.menu && !overlay::interface_open();
+#else
+    return fixture::env.menu;
+#endif
+}
 bool interference_clear() noexcept { return fixture::env.interference; }
 }
 

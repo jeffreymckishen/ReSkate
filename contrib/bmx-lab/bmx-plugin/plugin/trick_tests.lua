@@ -2,7 +2,7 @@ local Tricks = require("./tricks")
 local motions = require("./motions")
 local catalog = require("./catalog")
 local tests = {}
-function tests.run()
+function tests.run(case_done)
     local assertions, cases = 0, 0
     local function check(value, reason)
         assertions = assertions + 1
@@ -57,6 +57,7 @@ function tests.run()
         check(r:state().tally.landed_by_id[34] == 1 and r:state().tally.landed_by_id[52] == 1, "signed identities reach own tally")
         r:tick(); check(r:state().tally.landed_combos == 1, "held support cannot double-award")
         cases = cases + 1
+        if case_done then case_done(cases, assertions) end
     end
     do
         local early = ride(); early:air(); early:bar(); early:wait(38)
@@ -70,6 +71,7 @@ function tests.run()
         check(expired:state().failure == "uncaught" and expired:state().bar_release == 1, "expired catch retains released contact")
         expired:wait(2); check(expired:land().failed, "late neutral cannot revive expired attempt")
         cases = cases + 1
+        if case_done then case_done(cases, assertions) end
     end
     do
         local r = ride(); r:air(); r:bar(); r:wait(46, false)
@@ -78,6 +80,7 @@ function tests.run()
         check(r:state().pending_barspins == 2 and near(r:state().bar_angle, 0), "fresh opposite spin repeats from unwrapped origin")
         check(r:land().barspins == 2, "both completed spins commit together")
         cases = cases + 1
+        if case_done then case_done(cases, assertions) end
     end
     do
         for _, angle in ipairs({ math.pi, 2 * math.pi, -2 * math.pi }) do
@@ -95,6 +98,7 @@ function tests.run()
         local empty = ride(); empty:air(); empty:wait(10)
         check(not empty:land().combo_landed and empty:state().tally.landed_units == 0, "ordinary hop earns no trick credit")
         cases = cases + 1
+        if case_done then case_done(cases, assertions) end
     end
     do
         for mode = 1, 4 do
@@ -114,6 +118,7 @@ function tests.run()
             r.tricks:reset(); check(r:state().tally.landed_units == 0, "explicit reset clears session tally")
         end
         cases = cases + 1
+        if case_done then case_done(cases, assertions) end
     end
     do
         for _, seconds in ipairs({ -.01, .2, math.huge, 0 / 0 }) do
@@ -132,6 +137,7 @@ function tests.run()
         local huge = ride(); huge:air(); huge:bar(); huge.input.body_yaw = 1e20
         check(huge:tick().failure == "invalid_sample", "large finite heading retains its nonzero modular jump")
         cases = cases + 1
+        if case_done then case_done(cases, assertions) end
     end
     do
         local r = caught_quality(); local first = r:land()
@@ -147,6 +153,7 @@ function tests.run()
         local e = r:tick()
         check(e.combo_landed and e.barspins == 1 and e.spin_half_turns == 0, "six observed support intervals commit frozen combo")
         cases = cases + 1
+        if case_done then case_done(cases, assertions) end
     end
     do
         local r = caught_quality(); r:land(); r:wait(3)
@@ -158,6 +165,7 @@ function tests.run()
         local gap = caught_quality(); gap:land(); gap.input.grounded = false; gap:wait(5)
         check(not gap:state().landing_pending and gap:state().failure == "unstable_landing", "unqualified gap above40ms cancels")
         cases = cases + 1
+        if case_done then case_done(cases, assertions) end
     end
     do
         local held = caught_quality(); held:land()
@@ -168,6 +176,7 @@ function tests.run()
         local invalid = caught_quality(); invalid:land(); invalid.input.landing_settle_hold_invalid = true
         check(invalid:tick().failure == "unstable_landing", "adapter rejection cancels pending landing")
         cases = cases + 1
+        if case_done then case_done(cases, assertions) end
     end
     do
         for _, fault in ipairs({ { body_up_alignment = .49 }, { support_up_alignment = .14 }, { closing_normal_speed = 7.01 } }) do
@@ -182,6 +191,7 @@ function tests.run()
         local absent = caught_quality(); absent:land(); absent.input.landing_quality_available = false
         check(absent:tick().failure == "invalid_sample", "quality cannot disappear during settlement")
         cases = cases + 1
+        if case_done then case_done(cases, assertions) end
     end
     do
         -- Independent target checks, including the optional C++ aggregate fields.
@@ -208,6 +218,7 @@ function tests.run()
         end
         check(count == 58 and motions.find(255) == nil, "empty slots and none have no motion record")
         cases = cases + 1
+        if case_done then case_done(cases, assertions) end
     end
     do
         local pose = ride(); pose:air(); pose.input.movement, pose.input.rear_neutral = 7, false; pose:tick(); pose.input.movement = 255
@@ -222,6 +233,7 @@ function tests.run()
         cycle:wait(31, false, .02)
         check(cycle:state().failure == "uncaught", "catalog cycle also has bounded catch window")
         cases = cases + 1
+        if case_done then case_done(cases, assertions) end
     end
     do
         -- Full measured quaternion turns; alternating signs must not add rotation.
@@ -243,6 +255,7 @@ function tests.run()
         local norm = ride(); norm:air(); norm:bar(); norm.input.orientation_available, norm.input.body_quaternion = true, { 0, 0, 0, 2 }
         check(norm:tick().failure == "invalid_sample", "nonunit orientation is refused")
         cases = cases + 1
+        if case_done then case_done(cases, assertions) end
     end
     do
         local r = ride({ bar_seconds = 0 / 0, tail_seconds = 99, catch_window = -1, landing_gap_seconds = 99 })
@@ -257,6 +270,7 @@ function tests.run()
         local bad = ride(); bad:air(); bad:bar(); bad.input.movement = 30
         check(bad:tick().failure == "invalid_sample", "unsupported identity is invalid rather than a guessed trick")
         cases = cases + 1
+        if case_done then case_done(cases, assertions) end
     end
     do
         local r = ride(); r:air(); r.input.movement, r.input.rear_neutral = 7, false; r:tick(); r.input.movement = 255
@@ -273,6 +287,7 @@ function tests.run()
         check(busy:state().pending_movements == 0 and busy:state().pending_barspins == 1, "catalog pulse during barspin is consumed")
         check(busy:land().units == 1, "busy catalog pulse never queues behind catch")
         cases = cases + 1
+        if case_done then case_done(cases, assertions) end
     end
     do
         local r = ride(); r:air(); r:bar(); r:tail(); r:wait(62)
@@ -289,6 +304,7 @@ function tests.run()
             and result.landed_by_id[34] == maximum, "Lua tallies saturate at the last exact safe integer")
         r:tick(); check(r:state().tally.landed_units == maximum, "saturation remains stable on later support")
         cases = cases + 1
+        if case_done then case_done(cases, assertions) end
     end
     return { cases = cases, assertions = assertions, native_actions = 0 }
 end

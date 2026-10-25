@@ -5200,18 +5200,61 @@ void bmx_lua_trick_policy_uses_actual_package_modules() {
     for (const auto* name : {"catalog.lua", "motions.lua", "tricks.lua", "trick_tests.lua"})
         files[std::string("plugin/") + name] = contents(directory / "plugin" / name);
     files["plugin/main.lua"] = R"(
-        local result = require("./trick_tests").run()
-        assert(result.cases == 16 and result.assertions > 300 and result.native_actions == 0,
-            string.format("unexpected trick coverage: %s/%s", tostring(result.cases), tostring(result.assertions)))
-        reskate.log(string.format("BMX Lua tricks: %d cases, %d assertions, 0 native actions", result.cases, result.assertions))
+        local paths = {"./catalog", "./motions", "./tricks", "./trick_tests"}
+        local loading, tests, job, complete = 1, nil, nil, false
+        local completed_cases, completed_assertions = 0, 0
+        reskate.on("tick", function()
+            if complete then return end
+            if loading <= #paths then
+                local exports = require(paths[loading])
+                if loading == #paths then tests = exports end
+                loading += 1
+                return
+            end
+            if not job then
+                job = coroutine.create(function()
+                    return tests.run(function(cases, assertions)
+                        assert(cases == completed_cases + 1 and assertions > completed_assertions,
+                            "trick case progress must advance exactly once")
+                        completed_cases, completed_assertions = cases, assertions
+                        coroutine.yield()
+                    end)
+                end)
+            end
+            local ok, result = coroutine.resume(job)
+            assert(ok, result)
+            if coroutine.status(job) ~= "dead" then return end
+            complete = true
+            assert(result.cases == 16 and result.assertions > 300 and result.native_actions == 0,
+                string.format("unexpected trick coverage: %s/%s", tostring(result.cases), tostring(result.assertions)))
+            assert(completed_cases == result.cases and completed_assertions == result.assertions,
+                "trick final coverage must match every yielded case")
+            reskate.log(string.format("BMX Lua tricks: %d cases, %d assertions, 0 native actions", result.cases, result.assertions))
+        end)
     )";
     TestEnvironment environment;
     Host host(environment, Side::client);
     host.apply({package("bmx-lua-trick-tests", files)});
     running(host, "bmx-lua-trick-tests", environment);
+    check(!environment.logged("BMX Lua tricks:"), "Trick regressions do not execute during startup");
+    // Four cold modules, sixteen cases and one final return. Each call keeps
+    // the actual Host's unchanged production limits; no case is skipped.
+    for (unsigned tick = 0; tick < 21; ++tick) {
+        environment.now += 1000.0 / 60.0;
+        host.tick(1000.0 / 60.0);
+        running(host, "bmx-lua-trick-tests", environment);
+        if (tick < 20) check(!environment.logged("BMX Lua tricks:"), "Trick suite cannot complete before all sixteen case boundaries");
+    }
     check(environment.logged("BMX Lua tricks: 16 cases") && environment.fake.calls.empty() && environment.fake.binds.empty() &&
               environment.teleports.empty() && environment.rays == 0,
           "Actual Lua trick modules run without native services or gameplay permissions\n" + environment.all());
+    const auto completed = environment.all();
+    for (unsigned idle = 0; idle < 2; ++idle) {
+        environment.now += 1000.0 / 60.0;
+        host.tick(1000.0 / 60.0);
+        running(host, "bmx-lua-trick-tests", environment);
+    }
+    check(environment.all() == completed, "The trick regression suite runs only once");
 }
 
 void bmx_lua_forces_use_actual_modules_and_match_the_portable_kernel() {

@@ -4698,6 +4698,7 @@ void camera_inspector_prepares_then_explicitly_requests_a_view() {
 }
 
 #include "bmx_first_ride_import_test.inc"
+#include "bmx_contact_runtime_host_fixture.inc"
 #include "passive_sync_trial_test.inc"
 #include "passive_sync_routes_trial_test.inc"
 
@@ -8228,6 +8229,7 @@ int main() {
         run(bmx_lua_recovery_policy_keeps_native_cleanup_separate);
         run(bmx_lua_trick_policy_uses_actual_package_modules);
         run(bmx_lua_forces_use_actual_modules_and_match_the_portable_kernel);
+        run(bmx_lua_contacts_use_actual_decoder_and_force_modules);
         run(plugins_have_pages);
         run(plugins_play_sounds_and_read_the_mods);
         run(plugins_follow_the_session_and_message_each_other);

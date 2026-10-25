@@ -95,10 +95,29 @@ void run_bmx_first_ride_import_fixture(const std::filesystem::path& plugin_direc
         check(status.commands.empty(), "import fixture registers no console commands");
     };
     check(!import_entry.empty(), "exact inert import entry is required");
+    check(Limits{}.call_ms == 50 && Limits{}.tick_ms == 2, "first-ride import fixture retains default Host budgets");
     for (const auto& permissions : {std::string{}, std::string(R"("input.lease","input.capture")")}) {
         const std::string id = permissions.empty() ? "bmx-first-ride-import-denied" : "bmx-first-ride-import-capable";
         const std::string control_id = id + "-control";
-        std::map<std::string, std::string> files{{manifest_file, manifest(permissions)}, {"plugin/main.lua", import_entry}};
+        // Keep the supplied construction/assertion body exact, but execute it
+        // as a warm module only after six separate cold-import tick calls.
+        std::map<std::string, std::string> files{{manifest_file, manifest(permissions)},
+            {"plugin/first_ride_import_checks.lua", import_entry + "\nreturn true\n"}};
+        files["plugin/main.lua"] = R"(
+            local paths = {"./lease_identity", "./catalog", "./input", "./lease_source",
+                "./ride_input_mapping", "./ride_input"}
+            local loading, complete = 1, false
+            reskate.on("tick", function()
+                if complete then return end
+                if loading <= #paths then
+                    require(paths[loading])
+                    loading += 1
+                    return
+                end
+                complete = true
+                assert(require("./first_ride_import_checks") == true)
+            end)
+        )";
         for (const auto* name : {"lease_identity.lua", "lease_source.lua", "ride_input_mapping.lua", "ride_input.lua", "input.lua", "catalog.lua"})
             files[std::string("plugin/") + name] = contents(plugin_directory / name);
         ImportEnvironment environment, control;
@@ -107,9 +126,24 @@ void run_bmx_first_ride_import_fixture(const std::filesystem::path& plugin_direc
         baseline.apply({script(control_id, "reskate.log('FIRST_RIDE_IMPORT_CONTROL_V1')", permissions)});
         require_running(host, id, environment);
         require_running(baseline, control_id, control);
-        check(environment.logged("FIRST_RIDE_IMPORT_CONSTRUCT_INERT_V1"), "all actual-Host Lua status assertions complete\n" + environment.all());
+        check(!environment.logged("FIRST_RIDE_IMPORT_CONSTRUCT_INERT_V1"), "construction is deferred until cold imports finish");
         check(environment.game_accesses == 0 && control.game_accesses == 0 && environment.world_callbacks == 0,
-            "imports and two independent constructions reach no Game or world callback");
+            "import-loader startup reaches no Game or world callback");
+        check(environment.fake.no_api_callbacks(), "loader startup reaches none of the ten lease/capture callbacks");
+        // Both Hosts see the same seven real ticks. Only the fixture imports
+        // modules and constructs Lua objects; automatic Game polling is matched.
+        for (unsigned tick = 0; tick != 7; ++tick) {
+            environment.now += 16.125; control.now += 16.125;
+            host.tick(16.125); baseline.tick(16.125);
+            require_running(host, id, environment);
+            require_running(baseline, control_id, control);
+            check(environment.game_accesses == control.game_accesses && environment.world_callbacks == 0 &&
+                environment.fake.no_api_callbacks() && environment.console_callbacks == 0,
+                "cold imports and construction add no Game or API callback beyond the empty control");
+            if (tick < 6) check(!environment.logged("FIRST_RIDE_IMPORT_CONSTRUCT_INERT_V1"),
+                "construction cannot run before all six cold-import calls complete");
+        }
+        check(environment.logged("FIRST_RIDE_IMPORT_CONSTRUCT_INERT_V1"), "all actual-Host Lua status assertions complete\n" + environment.all());
         check(environment.fake.no_api_callbacks(), "construction never reaches any of the ten lease/capture callbacks");
         for (unsigned tick = 0; tick != 60; ++tick) {
             environment.now += 16.125; control.now += 16.125;
@@ -122,6 +156,9 @@ void run_bmx_first_ride_import_fixture(const std::filesystem::path& plugin_direc
             "idle Host ticks add only the same automatic Game polling as an empty control entry");
         check(environment.layers.empty() && environment.panels.empty() && environment.pages.empty(),
             "import-only entry registers no overlay or menu even while Host menu building is enabled");
+        check(std::count_if(environment.logs.begin(), environment.logs.end(), [](const auto& line) {
+            return line.find("FIRST_RIDE_IMPORT_CONSTRUCT_INERT_V1") != std::string::npos;
+        }) == 1, "all construction and status assertions run exactly once across load and sixty idle ticks");
         host.apply({}); baseline.apply({});
         check(environment.fake.no_api_callbacks() && environment.world_callbacks == 0,
             "VM close does not turn inert Lua objects into native API requests");

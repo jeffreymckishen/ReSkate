@@ -126,6 +126,11 @@ void log_follow_diagnostic(const char* kind, const char* origin, actor_control_n
     else logging::log(logging::Level::warning, logging::Channel::skater,
         "Body follow first-{} SDK global epoch snapshot: sequence={} values_available=false expected=unknown captured=unknown "
         "capture=unknown causal_link=unknown", kind, state.sequence);
+    if (provider.world_park.check != owned_bodies::ParkObservationCheck::not_attempted)
+        logging::log(logging::Level::warning, logging::Channel::skater,
+            "Body follow first-{} park check: sequence={} check={} lanes_known={} failed_lanes_mask={}",
+            kind, state.sequence, owned_bodies::park_observation_check_name(provider.world_park.check),
+            provider.world_park.lanes_known, static_cast<unsigned>(provider.world_park.failed_lanes));
 }
 // Client thread only, after update_model has admitted the engine thread. This
 // state changes diagnostic frequency only; it never gates a service/native edge.
@@ -227,8 +232,15 @@ void initialize_follow_world_diagnostics() noexcept {
 void drain_follow_diagnostics() noexcept {
     const auto saved = GetLastError();
     body_follow_service::StopDiagnostic stop;
-    body_follow_service::CleanupDiagnostic cleanup;
-    body_follow_service::take_diagnostics(stop, cleanup);
+    body_follow_service::CleanupDiagnostic cleanup, latest;
+    // First history remains immediate. Latest has fixed one-slot storage and
+    // may coalesce changes; drain at most once per 64 admitted client ticks.
+    // This counter controls diagnostics only and adds no game/clock reads.
+    static unsigned latest_cleanup_tick{};
+    if (++latest_cleanup_tick == 64) {
+        latest_cleanup_tick = 0;
+        body_follow_service::take_diagnostics(stop, cleanup, latest);
+    } else body_follow_service::take_diagnostics(stop, cleanup);
     // take_diagnostics has released its lock. The World getter takes only the
     // World mutex. No actor/Service/Runtime lock spans retrieval or formatting.
     // Retrieval is later than diagnostic latching, not a simultaneous witness.
@@ -261,6 +273,17 @@ void drain_follow_diagnostics() noexcept {
         stop.reason, stop.state, stop.provider);
     if (cleanup.available) log_follow_diagnostic("cleanup-observation", body_follow_service::cleanup_origin_name(cleanup.origin),
         cleanup.park_reason, cleanup.state, cleanup.provider);
+    if (latest.available) logging::log(logging::Level::warning, logging::Channel::skater,
+        "Body follow latest-cleanup-observation: sequence={} origin={} public_reason={} stage={} park_check={} "
+        "lanes_known={} failed_lanes_mask={} published={} stopped={} release_hold={} release_requested={} "
+        "release_started={} fence={} park={} final_revision={} returned_revision={} intermediate_changes=coalesced",
+        latest.state.sequence, body_follow_service::cleanup_origin_name(latest.origin),
+        skater_action::reason_name(latest.park_reason), body_follow_native::diagnostic_stage_name(latest.provider.stage),
+        owned_bodies::park_observation_check_name(latest.provider.world_park.check),
+        latest.provider.world_park.lanes_known, static_cast<unsigned>(latest.provider.world_park.failed_lanes),
+        latest.state.published, latest.state.stopped, latest.state.release_hold, latest.state.release_requested,
+        latest.state.release_started, latest.state.fence, latest.state.park,
+        latest.state.final_revision, latest.state.returned_revision);
     SetLastError(saved);
 }
 // Development-only acknowledgement barrier. The native tick never waits or

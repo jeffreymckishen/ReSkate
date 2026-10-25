@@ -17,6 +17,7 @@ struct Receipt {
 };
 // Internal diagnostics, separate from Receipt and all plugin DTOs. Exactly one
 // first-stop and first-cleanup observation is retained for the current receipt.
+// A separate one-slot latest categorical cleanup failure may coalesce changes.
 enum class StopOrigin : std::uint8_t {
     reserve_binding, reserve_hold, reserve_clock, publish_binding, publish_closing,
     explicit_stop, owner_release, release_query, runtime_not_ready, tick_expired,
@@ -28,6 +29,7 @@ struct DiagnosticState {
     // Binding::stop; cleanup captures them at the first provider refusal.
     std::uint64_t sequence{}, final_revision{}, returned_revision{};
     bool published{}, stopped{}, release_hold{}, release_requested{}, release_started{}, fence{}, park{};
+    bool operator==(const DiagnosticState&) const = default;
 };
 struct StopDiagnostic {
     DiagnosticState state;
@@ -49,6 +51,9 @@ const char* cleanup_origin_name(CleanupOrigin) noexcept;
 // formatting/logging happens after return. ACK/reuse may discard an undrained
 // receipt; diagnostics never block either operation or change authority.
 void take_diagnostics(StopDiagnostic&, CleanupDiagnostic&) noexcept;
+// The legacy overload never consumes latest. This overload copies it only when
+// its categorical failure/state changed since the last copy, under the same Try lock.
+void take_diagnostics(StopDiagnostic&, CleanupDiagnostic&, CleanupDiagnostic& latest) noexcept;
 using Original = body_follow_native::NativeMotionEntry::Original;
 
 // Client thread. Fixed one-slot capacity is secured before the actual claim.

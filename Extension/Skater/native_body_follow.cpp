@@ -406,7 +406,7 @@ bool observe_park(const Binding& binding, const ParkFence& fence, owned_bodies::
         !cleanup_authority(binding, reason, diagnostic, DiagnosticStage::park_actor)) return false;
     owned_bodies::RetainedParkReceipt observed;
     at(diagnostic, DiagnosticStage::park_observe);
-    if (!owned_bodies::observe_retained_park(binding.owner, fence.basis_, observed) ||
+    if (!owned_bodies::observe_retained_park(binding.owner, fence.basis_, observed, diagnostic.world_park) ||
         !cleanup_authority(binding, reason, diagnostic, DiagnosticStage::park_closing_actor) ||
         (at(diagnostic, DiagnosticStage::park_drained), !drained_follow(binding)) ||
         (at(diagnostic, DiagnosticStage::park_match), !park_history_matches(binding, fence, observed))) {

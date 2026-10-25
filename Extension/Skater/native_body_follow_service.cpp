@@ -102,8 +102,8 @@ struct Service {
     actor_control_native::Reason park_reason{actor_control_native::Reason::unavailable};
     bool occupied{}, orphaned{}, body_release_requested{}, body_release_started{}, stop_cause_recorded{}, command_cleanup_sealed{};
     StopDiagnostic first_stop;
-    CleanupDiagnostic first_cleanup;
-    bool stop_drained{}, cleanup_drained{};
+    CleanupDiagnostic first_cleanup, latest_cleanup;
+    bool stop_drained{}, cleanup_drained{}, latest_cleanup_drained{};
 };
 // Initialized with the runtime, before any existing native hook is enabled.
 // The native dispatch path must not allocate on its first invocation.
@@ -123,8 +123,17 @@ DiagnosticState diagnostic_state(const Service& s) noexcept {
         s.body_release_started, s.park_fence.available(), s.park_receipt.available()};
 }
 void cleanup_observation(Service& s, CleanupOrigin origin, const body_follow_native::Diagnostic& provider) noexcept {
-    if (s.first_cleanup.available) return;
-    s.first_cleanup = {diagnostic_state(s), origin, s.park_reason, provider, true};
+    const CleanupDiagnostic next{diagnostic_state(s), origin, s.park_reason, provider, true};
+    if (!s.first_cleanup.available) {
+        s.first_cleanup = s.latest_cleanup = next;
+        // The first record is already delivered by the immutable first channel.
+        s.latest_cleanup_drained = true;
+        return;
+    }
+    const auto& previous = s.latest_cleanup;
+    if (previous.state == next.state && previous.origin == next.origin && previous.park_reason == next.park_reason &&
+        previous.provider.stage == next.provider.stage && previous.provider.world_park == next.provider.world_park) return;
+    s.latest_cleanup = next; s.latest_cleanup_drained = false;
 }
 void stop_locked(Service& s, actor_control_native::Reason reason, StopOrigin origin,
     const body_follow_native::Diagnostic& provider = {}) noexcept {
@@ -183,7 +192,8 @@ void acknowledge_locked(Service& s) noexcept {
     s.started = s.deadline = 0;
     s.reason = s.park_reason = actor_control_native::Reason::unavailable;
     s.orphaned = s.body_release_requested = s.body_release_started = s.stop_cause_recorded = s.command_cleanup_sealed = false;
-    s.first_stop = {}; s.first_cleanup = {}; s.stop_drained = s.cleanup_drained = false;
+    s.first_stop = {}; s.first_cleanup = {}; s.latest_cleanup = {};
+    s.stop_drained = s.cleanup_drained = s.latest_cleanup_drained = false;
     // edge remains stopped_bit. next_sequence and the actual Arbiter are never
     // reset, so stale handles cannot become valid after receipt or owner reuse.
     s.occupied = false;
@@ -217,8 +227,9 @@ bool valid_attachment(const body_follow_native::Attachment& value) noexcept {
 }
 }
 
-void take_diagnostics(StopDiagnostic& stop, CleanupDiagnostic& cleanup) noexcept {
-    LastError error; stop = {}; cleanup = {};
+namespace {
+void take_diagnostics_impl(StopDiagnostic& stop, CleanupDiagnostic& cleanup, CleanupDiagnostic* latest) noexcept {
+    LastError error; stop = {}; cleanup = {}; if (latest) *latest = {};
     auto& s = service();
     if (!TryAcquireSRWLockExclusive(&s.lock)) return;
     Unlock unlock{s.lock};
@@ -228,6 +239,16 @@ void take_diagnostics(StopDiagnostic& stop, CleanupDiagnostic& cleanup) noexcept
     if (s.first_cleanup.available && !s.cleanup_drained) {
         cleanup = s.first_cleanup; s.cleanup_drained = true;
     }
+    if (latest && s.latest_cleanup.available && !s.latest_cleanup_drained) {
+        *latest = s.latest_cleanup; s.latest_cleanup_drained = true;
+    }
+}
+}
+void take_diagnostics(StopDiagnostic& stop, CleanupDiagnostic& cleanup) noexcept {
+    take_diagnostics_impl(stop, cleanup, nullptr);
+}
+void take_diagnostics(StopDiagnostic& stop, CleanupDiagnostic& cleanup, CleanupDiagnostic& latest) noexcept {
+    take_diagnostics_impl(stop, cleanup, &latest);
 }
 
 bool reserve(std::uint64_t owner, const owned_body::Handle& body,

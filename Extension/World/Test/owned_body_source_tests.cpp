@@ -20,12 +20,17 @@ namespace test_clock {
 std::atomic<ULONGLONG> now{10000};
 std::atomic<unsigned> reads{};
 std::atomic<bool> inject_after_open_clock{}, advance_at_world_read{};
+std::function<void(unsigned)> park_read_hook;
 }
 ULONGLONG WINAPI source_test_now() noexcept {
     // get() first reads its wall, then clock() reads its own freshness wall.
     // Arm an external feed at that opening clock read; the next native world
     // ABI read occurs after the shared clock lock has been released.
-    if (++test_clock::reads == 2 && test_clock::inject_after_open_clock.load())
+    const auto read = ++test_clock::reads;
+    // Keep the test callable alive when its one-shot body clears the hook.
+    const auto park_read = test_clock::park_read_hook;
+    if (park_read) park_read(read);
+    if (read == 2 && test_clock::inject_after_open_clock.load())
         test_clock::advance_at_world_read = true;
     return test_clock::now.load();
 }
@@ -45,6 +50,7 @@ std::atomic<ULONGLONG> initializer_elapsed{};
 std::atomic<bool> motion_actor_enabled{}, motion_available{};
 dingosdk::actor_control_native::Actor motion_actor{};
 std::function<void()> motion_observe_once;
+std::function<void(unsigned)> park_shape_hook;
 std::function<dingosdk::BoundedLocalSurfaceProbe(const std::array<float,3>&,const std::array<float,3>&,unsigned,bool)> probe_callback;
 }
 namespace dingosdk::multiplayer {
@@ -192,7 +198,9 @@ bool body_valid_read(const NativeHandle* handle) {
         peek(generations + handle->index * sizeof(std::uint32_t), generation) && generation == handle->generation;
 }
 bool shape_valid_read(const NativeHandle* handle) {
-    ++test_facts::shape_calls;
+    const auto call = ++test_facts::shape_calls;
+    const auto park_shape = test_facts::park_shape_hook;
+    if (park_shape) park_shape(call);
     SetLastError(0xB013);
     std::uintptr_t state{}, generations{}, bits{};
     std::uint32_t allocation{};
@@ -223,11 +231,13 @@ public:
         test_clock::now = 10000;
         test_clock::reads = 0; test_clock::inject_after_open_clock = false;
         test_clock::advance_at_world_read = false;
+        test_clock::park_read_hook = {};
         test_facts::model_calls = 0; test_facts::world_calls = 0;
         test_facts::body_calls = 0; test_facts::shape_calls = 0;
         test_facts::mutations = 0; test_facts::multiplayer_active = false; test_facts::probe_callback={};
         test_facts::motion_actor_enabled = false; test_facts::motion_available = false; test_facts::motion_actor = {};
         test_facts::motion_observe_once = {};
+        test_facts::park_shape_hook = {};
         InitializeSRWLock(&motion_probe.lock);
         motion_probe.owner = motion_probe.sequence = motion_probe.opened = motion_probe.deadline = 0;
         motion_probe.generation = 0; motion_probe.base = 0; motion_probe.actor = {}; motion_probe.result = {};
@@ -1063,6 +1073,14 @@ int main() {
     try {
         run("command_cleanup_exact_history_no_native_reread",command_cleanup_uses_exact_immutable_history_without_native_reread);
         run("command_cleanup_identity_busy_hold_quarantine",command_cleanup_rejects_changed_identity_busy_hold_and_quarantine);
+        run("park_diagnostic_valid_legacy_parity_signed_zero",park_diagnostic_valid_legacy_parity_and_signed_zero);
+        run("park_diagnostic_owner_busy_occupied_output",park_diagnostic_owner_busy_and_occupied_output);
+        run("park_diagnostic_identity_clock_dynamic",park_diagnostic_identity_clock_and_dynamic_guards);
+        run("park_diagnostic_finite_lane_masks_first_failure",park_diagnostic_finite_lane_masks_and_first_failure);
+        run("park_diagnostic_failed_reads_unknown",park_diagnostic_failed_reads_leave_lanes_unknown);
+        run("park_diagnostic_opening_storage_masks",park_diagnostic_opening_storage_and_mask_edges);
+        run("park_diagnostic_both_closing_passes",park_diagnostic_both_closing_passes_keep_fences);
+        run("park_diagnostic_closing_identity_clock_age",park_diagnostic_closing_identity_clock_and_final_age);
         run("capture_nonmutation_and_immutable_measurement", capture_does_not_publish);
         run("owner_generation_world_pool_and_native_lifetime", owner_generation_world_and_pool_failures);
         run("original_age_and_clock_continuity", original_age_and_clock_failures);

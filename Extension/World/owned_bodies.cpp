@@ -597,6 +597,58 @@ bool create_native(Slot& s) noexcept {
 }
 } // namespace
 
+const char* park_observation_check_name(ParkObservationCheck check) noexcept {
+    switch (check) {
+    case ParkObservationCheck::not_attempted: return "not_attempted";
+    case ParkObservationCheck::passed: return "passed";
+    case ParkObservationCheck::output_occupied: return "output_occupied";
+    case ParkObservationCheck::owner: return "owner";
+    case ParkObservationCheck::client_phase: return "client_phase";
+    case ParkObservationCheck::world_lock: return "world_lock";
+    case ParkObservationCheck::retained_identity: return "retained_identity";
+    case ParkObservationCheck::fresh_allocation: return "fresh_allocation";
+    case ParkObservationCheck::shape_identity: return "shape_identity";
+    case ParkObservationCheck::clock_unavailable: return "clock_unavailable";
+    case ParkObservationCheck::clock_serial: return "clock_serial";
+    case ParkObservationCheck::clock_time: return "clock_time";
+    case ParkObservationCheck::clock_after_fence: return "clock_after_fence";
+    case ParkObservationCheck::clock_after_park: return "clock_after_park";
+    case ParkObservationCheck::category_storage: return "category_storage";
+    case ParkObservationCheck::collision_storage: return "collision_storage";
+    case ParkObservationCheck::dynamic_storage: return "dynamic_storage";
+    case ParkObservationCheck::dynamic_bit: return "dynamic_bit";
+    case ParkObservationCheck::linear_read: return "linear_read";
+    case ParkObservationCheck::linear_zero: return "linear_zero";
+    case ParkObservationCheck::angular_read: return "angular_read";
+    case ParkObservationCheck::angular_zero: return "angular_zero";
+    case ParkObservationCheck::force_read: return "force_read";
+    case ParkObservationCheck::force_zero: return "force_zero";
+    case ParkObservationCheck::torque_read: return "torque_read";
+    case ParkObservationCheck::torque_zero: return "torque_zero";
+    case ParkObservationCheck::shape_category_read: return "shape_category_read";
+    case ParkObservationCheck::shape_category_zero: return "shape_category_zero";
+    case ParkObservationCheck::shape_collision_read: return "shape_collision_read";
+    case ParkObservationCheck::shape_collision_zero: return "shape_collision_zero";
+    case ParkObservationCheck::shape_current: return "shape_current";
+    case ParkObservationCheck::categories_unchanged: return "categories_unchanged";
+    case ParkObservationCheck::collisions_unchanged: return "collisions_unchanged";
+    case ParkObservationCheck::dynamic_unchanged: return "dynamic_unchanged";
+    case ParkObservationCheck::linear_header: return "linear_header";
+    case ParkObservationCheck::linear_values: return "linear_values";
+    case ParkObservationCheck::angular_header: return "angular_header";
+    case ParkObservationCheck::angular_values: return "angular_values";
+    case ParkObservationCheck::force_storage: return "force_storage";
+    case ParkObservationCheck::force_values: return "force_values";
+    case ParkObservationCheck::torque_storage: return "torque_storage";
+    case ParkObservationCheck::torque_values: return "torque_values";
+    case ParkObservationCheck::closing_clock: return "closing_clock";
+    case ParkObservationCheck::closing_epoch: return "closing_epoch";
+    case ParkObservationCheck::closing_stamp: return "closing_stamp";
+    case ParkObservationCheck::clock_freshness: return "clock_freshness";
+    }
+    return "unknown";
+}
+
 void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
     LastError error;
     if (!service.thread) service.thread = GetCurrentThreadId();
@@ -949,68 +1001,93 @@ bool capture_retirement_basis(std::uint64_t owner, const MeasuredSource& source,
 }
 
 bool observe_retained_park(std::uint64_t owner, const RetirementBasis& basis, RetainedParkReceipt& out) noexcept {
-    LastError error;
-    if (out.available() || !owner || owner != basis.owner_ || !eligible() ||
-        !TryAcquireSRWLockShared(&service.lock)) return false;
+    ParkObservationDiagnostic diagnostic;
+    return observe_retained_park(owner, basis, out, diagnostic);
+}
+bool observe_retained_park(std::uint64_t owner, const RetirementBasis& basis, RetainedParkReceipt& out,
+    ParkObservationDiagnostic& diagnostic) noexcept {
+    LastError error; diagnostic = {};
+    const auto failed = [&](ParkObservationCheck check, bool value) noexcept {
+        if (value && diagnostic.check == ParkObservationCheck::not_attempted) diagnostic.check = check;
+        return value;
+    };
+    const auto different = [&](ParkObservationCheck check, const V4& value, const V4& expected) noexcept {
+        if (value == expected) return false;
+        if (diagnostic.check == ParkObservationCheck::not_attempted) {
+            diagnostic.check = check; diagnostic.lanes_known = true;
+            for (std::size_t lane = 0; lane < value.size(); ++lane)
+                if (value[lane] != expected[lane]) diagnostic.failed_lanes |= static_cast<std::uint8_t>(1U << lane);
+        }
+        return true;
+    };
+    using Check = ParkObservationCheck;
+    if (failed(Check::output_occupied, out.available()) || failed(Check::owner, !owner || owner != basis.owner_) ||
+        failed(Check::client_phase, !eligible()) || failed(Check::world_lock, !TryAcquireSRWLockShared(&service.lock))) return false;
     struct Unlock { ~Unlock() { ReleaseSRWLockShared(&service.lock); } } unlock;
     const auto* s = lookup(owner, basis.handle_);
     const auto identity = [&] {
-        if (!s || s->active || !s->retained || s->quarantined || !s->parked_ms ||
+        if (failed(Check::retained_identity, !s || s->active || !s->retained || s->quarantined || !s->parked_ms ||
             s->parked_ms < basis.captured_ms_ || basis.base_ != service.base ||
             basis.world_generation_ != service.world_generation || basis.world_ != s->anchor.world ||
             basis.state_ != s->anchor.state || basis.body_.world != s->body.world ||
             basis.body_.index != s->body.index || basis.body_.generation != s->body.generation ||
-            !basis.made_ || basis.made_ != s->made || s->made > maximum_capsules || !fresh(*s)) return false;
+            !basis.made_ || basis.made_ != s->made || s->made > maximum_capsules) ||
+            failed(Check::fresh_allocation, !fresh(*s))) return false;
         for (std::size_t i = 0; i < s->made; ++i)
-            if (basis.shapes_[i].world != s->shapes[i].world || basis.shapes_[i].index != s->shapes[i].index ||
-                basis.shapes_[i].generation != s->shapes[i].generation) return false;
+            if (failed(Check::shape_identity, basis.shapes_[i].world != s->shapes[i].world || basis.shapes_[i].index != s->shapes[i].index ||
+                basis.shapes_[i].generation != s->shapes[i].generation)) return false;
         return true;
     };
     if (!identity()) return false;
     Epoch before{}; before.world = service.world_generation; before.body = s->handle.generation;
     std::uint64_t observed{};
-    if (!clock(s->anchor, before, &observed) || before.serial <= basis.epoch_.serial ||
-        before.time <= basis.epoch_.time || observed <= basis.captured_ms_ || observed <= s->parked_ms) return false;
+    if (failed(Check::clock_unavailable, !clock(s->anchor, before, &observed)) ||
+        failed(Check::clock_serial, before.serial <= basis.epoch_.serial) ||
+        failed(Check::clock_time, before.time <= basis.epoch_.time) ||
+        failed(Check::clock_after_fence, observed <= basis.captured_ms_) ||
+        failed(Check::clock_after_park, observed <= s->parked_ms)) return false;
     std::uintptr_t categories{}, collides{}, dynamics{};
     std::uint32_t dynamic_word{};
     const auto word = std::uintptr_t{s->body.index >> 5} * sizeof(std::uint32_t);
     const auto bit = 1U << (s->body.index & 31U);
-    if (!peek(s->anchor.state + r::shape_categories, categories) || !pointer(categories) ||
-        !peek(s->anchor.state + r::shape_collides, collides) || !pointer(collides) ||
-        !peek(s->anchor.state + r::dynamic_bits, dynamics) || !pointer(dynamics) ||
-        !peek(dynamics + word, dynamic_word) || (dynamic_word & bit)) return false;
+    if (failed(Check::category_storage, !peek(s->anchor.state + r::shape_categories, categories) || !pointer(categories)) ||
+        failed(Check::collision_storage, !peek(s->anchor.state + r::shape_collides, collides) || !pointer(collides)) ||
+        failed(Check::dynamic_storage, !peek(s->anchor.state + r::dynamic_bits, dynamics) || !pointer(dynamics) ||
+            !peek(dynamics + word, dynamic_word)) || failed(Check::dynamic_bit, (dynamic_word & bit) != 0)) return false;
     Ring linear_header, angular_header; V4 linear{}, angular{}, force{}, torque{};
     std::uintptr_t force_source{}, torque_source{};
-    if (!ring(*s, r::velocity_ring, linear_header, linear) || linear != V4{} ||
-        !ring(*s, r::spin_ring, angular_header, angular) || angular != V4{} ||
-        !array4(s->anchor.state, r::pending_force, s->body.index, force, force_source) || force != V4{} ||
-        !array4(s->anchor.state, r::pending_torque, s->body.index, torque, torque_source) || torque != V4{}) return false;
+    if (failed(Check::linear_read, !ring(*s, r::velocity_ring, linear_header, linear)) || different(Check::linear_zero, linear, V4{}) ||
+        failed(Check::angular_read, !ring(*s, r::spin_ring, angular_header, angular)) || different(Check::angular_zero, angular, V4{}) ||
+        failed(Check::force_read, !array4(s->anchor.state, r::pending_force, s->body.index, force, force_source)) || different(Check::force_zero, force, V4{}) ||
+        failed(Check::torque_read, !array4(s->anchor.state, r::pending_torque, s->body.index, torque, torque_source)) || different(Check::torque_zero, torque, V4{})) return false;
     for (unsigned pass = 0; pass < 2; ++pass) {
         for (std::size_t i = 0; i < s->made; ++i) {
             std::uint32_t category{}, collision{};
             const auto offset = std::uintptr_t{s->shapes[i].index} * sizeof(std::uint32_t);
-            if (!peek(categories + offset, category) || category || !peek(collides + offset, collision) || collision ||
-                !shape_current(*s, i)) return false;
+            if (failed(Check::shape_category_read, !peek(categories + offset, category)) || failed(Check::shape_category_zero, category != 0) ||
+                failed(Check::shape_collision_read, !peek(collides + offset, collision)) || failed(Check::shape_collision_zero, collision != 0) ||
+                failed(Check::shape_current, !shape_current(*s, i))) return false;
         }
         std::uintptr_t again{}; std::uint32_t bits{}; Ring header; V4 value{};
-        if (!peek(s->anchor.state + r::shape_categories, again) || again != categories ||
-            !peek(s->anchor.state + r::shape_collides, again) || again != collides ||
-            !peek(s->anchor.state + r::dynamic_bits, again) || again != dynamics ||
-            !peek(dynamics + word, bits) || bits != dynamic_word ||
-            !ring(*s, r::velocity_ring, header, value) || header != linear_header || value != linear ||
-            !ring(*s, r::spin_ring, header, value) || header != angular_header || value != angular ||
-            !array4(s->anchor.state, r::pending_force, s->body.index, value, again) || again != force_source || value != force ||
-            !array4(s->anchor.state, r::pending_torque, s->body.index, value, again) || again != torque_source || value != torque ||
+        if (failed(Check::categories_unchanged, !peek(s->anchor.state + r::shape_categories, again) || again != categories) ||
+            failed(Check::collisions_unchanged, !peek(s->anchor.state + r::shape_collides, again) || again != collides) ||
+            failed(Check::dynamic_unchanged, !peek(s->anchor.state + r::dynamic_bits, again) || again != dynamics ||
+                !peek(dynamics + word, bits) || bits != dynamic_word) ||
+            failed(Check::linear_read, !ring(*s, r::velocity_ring, header, value)) || failed(Check::linear_header, header != linear_header) || different(Check::linear_values, value, linear) ||
+            failed(Check::angular_read, !ring(*s, r::spin_ring, header, value)) || failed(Check::angular_header, header != angular_header) || different(Check::angular_values, value, angular) ||
+            failed(Check::force_read, !array4(s->anchor.state, r::pending_force, s->body.index, value, again)) || failed(Check::force_storage, again != force_source) || different(Check::force_values, value, force) ||
+            failed(Check::torque_read, !array4(s->anchor.state, r::pending_torque, s->body.index, value, again)) || failed(Check::torque_storage, again != torque_source) || different(Check::torque_values, value, torque) ||
             !identity()) return false;
     }
     Epoch after{}; after.world = service.world_generation; after.body = s->handle.generation;
     std::uint64_t observed_after{};
-    if (!identity() || !clock(s->anchor, after, &observed_after) || after != before || observed_after != observed) return false;
+    if (!identity() || failed(Check::closing_clock, !clock(s->anchor, after, &observed_after)) ||
+        failed(Check::closing_epoch, after != before) || failed(Check::closing_stamp, observed_after != observed)) return false;
     const auto finished = GetTickCount64();
-    if (finished < observed || finished - observed >= command_lifetime_ms) return false;
+    if (failed(Check::clock_freshness, finished < observed || finished - observed >= command_lifetime_ms)) return false;
     RetainedParkReceipt value; value.basis_ = basis; value.observed_epoch_ = before;
     value.parked_ms_ = s->parked_ms; value.observed_ms_ = observed;
-    out = value; return true;
+    out = value; diagnostic.check = Check::passed; return true;
 }
 
 // Both callers already hold the World lock. This checks stored terminal

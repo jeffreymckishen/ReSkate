@@ -31,6 +31,7 @@ struct Diagnostic {
     // non-actor stage does not turn a qualified inspection into a failed one.
     actor_control_native::Observation actor;
     actor_control_native::InspectionFacts facts;
+    owned_bodies::ParkObservationDiagnostic world_park;
 };
 const char* diagnostic_stage_name(DiagnosticStage) noexcept;
 // Caller serializes Binding access. Internal only: no address, Actor or

@@ -42,6 +42,30 @@ void cancel_motion_refresh_probes(std::uint64_t owner) noexcept;
 
 // Private native-service bridge. These values never cross the Lua API.
 // The source owns a copy of the original measured sample, not a live pose.
+// Internal copied diagnostics only. A check names the first existing predicate
+// that refused this observation, not an inferred native cause. A failed read
+// leaves lanes unknown. Known mask bits 0..3 correspond to the existing XYZW
+// value comparison; zero includes either sign of zero. No native identity leaks.
+enum class ParkObservationCheck : std::uint8_t {
+    not_attempted, passed, output_occupied, owner, client_phase,
+    world_lock, retained_identity, fresh_allocation, shape_identity, clock_unavailable,
+    clock_serial, clock_time, clock_after_fence, clock_after_park, category_storage,
+    collision_storage, dynamic_storage, dynamic_bit, linear_read, linear_zero,
+    angular_read, angular_zero, force_read, force_zero, torque_read,
+    torque_zero, shape_category_read, shape_category_zero, shape_collision_read, shape_collision_zero,
+    shape_current, categories_unchanged, collisions_unchanged, dynamic_unchanged, linear_header,
+    linear_values, angular_header, angular_values, force_storage, force_values,
+    torque_storage, torque_values, closing_clock, closing_epoch, closing_stamp,
+    clock_freshness
+};
+struct ParkObservationDiagnostic {
+    ParkObservationCheck check{ParkObservationCheck::not_attempted};
+    std::uint8_t failed_lanes{};
+    bool lanes_known{};
+    bool operator==(const ParkObservationDiagnostic&) const = default;
+};
+const char* park_observation_check_name(ParkObservationCheck) noexcept;
+
 class SourceBorrow;
 class RetirementBasis;
 class RetainedParkReceipt;
@@ -164,6 +188,7 @@ public:
 private:
     friend bool capture_retirement_basis(std::uint64_t, const MeasuredSource&, RetirementBasis&) noexcept;
     friend bool observe_retained_park(std::uint64_t, const RetirementBasis&, RetainedParkReceipt&) noexcept;
+    friend bool observe_retained_park(std::uint64_t, const RetirementBasis&, RetainedParkReceipt&, ParkObservationDiagnostic&) noexcept;
     friend bool matches_retained_park(std::uint64_t, const RetirementBasis&, const RetainedParkReceipt&) noexcept;
     friend bool matches_retained_park_locked(std::uint64_t, const RetirementBasis&, const RetainedParkReceipt&) noexcept;
     friend bool seal_parked_command_cleanup(std::uint64_t, const RetirementBasis&, const RetainedParkReceipt&) noexcept;
@@ -188,6 +213,7 @@ public:
     std::uint64_t parked_ms() const noexcept { return parked_ms_; }
 private:
     friend bool observe_retained_park(std::uint64_t, const RetirementBasis&, RetainedParkReceipt&) noexcept;
+    friend bool observe_retained_park(std::uint64_t, const RetirementBasis&, RetainedParkReceipt&, ParkObservationDiagnostic&) noexcept;
     friend bool matches_retained_park(std::uint64_t, const RetirementBasis&, const RetainedParkReceipt&) noexcept;
     friend bool matches_retained_park_locked(std::uint64_t, const RetirementBasis&, const RetainedParkReceipt&) noexcept;
     friend bool seal_parked_command_cleanup(std::uint64_t, const RetirementBasis&, const RetainedParkReceipt&) noexcept;
@@ -204,6 +230,8 @@ bool capture_retirement_basis(std::uint64_t, const MeasuredSource&, RetirementBa
 // fixed versus keyframed subtype is not inferred. No destruction/reuse proof.
 // Output is issued once and never restamped; an occupied output is preserved.
 bool observe_retained_park(std::uint64_t, const RetirementBasis&, RetainedParkReceipt&) noexcept;
+// Same observation and short-circuit order; diagnostics add no native reads.
+bool observe_retained_park(std::uint64_t, const RetirementBasis&, RetainedParkReceipt&, ParkObservationDiagnostic&) noexcept;
 // Checks immutable terminal history against the still-retained SDK identity.
 // It does not impose receipt-age limits or provide fresh actor/input authority.
 // The retaining actor service must separately qualify the current native context.

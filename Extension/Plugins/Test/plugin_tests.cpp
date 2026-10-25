@@ -4872,13 +4872,32 @@ void bmx_lua_policy_runs_as_modules_and_the_inspector_starts_inert() {
     // Cold module loading and policy execution use separate unchanged Host call budgets.
     files["plugin/main.lua"] = R"(
         local tests = require("./tests")
-        local complete = false
+        local job, complete = nil, false
+        local completed_cases, completed_assertions = 0, 0
         reskate.on("tick", function()
             if complete then return end
+            if not job then
+                job = coroutine.create(function()
+                    return tests.run(function(cases, assertions)
+                        assert(cases == completed_cases + 1 and assertions > completed_assertions,
+                            "policy case progress must advance exactly once")
+                        completed_cases, completed_assertions = cases, assertions
+                        coroutine.yield()
+                    end)
+                end)
+            end
+            local before_cases = completed_cases
+            local ok, result = coroutine.resume(job)
+            assert(ok, result)
+            if coroutine.status(job) ~= "dead" then
+                assert(completed_cases == before_cases + 1, "one complete policy case must yield per callback")
+                return
+            end
             complete = true
-            local result = tests.run()
             assert(result.cases == 12 and result.assertions == 1216 and result.native_actions == 0,
                 string.format("unexpected Lua coverage: %s/%s", tostring(result.cases), tostring(result.assertions)))
+            assert(before_cases == 12 and completed_cases == result.cases and completed_assertions == result.assertions,
+                "policy final return must follow all twelve case yields and match their counts")
             local pad, focus = reskate.input.gamepad(), reskate.input.focus()
             assert(type(pad.left_x) == "number" and type(pad.right_y) == "number" and pad.left_trigger > 0 and pad.right_trigger > 0)
             assert(pad.buttons.a and pad.buttons.b and pad.buttons.y and pad.buttons.right_stick and pad.buttons.lb and pad.buttons.rb)
@@ -4889,6 +4908,8 @@ void bmx_lua_policy_runs_as_modules_and_the_inspector_starts_inert() {
     TestEnvironment portable;
     portable.fake.pad = PadInput{0.25f, 0, 0, -1, 0.3f, 0.9f, 0xb380, false};
     portable.fake.focus_now = {true, false, true};
+    check(Limits{}.call_ms == 50 && Limits{}.tick_ms == 2,
+          "The policy Host regression uses unchanged default call and tick limits");
     Host unit(portable, Side::client);
     unit.apply({package("bmx-lua-policy-tests", files)});
     running(unit, "bmx-lua-policy-tests", portable);
@@ -4902,15 +4923,24 @@ void bmx_lua_policy_runs_as_modules_and_the_inspector_starts_inert() {
     };
     check(!portable.logged("BMX Lua: 12 cases, 1216 assertions, 0 native actions") && policy_inert(),
           "Cold policy loading stays inert and defers the regression suite to a separate tick call\n" + portable.all());
-    unit.tick(1.0 / 60.0);
-    running(unit, "bmx-lua-policy-tests", portable);
+    // Twelve complete case yields, then one separate callback returns/logs the result.
+    for (unsigned tick = 0; tick < 13; ++tick) {
+        ticks(unit, portable, 1);
+        running(unit, "bmx-lua-policy-tests", portable);
+        check(policy_inert(), "Every paced policy callback remains inert\n" + portable.all());
+        if (tick < 12)
+            check(!portable.logged("BMX Lua: 12 cases, 1216 assertions, 0 native actions"),
+                  "Policy completion cannot precede all twelve case yields and the separate return callback\n" + portable.all());
+    }
     check(portable.logged("BMX Lua: 12 cases, 1216 assertions, 0 native actions") && portable.fake.calls.empty(),
           "Actual package modules run through the vendored Luau Host with expected coverage and actual input API fields\n" + portable.all());
     check(policy_inert(), "The policy suite and actual input reads never invoke an actuator\n" + portable.all());
     const auto completed = portable.all();
-    unit.tick(1.0 / 60.0);
-    running(unit, "bmx-lua-policy-tests", portable);
-    check(portable.all() == completed && policy_inert(), "The input policy regression suite runs only once");
+    for (unsigned idle = 0; idle < 2; ++idle) {
+        ticks(unit, portable, 1);
+        running(unit, "bmx-lua-policy-tests", portable);
+        check(portable.all() == completed && policy_inert(), "The input policy regression suite runs only once");
+    }
 }
 
 void bmx_lua_public_bike_facade_denies_mount_before_service_access() {

@@ -5,7 +5,8 @@ local Input = require("./input")
 local catalog = require("./catalog")
 local tests = {}
 
-function tests.run()
+-- Optional progress callback runs only after each complete case; callers may yield there.
+function tests.run(case_done)
     local assertions, cases = 0, 0
     local function check(condition, message)
         assertions = assertions + 1
@@ -55,6 +56,7 @@ function tests.run()
     end
     check(catalog.valid(255) and not catalog.valid(30) and not catalog.valid(64), "catalog holes never alias a request")
     cases = cases + 1
+    if case_done then case_done(cases, assertions) end
 
     do
         local mapper = Input.new()
@@ -68,6 +70,7 @@ function tests.run()
         mapper:reset()
         check(not step(mapper, pad({ quick_hop = true })).active, "reset never accepts a held quick hop")
         cases = cases + 1
+        if case_done then case_done(cases, assertions) end
     end
 
     do
@@ -87,6 +90,7 @@ function tests.run()
         a = step(mapper, pad({ right_y = 1 }))
         check(a.hop_pressed and a.hop_strength >= 0.25 and a.hop_strength < 1, "quick flick through neutral retains bounded weak-hop strength")
         cases = cases + 1
+        if case_done then case_done(cases, assertions) end
     end
 
     do
@@ -103,6 +107,7 @@ function tests.run()
         step(mapper, pad({ right_y = -1 }), ground)
         check(not step(mapper, pad({ right_y = 1 }), ground).hop_pressed, "preheld landing stick cannot ghost-hop")
         cases = cases + 1
+        if case_done then case_done(cases, assertions) end
     end
 
     do
@@ -115,6 +120,7 @@ function tests.run()
         ready(mapper)
         check(step(mapper, pad({ right_y = -0.55 })).manual > 0, "landing neutral rearms manual")
         cases = cases + 1
+        if case_done then case_done(cases, assertions) end
     end
 
     do
@@ -125,6 +131,7 @@ function tests.run()
         step(mapper, pad())
         check(step(mapper, pad({ quick_hop = true })).hop_pressed, "R3 release rearms once")
         cases = cases + 1
+        if case_done then case_done(cases, assertions) end
     end
 
     -- LB1/RB2/LT4/RT8. This independent precedence table includes unsupported
@@ -152,6 +159,7 @@ function tests.run()
         end
     end
     cases = cases + 1
+    if case_done then case_done(cases, assertions) end
 
     do
         local mapper = Input.new(); ready(mapper)
@@ -168,6 +176,7 @@ function tests.run()
         raw = pad({ left_shoulder = true, right_y = 1 }); check(not event(step(mapper, raw, air)), "empty slot remains empty")
         raw.right_y = -1; check(not event(step(mapper, raw, air)), "empty slot still consumes attempted gesture")
         cases = cases + 1
+        if case_done then case_done(cases, assertions) end
     end
 
     do
@@ -180,6 +189,7 @@ function tests.run()
         check(diagonal.steer > 0 and diagonal.air_pitch > 0, "armed diagonal keeps yaw plus flip")
         check(step(mapper, pad({ right_y = -1 }), air).air_pitch == 0, "rear stick never aliases LS flip")
         cases = cases + 1
+        if case_done then case_done(cases, assertions) end
     end
 
     do
@@ -202,6 +212,7 @@ function tests.run()
             check(a.movement == sample[2], "authored asymmetric top/bottom sector boundaries remain unchanged")
         end
         cases = cases + 1
+        if case_done then case_done(cases, assertions) end
     end
 
     do
@@ -223,6 +234,7 @@ function tests.run()
         ready(mapper)
         check(not step(mapper, pad({ device = 8, left_shoulder = true })).active, "held modifier on source change cannot arm")
         cases = cases + 1
+        if case_done then case_done(cases, assertions) end
     end
 
     do
@@ -238,6 +250,7 @@ function tests.run()
         mapper:configure({})
         check(not step(mapper, pad({ pedal = 1 })).active, "configure resets gesture/source gate")
         cases = cases + 1
+        if case_done then case_done(cases, assertions) end
     end
 
     return { cases = cases, assertions = assertions, native_actions = 0 }

@@ -256,6 +256,135 @@ function Tests.run()
         local out=step.missing_rotation and f.mapping:controls({physics_epoch=newproxy(),h=.01666666567325592,grounded=true})or f.controls(step)
         refused(out,"force context requires actual epoch, positive measured h and explicit facts")
     end
+    -- B15: a genuine body ground change may occur between admitted reports.
+    -- These are constructed held-state traces, not native support/input proof.
+    do
+        cases+=1
+        local f=fixture();f.prime()
+        f.observe(pad({left_x=.7,buttons={a=true}}),20)
+        local before=f.mapping:status()
+        -- The original caller's mutable pad cannot replace admitted held state.
+        f.pad.left_x=-1;f.pad.buttons.a=false
+        local air=f.controls({grounded=false})
+        local a=permitted(air,"held A survives report-free takeoff as valid air controls")
+        check(a.pedal==0 and a.steer>0,"air projection gates pedal without dropping held steering")
+        local land=f.controls({grounded=true})
+        local b=permitted(land,"held A resumes on report-free landing without neutral rearm")
+        check(b.pedal==1 and b.steer>0,"landing uses admitted A/steering, not mutated caller pad")
+        local after=f.mapping:status()
+        for _,name in ipairs({"lease_handle","generation","user","sequence","source_epoch","context_generation",
+            "observation_serial","observed_ms","packet"})do
+            check(after.source[name]==before.source[name],"ground-only projection cannot advance or replace source "..name)
+        end
+        check(after.source.pad.buttons.a and after.source.pad.left_x==.7,"admitted source snapshot stays detached")
+        check(after.hop_counter==before.hop_counter and not land.actions.hop_pressed,"ground context is not a new input edge")
+    end
+    do
+        cases+=1
+        local f=fixture();f.prime()
+        f.context.grounded=false;f.observe(pad(),10)
+        f.observe(pad({left_x=-.7,buttons={b=true}}),20)
+        local ground=permitted(f.controls({grounded=true}),"held brake survives report-free landing")
+        local air=permitted(f.controls({grounded=false}),"held brake survives report-free takeoff")
+        check(ground.brake==1 and air.brake==1 and ground.steer<0 and air.steer<0,"held B and steering retain their level/sign")
+    end
+    do
+        cases+=1
+        local f=fixture();f.prime();f.observe(pad({buttons={a=true}}),20)
+        local frame=f.frame();frame.new_observation=false
+        local context=copy(f.context);context.grounded=false
+        local changed=f.mapping:observe(frame,context)
+        check(changed.valid and changed.active and not changed.new_observation,"identical duplicate changes ground context without a source observation")
+        check(changed.source.observation_serial==frame.sample.observation_serial and changed.source.observed_ms==frame.sample.observed_ms,
+            "duplicate ground projection retains exact source clock/ordinal")
+        check(permitted(f.controls({grounded=false}),"duplicate air projection remains valid").pedal==0,"air duplicate gates A")
+        context.grounded=true
+        changed=f.mapping:observe(frame,context)
+        check(changed.valid and changed.active and not changed.new_observation,"duplicate landing remains a held projection")
+        check(permitted(f.controls({grounded=true}),"duplicate landing restores held A").pedal==1,"duplicate landing does not require invented neutral")
+    end
+    do
+        cases+=1
+        local f=fixture();f.prime();f.r3()
+        local original=f.mapping:status().pending_hop
+        for index=1,6 do
+            local row=f.controls({grounded=index%2==0})
+            local controls=permitted(row,"receipt-owned pending hop survives held ground transition")
+            check(controls.hop_event_id==original.id and controls.hop_strength==original.strength,"ground transition never retires or reissues pending hop")
+            check(not row.actions.hop_pressed and row.actions.hop_strength==0,"held projection carries no new gesture edge")
+        end
+        local state=f.mapping:status()
+        check(state.hop_counter==1 and state.pending_hop.observation_serial==original.observation_serial
+            and state.pending_hop.observed_ms==original.observed_ms,"pending event provenance/high-water mark remains original")
+        check(f.mapping:retire_hop(original.id,"accepted"),"only exact owner disposition retires pending hop")
+        for index=1,4 do
+            local row=f.controls({grounded=index%2==0})
+            local controls=permitted(row,"retired held R3 remains valid across ground transitions")
+            check(controls.hop_event_id==0 and not row.actions.hop_pressed,"held R3 cannot replay retired event")
+        end
+        check(not f.observe(pad({buttons={right_stick=true}}),10).actions.hop_pressed,"fresh still-held R3 is not a second edge")
+        f.observe(pad(),10);f.r3()
+        check(permitted(f.controls(),"genuine release/new press remains available").hop_event_id==2,"only genuine release/press mints next lifetime identity")
+    end
+    do
+        cases+=1
+        local f=fixture();f.prime()
+        local charged=f.observe(pad({right_y=-1}),50)
+        local preload=charged.actions.preload
+        check(preload>0 and preload<1,"real source time begins partial charge")
+        for _=1,6 do
+            local row=f.controls()
+            permitted(row,"body-only controls can reuse held charged level")
+            check(near(row.actions.preload,preload),"physics h/repeated controls cannot charge input history")
+        end
+        f.controls({grounded=false})
+        local landed=f.controls({grounded=true});permitted(landed,"held back stick survives new ground context")
+        check(landed.actions.preload==0 and not landed.actions.hop_pressed,"actual context change clears old gesture charge without fabricating duration")
+        local forward=f.observe(pad({right_y=1}),1)
+        check(not forward.actions.hop_pressed and f.mapping:status().hop_counter==0,"ground-only projection cannot finish old charged flick")
+    end
+    for _,gap in ipairs({100,101})do
+        cases+=1
+        local f=fixture();f.prime();f.observe(pad({buttons={a=true}}),20)
+        local before=f.mapping:status().source
+        f.controls({grounded=false});f.controls({grounded=true})
+        local out=f.observe(pad({buttons={a=true}}),gap)
+        if gap==100 then
+            check(out.valid and out.active,"exact100ms actual report remains admitted after held ground changes")
+            check(permitted(f.controls(),"boundary report can still provide controls").pedal==1,"held A remains on exact existing source deadline")
+        else
+            check(not out.valid and out.issue=="observation_gap","101ms actual report remains stale despite held ground projections")
+            refused(f.controls({grounded=false}),"stale report cannot recover through ground-only projection")
+        end
+        check(before.observed_ms~=out.source.observed_ms,"only genuine report changes source time")
+    end
+    do
+        cases+=1
+        local f=fixture();f.observe(pad({buttons={a=true}}),0)
+        refused(f.controls({grounded=false}),"unprimed held A cannot become active via takeoff")
+        refused(f.controls({grounded=true}),"unprimed held A cannot become active via landing")
+        check(not f.observe(pad({buttons={a=true}}),10).active,"invalid projection does not bypass real neutral prime")
+        f.observe(pad(),10);f.observe(pad({buttons={a=true}}),10)
+        check(permitted(f.controls(),"real neutral then new A still works").pedal==1,"held ground fix preserves neutral gate")
+    end
+    for _,fault in ipairs({"reset","input_loss","focus_loss"})do
+        cases+=1
+        local f=fixture();f.prime();f.observe(pad({buttons={a=true}}),20)
+        if fault=="reset" then f.mapping:reset("explicit fixture reset")
+        elseif fault=="input_loss" then local frame=f.frame();frame.input_ok=false;f.mapping:observe(frame,f.context)
+        else local context=copy(f.context);context.focused=false;f.mapping:observe(f.frame(),context) end
+        refused(f.controls({grounded=false}),"invalidated "..fault.." cannot reuse old held raw on ground transition")
+        refused(f.controls({grounded=true}),"invalidated "..fault.." cannot rearm on second transition")
+    end
+    do
+        cases+=1
+        local f=fixture();f.prime();f.r3()
+        f.context.grounded=false
+        local fresh=f.observe(pad({buttons={right_stick=true}}),10)
+        local state=f.mapping:status()
+        check(fresh.valid and state.pending_hop==nil and state.hop_counter==1,"existing fresh-report ground-change cancellation stays unchanged")
+        check(state.last_retired.disposition=="ground_context_changed","held-only fix does not rewrite fresh-report retirement policy")
+    end
     return {cases=cases,assertions=assertions,constructed=true,native_authority=false,gameplay=false}
 end
 return Tests

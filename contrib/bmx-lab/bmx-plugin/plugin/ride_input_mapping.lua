@@ -126,6 +126,20 @@ function Mapper:reset(issue)
     -- Keep same-source observation/time high-water marks and the lifetime
     -- counter. Reset cannot turn an old cached R3 press into a new event.
 end
+-- A body ground transition is not another source observation. Re-project the
+-- last admitted held state at zero input time; keep source/time high-water
+-- marks and the receipt-owned pending hop unchanged.
+function Mapper:_held_ground(grounded)
+    if not self._valid or not self._active or not self._raw or not self._source or self._needs_prime
+        or self._blocked or self._uncertain or self._exhausted then return false end
+    local actions = self._mapper:update_observation(self._raw, { grounded = grounded }, 0)
+    -- A held projection cannot deliver a new gesture edge, even if the input
+    -- policy changes in future. Only observe() may mint a lifetime hop ID.
+    actions.hop_pressed, actions.hop_strength = false, 0
+    self._grounded, self._actions, self._active = grounded, actions, actions.active
+    self._issue = actions.active and "none" or "neutral_required"
+    return actions.active
+end
 function Mapper:_observation(valid, issue, fresh)
     return { valid = valid, issue = issue, active = self._active,
         new_observation = fresh == true, source = copy(self._source),
@@ -164,7 +178,7 @@ function Mapper:observe(frame, context)
             return self:_refuse("inconsistent_observation")
         end
         self._rotation_reserved = context.rotation_reserved
-        if self._grounded ~= context.grounded then
+        if self._grounded ~= context.grounded and not self:_held_ground(context.grounded) then
             self._grounded = context.grounded
             return self:_refuse("ground_context_changed")
         end
@@ -223,7 +237,7 @@ function Mapper:controls(context)
         out.issue = self._issue
         return out
     end
-    if self._grounded ~= context.grounded then
+    if self._grounded ~= context.grounded and not self:_held_ground(context.grounded) then
         self._grounded = context.grounded
         self:_invalidate("ground_context_changed")
         out.issue = self._issue

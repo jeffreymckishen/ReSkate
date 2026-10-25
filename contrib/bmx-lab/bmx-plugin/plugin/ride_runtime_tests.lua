@@ -100,7 +100,8 @@ local function fixture(options)
         return {sequence=f.receipt_sequence or f.sequence,requested_serial=f.requested,
             produced_serial=(f.mode=="queued" or f.mode=="rejected" or f.mode=="expired") and "0" or f.produced,
             outcome=f.mode,force_attempted=f.mode=="applied" or f.mode=="partial",torque_attempted=f.mode=="applied",
-            retained=f.retained==true,quarantined=f.quarantined==true,successor=f.mode=="applied" and f.successor or nil}
+            retained=f.retained==true,quarantined=f.quarantined==true,successor=f.mode=="applied" and f.successor or nil,
+            cleanup_disposition=f.cleanup_disposition or "none"}
     end
     function f.api.acknowledge(sequence)
         table.insert(f.calls,"ack");assert(sequence==f.sequence)
@@ -439,7 +440,7 @@ function Tests.run(case_done)
         local f=fixture();f.observe()
         f.on_receipt=function()
             return {sequence=f.sequence,requested_serial=f.requested,produced_serial=f.produced,
-                outcome="partial",force_attempted=true,torque_attempted=true,retained=true,quarantined=false}
+                outcome="partial",force_attempted=true,torque_attempted=true,retained=true,quarantined=false,cleanup_disposition="none"}
         end
         local s=f.ride:drain()
         check(s.receipt and s.receipt.outcome=="partial" and s.acknowledged==1,"both-attempted partial is real native terminal shape")
@@ -449,8 +450,8 @@ function Tests.run(case_done)
         local f=fixture();f.observe();local ordinal,ms=f.input_serial,f.ms
         f.advance();f.input_serial,f.ms=ordinal,ms;f.clear=true
         local s=f.observe()
-        check(s.stop_requested and s.issue=="non-initial model cadence unavailable","unchanged input plus ground change cannot silently skip Trick epoch")
-        check(#f.tricks.observed==1,"no invented action snapshot or extra model dt")
+        check(not s.stop_requested and s.model_steps==2 and #f.tricks.observed==2,"held-only ground projection continues the next constructed body model step")
+        check(s.force_pending and s.pending_sequence==f.sequence and count(f,"submit")==1 and s.input_staged==1 and s.input_consumed==1,"same pending command and input accounting without another submission or source observation")
     end
     next_case() do
         local f=fixture();f.observe();f.advance(2);f.mode="applied";f.successor=f.sample()

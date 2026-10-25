@@ -170,6 +170,16 @@ local function equal_sample(a,b)
     for i=1,4 do if a.rotation[i] ~= b.rotation[i] then return false end end
     return true
 end
+local function wheel_copy(wheels,previous)
+    if type(wheels)~="table" then return nil end
+    local out={}
+    for i=1,2 do
+        local wheel=wheels[i]
+        if not M.valid_wheel(wheel) or wheel.radius~=previous[i].radius or wheel.inertia~=previous[i].inertia then return nil end
+        out[i]={radius=wheel.radius,inertia=wheel.inertia,angular_speed=wheel.angular_speed}
+    end
+    return detached(out)
+end
 local function stop(s, reason)
     -- Pure latch. Core inspects stop_requested after this subordinate returns.
     -- There are no Source, body, Follow or owner callbacks in this module.
@@ -201,7 +211,10 @@ local function receipt_valid(row,p)
     if type(row)~="table" or row.sequence~=p.sequence or row.requested_serial~=p.serial
         or not Identity.is_u64(row.produced_serial) or type(row.force_attempted)~="boolean"
         or type(row.torque_attempted)~="boolean" or type(row.retained)~="boolean"
-        or type(row.quarantined)~="boolean" then return false end
+        or type(row.quarantined)~="boolean"
+        or (row.cleanup_disposition~="none" and row.cleanup_disposition~="parked_without_successor") then return false end
+    if row.cleanup_disposition=="parked_without_successor" and (row.outcome~="applied" or row.successor~=nil
+        or not row.retained or row.quarantined or not row.force_attempted or not row.torque_attempted) then return false end
     if row.outcome=="queued" then return row.produced_serial=="0" and not row.force_attempted and not row.torque_attempted end
     if row.outcome=="applied" then
         return row.force_attempted and row.torque_attempted
@@ -228,10 +241,15 @@ local function poll_pending(s)
     -- Keep only bounded scalar receipt diagnostics. Never publish its successor.
     s.last_receipt={outcome=row.outcome,sequence=row.sequence,requested_serial=row.requested_serial,
         produced_serial=row.produced_serial,force_attempted=row.force_attempted,torque_attempted=row.torque_attempted,
-        retained=row.retained,quarantined=row.quarantined,successor_available=row.successor~=nil}
+        retained=row.retained,quarantined=row.quarantined,successor_available=row.successor~=nil,
+        cleanup_disposition=row.cleanup_disposition}
     if row.outcome=="queued" then return end
-    if row.outcome=="applied" then
-        if row.successor==nil then return end -- Park/Follow terminal cannot replace this native evidence.
+    local parked=row.cleanup_disposition=="parked_without_successor"
+    if parked then
+        -- This is terminal transport cleanup, never a successor or an accepted model result.
+        stop(s,"force body parked without successor")
+    elseif row.outcome=="applied" then
+        if row.successor==nil then return end -- Outer lifecycle alone cannot replace native evidence.
         local successor=receipt_sample_copy(row.successor)
         local steps=successor and Identity.bounded_delta(successor.serial,p.serial,MAX_SAFE)
         if not successor or not steps or steps<2 or Identity.compare(successor.serial,row.produced_serial)<=0
@@ -253,13 +271,15 @@ local function poll_pending(s)
     if row.outcome=="partial" then
         retire(s,p,"uncertain");p.unknown=true;s.unknown=true;return
     end
-    if not retire(s,p,row.outcome=="applied" and "accepted" or "cancelled") then p.unknown=true;return end
+    if not retire(s,p,parked and "uncertain" or row.outcome=="applied" and "accepted" or "cancelled") then p.unknown=true;return end
     s.pending=nil
     -- A one-step preview is older than the SDK's N+2 successor. Reset ONLY
     -- force policy histories. Mapping/Trick already observed intervening epochs.
     local reset=invoke(s,s.force.reset,s.force)
     if not reset[1] or reset.n~=1 then s.unknown=true;stop(s,"force history reset unavailable");return end
-    s.wheels=Forces.proposed_wheels()
+    -- Carry predicted spin only for the exact applied command after coherent successor and ACK.
+    -- Force policy histories still reset; these wheels are not native wheel observations.
+    if row.outcome=="applied" and not parked then s.wheels=p.wheels end
     s.model_history={kind="force_reset",serial=p.serial,reason="terminal_force_receipt",native_wheel_state_known=false}
 end
 local function companion_result(s,frame,contact,actions)
@@ -485,8 +505,10 @@ local function observe(s,source_frame,raw,context)
     end
     local command=packet(model,companions,sample.seconds)
     if not command then stop(s,"bounded force packet unavailable");return end
+    local wheels=wheel_copy(model.wheels,s.wheels)
+    if not wheels then stop(s,"bounded wheel model unavailable");return end
     local p={serial=sample.serial,time=sample.time,seconds=sample.seconds,submitted_at=s.now,
-        hop_id=model.hop_applied and model.hop_event_id or nil}
+        hop_id=model.hop_applied and model.hop_event_id or nil,wheels=wheels}
     -- Core's closures enforce exact live ownership before AND after effects.
     -- This local reservation survives stop during submit and unknown admission.
     s.pending=p

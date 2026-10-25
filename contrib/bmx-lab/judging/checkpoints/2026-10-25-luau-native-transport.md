@@ -89,3 +89,118 @@ Follow acknowledgement,
 but a parked body cannot be reused. Reliable repeated bike/board cycling still
 needs a supported ownership/lifetime path; resetting counters or reviving retained
 bodies would not establish one.
+
+## CE2 startup attempt and ordinary close
+
+CE2 did not reach a native bike trial. Its isolated owner was PID `54692`, creation
+FILETIME `134373859556082181`, using diagnostic runtime
+`3B25624D2E0C104DDA935C2A47D21A1087CCF44E91776A112DC22F44B101DB09`.
+At 03:13:11 local time, Follow startup failed because its 25-character page title
+exceeded the Host's 24-character limit. That call precedes tick registration.
+The one-file correction shortened the title to 19 characters; all other 13 package
+leaves stayed exact. Host reloaded it in the same process at 07:24:49Z, and its
+page was visibly idle with no Follow receipt. This was a title-only hot reload,
+not a fresh cold lifetime or native policy qualification.
+
+One ordinary MPR reload reached level-content-active at 03:23:43 local time.
+The saved log's multiplayer counters reported zero session players/skaters; those
+counters do not establish local actor absence. Separately, no subsequent skater-
+factory construction event was observed. The screen still showed “Loading…” after a
+completed controller baseline. That baseline delivered 301 scheduled neutral
+reports over six seconds, following its declared one-LSB bootstrap and two exact
+slot-zero neutral samples, then final neutral release and disconnect. Its ledger
+reports no issue and leaves input consumption unknown; it does not establish
+gameplay readiness or explain the stalled startup.
+
+V3 actually failed its static source scan because bind-attempt.ps1 was omitted.
+Source review then found that V3/V4's Int32-only lineage contract would reject
+persisted Int64 indices; Root did not run admission under either version.
+V5 accepted exactly Int32 or Int64 line indices with the same ordering checks.
+Its actual constructed title-contract suite, including a JSON roundtrip, passed
+30 cases/32 checks; the unchanged pure suites remain separate from gameplay.
+The same-owner title-reload lineage was admitted, but Root confirmed no Prep or
+Follow Arm and no native bike trial. Both known CE2 storage locations for each
+package were recorded absent before close.
+
+The exact process received an ordinary close request at 07:33:40Z and was recorded
+absent at 07:33:48Z, with no forced termination. The log records Shutdown [25].
+This closes a stalled startup lifetime; it is not a park, cleanup acknowledgement
+or native destruction result. No riding, switching, alignment, recovery or likeness
+score is demonstrated. The separate six-case actual-Service operator remained
+unexecuted at this first case's closure. The preceding observations concern only
+the lifetime ending at 07:33:48Z.
+
+The preserved case is `ce2-stalled-startup-20261025T073340674Z` on the development
+drive. Exact-owner closure hash:
+`B82178D681DA0CA429372663CD158FCC9DD30AC77DBF5231C63700E6D8229AFF`.
+
+Separately, a later cold lifetime, PID `13400` / FILETIME `134373874322929113`,
+loaded both plugins without the title error but still showed MPR “Loading…”; Root
+confirmed no Prep/Follow Arm or controller test in that lifetime. Its exact PID was
+recorded absent after ordinary close at 07:43:28Z in
+`ce2-second-stalled-startup-20261025T074323161Z` (closure hash
+`8D7063DA50BA4BCD74D6A44C739E462DA4E2E97D70C008352C0E12BDDDD28C41`),
+which establishes startup-process closure, not a native bike trial or park/ACK result.
+
+## CE2 profile boot and first-baseline failure
+
+A further no-map/default-boot lifetime, PID `51088`, also stalled and was ordinarily
+closed at 07:52:53Z without Prep, Follow Arm or a controller trial. Its closure is
+`1538C3F02D5BDD17D7CD5C57211C758D24090351B505CED6034F4EC187E033FE`.
+The launch helpers had omitted `RESKATE_BMX_LOCAL_PROFILE=1`, which the existing
+guarded isolated-profile adapter requires. Root set it only in the next helper's
+child environment; no runtime code or global environment setting changed.
+
+That next owner was PID `63876`, FILETIME `134373886098290746`, with the same
+`3B25624D…` runtime. Its log records the isolated profile path accepted and native
+storage configuration returning 0. After ordinary SDK travel to MPR, a skater
+factory returned at 03:59:55 local time (07:59:55Z); Root reported a controllable
+on-foot skater, and the saved screenshot shows the skater carrying the board.
+This sequence does not establish a matched causal test of all earlier stalls.
+
+Root armed Prep once. Its sampled page reached ready after 3 of at most 20 calls;
+that is setup readiness, not a mounted bike or Follow result. Follow was never
+armed and no bike body was created in these observations. The first neutral
+baseline failed after 11 reports on the unchanged 120 ms scheduler-lateness guard.
+The checked monotonic QPC path distinguishes that failure from clock reversal;
+the cause of the scheduling delay is unknown. Final neutral release and disconnect
+both succeeded, but the attempted baseline did not pass.
+
+No graphics settings were changed; saved Uncapped values do not measure effective
+frame rate. The history here stops at the preserved first-baseline failure in
+`ce2-first-baseline-lateness-20261025T081608834Z`; it includes no later scheduling
+experiment, native bike trial, park/ACK, riding or likeness score.
+
+## Later CE2 attempt: completed Follow, park and acknowledgement
+
+A later attempt used the same PID `63876` / FILETIME `134373886098290746` and
+runtime. Only the owned controller children were prospectively assigned AboveNormal
+priority, which was read back before bootstrap and the first scheduled reports.
+The baseline completed 301 reports; the separate 20-second gate completed 1,001.
+Both reported final neutral release and disconnect, and Root observed both owned
+children exit. The unchanged 120 ms lateness guard stayed active. This is one
+successful scheduling attempt, not proof that priority caused the improvement.
+The first failed baseline remains preserved.
+
+CE2 then reached Done / Completed + ACK: final and returned revision `31`,
+`in_flight=0`, terminal true, park observed and acknowledgement true. The first
+cleanup diagnostic reported `clock_serial`; that was an initial observation,
+not a persistent terminal failure. The later completed receipt is the outcome.
+It does not resolve CE1's different lifetime or prove native history erasure.
+
+The source drained with both cleanup-pending and cleanup-unknown false, no report
+debt, 172 outer-XInput-buffer publications and 42 renewals. Lua recorded one body-create call.
+Eight visual-removal calls were accepted. Root's saved view shows the standing
+skater carrying the board with no bike visible in that view; this does not prove
+absence outside that view, native body destruction or erased native history.
+The receipt still reports native_retirement_known=false.
+
+At this pre-board snapshot, no Board action had been requested. A Board trial
+remains a separate explicit gate. No mounted riding, rider alignment, repeated
+switching, fall recovery or BMX Streets likeness score is demonstrated.
+
+The actual result is `priority-attempt-result-v1/actual-result.json` in the CE2
+case on the development drive, hash
+`90CCD00C3E4644EC12BAB2D82C2DD2E55EA72CB06ECEA038DCEE3C3F8375470B`.
+Pre-board storage hash:
+`B72E63A6B0485C6C066A11F6EF0E0995E9CDEADE2D38F27D204226CC42E570AF`.

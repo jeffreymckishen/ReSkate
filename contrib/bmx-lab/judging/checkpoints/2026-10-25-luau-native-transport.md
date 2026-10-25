@@ -55,15 +55,37 @@ Independent actual-evidence review is `E906C8F6FEDB59AB80B143E1BCA4051A1A931214A
 with post-unload addendum `4A36262B10D44E89585A5F558C7EF5A2B4ED00E579A56BC8D14D39E2FFB190EB`.
 Earlier refused attempts remain preserved and earn no native-trial credit.
 
-The next live check requests a 500 ms Follow interval using the new callback-entry
-policy and a genuinely new active body. Force7 used the existing native-lifetime
-motion policy, so it does not qualify that new branch. Actor-excluded native
-contacts, measured nonzero-force response and rendered rider alignment remain open.
-The Lua ride activation gates stay off.
+The later CE1 trial requested a 500 ms Follow interval using the callback-entry
+policy and created one new active body. Its controller baseline and separate
+20-second window passed. Follow returned revision `30` of final revision `30`,
+with no invocation in flight. A screenshot showed the bike beside a standing
+rider carrying a skateboard; mounted alignment and riding were not demonstrated.
+Input and capture drained without report debt.
+
+CE1 then failed its separate body cleanup barrier: `retained_unknown`,
+`pending=[body_parked]`, `park_observed=false`, and no completed acknowledgement.
+CE1's sequence-2 cleanup diagnostic records release requested/started and a
+captured fence; it does not identify which later World park condition kept failing.
+Force7's success does not
+qualify cleanup after the callback-entry trial's moving body.
+
+CE1 evidence is in `callback-entry-follow-trial-ce1-20261025T062525536Z` on the
+development drive. Retained storage is
+`F9470EF47402FEDC6DD3ACA8094B76B0A5D492BC545D7CE45DB0E12C579BD82D`;
+post-unload storage is `0BCF322FD08206A01CA3E95F67E897FF02076746C53041E8A84A7E36EBACECBB`.
+The exact plugin was withdrawn at 06:38:34Z. Its unloaded snapshot still had no
+park acknowledgement. The isolated process was subsequently closed and its exact
+PID was absent at 06:40:11Z. Process closure does not establish a successful park
+or native destruction acknowledgement. No new body or equipment request followed.
+
+The next live check needs predicate-level park diagnostics and a fresh process
+identity. Actor-excluded native contacts, measured nonzero-force response and
+rendered rider alignment remain open. The Lua ride activation gates stay off.
 
 The current World backend retains parked allocations and permits only eight
-attempted allocations per process. Preparation alone spends no slot; this trial
-spent one. A fresh allocation may be admitted after completed Follow acknowledgement,
+attempted allocations per process. Preparation alone spends no slot; Force7 and
+CE1 each created one body. A fresh allocation may be admitted after completed
+Follow acknowledgement,
 but a parked body cannot be reused. Reliable repeated bike/board cycling still
 needs a supported ownership/lifetime path; resetting counters or reviving retained
 bodies would not establish one.

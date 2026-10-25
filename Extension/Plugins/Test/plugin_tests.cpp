@@ -5153,16 +5153,18 @@ void bmx_lua_persistence_keeps_terminal_records_and_public_fault_gates() {
     const auto directory = std::filesystem::path(RESKATE_SOURCE_DIR) / "contrib" / "bmx-lab" / "bmx-plugin";
     std::map<std::string, std::string> files{{manifest_file, R"({"api":1,"entry":"plugin/main.lua","permissions":[]})"}};
     for (const auto* name : {"equipment_transition.lua", "bike_admission.lua", "equipment_runtime.lua",
-             "bike_runtime_core.lua", "bike_runtime.lua", "bike_runtime_core_persist_tests.lua", "runtime_progress_fault_tests.lua"}) {
+             "bike_runtime_core.lua", "bike_runtime.lua", "lease_identity.lua", "bike_runtime_core_persist_tests.lua",
+             "runtime_progress_fault_tests.lua"}) {
         std::ifstream file(directory / "plugin" / name, std::ios::binary);
         check(file.good(), std::string("BMX Lua persistence source is available: ") + name);
         files[std::string("plugin/") + name] = std::string(std::istreambuf_iterator<char>(file), {});
     }
     files["plugin/main.lua"] = R"(
         local modules = {"./equipment_transition", "./bike_admission", "./equipment_runtime",
-            "./bike_runtime_core", "./bike_runtime", "./bike_runtime_core_persist_tests", "./runtime_progress_fault_tests"}
+            "./bike_runtime_core", "./bike_runtime", "./lease_identity", "./bike_runtime_core_persist_tests",
+            "./runtime_progress_fault_tests"}
         local loaded, persisted, persisted_work, persistence, public_done = 0, 0, 0, nil, false
-        local expected_cases = {1,1,1,1,1,2,3,4,5}
+        local expected_cases = {1,1,1,1,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17}
         reskate.on("tick", function()
             -- One cold import, persistence work unit or public suite per unchanged-budget callback.
             if loaded < #modules then
@@ -5170,16 +5172,16 @@ void bmx_lua_persistence_keeps_terminal_records_and_public_fault_gates() {
                 require(modules[loaded])
                 return
             end
-            if persisted_work < 9 then
+            if persisted_work < 21 then
                 persistence = persistence or require("./bike_runtime_core_persist_tests").new_runner()
                 local result = persistence:step()
                 assert(type(result.work_unit_complete) == "boolean")
-                assert(result.work_units == persisted_work + (result.work_unit_complete and 1 or 0) and result.total_work_units == 9 and result.total_cases == 5 and result.native_actions == 0)
+                assert(result.work_units == persisted_work + (result.work_unit_complete and 1 or 0) and result.total_work_units == 21 and result.total_cases == 17 and result.native_actions == 0)
                 assert(result.cases == (result.work_units == 0 and 0 or expected_cases[result.work_units]) and result.cases >= persisted and result.cases <= persisted + 1)
                 persisted, persisted_work = result.cases, result.work_units
-                assert(result.done == (persisted_work == 9))
+                assert(result.done == (persisted_work == 21))
                 if result.done then
-                    assert(result.cases == 5 and result.assertions == 78)
+                    assert(result.cases == 17 and result.assertions == 185)
                     reskate.log(string.format("BMX Lua persistence: %d cases, %d assertions, 0 native actions", result.cases, result.assertions))
                 end
                 return

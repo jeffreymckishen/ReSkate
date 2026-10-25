@@ -6,6 +6,7 @@
 -- mount per VM, so one real mount covers B3, B7 and B14, and B13 calls the
 -- facade's own API check directly. Requiring this module performs no call.
 local Runtime=require("./bike_runtime")
+local Core=require("./bike_runtime_core")
 local Admission=require("./bike_admission")
 local G=require("./bike_geometry")
 local Tests={}
@@ -196,6 +197,11 @@ end
 function Tests.run()
     local cases,assertions=0,0
     local function check(v,why) assertions+=1;assert(v,why) end
+
+    cases+=1 do
+        check(Core.probe_batches_per_serial==4 and table.isfrozen(Core),"Core exports its fixed four-batch allowance read-only")
+        check(not pcall(function() Core.probe_batches_per_serial=5 end),"a caller cannot raise Core's allowance")
+    end
 
     cases+=1 do
         -- B13. The facade runs this exact check (bike_runtime.lua admission) before

@@ -242,14 +242,17 @@ A refused read at first still submitted its command. Through `plan`, `witness`
 and `step` on a rider rolling at 4 m/s with R3 pressed, every refused
 counterexample batch gave a submitted command with the hop impulse (477 N s),
 the same as the judged control, and so did a guard or witness batch never
-cast, a witness never called, refused witnesses, Core's one batch and a sample
-the policy refused (a scratch run of today's composer test against the earlier
-composer, not in the tree: all 23 such reads submitted). The composer now
+cast, a witness never called, refused witnesses, a one-batch allowance and a
+sample the policy refused (a scratch run of today's composer test against the
+earlier composer, not in the tree: all 23 such reads submitted). The composer now
 fails closed on every read `bail_policy` does not judge, and its tests check,
 for each of those reads, that no force, torque or hop impulse is submitted and
 the hop is cancelled. The finite-edge cases are judged without the false
 contact and submit normally. The 4-batch riding scenarios in `RIDE_COMPOSER.md`
-are unchanged; under Core's one batch nothing is submitted at all.
+are unchanged; under an explicit one-batch allowance nothing is submitted at
+all. Core grants four probe batches per native serial (`bike_runtime_core.lua`,
+`probe_batch_adapter`, `:21-43`), the composer defaults to that allowance, and
+so the guard and witness lanes can be cast through Core, each as its own batch.
 
 A 1000-sample seeded run matches line for line the output of a scratch C++
 program built `/W4 /WX` against the real header. That program is not in the
@@ -267,5 +270,9 @@ game. The native adapter currently refuses
 query is always unavailable today. Nothing computes the force/velocity residual
 proxy yet; the caller passes it in. No fall is dispatched, and no recovery module
 is changed. `ride_composer.lua` submits nothing for a read `bail_policy` did not
-judge, so with that native refusal, and under Core's one batch per read, it
-would submit nothing in game today (`RIDE_COMPOSER.md`, Gaps found, 13).
+judge, so with that native refusal it would submit nothing in game today
+(`RIDE_COMPOSER.md`, Gaps found, 13). The batch allowance is not what stops it:
+Core grants four probe batches per native serial (`probe_batch_adapter`), the
+composer defaults to that allowance, and the guard and witness lanes can
+therefore be cast through Core. The native exclusion refusal leaves every
+riding guard query unavailable, and an unavailable guard is never clear.

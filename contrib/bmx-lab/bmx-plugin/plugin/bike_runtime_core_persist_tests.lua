@@ -4,6 +4,7 @@
 -- capture or game state is involved, and no bike actuator may be reached.
 local Core=require("./bike_runtime_core")
 local Equipment=require("./equipment_runtime")
+local Identity=require("./lease_identity")
 local tests={}
 function tests.new_runner()
     local assertions=0
@@ -237,11 +238,176 @@ function tests.new_runner()
     end)
     -- Case 2 may yield incomplete work after one simulated Core step.
     -- The Core's one qualification intent per VM remains untouched.
-    local completion={1,1,1,1,1,2,3,4,5}
+    -- These cases use the very adapter create_ride binds, with fake callbacks.
+    -- They do not construct a Ride or open either activation literal.
+    local good_options={require_contact=true,exclude_local_actor=true}
+    local function probe_fixture()
+        local f={serial="9007199254740993",epoch=newproxy(),rays={},guard_ok=true,current=true,
+            queries=0,guards=0,afters=0,trace={},stopped=false}
+        local function stop(why) f.stopped=true;f.reason=f.reason or why end
+        f.probe=Core.probe_batch_adapter(Identity,
+            function(epoch)
+                f.guards+=1;table.insert(f.trace,"guard")
+                if f.stopped or not f.guard_ok or epoch~=f.epoch then
+                    stop("current Core Source/Follow/body/epoch force guard refused");return false
+                end
+                return true
+            end,
+            function() table.insert(f.trace,"serial");return f.serial end,
+            function(epoch,rays,options)
+                f.queries+=1;table.insert(f.trace,"invoke")
+                local query=f.queries
+                f.last={epoch=epoch,rays=rays,options=options}
+                if f.reenter then f.probe(epoch,rays,options) end
+                if f.backend_failure then return table.pack(false,"constructed backend exception") end
+                return table.pack(true,query)
+            end,
+            function(epoch)
+                f.afters+=1;table.insert(f.trace,"after")
+                return f.current and not f.stopped and epoch==f.epoch
+            end,stop)
+        function f:query(options) return self.probe(self.epoch,self.rays,options or good_options) end
+        return f
+    end
+    table.insert(work_functions,function()
+        local f=probe_fixture()
+        check(f.queries==0 and f.guards==0 and #f.trace==0,"binding the adapter is inert")
+        for batch=1,4 do check(f:query()==batch,"batch "..batch.." reaches the same query adapter") end
+        check(f.queries==4 and f.guards==4 and f.afters==4 and not f.stopped
+            and f.last.epoch==f.epoch and f.last.rays==f.rays and f.last.options==good_options
+            and #f.trace==16 and f.trace[1]=="guard" and f.trace[2]=="serial" and f.trace[3]=="invoke" and f.trace[4]=="after",
+            "all four batches preserve arguments and guard/serial/invoke/after ordering")
+        check(f:query()==nil,"the fifth batch is refused")
+        check(f.queries==4 and f.guards==5 and f.afters==4 and f.stopped
+            and f.reason=="fifth contact batch for one native serial refused","the fifth stops before another SDK query")
+        check(f:query()==nil and f.queries==4,"a stopped adapter cannot spend another batch")
+    end)
+    table.insert(work_functions,function()
+        local f=probe_fixture()
+        for _=1,4 do f:query() end
+        f.serial="9007199254740994";f.epoch=newproxy()
+        for batch=5,8 do check(f:query()==batch,"an exact uint64 serial advance grants four fresh batches") end
+        check(f:query()==nil and f.reason=="fifth contact batch for one native serial refused","the advanced serial still has only four")
+        check(f.queries==8 and f.guards==9 and f.afters==8,"each admitted batch retains both owner checks")
+    end)
+    table.insert(work_functions,function()
+        local f=probe_fixture()
+        for _=1,2 do f:query() end
+        f.epoch=newproxy() -- Another read with the same serial cannot refresh it.
+        for _=1,2 do f:query() end
+        check(f.queries==4 and f.guards==4 and f.afters==4 and not f.stopped,"a duplicate serial spends the remaining allowance")
+        check(f:query()==nil and f.queries==4 and f.reason=="fifth contact batch for one native serial refused",
+            "a duplicate serial never resets the count")
+    end)
+    table.insert(work_functions,function()
+        local f=probe_fixture()
+        for _=1,4 do f:query() end
+        f.serial="9007199254740992";f.epoch=newproxy()
+        check(f:query()==nil and f.queries==4 and f.reason=="contact batch native serial regressed or invalid",
+            "a regressed serial stops without refreshing the allowance")
+        f.serial="9007199254740993";f.epoch=newproxy()
+        check(f:query()==nil and f.queries==4 and f.guards==6 and f.afters==4,
+            "restoring the old serial cannot reopen a stopped owner")
+    end)
+    table.insert(work_functions,function()
+        local f=probe_fixture()
+        for _=1,2 do f:query() end
+        f.guard_ok=false
+        check(f:query()==nil and f.queries==2 and f.guards==3 and f.afters==2
+            and f.reason=="current Core Source/Follow/body/epoch force guard refused","batch three still runs the stopping owner guard")
+        f.guard_ok=true
+        check(f:query()==nil and f.queries==2,"a later guard recovery does not resume a stopped runtime")
+    end)
+    table.insert(work_functions,function()
+        for _,bad in {{},{value=false},{value={}},{value={require_contact=false,exclude_local_actor=true}},
+            {value={require_contact=true,exclude_local_actor=false}},{value={require_contact=true}},{value={exclude_local_actor=true}}} do
+            local f=probe_fixture()
+            for _=1,2 do f:query() end
+            check(f.probe(f.epoch,f.rays,bad.value)==nil and f.queries==2 and f.guards==2 and f.afters==2 and not f.stopped,
+                "batch three still requires both query options before any callback")
+            check(f:query()==3 and f:query()==4 and f.queries==4,"malformed options neither spend nor refresh the allowance")
+            check(f:query()==nil and f.queries==4 and f.reason=="fifth contact batch for one native serial refused",
+                "the original four-call cap survives an invalid option attempt")
+        end
+    end)
+    table.insert(work_functions,function()
+        local f=probe_fixture()
+        for _=1,2 do f:query() end
+        f.current=false
+        check(f:query()==3,"the actual returned query tuple survives post-call owner loss")
+        check(f.queries==3 and f.guards==3 and f.afters==3 and f.reason=="Core guard changed during contact query",
+            "batch three still stops on its after-call owner check")
+        check(f:query()==nil and f.queries==3,"post-call owner loss stops later batches")
+    end)
+    table.insert(work_functions,function()
+        for _,bad in {{value="0"},{value="01"},{value="18446744073709551616"},{value=7},{}} do
+            local f=probe_fixture();f.serial=bad.value
+            check(f:query()==nil and f.queries==0 and f.guards==1 and f.afters==0
+                and f.reason=="contact batch native serial regressed or invalid","an invalid initial native serial is never an allowance")
+        end
+        local f=probe_fixture();f:query();f.serial="0"
+        check(f:query()==nil and f.queries==1 and f.reason=="contact batch native serial regressed or invalid",
+            "invalid serials after admission do not refresh the allowance")
+    end)
+    table.insert(work_functions,function()
+        local f=probe_fixture()
+        for _=1,2 do f:query() end
+        f.backend_failure=true
+        local ok,why=pcall(function() return f:query() end)
+        check(not ok and why=="contact query result unknown" and f.queries==3 and f.afters==3,
+            "a packed backend failure still performs the after-call check and preserves the error")
+        f.backend_failure=false
+        check(f:query()==4,"a failed backend call consumed its batch")
+        check(f:query()==nil and f.queries==4,"backend failure refunds no allowance")
+    end)
+    table.insert(work_functions,function()
+        local f=probe_fixture();f.reenter=true
+        check(f:query()==1,"the outer query preserves its own returned tuple during reentry")
+        check(f.queries==4 and f.guards==5 and f.afters==4 and f.reason=="fifth contact batch for one native serial refused",
+            "reserving before callbacks caps nested queries at four")
+        -- Before the next query, whose refused guard call is appended to the trace.
+        check(f.trace[1]=="guard" and f.trace[2]=="serial" and f.trace[3]=="invoke" and f.trace[#f.trace]=="after",
+            "the nested path preserves checks before and after the backend")
+        check(f:query()==nil and f.queries==4,"reentry cannot reopen the stopped owner")
+    end)
+    table.insert(work_functions,function()
+        -- The full-spend advance above would also pass a count that resets
+        -- only once four are used. Here serial A spends part of its allowance.
+        for _,spent in {2,3} do
+            local f=probe_fixture()
+            for batch=1,spent do check(f:query()==batch,"serial A spends batch "..batch.." of "..spent) end
+            f.serial="9007199254740994";f.epoch=newproxy()
+            for batch=spent+1,spent+4 do
+                check(f:query()==batch,"an advance after "..spent.." batches grants four fresh batches")
+            end
+            check(f.queries==spent+4 and f.guards==spent+4 and f.afters==spent+4 and not f.stopped,
+                "serial B admits exactly four after "..spent.." on serial A")
+            check(f:query()==nil and f.queries==spent+4 and f.reason=="fifth contact batch for one native serial refused",
+                "the fifth batch on serial B is refused after "..spent.." on serial A")
+        end
+    end)
+    table.insert(work_functions,function()
+        -- A plain string comparison orders "10" before "9" and "100" before
+        -- "99", so these advances would stop as regressions.
+        local f=probe_fixture()
+        local admitted=0
+        for _,serial in {"9","10","99","100","9999999999999999999","10000000000000000000"} do
+            f.serial=serial;f.epoch=newproxy()
+            for _=1,4 do
+                admitted+=1
+                check(f:query()==admitted,"serial "..serial.." grants a fresh batch")
+            end
+            check(not f.stopped and f.reason==nil,"advancing to serial "..serial.." is not a regression stop")
+        end
+        check(f.queries==24 and f.guards==24 and f.afters==24,"each of the six serials granted its own four batches")
+        check(f:query()==nil and f.queries==24 and f.reason=="fifth contact batch for one native serial refused",
+            "the last serial still has only four")
+    end)
+    local completion={1,1,1,1,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17}
     local completed,work_completed,failed=0,0,false
     local runner={}
     local function snapshot(work_unit_complete)
-        return {cases=completed,assertions=assertions,native_actions=0,total_cases=5,
+        return {cases=completed,assertions=assertions,native_actions=0,total_cases=17,
             work_units=work_completed,total_work_units=#work_functions,work_unit_complete=work_unit_complete,done=work_completed==#work_functions}
     end
     function runner:step()

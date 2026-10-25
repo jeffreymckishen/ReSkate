@@ -34,10 +34,12 @@ local placed = ride:matrices()          -- the eight part matrices, on demand
 ```
 
 `batches_per_read` is how many `probe_batch` calls the caller's native owner lets one read make,
-the wheel batch included. It defaults to `Composer.core_batches`, which is 1, because that is
-what Core grants today (see Batches). With the default, `plan` asks for no rail or guard batch at
-all and says so (`batch_allowance`), and since no read is then guarded, `step` submits nothing at
-all. The offline scenarios below run with 4.
+the wheel batch included. It defaults to `Composer.core_batches`, 4, the same as Core's read-only
+`probe_batches_per_serial` export (see Batches). The composer writes it as a literal so that
+requiring it does not load Core, and `ride_composer_tests` checks the two are equal. Each lane
+keeps its own batch and decoder. Four batches do not increase the SDK's ray, request or
+native-cast limits, and a read the guard policy did not judge still submits nothing. The offline
+four-batch scenarios use this default; smaller allowances are explicit counterexamples.
 
 Every guard plan is bound to the read's Ride Framev1, and a command leaves only from a read that
 `bail_policy` judged on that read's own guard rows. Every other read fails closed and submits
@@ -200,12 +202,12 @@ lock_on)` expose the graph. Every edge the composer takes goes through `allowed`
 `bail_guard.lua` plans only on a frame that carries its read's Ride Framev1 (`frame_identity.lua`).
 It holds both guard batches to that frame's epoch, runs them through the real `Contact.decode`, and
 lends sweep history only from the same body and source's coherent successor (BAIL.md). The composer
-builds that frame in `plan` (`guard_frame`, `ride_composer.lua:206`) from this read's `sample`,
+builds that frame in `plan` (`guard_frame`, `ride_composer.lua:210`) from this read's `sample`,
 `body_handle` and `gates` and the selected-source observation in `tick.input`, so it names this
 read's body and source and nothing older. `fresh` is the composer's own verdict: it builds a frame
 only for a read whose serial follows the last read it stepped. A planned but unstepped read is not
 tracked, so a pending higher plan can be replaced before it is stepped. The trick frame has the
-same shape (`read_frame`, `:194`), with the source `ride_input_mapping` last accepted.
+same shape (`read_frame`, `:198`), with the source `ride_input_mapping` last accepted.
 
 `plan.guard_binding` and `diagnostics.queries.guard_binding` say whether the read is bound:
 
@@ -227,7 +229,7 @@ bailed submits nothing: no force, torque or hop impulse. Its withheld issue
 | --- | --- |
 | `bail_guard_unbound` | No qualified Framev1, so no guard plan and no witness (`guard_binding` says why). |
 | the guard's own refusal | The guard will not plan for a qualified frame (`guard_ray_outside_world`, `guard_ray_budget`). |
-| `batch_allowance` | The batch allowance has no batch for the guard lane. Under Core's one batch that is every read. |
+| `batch_allowance` | The chosen allowance has no batch for the guard lane. An explicit one-batch caller has only the wheels; Core defaults to four. |
 | `uncast` | `step` without `plan`: nothing planned was cast. |
 | `guard_batch_missing`, `<lane>_batch_malformed`, `<lane>_batch_contact_copy`, `<lane>_epoch_mismatch` | The guard or witness batch handed back is not this read's raw `probe_batch` result (The tick). A stale batch relabelled for this read is an epoch mismatch. |
 | `witness_not_called`, `witness_batch_missing` | `witness` was never called, or its rays were not cast and handed back. |
@@ -261,11 +263,11 @@ submit their command with `bail_policy` not stepped (gap 13 of the previous revi
 submit nothing. The read that leaves bailed used to submit; it now submits nothing. And the guard
 used to lend history from the previous read whether or not the policy judged it.
 
-The consequence is that under Core's one batch per read, which carries no guard lane, the composer
-submits nothing at all, and in game it would submit nothing even with more batches until the native
+An explicit one-batch caller carries no guard lane and submits nothing at all. Core now grants
+four batches per native serial, but in game the composer still submits nothing until the native
 adapter accepts `exclude_local_actor` (BAIL.md). That is intended: those are exactly the reads it
-cannot protect. The constructed offline caller rides only because it grants more batches than Core
-and returns both exclusion facts true.
+cannot protect. The constructed offline caller uses the same four-batch allowance and returns
+both exclusion facts true; those facts have not been established for the native adapter.
 
 ## Batches and the request budget
 
@@ -273,37 +275,36 @@ One composer read needs up to four separate `probe_batch` calls, one per lane:
 
 | Lane | Rays | Why it is its own batch |
 | --- | --- | --- |
-| wheels | 2 | `ride_runtime.lua` casts them before `plan` (`ride_runtime.lua:430-432`), and `plan` reads their rows to decide whether to probe the rail at all. |
+| wheels | 2 | `ride_runtime.lua` casts them before `plan` (`ride_runtime.lua:450-452`) and decodes them through `Contact.decode` (`:454`), and `plan` reads their rows to decide whether to probe the rail at all. |
 | rail | 30 | Six sites of five rays (`rail_probe.lua:1-6`, `:58`). Rail plus the smallest guard is 38 rays. |
 | guard | 8 to 24 | One to three rays for each of eight spheres (`bail_guard.lua:207-250`). |
-| witnesses | 0 to 24 | Aimed along normals that the guard batch has just measured, so they cannot share its batch (`bail_guard.lua:12-16`, `:362-428`). `Guard.decode` refuses a witness batch whose epoch is not the guard batch's (`:446-447`), and every `physics.read` sample has its own epoch (`frame_identity.lua:3`), so they cannot move to a later read either. |
+| witnesses | 0 to 24 | Aimed along normals that the guard batch has just measured, so they cannot share its batch (`bail_guard.lua:12-16`, `:364-430`). `Guard.decode` refuses a witness batch whose epoch is not the guard batch's (`:448-449`), and every `physics.read` sample has its own epoch (`frame_identity.lua:3`), so they cannot move to a later read either. |
 
-The native side allows less than that:
+Every lane still shares these fixed limits:
 
 - **A batch holds 1 to 32 rays.** `probe_batch` refuses anything else with "a ray batch has 1 to 32
   rays" (`Extension/Plugins/plugin_api_physics.cpp:568`, from `body_query::maximum_rays = 32` at
   `Engine/Game/World/body_query.h:11`; `contact_runtime.lua:4` and `:67` hold plans to the same 32).
-- **Core and Contact carry one batch per serial.** Core's `api.probe_batch`
-  (`bike_runtime_core.lua:568-577`) stops the whole runtime on a second batch for one native serial
-  ("second contact batch for one native serial refused", `:572`). It also requires
-  `require_contact` and `exclude_local_actor` (`:569-570`). `ride_runtime.lua:432` spends that one
-  batch on the 2 wheel rays, and `Contact.decode` decodes exactly that batch for the frame
-  (`contact_runtime.lua:168`).
+- **Core permits four batches per native serial, including the wheels.** Its read-only
+  `probe_batches_per_serial` export is the composer's default. The private adapter runs the
+  existing epoch/Source/Follow/body guard and checks `require_contact` and `exclude_local_actor`
+  on every batch, then checks the current owner again after every SDK call. The fifth stops the
+  runtime with "fifth contact batch for one native serial refused". Only an exact uint64 serial
+  advance refreshes the count; duplicates retain it and regression stops the runtime. Callback
+  failure and reentry do not refund a call. The wheel lane still uses `Contact.decode`; rail and
+  Guard retain their own plans and batches, and Guard additionally validates each used batch
+  through `Contact.decode`.
 - **64 logical requests and 64 native casts per tick.** `plugin_vm.h:43` sets 64 requests, counted
   per batch at `plugin_api_physics.cpp:608-610`. `body_query.h:10` sets 64 native casts with up to 2
   per ray. All four lanes plus the camera ray come to 81 in the worst case.
 
-So under Core one read carries only the wheel batch. The composer cannot get under that by
-budgeting. Its own lanes cannot share a batch: rail plus guard is at least 38 rays, and the
-witnesses depend on the guard's rows. Only the wheels plus the rail fill one batch exactly (2 + 30
-= 32). That merge would need the wheel cast in `ride_runtime.lua` to carry the rail rays, the rail
-decision to use the previous read's support, and `Contact.decode`'s per-batch cast accounting
-(`contact_runtime.lua:140-141`) to be split by lane, all outside this item. Staging does not work
-either. Rail and guard on alternate reads would halve each lane's rate, and the witnesses cannot
-be staged at all. So the composer refuses explicitly:
+Four batches can carry all four lanes separately. They are not merged or staged: rail plus guard
+is at least 38 rays, and witnesses depend on the current guard's rows and epoch. Each decoder
+keeps its own per-batch accounting, ray plan and row count. The composer still refuses explicitly:
 
-- `batches_per_read` (default `Composer.core_batches = 1`) is the read's allowance, the wheel batch
-  included. `Composer.layout(allowance, lanes)` gives each lane in priority order its own batch.
+- `batches_per_read` (default `Composer.core_batches = 4`, tested equal to Core's
+  `probe_batches_per_serial`) is the read's allowance, the wheel batch included.
+  `Composer.layout(allowance, lanes)` gives each lane in priority order its own batch.
   The order is guard, rail, then a batch reserved for the witnesses. While grinding it is rail,
   guard, witnesses. Under guard pressure the rail yields (`guard_priority`). A lane past the
   allowance is refused as `batch_allowance`, and a lane outside 1 to 32 rays as `batch_rays`. A
@@ -325,10 +326,10 @@ scenarios).
 
 | Batches per read | Lanes | Rail flick | Head-height bar | Nose dive |
 | --- | --- | --- | --- | --- |
-| 1 (Core) | wheels | Nothing is submitted on any of its 151 reads (`batch_allowance`), so the flick's hop is cancelled and the bike coasts on the ground: no rail, no lock-on. (A separate unsupported read is refused the rail as `batch_allowance`.) | Nothing submitted on any of 90 reads; coasts through to z 4.45, never bails. Every read reports `batch_allowance`. | Not run. With no guard batch, nothing can bail, and nothing is submitted. |
+| 1 (explicit limit) | wheels | Nothing is submitted on any of its 151 reads (`batch_allowance`), so the flick's hop is cancelled and the bike coasts on the ground: no rail, no lock-on. (A separate unsupported read is refused the rail as `batch_allowance`.) | Nothing submitted on any of 90 reads; coasts through to z 4.45, never bails. Every read reports `batch_allowance`. | Not run. With no guard batch, nothing can bail, and nothing is submitted. |
 | 2 | wheels, guard | Rail refused on 28 reads, no lock-on. Every read guarded. | Witnesses refused on 5 reads, each submitting nothing; no bail in 120. | Witnesses refused on 10 reads (8 before reads failed closed), each submitting nothing; no bail. |
 | 3 | wheels, guard, rail or witnesses | Lock-on at the same read as with 4. Witnesses refused on 9 reads (6 before) while the rail held a batch, each submitting nothing, and the rail yielded on 3 (4 before). | Bails at the same read (`swept_body_crossing`). | Bails at the same read (`hard_rider_contact`); witnesses refused on 1 read, which submits nothing. |
-| 4 (lab) | all four | As in Offline scenarios. | As in Offline scenarios. | As in Offline scenarios. |
+| 4 (Core default and lab) | all four | As in Offline scenarios. | As in Offline scenarios. | As in Offline scenarios. |
 
 The 2- and 3-batch counts moved when unguarded reads began to fail closed: a read that submits
 nothing leaves the body where native physics would, so the later reads differ.
@@ -350,8 +351,8 @@ Framev1, which the invariants check on every read. Wheel rows are built from tho
 physics, applying each submitted command within its own step, and the test then accepts it. The
 test also stands in for the native support owner: it reports the world's wheel contact as
 `measured_support` and knows nothing of pegs, as native collision does not. The constructed caller
-casts every lane as its own batch, so these scenarios run with `batches_per_read = 4`, three more
-than Core grants (see Batches). The pad goes through the real mapping, and every module above is
+casts every lane as its own batch, so these scenarios run with `batches_per_read = 4`, Core's
+default allowance (see Batches). The pad goes through the real mapping, and every module above is
 the real one with its own defaults unless stated. A read that submits nothing leaves the body to
 the constructed stand-in for native physics: the ground holds it up for that step if a wheel was
 supported, and otherwise it falls freely. Measured 2026-10-25, and measured again after the guard
@@ -427,32 +428,28 @@ every run below.
   whole-pass p95 is over 2 ms and the maxima reach 51-130 ms: stalls a Host would count.
 - The only cost assertions are that the median least-disturbed tick is inside 20 ms and the
   suite-wide median is inside 20 ms. The tails are reported, not asserted.
-- **Require.** `require("./ride_composer")` loads the whole chain (about twenty modules). From a cold
-  VM in the pure runner it took 34.3, 37.3, 43.5, 39.6 and 35.7 ms (warm file cache), and
-  `Composer.new` 0.14-0.39 ms. An earlier independent run measured 326 ms with a cold file cache.
-  `plugin_vm.h`'s 50 ms limit covers the load call too, so requiring the composer at load leaves
-  little room, and requiring it inside a handler would spend a whole call on it.
+- **Require.** `require("./ride_composer")` loads the whole chain (28 modules, the composer
+  included). From a cold VM in the pure runner it took 34.3, 37.3, 43.5, 39.6 and 35.7 ms (warm
+  file cache), and `Composer.new` 0.14-0.39 ms. An earlier independent run measured 326 ms with a
+  cold file cache. The chain does not include `bike_runtime_core`: importing Core for its batch
+  allowance cold-loaded Core, `equipment_runtime`, `equipment_transition` and `bike_admission`
+  too, and in six interleaved cold runs on a busy machine took 51.7-58.5 ms against 43.4-49.1 ms
+  without it, so the composer writes the allowance as a literal. `plugin_vm.h`'s 50 ms limit
+  covers the load call too, so requiring the composer at load leaves little room, and requiring
+  it inside a handler would spend a whole call on it.
 
 ## Gaps found
 
 Each of these keeps the composition short of riding, and each would take a change outside this
-item to close. The first is the native blocker; the rest are model limits that show only once it
-is gone.
+item to close. Native exclusion remains a blocker (gap 13); several other limits show only once
+it is gone.
 
-1. **One read needs up to four batches, and Core carries one.** A read's lanes are the wheels (2
-   rays), the rail (30), the guard (8 to 24) and the witnesses (0 to 24), each its own
-   `probe_batch` call. A batch holds 1 to 32 rays (`plugin_api_physics.cpp:568`,
-   `body_query.h:11`). Core's `api.probe_batch` stops the runtime on a second batch for one serial
-   (`bike_runtime_core.lua:572`), and the wheels already use that batch (`ride_runtime.lua:432`).
-   The lanes cannot be merged under 32 or staged across reads (see Batches), so with Core's
-   allowance the composer plans no rail and no guard. It never grinds, never bails, says
-   `batch_allowance` on every read, and, since no read is guarded, submits nothing at all. In this world it takes 3 batches per read to reproduce the
-   lock-on and both bails, and 4 to carry every lane on every read. The worst case is also 81
-   logical requests against the 64 per tick (`plugin_vm.h:43`). Closing this needs one of these:
-   Core allowing more than one batch per serial, a merged wheel-plus-rail batch (2 + 30 = 32) with
-   the rail decided from the previous read, or a native guard query that measures and witnesses in
-   one call, as C++'s `body_guard::search` does through its ray callback
-   (`Extension/BMX/bmx_body_guard.h:20`, `:66-74`).
+1. **Four batches still share the SDK budgets.** Core's former one-batch restriction is closed
+   in Lua: four separate lanes fit its per-serial call allowance. Each batch still holds 1 to 32
+   rays, every VM tick still has 64 logical requests and 64 native casts, and the worst-case four
+   lanes plus camera ask for 81 requests. The composer refuses lanes that do not fit rather than
+   splitting, merging or deferring them. The offline 3-batch result holds for its three scripts
+   only; four Core calls do not prove a native four-batch result or bypass actor exclusion.
 2. **No roll balance on a rail.** A rail row carries only the crest normal, which is vertical, and
    friction along the rail. A grinding bike therefore gets no lateral force, and its centre of mass
    cannot move sideways. `grind_policy`'s assist works from `tilt`, the contact-to-COM line, which
@@ -501,10 +498,10 @@ is gone.
     change) reports `hop_identity_mismatch` in `last_receipt.hop`.
 12. **Require cost.** See Per-tick cost: 34-43 ms of a 50 ms load call.
 13. **Nothing is submitted in game today.** Every read `bail_policy` does not judge fails closed
-    (see Guard binding). Under Core's one batch no read has a guard lane (gap 1), and in game every
-    riding guard query is unavailable anyway, because the native adapter refuses
+    (see Guard binding). Core's four-call allowance leaves the per-tick SDK limits intact (gap 1),
+    and in game every riding guard query is unavailable because the native adapter refuses
     `exclude_local_actor` with `local_actor_exclusion_unavailable` (BAIL.md). So the composer would
-    submit no force, torque or hop impulse in game until both are fixed natively. This replaces the
+    submit no force, torque or hop impulse in game until native exclusion is qualified. This replaces the
     previous revision's gap 13, where those reads still submitted with `bail_policy` not stepped;
     it was closed by choosing to fail closed, not left to the integration.
 
@@ -520,18 +517,18 @@ took 10-20 s on the shared desktop.
 | Case | What it checks |
 | --- | --- |
 | graph and refusals | The edges (none -> bailed included), `settle`'s refusals including `grind_without_lock_on`, a detached `edges()` copy, malformed ticks submitting nothing, unknown force tuning and out-of-range command limits refused, and receipts refused with nothing waiting or an unknown outcome. |
-| duplicate, gap and unknown-support reads | A read without its selected source fails closed: no guard plan, `bail_guard_unbound`, nothing submitted. An unplanned step plans itself uncast and submits nothing (`uncast`). A fully cast and judged read with a neutral pad gives support with no rider control. A command waits for its receipt and the kernel adopts it only on `accept`; a wrong-serial or second receipt is refused. A duplicate submits nothing, a regression is refused, a gap previews from a reset kernel. One budget-exhausted wheel batch while rolling takes no edge, holds the balance, does not arm `grind_policy`, and the next read continues rolling with no landing. Under Core's default allowance the same fully cast read submits nothing (`batch_allowance`). |
+| duplicate, gap and unknown-support reads | A read without its selected source fails closed: no guard plan, `bail_guard_unbound`, nothing submitted. An unplanned step plans itself uncast and submits nothing (`uncast`). A fully cast and judged read with a neutral pad gives support with no rider control. A command waits for its receipt and the kernel adopts it only on `accept`; a wrong-serial or second receipt is refused. A duplicate submits nothing, a regression is refused, a gap previews from a reset kernel. One budget-exhausted wheel batch while rolling takes no edge, holds the balance, does not arm `grind_policy`, and the next read continues rolling with no landing. Under an explicit one-batch allowance the same fully cast read submits nothing (`batch_allowance`). |
 | scenarios | Each row of the table above, with its numbers asserted only where they define the behaviour: speeds reached, airborne on the read after the hop, the manual mode starting at lift-off and more than 1 s balancing, one caught barspin of exactly 2 pi, the bail made by `bail_policy`, the recovery read submitting nothing (`recovered_unjudged`) and the next read judged afresh, 0 of 5 R3 lock-ons. |
 | receipts gate the kernel and the hop | A hop arriving while an older command waits: the kernel's preview applies it, the command is withheld, the hop is held, neither retired nor consumed, then sent once and accepted once. A rejected hop is cancelled, the kernel keeps its last accepted history, and the hop never fires later. An uncertain hop blocks the input and leaves the residual unknown. With `command_limits.force = 1`, the composer refuses the hop the kernel applied and cancels it. |
 | support provenance belongs to the caller | No support owner, a `geometry` label, or an incomplete grounded fact: every trick step is refused and no trick event fires, while the ride still hops and lands. |
 | a refused lock-on is undone in grind_policy | With stubbed balance and grind policies: a lock-on inside a manual is reported as `lock_on_refused`, the manual continues, and the policy is reset; a lingering lock is refused again; in the air, locked without a `lock_on` never enters grinding. |
 | a first-read bail is an edge of the graph | none -> bailed on the first read, inside the graph. |
 | one plan per read; stale reads move nothing | A repeated plan returns the same plan without stepping the camera; three duplicate reads plan, witness and step nothing and leave the camera exactly where it was. |
-| one read carries one batch per lane, inside its allowance | `Composer.layout` at 1 to 4 batches, while grinding too, and a lane of 0 or 33 rays refused as `batch_rays`. Bad `batches_per_read` values refused, and the default is Core's 1. With Core's allowance, the rail flick plans only the wheel batch on every read, reports `batch_allowance` for the guard, never steps `bail_policy` as if clear, submits no force, torque or impulse on any read, cancels the flick's hop, never leaves the ground and never locks on; an unsupported read is refused the rail as `batch_allowance`; the head-height bar is coasted through without a bail or a command. At 2 batches: no rail probe and no lock-on, and refused witnesses leave the bar and the nose dive without a bail, each of those reads submitting nothing. At 3: the lock-on and both bails, with witnesses refused while the rail holds a batch, each of those reads submitting nothing. |
+| one read carries one batch per lane, inside its allowance | `Composer.layout` at 1 to 4 batches, while grinding too, and a lane of 0 or 33 rays refused as `batch_rays`. Bad `batches_per_read` values refused, and the default is 4, the composer's literal checked equal to Core's `probe_batches_per_serial`. With an explicit one-batch allowance, the rail flick plans only the wheel batch on every read, reports `batch_allowance` for the guard, never steps `bail_policy` as if clear, submits no force, torque or impulse on any read, cancels the flick's hop, never leaves the ground and never locks on; an unsupported read is refused the rail as `batch_allowance`; the head-height bar is coasted through without a bail or a command. At 2 batches: no rail probe and no lock-on, and refused witnesses leave the bar and the nose dive without a bail, each of those reads submitting nothing. At 3: the lock-on and both bails, with witnesses refused while the rail holds a batch, each of those reads submitting nothing. |
 | the rail batch is the raw probe_batch on this read's epoch | Control: raw rows on this read's epoch lock on. The previous read's epoch on every rail batch: each is refused as `rail_epoch_mismatch` (and `Probe.decode` says `epoch_mismatch`), with no lock-on. A real `Contact.decode` copy of each read's own raw rows, matched to that read and carrying no epoch, is refused as `rail_batch_contact_copy` (`Probe.decode`: `epoch_mismatch`), with no lock-on. A guard batch on another epoch is refused as `guard_epoch_mismatch` and `bail_policy` is not stepped. |
 | a read without a qualified Framev1 plans no guard and submits nothing | While riding at 4 m/s: no source, an `input_ok = false` source, a lease that is not userdata, a source `frame_identity` refuses, an unfocused read and a menu-open read. Each plans no guard and no witness, submits no force, torque or impulse, reports `bail_guard_unbound` with its `guard_binding`, and leaves `bail_policy` unstepped. The next bound read is guarded with no sweep history, and its successor has history again. A hop the kernel applies on an unbound read (held behind an older receipt) is cancelled and never fires later. |
 | the guard packet's counterexamples are refused through the composer | A body on its side 5 m up over the review fixture's tiny face under the right grip, on fresh composers. Control: a witness at the foot is contact and seeds a severe tilt, and the judged read submits. A witness beside its line keeps the measured point's distance (0.0063 m) and seeds none; a witness that misses is no contact; both are judged and submit. Eight guard-batch and seven witness-batch edits (wrong and missing epoch, either exclusion false, no or zero `native_casts`, an available batch with a reason, unmeasured surface motion) are refused through `plan`, `witness` and `step` with `bail_policy` unstepped and nothing submitted, and the composer's own bound plan refuses each in the guard too. The previous read's guard batch and witness batch are refused on the next read of the same pose and submit nothing; the plan after the unjudged read has no sweep history. A read with no source has no guard plan and submits nothing. |
-| an unguarded read submits no force, torque or hop impulse | A rider rolling at 4 m/s presses R3. Control: the same read with the tiny face under the grip and its witness at the foot is judged (one frame contact, no bail) and submits a 477 N s hop. Each of 24 unguarded reads submits no force, torque or impulse, names its reason as the withheld issue, and retires the hop the kernel applied as `cancelled`: the 8 guard-batch and 7 witness-batch edits, the previous read's guard and witness batches, a guard batch never handed back (`guard_batch_missing`), a witness never called (`witness_not_called`), a witness batch never handed back (`witness_batch_missing`), witnesses with no batch at 2 batches (`witness_batch_allowance`), Core's one batch (`batch_allowance`), an invalid bail tuning (`bail_policy_invalid_sample`) and a read with no source (`bail_guard_unbound`). After an unjudged read the next plan has no sweep history and submits; its successor has history again. |
+| an unguarded read submits no force, torque or hop impulse | A rider rolling at 4 m/s presses R3. Control: the same read with the tiny face under the grip and its witness at the foot is judged (one frame contact, no bail) and submits a 477 N s hop. Each of 24 unguarded reads submits no force, torque or impulse, names its reason as the withheld issue, and retires the hop the kernel applied as `cancelled`: the 8 guard-batch and 7 witness-batch edits, the previous read's guard and witness batches, a guard batch never handed back (`guard_batch_missing`), a witness never called (`witness_not_called`), a witness batch never handed back (`witness_batch_missing`), witnesses with no batch at 2 batches (`witness_batch_allowance`), an explicit one-batch allowance (`batch_allowance`), an invalid bail tuning (`bail_policy_invalid_sample`) and a read with no source (`bail_guard_unbound`). After an unjudged read the next plan has no sweep history and submits; its successor has history again. |
 | no opaque handles in status or results | Every result of a barspin run with matrices, `status()` and `matrices()` hold no userdata or function. |
 | invariants, every read of every run | Valid results. Every read of a riding scenario plans its guard on a qualified Framev1, and a command leaves only from a bound read that `bail_policy` judged and accepted; every unguarded read submits no force or impulse and names its reason as the withheld issue. Every mode edge is in the graph and starts from the previous mode. Grinding begins only with a `lock_on`, bailed only with a `bail_policy` bail, and leaves only on `recovered`. Never airborne -> manual. Nothing submitted while bailed. Every command names its read. Requests within 64, no more batches than the read's allowance, every cast batch 1 to 32 rays, the composer's own batch count matching the batches cast, finite commands, and camera views `camera.look` accepts. |
 | per-tick cost | Three-run minima for the hop, the balanced rail and the barspin with and without matrices, plus the kernel's preview/adopt calibration. |
@@ -547,9 +544,9 @@ took 10-20 s on the shared desktop.
 - That native physics holds a bike the composer stops pushing is assumed, not measured. On a read
   that submits nothing, the constructed ground only cancels gravity for one step while a wheel was
   supported; no native body has been left unpushed under the composer.
-- Every scenario except the Core-allowance runs uses 4 batches per read, which Core does not grant.
-  Nothing here shows a native owner that can carry more than one batch per serial. The 3-batch
-  result holds for this world's three scripts only.
+- The ordinary scenarios use Core's four-batch default; the 1-, 2- and 3-batch counterexamples
+  request smaller allowances explicitly. Nothing here demonstrates four batches through the
+  native Core adapter in game. The 3-batch result holds for this world's three scripts only.
 - The scripted rider on the rail is faster and steadier than a person. It shows the composition can
   carry a grind when roll is held, not that a player could hold one.
 - The landing evidence and the crank cadence are the composer's own stand-ins for the C++ landing

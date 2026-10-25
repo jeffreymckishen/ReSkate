@@ -4,6 +4,8 @@
 local EquipmentRuntime=require("./equipment_runtime")
 local Admission=require("./bike_admission")
 local BikeRuntime={}
+local PROBE_BATCHES_PER_SERIAL=4
+BikeRuntime.probe_batches_per_serial=PROBE_BATCHES_PER_SERIAL
 local vm_attempt_used=false
 local KEY="bmx_bike_lifecycle_v1"
 local MAX=9007199254740991
@@ -12,6 +14,33 @@ local MAX=9007199254740991
 local RIDE_COMPOSITION_QUALIFIED=false
 local receipt_revisions={"final_revision","final_native_epoch","returned_revision"}
 local receipt_flags={"claim_known","orphaned","park_observed","native_retirement_known","terminal"}
+
+-- Bind only callbacks, never an SDK object or activation option. Keeping this
+-- adapter inert lets constructed tests exercise the private query path while
+-- both riding gates stay closed. Only create_ride supplies the real closures.
+function BikeRuntime.probe_batch_adapter(identity,guard,read_serial,invoke,current_owner,stop)
+    local last_serial,count=nil,0
+    return function(epoch,rays,query_options)
+        if type(query_options)~="table" or query_options.require_contact~=true
+            or query_options.exclude_local_actor~=true or not guard(epoch) then return nil end
+        local serial=read_serial()
+        local order=1
+        if last_serial then order=identity.compare(serial,last_serial) end
+        if not identity.is_nonzero_u64(serial) or order==nil or order<0 then
+            stop("contact batch native serial regressed or invalid");return nil
+        end
+        if order>0 then last_serial=serial;count=0 end
+        if count>=PROBE_BATCHES_PER_SERIAL then
+            stop("fifth contact batch for one native serial refused");return nil
+        end
+        -- Reserve before invoking a callback: failure or reentry refunds nothing.
+        count+=1
+        local r=invoke(epoch,rays,query_options)
+        if not current_owner(epoch) then stop("Core guard changed during contact query") end
+        if not r[1] then error("contact query result unknown",0) end
+        return table.unpack(r,2,r.n)
+    end
+end
 
 function BikeRuntime.new(services,options,shared_state)
 local supplied=services or reskate
@@ -568,17 +597,12 @@ local function create_ride(frame)
         end
         return true
     end
-    api.probe_batch=function(epoch,rays,query_options)
-        if type(query_options)~="table" or query_options.require_contact~=true
-            or query_options.exclude_local_actor~=true or not guard(epoch) then return nil end
-        local serial=binding.sample.serial
-        if binding.last_probe==serial then stop_all("second contact batch for one native serial refused");return nil end
-        binding.last_probe=serial
-        local r=call("ride.probe_batch",lookup("world.physics.probe_batch"),owner.body,epoch,rays,query_options)
-        if not current_ride_owner(binding,epoch) then stop_all("Core guard changed during contact query") end
-        if not r[1] then error("contact query result unknown",0) end
-        return table.unpack(r,2,r.n)
-    end
+    api.probe_batch=BikeRuntime.probe_batch_adapter(Identity,guard,
+        function() return binding.sample.serial end,
+        function(epoch,rays,query_options)
+            return call("ride.probe_batch",lookup("world.physics.probe_batch"),owner.body,epoch,rays,query_options)
+        end,
+        function(epoch) return current_ride_owner(binding,epoch) end,stop_all)
     api.submit=function(epoch,command)
         if not guard(epoch) then return false,"Core force publication guard refused before SDK call" end
         local serial=binding.sample.serial

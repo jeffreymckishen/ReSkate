@@ -60,12 +60,16 @@ Composer.rail_rays = 30
 -- carry that batch's epoch (bail_guard.lua), so they can neither share the
 -- guard's batch nor move to a later read. One batch holds 1 to 32 rays
 -- (plugin_api_physics.cpp probe_batch, body_query::maximum_rays). Core's
--- api.probe_batch takes one batch per native serial (bike_runtime_core.lua),
--- and ride_runtime.lua spends it on the wheel rays. batches_per_read is what
+-- api.probe_batch takes up to four batches per native serial, with every
+-- existing guard checked on each call. batches_per_read is what
 -- the caller's native owner lets one read make, the wheel batch included;
--- by default Core's one. A lane past it is refused, never split or deferred.
+-- by default Core's allowance. A lane past it is refused, never split or
+-- deferred. The SDK's per-tick request and cast limits still apply.
 Composer.batch_rays = 32
-Composer.core_batches = 1
+-- Core's probe_batches_per_serial, written as a literal so requiring the
+-- composer does not cold-load Core and its equipment modules.
+-- ride_composer_tests pins the two together.
+Composer.core_batches = 4
 -- Authored display gearing for the presented crank (a 25/9 BMX drive). It
 -- only turns the drawn cranks; no force or input reads it.
 Composer.crank_ratio = 25 / 9

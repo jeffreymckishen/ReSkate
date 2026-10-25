@@ -5,6 +5,7 @@
 -- standing in for native physics. Every number is a model metric of today's
 -- modules in that world. None of it is gameplay, native or likeness evidence.
 local Composer = require("./ride_composer")
+local Core = require("./bike_runtime_core")
 local World = require("./sim_world")
 local Forces = require("./forces")
 local M = require("./force_math")
@@ -22,8 +23,8 @@ local R = World.wheel_radius
 local clock = os and os.clock
 -- The constructed caller casts each lane (wheels, rail, guard, witnesses)
 -- as its own probe_batch, so the offline scenarios run with four batches
--- per read. Core grants one (Composer.core_batches); the cases that use
--- Core's allowance say so.
+-- per read. That is now Core's default too. Explicit lower allowances keep
+-- their fail-closed counterexamples; they do not model Core's default.
 local LAB_BATCHES = 4
 
 ------------------------------------------------------------------------------
@@ -230,11 +231,10 @@ end
 
 -- spec: options, rails, bars, speed, x, z, and `support` ("owner" by default,
 -- "none" for no support owner, or a function(seen, rows) returning the fact).
--- options.batches_per_read defaults to LAB_BATCHES unless spec.core_batches,
--- which leaves the composer's own default (Core's one batch).
+-- With no explicit option the real composer/Core default supplies four
+-- batches. The one-, two- and three-batch counterexamples set their option.
 local function driver(spec)
     local options = table.clone(spec.options or {})
-    if not spec.core_batches and options.batches_per_read == nil then options.batches_per_read = LAB_BATCHES end
     local d = { spec = spec, world = { rails = spec.rails or {}, bars = spec.bars }, ride = Composer.new(options),
         s = { serial = "100", time = 0, k = 0, ms = 50000, owner = "mount-1", body_handle = newproxy(),
             lease = newproxy(), mounts = 1 }, costs = {} }
@@ -773,13 +773,13 @@ function Tests.run()
             "manual_balance holds and grind_policy is not armed by an unknown read")
         local next_read = full(ride, tick("505", 5))
         check(next_read.mode == "rolling" and #next_read.events == 0, "the next known read continues rolling with no landing")
-        -- Core's default allowance: the same fully cast read has no guard
+        -- An explicit one-batch allowance: the same read has no guard
         -- lane, so nothing is submitted.
-        local core = Composer.new()
+        local core = Composer.new({ batches_per_read = 1 })
         local cr = full(core, tick("600", 0))
         check(cr.valid and cr.diagnostics.queries.guard == "batch_allowance" and not cr.commands.submit
             and cr.diagnostics.kernel.issue == "batch_allowance" and cr.diagnostics.bail.guarded == false,
-            "under Core's one batch a read is unguarded and submits nothing (batch_allowance)")
+            "under one batch a read is unguarded and submits nothing (batch_allowance)")
     end)
 
     scenario("pedal to speed and brake to stop", function()
@@ -1357,7 +1357,11 @@ function Tests.run()
     end)
 
     scenario("one read carries one batch per lane, inside its allowance", function()
-        check(Composer.batch_rays == 32 and Composer.core_batches == 1, "a batch holds 32 rays; Core grants one batch per serial")
+        check(Composer.batch_rays == 32 and Composer.core_batches == 4, "a batch holds 32 rays; the composer allows four batches")
+        -- The composer writes Core's allowance as a literal so that requiring
+        -- it does not load Core. This pins the literal to Core's export.
+        check(Composer.core_batches == Core.probe_batches_per_serial,
+            "Composer.core_batches equals bike_runtime_core's probe_batches_per_serial")
         -- The arithmetic of merging: only the wheels and the rail together
         -- fill one batch. The rail and the smallest guard (8 rays) do not,
         -- and the witnesses depend on the guard batch's rows.
@@ -1370,7 +1374,7 @@ function Tests.run()
         local l = Composer.layout(1, lanes())
         check(l.batches == 1 and next(l.lanes) == nil and l.refused.guard == "batch_allowance"
             and l.refused.rail == "batch_allowance" and l.refused.witness == "batch_allowance",
-            "Core's one batch is the wheel batch: every composer lane is refused")
+            "an explicit one-batch allowance carries only the wheels: every composer lane is refused")
         l = Composer.layout(2, lanes())
         check(l.batches == 2 and l.lanes.guard == 2 and l.refused.rail == "batch_allowance"
             and l.refused.witness == "batch_allowance", "two batches: the wheels and the guard")
@@ -1388,25 +1392,25 @@ function Tests.run()
         for _, bad in ipairs({ 0, -1, 1.5, 65, "2", true }) do
             check(not pcall(Composer.new, { batches_per_read = bad }), "batches_per_read " .. tostring(bad) .. " is refused")
         end
-        check(Composer.new():status().batch_allowance == Composer.core_batches, "by default a read gets Core's one batch")
+        check(Composer.new():status().batch_allowance == Core.probe_batches_per_serial, "by default a read gets Core's four batches")
 
-        -- Core's allowance on the rail flick: nothing beyond the wheel batch
+        -- An explicit one-batch allowance on the rail flick: only the wheels
         -- is planned, every refusal says why, and with no guard lane no read
         -- is guarded, so none submits anything. The constructed ground holds
         -- the bike up, so it coasts and never leaves the ground.
-        local core = run({ speed = 5, max_steps = 420, rails = rail_list(), script = flick_onto(8), core_batches = true })
+        local core = run({ speed = 5, max_steps = 420, rails = rail_list(), script = flick_onto(8), options = { batches_per_read = 1 } })
         invariants("rail_core_batches", core)
         local flicked = 0
         for _, r in ipairs(core.trace) do
             local res = r.result
             check(r.plan.batch_allowance == 1 and r.plan.batches == 1 and #r.lanes == 1 and r.plan.rail == nil
-                and r.plan.guard == nil and r.plan.witness_batch == false, "Core's allowance: the wheel batch only")
+                and r.plan.guard == nil and r.plan.witness_batch == false, "one-batch allowance: the wheel batch only")
             check(r.plan.guard_issue == "batch_allowance" and res.diagnostics.queries.guard == "batch_allowance"
                 and res.diagnostics.bail.guard == "batch_allowance" and res.diagnostics.bail.evaluated == false,
                 "the guard is refused and bail_policy is not stepped as if clear")
             check(not res.commands.submit and res.commands.force == nil and res.commands.torque == nil
                 and res.commands.hop_impulse == nil and res.diagnostics.kernel.issue == "batch_allowance",
-                "Core's allowance: an unguarded read submits no force, torque or impulse")
+                "one-batch allowance: an unguarded read submits no force, torque or impulse")
             if res.diagnostics.kernel.hop_applied then
                 flicked += 1
                 check(res.diagnostics.hop == "cancelled", "the flick's hop is cancelled, never sent")
@@ -1415,24 +1419,24 @@ function Tests.run()
                 and grind_event(r, "lock_on") == nil, "nothing pushes the bike off the ground")
         end
         check(flicked >= 1, "the flick's hop reached the kernel and was withheld")
-        -- An unsupported read under Core's allowance: the rail is refused too.
-        local up = driver({ speed = 5, core_batches = true })
+        -- An unsupported read under one batch: the rail is refused too.
+        local up = driver({ speed = 5, options = { batches_per_read = 1 } })
         up.body = M.copy(up.body)
         up.body.center_of_mass[2] += 3
         local air = read(up, {})
         check(air.result.diagnostics.support.ground_known and not air.result.diagnostics.support.any
             and air.plan.rail == nil and air.plan.rail_issue == "batch_allowance"
             and air.result.diagnostics.grind.rows == "batch_allowance" and not air.result.commands.submit,
-            "an unsupported read under Core's allowance: the rail is refused as batch_allowance and nothing is submitted")
+            "an unsupported read under one batch: the rail is refused as batch_allowance and nothing is submitted")
         local bar = { { y = 1.40, z = 3, radius = .03, x0 = -1, x1 = 1 } }
-        local through = run({ speed = 3, max_steps = 90, bars = bar, core_batches = true, script = function() return {} end })
+        local through = run({ speed = 3, max_steps = 90, bars = bar, options = { batches_per_read = 1 }, script = function() return {} end })
         invariants("clothesline_core_batches", through)
         for _, r in ipairs(through.trace) do
             check(r.mode ~= "bailed" and r.result.diagnostics.bail.guard == "batch_allowance"
                 and not r.result.commands.submit, "no guard batch, so no bail and nothing submitted")
         end
         check(through.trace[#through.trace].position[3] > 3.5, "the coasting bike passes the bar the guard could not see")
-        note(string.format("batches: with Core's one batch per read no read is guarded, so none of the rail flick's %d reads or the head-height bar's %d submits anything (batch_allowance); the flick's hop is cancelled, the bike coasts on the constructed ground, never locks on, and passes the bar at z %s without a bail",
+        note(string.format("batches: with an explicit one-batch allowance no read is guarded, so none of the rail flick's %d reads or the head-height bar's %d submits anything (batch_allowance); the flick's hop is cancelled, the bike coasts on the constructed ground, never locks on, and passes the bar at z %s without a bail",
             #core.trace, #through.trace, fmt(through.trace[#through.trace].position[3])))
 
         -- Two and three batches: what each lane gets.
@@ -1914,7 +1918,7 @@ function Tests.run()
             "witness_epoch_mismatch", d.ride)
         cases += 2
         -- Batches the caller never handed back, a witness never asked for,
-        -- witnesses with no batch left, Core's one batch, and a bail_policy
+        -- witnesses with no batch left, an explicit one-batch cap, and a bail_policy
         -- that refuses every sample (an invalid tuning).
         d = rider()
         refused_hop("guard batch never cast", hop_read(d, { guard = function() return nil end }), "guard_batch_missing", d.ride)
@@ -1925,8 +1929,8 @@ function Tests.run()
             "witness_batch_missing", d.ride)
         d = rider({ batches_per_read = 2 })
         refused_hop("witnesses with no batch", hop_read(d, { guard = FACE }), "witness_batch_allowance", d.ride)
-        d = rider(nil, { core_batches = true })
-        refused_hop("Core's one batch", hop_read(d), "batch_allowance", d.ride)
+        d = rider({ batches_per_read = 1 })
+        refused_hop("explicit one-batch allowance", hop_read(d), "batch_allowance", d.ride)
         d = rider({ bail = { contact_gap = 1 } })
         refused_hop("bail_policy refusing its sample", hop_read(d), "bail_policy_invalid_sample", d.ride)
         cases += 6
@@ -1949,7 +1953,7 @@ function Tests.run()
         local again = read(d, {})
         check(again.plan.guard.consecutive == true and again.result.diagnostics.bail.guarded and again.result.commands.submit,
             "and its successor lends history again")
-        note(string.format("unguarded reads: rolling at 4 m/s with R3, the judged control submits a %.1f N s hop; %d unguarded reads (%d guard-batch and %d witness-batch edits, both stale batches, a guard or witness batch never cast, a witness never called, witnesses with no batch, Core's one batch, a bail_policy refusing its sample, no frame) submit no force, torque or impulse and cancel the hop",
+        note(string.format("unguarded reads: rolling at 4 m/s with R3, the judged control submits a %.1f N s hop; %d unguarded reads (%d guard-batch and %d witness-batch edits, both stale batches, a guard or witness batch never cast, a witness never called, witnesses with no batch, an explicit one-batch cap, a bail_policy refusing its sample, no frame) submit no force, torque or impulse and cancel the hop",
             control_impulse, cases, #guard_edits, #witness_edits))
     end)
 

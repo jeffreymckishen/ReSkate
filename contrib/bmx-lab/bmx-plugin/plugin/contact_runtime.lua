@@ -3,7 +3,7 @@ local Frame = require("./frame_identity")
 local Contact = {}
 local MAX_RAYS, MAX_CASTS = 32, 64
 local source_fields = {"generation", "user", "sequence", "source_epoch", "context_generation", "observation_serial", "observed_ms", "packet"}
-local batch_fields = {status=true,reason=true,native_casts=true,budget_exhausted=true,epoch=true,local_actor_excluded=true,owned_bodies_excluded=true,rays=true}
+local batch_fields = {status=true,reason=true,native_casts=true,budget_exhausted=true,epoch=true,local_actor_excluded=true,owned_bodies_excluded=true,rays=true,requested_query_preset=true}
 local hit_fields = {status=true,position=true,fraction=true,motion=true,normal_available=true,surface_velocity_available=true,normal=true,surface_velocity=true,body=true}
 
 local function finite(v) return type(v)=="number" and v==v and math.abs(v)<math.huge end
@@ -117,11 +117,14 @@ local function decode(out,frame,plan,batch)
     local rays=plan_copy(plan)
     if not rays then return reject(out,"invalid_ray_plan") end
     local count=#rays
-    if not fields(batch,batch_fields,8) or (batch.status~="available" and batch.status~="unavailable")
+    if not fields(batch,batch_fields,9) or (batch.status~="available" and batch.status~="unavailable")
         or type(batch.budget_exhausted)~="boolean" or type(batch.local_actor_excluded)~="boolean"
-        or type(batch.owned_bodies_excluded)~="boolean" or not dense(batch.rays,count) then
+        or type(batch.owned_bodies_excluded)~="boolean" or not dense(batch.rays,count)
+        or (batch.requested_query_preset~=nil and batch.requested_query_preset~="camera" and batch.requested_query_preset~="terrain") then
         return reject(out,"malformed_batch",count)
     end
+    -- Request metadata only: this proves neither a filter ran nor support/exclusions.
+    if batch.requested_query_preset~=nil then out.query.requested_query_preset=batch.requested_query_preset end
     out.query.epoch_matches=rawequal(batch.epoch,checked.physics_epoch)
     if not out.query.epoch_matches then return reject(out,"query_epoch_mismatch",count) end
     if batch.native_casts~=nil and not out.query.accounting_known then return reject(out,"invalid_cast_accounting",count) end

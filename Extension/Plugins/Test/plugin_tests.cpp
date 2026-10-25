@@ -4981,7 +4981,7 @@ void bmx_lua_equipment_runtime_uses_typed_services_without_native_permissions() 
         -- Compile each cold module in its own unchanged-budget callback.
         local modules = {"./equipment_transition", "./bike_admission", "./equipment_runtime",
             "./bike_runtime_core", "./equipment_runtime_tests"}
-        local loaded, done = 0, false
+        local loaded, cases, done, runner = 0, 0, false, nil
         reskate.on("tick", function()
             if done then return end
             if loaded < #modules then
@@ -4989,8 +4989,13 @@ void bmx_lua_equipment_runtime_uses_typed_services_without_native_permissions() 
                 require(modules[loaded])
                 return
             end
-            local result = require("./equipment_runtime_tests").run()
-            assert(result.cases >= 13 and result.assertions >= 260 and result.native_actions == 0)
+            runner = runner or require("./equipment_runtime_tests").new_runner()
+            local result = runner:step()
+            assert(result.cases == cases + 1 and result.total_cases == 13 and result.native_actions == 0)
+            cases = result.cases
+            assert(result.done == (cases == 13))
+            if not result.done then return end
+            assert(result.cases == 13 and result.assertions == 260)
             done = true
             reskate.log(string.format("BMX Lua runtime: %d cases, %d assertions, 0 native actions", result.cases, result.assertions))
         end)
@@ -4998,7 +5003,7 @@ void bmx_lua_equipment_runtime_uses_typed_services_without_native_permissions() 
     TestEnvironment environment;
     Host host(environment, Side::client);
     host.apply({package("bmx-lua-runtime-tests", files)});
-    for (int tick = 0; tick < 6; ++tick) host.tick(1.0 / 60.0);
+    for (int tick = 0; tick < 18; ++tick) host.tick(1.0 / 60.0);
     running(host, "bmx-lua-runtime-tests", environment);
     check(environment.logged("BMX Lua runtime:") && environment.fake.calls.empty() && environment.fake.binds.empty() &&
               !environment.fake.input_pulse_requests && !environment.fake.input_pulse_reads &&

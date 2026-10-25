@@ -2,8 +2,9 @@
 -- No native API, input binding or control permission is used by these tests.
 local Runtime=require("./equipment_runtime")
 local tests={}
-function tests.run()
-    local cases,assertions=0,0
+function tests.new_runner()
+    local assertions=0
+    local case_functions={}
     local function check(v,why) assertions+=1;assert(v,why) end
     local function copy(t) if type(t)~="table" then return t end;local o={};for k,v in t do o[k]=copy(v) end;return o end
     local terminal_key,progress_key="bmx_equipment_terminal_v1","bmx_equipment_runtime_v1"
@@ -82,15 +83,14 @@ function tests.run()
         check(f.calls.request==1,"closed-menu neutral and600ms baseline produce one call")
         return out
     end
-    do
+    table.insert(case_functions, function()
         local f,a=fake();local out=a:status()
         check(out.phase=="idle" and f.calls.request==0 and f.calls.store==0,"constructor and status are inert")
         ticks(f,a,20)
         check(f.calls.request==0 and f.calls.store==0 and f.calls.encode==0,"idle ticking makes no control or storage calls")
         a:unload();a:update();check(f.calls.cancel==0 and f.calls.store==0,"unused unload is inert")
-        cases+=1
-    end
-    do
+    end)
+    table.insert(case_functions, function()
         for slot=0,3 do
             local f,a=fake();launch(f,a,slot);f.state=504;local out=ticks(f,a,35)
             check(out.historical_transition and out.qualified_transition and out.outcome=="target_observed","revoked report plus settled504 is independently qualified")
@@ -103,15 +103,13 @@ function tests.run()
             a:unload();out=a:status()
             check(out.historical_transition and out.outcome=="target_observed" and f.calls.cancel==0,"clean historical success is preserved on unload")
         end
-        cases+=1
-    end
-    do
+    end)
+    table.insert(case_functions, function()
         local f,a=fake();f.state=504;launch(f,a,2);f.state=100;local out=ticks(f,a,35)
         check(out.initial_state==504 and out.expected_state==100 and out.historical_transition,"reverse action uses frozen504 baseline")
         check(f.records[terminal_key].storage_scope=="Host cache acceptance; disk durability is unobserved","stored record does not claim durable persistence")
-        cases+=1
-    end
-    do
+    end)
+    table.insert(case_functions, function()
         local f,a=fake()
         for _,slot in {-1,.5,4,"0",false} do check(not a:request(slot),"invalid slot cannot arm") end
         check(a:request(0),"first explicit arm succeeds")
@@ -119,9 +117,8 @@ function tests.run()
         check(not a:request(1) and f.calls.request==0,"copied status cannot unlock or replace pending ownership")
         f.now=60000;a:update();check(f.calls.request==0,"60s arm expires without a pulse")
         f.menu=false;ticks(f,a,20);check(f.calls.request==0,"expired arm never resumes automatically")
-        cases+=1
-    end
-    do
+    end)
+    table.insert(case_functions, function()
         for _,change in {"focused","player","airborne","ragdoll","teleport","state","level","get_throw"} do
             local f,a=fake();check(a:request(0),"arm begins with known readiness")
             if change=="state" then f.state=504 elseif change=="level" then f.level="other"
@@ -131,42 +128,37 @@ function tests.run()
             f.menu=false;ticks(f,a,15)
             check(f.calls.request==0 and f.calls.ack==0,"changed readiness/state/level or API error consumes the arm")
         end
-        cases+=1
-    end
-    do
+    end)
+    table.insert(case_functions, function()
         for _,mode in {"false","nil","throw","refuse"} do
             local f,a=fake();f.pulse_mode=mode;launch(f,a);local out=ticks(f,a,20)
             check(f.calls.request==1 and f.calls.read==0 and f.calls.ack==0,"false/nil/exception/refusal never repeats or fabricates a handle")
             if mode=="refuse" then check(out.outcome=="failed" and not out.retained,"definite nil+reason refusal owns no handle")
             else check(out.retained and out.outcome=="unresolved" and not a:request(0),"unknown call outcome blocks replacement") end
         end
-        cases+=1
-    end
-    do
+    end)
+    table.insert(case_functions, function()
         for _,mode in {"false","nil","throw","oversize"} do
             local f,a=fake();if mode=="oversize" then f.oversize=true else f.store_mode=mode end
             launch(f,a);local out=ticks(f,a,15)
             check(f.calls.ack==0 and out.retained and out.outcome=="unresolved","failed, nonzero-return or oversize terminal storage never acknowledges")
             check(f.calls.request==1 and f.calls.cancel<=1,"storage failure cannot retry or flood cancellation")
         end
-        cases+=1
-    end
-    do
+    end)
+    table.insert(case_functions, function()
         for _,mode in {"ack_false","ack_throw","read_throw"} do
             local f,a=fake();f[mode]=true;launch(f,a);local out=ticks(f,a,15)
             check(out.retained and not out.historical_transition and not a:request(0),"failed/unknown read or ack retains ownership")
             check(f.calls.request==1 and f.calls.ack<=1 and f.calls.cancel<=1,"effect exceptions are joined once without control retries")
         end
-        cases+=1
-    end
-    do
+    end)
+    table.insert(case_functions, function()
         local f,a=fake();f.debt=true;launch(f,a);local before=f.calls.cancel
         local out=a:unload();a:unload();ticks(f,a,3)
         check(f.calls.cancel==before+1 and f.calls.ack==0,"unload attempts cancel once and never acknowledges debt")
         check(out.retained and out.outcome=="unresolved" and f.records[progress_key].unloaded,"unload progress retains actual obligation")
-        cases+=1
-    end
-    do
+    end)
+    table.insert(case_functions, function()
         local f,a=fake();launch(f,a);f.state=504;ticks(f,a,35)
         f.wipeouts=1;f.state=300;f.ragdoll=true;ticks(f,a,1)
         f.state,f.ragdoll,f.menu=504,false,true
@@ -175,9 +167,8 @@ function tests.run()
         local g,b=fake();g.wipeouts=5;launch(g,b);g.state=504;ticks(g,b,35)
         g.level,g.wipeouts,g.menu="other",0,true
         check(b:request(3),"observed new context can establish a fresh counter baseline after done")
-        cases+=1
-    end
-    do
+    end)
+    table.insert(case_functions, function()
         -- Constructed *already-clean* bike history exercises the real Core
         -- stock join. It is not evidence of a native bike mount or cleanup.
         local Core=require("./bike_runtime_core")
@@ -213,9 +204,8 @@ function tests.run()
         check(f.calls.request==1 and f.calls.ack==1 and expired.bike_cleanup_complete and
             not expired.bike_authority and not expired.cleanup_unknown and not expired.mount_enabled,
             "known local arm cancellation creates no second pulse, ACK or reopened bike authority")
-        cases+=1
-    end
-    do
+    end)
+    table.insert(case_functions, function()
         local f,a=fake();launch(f,a);f.state=504;local old=ticks(f,a,35)
         local attempt=old.attempt;local previous=copy(old.terminal_receipt)
         f.menu=true;check(a:request(1),"new arm accepted after acknowledged prior transition")
@@ -229,9 +219,8 @@ function tests.run()
             fresh.initial_state==504 and fresh.expected_state==100,
             "strictly newer real model attempt alone credits the new target")
         check(f.calls.request==2 and f.calls.ack==2,"fresh request preserves original exactly-once transport cleanup")
-        cases+=1
-    end
-    do
+    end)
+    table.insert(case_functions, function()
         for _,change in {"focus","level"} do
             local f,a=fake();launch(f,a);f.state=504;local old=ticks(f,a,35)
             f.menu=true;check(a:request(2),"second arm begins before readiness cancellation")
@@ -245,8 +234,30 @@ function tests.run()
             cancelled.current_transition=true
             check(not a:status().current_transition,"detached status cannot grant current-attempt credit")
         end
-        cases+=1
+    end)
+    -- Every case owns fresh injected services and runtime objects. Only these
+    -- private counters cross callbacks; case bodies never share fixture state.
+    local completed,failed=0,false
+    local runner={}
+    local function snapshot()
+        return {cases=completed,assertions=assertions,native_actions=0,
+            total_cases=#case_functions,done=completed==#case_functions}
     end
-    return {cases=cases,assertions=assertions,native_actions=0}
+    function runner:step()
+        assert(not failed,"equipment runtime case failed; automatic replay is forbidden")
+        if completed==#case_functions then return snapshot() end
+        failed=true
+        case_functions[completed+1]()
+        completed+=1
+        failed=false
+        return snapshot()
+    end
+    return runner
+end
+function tests.run()
+    local runner=tests.new_runner()
+    local result
+    repeat result=runner:step() until result.done
+    return {cases=result.cases,assertions=result.assertions,native_actions=result.native_actions}
 end
 return tests

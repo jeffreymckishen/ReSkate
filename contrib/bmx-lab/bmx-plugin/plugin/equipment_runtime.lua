@@ -212,6 +212,7 @@ end
 function Adapter:update()
     if self._closed then return self:status() end
     local f=self:_facts();local down=false
+    local was_armed=self._pending~=nil
     if self._pending then
         local p=self._pending
         if not f.now_ms or not f.level or f.context~=p.context or f.level~=p.level or not ready(f.observation,true)
@@ -236,7 +237,9 @@ function Adapter:update()
     self:_dispatch(self._output)
     if self._output.reason~="none" then self._detail=short(self._output.reason)
     elseif self._output.historical_transition then self._detail="Expected stock state observed; native consumption remains unobserved." end
-    self:_progress(previous~=self._output.phase)
+    -- Ending a pending arm changes the reported phase without a model phase
+    -- change. An owner may stop updating once it sees that end, so save it now.
+    self:_progress(previous~=self._output.phase or was_armed~=(self._pending~=nil))
     return self:status()
 end
 function Adapter:unload()
@@ -270,6 +273,7 @@ function Adapter:status()
         calls=copy(self._calls),receipt=copy(o.receipt),terminal_receipt=copy(o.terminal_receipt),suffix=copy(o.suffix),
         request_result=copy(self._request_response),
         storage_key=storage_key,progress_key=progress_key,storage_accepted=self._cached~=nil,
+        storage_fault=self._storage_fault==true,
         unloaded=self._closed==true,unload_cancel=copy(self._unload_cancel),scope="Stock board/on-foot only; BMX is not mounted"}
 end
 return Runtime

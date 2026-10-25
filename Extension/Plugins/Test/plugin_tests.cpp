@@ -5017,6 +5017,65 @@ void bmx_lua_equipment_runtime_uses_typed_services_without_native_permissions() 
     std::cout << environment.all();
 }
 
+void bmx_lua_persistence_keeps_terminal_records_and_public_fault_gates() {
+    const auto directory = std::filesystem::path(RESKATE_SOURCE_DIR) / "contrib" / "bmx-lab" / "bmx-plugin";
+    std::map<std::string, std::string> files{{manifest_file, R"({"api":1,"entry":"plugin/main.lua","permissions":[]})"}};
+    for (const auto* name : {"equipment_transition.lua", "bike_admission.lua", "equipment_runtime.lua",
+             "bike_runtime_core.lua", "bike_runtime.lua", "bike_runtime_core_persist_tests.lua", "runtime_progress_fault_tests.lua"}) {
+        std::ifstream file(directory / "plugin" / name, std::ios::binary);
+        check(file.good(), std::string("BMX Lua persistence source is available: ") + name);
+        files[std::string("plugin/") + name] = std::string(std::istreambuf_iterator<char>(file), {});
+    }
+    files["plugin/main.lua"] = R"(
+        local modules = {"./equipment_transition", "./bike_admission", "./equipment_runtime",
+            "./bike_runtime_core", "./bike_runtime", "./bike_runtime_core_persist_tests", "./runtime_progress_fault_tests"}
+        local loaded, persisted, persisted_work, persistence, public_done = 0, 0, 0, nil, false
+        local expected_cases = {1,1,1,1,1,2,3,4,5}
+        reskate.on("tick", function()
+            -- One cold import, persistence work unit or public suite per unchanged-budget callback.
+            if loaded < #modules then
+                loaded += 1
+                require(modules[loaded])
+                return
+            end
+            if persisted_work < 9 then
+                persistence = persistence or require("./bike_runtime_core_persist_tests").new_runner()
+                local result = persistence:step()
+                assert(result.work_units == persisted_work + 1 and result.total_work_units == 9 and result.total_cases == 5 and result.native_actions == 0)
+                assert(result.cases == expected_cases[result.work_units] and result.cases >= persisted and result.cases <= persisted + 1)
+                persisted, persisted_work = result.cases, result.work_units
+                assert(result.done == (persisted_work == 9))
+                if result.done then
+                    assert(result.cases == 5 and result.assertions == 78)
+                    reskate.log(string.format("BMX Lua persistence: %d cases, %d assertions, 0 native actions", result.cases, result.assertions))
+                end
+                return
+            end
+            if public_done then return end
+            public_done = true
+            local result = require("./runtime_progress_fault_tests").run()
+            assert(result.cases == 1 and result.assertions == 12 and result.native_actions == 0)
+            reskate.log(string.format("BMX Lua public progress fault: %d cases, %d assertions, 0 native actions", result.cases, result.assertions))
+        end)
+    )";
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({package("bmx-lua-persistence-tests", files)});
+    for (int tick = 0; tick < 17; ++tick) host.tick(1.0 / 60.0);
+    running(host, "bmx-lua-persistence-tests", environment);
+    check(environment.logged("BMX Lua persistence:") && environment.logged("BMX Lua public progress fault:") &&
+              environment.fake.calls.empty() && environment.fake.binds.empty() &&
+              !environment.fake.input_pulse_requests && !environment.fake.input_pulse_reads &&
+              !environment.fake.input_pulse_cancels && !environment.fake.input_pulse_acks &&
+              !environment.fake.native_action_requests && !environment.fake.native_recovery_requests &&
+              !environment.fake.body_creates && !environment.fake.body_submissions && environment.teleports.empty() && !environment.rays,
+          "Public owner and persistence regressions use injected services without actual gameplay permissions\n" + environment.all());
+    const auto completed = environment.all();
+    host.tick(1.0 / 60.0);
+    check(environment.all() == completed, "The persistence and public progress suites run only once");
+    std::cout << environment.all();
+}
+
 void equipment_interruption_fixture_keeps_effects_one_shot() {
     const auto root = std::filesystem::path(RESKATE_SOURCE_DIR) / "contrib" / "bmx-lab";
     std::map<std::string, std::string> files{{manifest_file, R"({"api":1,"entry":"plugin/main.lua","permissions":[]})"}};
@@ -8229,6 +8288,7 @@ int main() {
         run(bmx_lua_equipment_requests_match_the_retained_gesture_rules);
         run(bmx_lua_equipment_transitions_keep_cleanup_and_target_observation_separate);
         run(bmx_lua_equipment_runtime_uses_typed_services_without_native_permissions);
+        run(bmx_lua_persistence_keeps_terminal_records_and_public_fault_gates);
         run(equipment_interruption_fixture_keeps_effects_one_shot);
         run(bmx_lua_menu_switches_explicit_slots_and_retains_cleanup_duty);
         run(bmx_lua_recovery_policy_keeps_native_cleanup_separate);

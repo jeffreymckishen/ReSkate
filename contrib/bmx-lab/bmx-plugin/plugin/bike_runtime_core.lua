@@ -150,6 +150,8 @@ local function unknown_duty(read_status)
 end
 local function stock_blocked(read_status)
     if T.unloaded or T.busy or T.gear_requested or T.startup_pending or T.startup_closed or unknown_duty(read_status) then return true end
+    local e=(read_status or status_of)(equipment)
+    if e and e.storage_fault==true then return true end
     if not force_clear() or not equipment_clear(read_status) or not source_clear(read_status) then return true end
     if T.intent_inflight or T.active or T.follow or T.body or T.handoff_unknown or T.reserve_unknown then return true end
     if T.used and T.phase~="done" and not T.startup_handoff then return true end
@@ -208,7 +210,10 @@ snapshot=function()
 end
 local function persist(force)
     if not T.ledger_owned or T.saving or T.storage_fault then return false end
-    if not force and T.saved_at and T.now and T.now-T.saved_at<200 then return true end
+    if not force and T.saved_at and T.now and T.now-T.saved_at<200 then
+        -- A quiescent tick makes no later tick-end save; it flushes this once.
+        T.persist_dirty=true;return true
+    end
     T.saving=true
     local ok,record=pcall(snapshot)
     local encoded=ok and call("json.encode",lookup("json.encode"),record) or nil
@@ -218,7 +223,7 @@ local function persist(force)
         accepted=stored[1]==true and stored.n==1 -- Actual API returns zero values; this is not a durability proof.
     end
     T.saving=false
-    if accepted then T.saved_at=T.now;return true end
+    if accepted then T.saved_at=T.now;T.persist_dirty=false;return true end
     T.storage_fault=true
     if stop_all then stop_all("ledger cache failed; no retry or replacement") end
     return false
@@ -876,14 +881,26 @@ function object:request_stock_toggle(slot,admitted)
         accepted=begin_equipment(slot,"stock",observed.state)
     elseif clear then T.detail="Stock request refused by fresh readiness or cancelled intent." end
     T.intent_inflight=false;T.busy=false
-    if not accepted then return false,short(T.detail) end
+    if not accepted then
+        -- A refused or cancelled request is terminal. The next quiescent tick
+        -- saves it, after a deferred startup caller has restored its phase.
+        T.persist_dirty=true
+        return false,short(T.detail)
+    end
     return true
 end
 local function tick(dt)
     selected_source_frame=nil
     if T.unloaded or T.phase=="blocked" then return end
-    if not T.used and not T.gear_requested then return end
-    if T.phase=="done" and not T.gear_requested then return end
+    if not T.used and not T.gear_requested or T.phase=="done" and not T.gear_requested then
+        -- No tick-end save runs from here, so a throttled snapshot would
+        -- otherwise remain the cached ledger for the rest of this VM.
+        if T.persist_dirty then persist(true) end
+        return
+    end
+    -- The tick that completes or cancels a stock request leaves the next tick
+    -- on the quiescent return above, so that terminal record is saved now.
+    local stock_open=T.gear_purpose=="stock" and T.gear_requested==true and not T.gear_cancelled
     local now=clock()
     if not finite(dt) or dt<=0 or dt>250 or now and T.last_step_at and now<=T.last_step_at then
         stop_all("invalid, stalled or reversed wall tick")
@@ -978,7 +995,7 @@ local function tick(dt)
         end
     end
     if T.stop_latched and not T.bike_cleanup_complete then cleanup_tick() end
-    persist(false)
+    persist(stock_open and (not T.gear_requested or T.gear_cancelled==true))
 end
 function object:step(dt_ms)
     if T.busy then

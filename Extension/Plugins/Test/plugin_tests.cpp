@@ -4970,19 +4970,34 @@ void bmx_lua_equipment_transitions_keep_cleanup_and_target_observation_separate(
 void bmx_lua_equipment_runtime_uses_typed_services_without_native_permissions() {
     const auto directory = std::filesystem::path(RESKATE_SOURCE_DIR) / "contrib" / "bmx-lab" / "bmx-plugin";
     std::map<std::string, std::string> files{{manifest_file, R"({"api":1,"entry":"plugin/main.lua","permissions":[]})"}};
-    for (const auto* name : {"equipment_transition.lua", "equipment_runtime.lua", "equipment_runtime_tests.lua"}) {
+    for (const auto* name : {"equipment_transition.lua", "bike_admission.lua", "equipment_runtime.lua",
+             "bike_runtime_core.lua", "equipment_runtime_tests.lua"}) {
         std::ifstream file(directory / "plugin" / name, std::ios::binary);
         check(file.good(), std::string("BMX Lua runtime source is available: ") + name);
         files[std::string("plugin/") + name] = std::string(std::istreambuf_iterator<char>(file), {});
     }
     files["plugin/main.lua"] = R"(
-        local result = require("./equipment_runtime_tests").run()
-        assert(result.cases >= 8 and result.assertions >= 100 and result.native_actions == 0)
-        reskate.log(string.format("BMX Lua runtime: %d cases, %d assertions, 0 native actions", result.cases, result.assertions))
+        -- Compile each cold module in its own unchanged-budget callback.
+        local modules = {"./equipment_transition", "./bike_admission", "./equipment_runtime",
+            "./bike_runtime_core", "./equipment_runtime_tests"}
+        local loaded, done = 0, false
+        reskate.on("tick", function()
+            if done then return end
+            if loaded < #modules then
+                loaded += 1
+                require(modules[loaded])
+                return
+            end
+            local result = require("./equipment_runtime_tests").run()
+            assert(result.cases >= 13 and result.assertions >= 260 and result.native_actions == 0)
+            done = true
+            reskate.log(string.format("BMX Lua runtime: %d cases, %d assertions, 0 native actions", result.cases, result.assertions))
+        end)
     )";
     TestEnvironment environment;
     Host host(environment, Side::client);
     host.apply({package("bmx-lua-runtime-tests", files)});
+    for (int tick = 0; tick < 6; ++tick) host.tick(1.0 / 60.0);
     running(host, "bmx-lua-runtime-tests", environment);
     check(environment.logged("BMX Lua runtime:") && environment.fake.calls.empty() && environment.fake.binds.empty() &&
               !environment.fake.input_pulse_requests && !environment.fake.input_pulse_reads &&
@@ -4990,6 +5005,9 @@ void bmx_lua_equipment_runtime_uses_typed_services_without_native_permissions() 
               !environment.fake.native_action_requests && !environment.fake.native_recovery_requests &&
               !environment.fake.body_creates && !environment.fake.body_submissions && environment.teleports.empty() && !environment.rays,
           "The actual adapter module tests use injected services without actual gameplay permissions\n" + environment.all());
+    const auto completed = environment.all();
+    host.tick(1.0 / 60.0);
+    check(environment.all() == completed, "The equipment runtime regression suite runs only once");
     std::cout << environment.all();
 }
 

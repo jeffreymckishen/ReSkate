@@ -783,7 +783,7 @@ local function equipment_tick()
             persist(true)
         else
             T.gear_requested=false;T.phase=T.used and "done" or "idle"
-            T.detail=e.historical_transition and "Stock target observed; consumption remains unobserved."
+            T.detail=e.current_transition==true and "Stock target observed; consumption remains unobserved."
                 or "Stock request ended without a qualified target; no automatic retry."
         end
     end

@@ -112,6 +112,9 @@ function Adapter:request(slot,admitted_at_ms)
         self._detail="Arm refused: original admission deadline elapsed or clock is invalid."
         return false,self._detail
     end
+    -- Prior terminal history remains visible, but cannot complete this new arm.
+    -- Only the model's strictly newer attempt can credit its sampled target.
+    self._request_after_attempt=out.attempt
     self._pending={slot=slot,at=admitted_at_ms or f.now_ms,last=f.now_ms,context=f.context,level=f.level,state=f.observation.state,neutral=false}
     self._wipeouts=f.wipeouts
     self._ever_requested=true
@@ -254,6 +257,7 @@ end
 function Adapter:status()
     local o=self._output
     local f=self._facts_now
+    local current_attempt=self._request_after_attempt~=nil and o.attempt>self._request_after_attempt
     local currently_ready=f and f.now_ms and f.context==self._selected_context and ready(f.observation,false)
         and f.observation.state==o.expected_state
     local retained=o.retained==true or self._handle~=nil or self._unknown_request==true
@@ -261,7 +265,8 @@ function Adapter:status()
         outcome=self._closed and retained and "unresolved" or o.outcome,reason=short(o.reason),detail=short(self._detail),
         attempt=o.attempt,slot=self._selected,initial_state=o.initial_state,expected_state=o.expected_state,
         retained=retained,acknowledged=o.acknowledged==true,
-        qualified_transition=not self._closed and currently_ready==true and o.qualified_transition==true,historical_transition=o.historical_transition==true,
+        qualified_transition=current_attempt and not self._closed and currently_ready==true and o.qualified_transition==true,
+        current_transition=current_attempt and o.historical_transition==true,historical_transition=o.historical_transition==true,
         calls=copy(self._calls),receipt=copy(o.receipt),terminal_receipt=copy(o.terminal_receipt),suffix=copy(o.suffix),
         request_result=copy(self._request_response),
         storage_key=storage_key,progress_key=progress_key,storage_accepted=self._cached~=nil,

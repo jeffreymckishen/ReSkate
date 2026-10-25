@@ -68,7 +68,7 @@ function tests.run()
             f.records[key]=copy(record)
             -- The actual SDK contract is zero values, not `return true`.
         end
-        return f,Runtime.new(s)
+        return f,Runtime.new(s),s
     end
     local function ticks(f,a,n)
         local out
@@ -175,6 +175,76 @@ function tests.run()
         local g,b=fake();g.wipeouts=5;launch(g,b);g.state=504;ticks(g,b,35)
         g.level,g.wipeouts,g.menu="other",0,true
         check(b:request(3),"observed new context can establish a fresh counter baseline after done")
+        cases+=1
+    end
+    do
+        -- Constructed *already-clean* bike history exercises the real Core
+        -- stock join. It is not evidence of a native bike mount or cleanup.
+        local Core=require("./bike_runtime_core")
+        local f,_,s=fake()
+        f.state=504
+        function s.skater.get() return {airborne=f.airborne,position=vector.create(0,0,0),heading=0} end
+        function s.input.allowed() return true end
+        s.menu={game=function() return {open=f.menu} end}
+        function s.storage.get() return nil end
+        local shared={phase="done",detail="Constructed clean bike history",used=true,bike_cleanup_complete=true,
+            stop_latched=true,generation=0,cancel_version=0,calls={},counts={},receipts={},
+            omitted_calls=0,omitted_receipts=0,remove_attempted={},remove_accepted={}}
+        local core=Core.new(s,nil,shared)
+        check(not core:request_mount(0) and f.calls.request==0,"public mount remains disabled before any control effect")
+        local function step(n)
+            local out
+            for _=1,n do f.now+=100;out=core:step(100) end
+            return out
+        end
+        check(core:request_stock_toggle(0),"clean constructed owner accepts explicit stock request")
+        f.menu=false;step(16);f.state=100;local old=step(35)
+        check(old.equipment.historical_transition and old.detail:find("Stock target observed",1,true),
+            "first actual stock transaction must finish before the stale-history regression")
+        local previous=copy(old.equipment.terminal_receipt)
+        f.menu=true;check(core:request_stock_toggle(1),"second independent stock arm accepted")
+        f.now+=60000;local expired=core:step(100)
+        check(expired.detail:find("ended without a qualified target",1,true)~=nil,
+            "cancelled new stock arm must not credit the previous equipment target")
+        check(expired.equipment.historical_transition and expired.equipment.current_transition==false and
+            expired.equipment.terminal_receipt.sequence==previous.sequence and
+            expired.equipment.terminal_receipt.observed_ms==previous.observed_ms,
+            "prior receipt/history stays intact and visibly separate from the current cancelled arm")
+        check(f.calls.request==1 and f.calls.ack==1 and expired.bike_cleanup_complete and
+            not expired.bike_authority and not expired.cleanup_unknown and not expired.mount_enabled,
+            "known local arm cancellation creates no second pulse, ACK or reopened bike authority")
+        cases+=1
+    end
+    do
+        local f,a=fake();launch(f,a);f.state=504;local old=ticks(f,a,35)
+        local attempt=old.attempt;local previous=copy(old.terminal_receipt)
+        f.menu=true;check(a:request(1),"new arm accepted after acknowledged prior transition")
+        f.menu=false;local pending=ticks(f,a,1)
+        check(pending.historical_transition and not pending.qualified_transition and pending.current_transition==false,
+            "neutral pre-begin tick cannot borrow prior target readiness")
+        check(pending.terminal_receipt.observed_ms==previous.observed_ms and f.calls.request==1,
+            "binding a new arm does not erase its prior receipt or act before its own baseline")
+        ticks(f,a,13);f.state=100;local fresh=ticks(f,a,35)
+        check(fresh.attempt>attempt and fresh.current_transition and fresh.qualified_transition and
+            fresh.initial_state==504 and fresh.expected_state==100,
+            "strictly newer real model attempt alone credits the new target")
+        check(f.calls.request==2 and f.calls.ack==2,"fresh request preserves original exactly-once transport cleanup")
+        cases+=1
+    end
+    do
+        for _,change in {"focus","level"} do
+            local f,a=fake();launch(f,a);f.state=504;local old=ticks(f,a,35)
+            f.menu=true;check(a:request(2),"second arm begins before readiness cancellation")
+            if change=="focus" then f.focused=false else f.level="other" end
+            local cancelled=ticks(f,a,1)
+            f.focused=true;f.menu=false;ticks(f,a,3)
+            check(cancelled.attempt==old.attempt and cancelled.historical_transition and
+                not a:status().current_transition and not a:status().qualified_transition and
+                f.calls.request==1 and f.calls.ack==1,
+                "pre-begin readiness loss preserves history without fabricating a new completion")
+            cancelled.current_transition=true
+            check(not a:status().current_transition,"detached status cannot grant current-attempt credit")
+        end
         cases+=1
     end
     return {cases=cases,assertions=assertions,native_actions=0}

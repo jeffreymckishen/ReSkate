@@ -188,9 +188,9 @@ end
 local scalar_source = { "generation", "user", "sequence", "source_epoch", "context_generation",
     "observation_serial", "observed_ms", "packet" }
 -- The Ride Framev1 (frame_identity.lua) of read t with a selected source:
--- this read's sample, body handle and gates. fresh is the composer's own
--- verdict: it builds a frame only for a read whose serial follows every read
--- it has planned or stepped.
+-- this read's sample, body handle and gates. fresh is the composer's own verdict:
+-- plan builds a frame only for a read whose serial follows the last read it
+-- stepped (self._serial); an unstepped planned read is not tracked.
 local function read_frame(t, source)
     return { valid = true, fresh = true, body_handle = t.body_handle, physics_epoch = t.epoch,
         serial = t.serial, time = t.time, seconds = t.seconds, body = t.body, sample = t.sample, source = source,

@@ -588,7 +588,8 @@ function Tests.run()
                     name .. " step " .. r.step .. " submits only from a read bail_policy judged")
             end
             if b and b.guarded == false then
-                check(not res.commands.submit and res.commands.force == nil and res.commands.hop_impulse == nil
+                check(not res.commands.submit and res.commands.force == nil and res.commands.torque == nil
+                    and res.commands.hop_impulse == nil
                     and type(b.unguarded) == "string" and res.diagnostics.kernel.issue == b.unguarded,
                     name .. " step " .. r.step .. " an unguarded read submits nothing and says why")
             end

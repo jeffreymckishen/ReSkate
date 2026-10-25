@@ -1064,8 +1064,10 @@ bool observe_retained_park(std::uint64_t owner, const RetirementBasis& basis, Re
             !peek(dynamics + word, dynamic_word)) || failed(Check::dynamic_bit, (dynamic_word & bit) != 0)) return false;
     Ring linear_header, angular_header; V4 linear{}, angular{}, force{}, torque{};
     std::uintptr_t force_source{}, torque_source{};
+    // The native angular setter and its zero check compare XYZ. Keep the
+    // qualified fourth lane for the unchanged full-vector readback below.
     if (failed(Check::linear_read, !ring(*s, r::velocity_ring, linear_header, linear)) || different(Check::linear_zero, linear, V4{}) ||
-        failed(Check::angular_read, !ring(*s, r::spin_ring, angular_header, angular)) || different(Check::angular_zero, angular, V4{}) ||
+        failed(Check::angular_read, !ring(*s, r::spin_ring, angular_header, angular)) || different(Check::angular_zero, angular, V4{0, 0, 0, angular[3]}) ||
         failed(Check::force_read, !array4(s->anchor.state, r::pending_force, s->body.index, force, force_source)) || different(Check::force_zero, force, V4{}) ||
         failed(Check::torque_read, !array4(s->anchor.state, r::pending_torque, s->body.index, torque, torque_source)) || different(Check::torque_zero, torque, V4{})) return false;
     for (unsigned pass = 0; pass < 2; ++pass) {

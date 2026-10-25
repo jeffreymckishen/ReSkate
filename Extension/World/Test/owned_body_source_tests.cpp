@@ -1071,6 +1071,11 @@ template<class F> void run(const char* name, F function, unsigned expected_links
 int main() {
     using namespace dingosdk::owned_bodies::source_test;
     try {
+        run("park_angular_xyz_zero_complete_observation",park_angular_xyz_zero_accepts_only_complete_observation);
+        run("park_angular_xyz_nonzero_invalid_fourth",park_angular_xyz_nonzero_and_invalid_fourth_refuse);
+        run("park_angular_xyz_fourth_stability_headers",park_angular_xyz_zero_keeps_fourth_stability_and_headers);
+        run("park_angular_xyz_later_pending_commands",park_angular_xyz_zero_keeps_later_pending_commands);
+        run("park_angular_xyz_closing_identity_clock_age",park_angular_xyz_zero_keeps_closing_identity_clock_and_age);
         run("command_cleanup_exact_history_no_native_reread",command_cleanup_uses_exact_immutable_history_without_native_reread);
         run("command_cleanup_identity_busy_hold_quarantine",command_cleanup_rejects_changed_identity_busy_hold_and_quarantine);
         run("park_diagnostic_valid_legacy_parity_signed_zero",park_diagnostic_valid_legacy_parity_and_signed_zero);

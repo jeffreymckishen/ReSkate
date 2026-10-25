@@ -234,10 +234,14 @@ void park_diagnostic_identity_clock_and_dynamic_guards() {
 void park_diagnostic_finite_lane_masks_and_first_failure() {
     const std::array<ParkCheck,4> expected_checks{ParkCheck::linear_zero,ParkCheck::angular_zero,ParkCheck::force_zero,ParkCheck::torque_zero};
     for(unsigned stream=0;stream<4;++stream)for(const auto mask:std::array<std::uint8_t,5>{1,2,4,8,11}) {
+        // A finite W-only angular row now reaches the remaining predicates;
+        // the separate acceptance group below exercises that complete path.
+        if(stream==1 && mask==8)continue;
         ParkedCommandFixture p;V4 value{};
         for(unsigned lane=0;lane<4;++lane)if(mask&(1U<<lane))value[lane]=(lane&1U)?-.5f:.5f;
         put(park_vector_address(p,stream),value);
-        park_refusal(p,expected_checks[stream],mask,true,true);
+        const auto compared_mask=static_cast<std::uint8_t>(stream==1?mask&7U:mask);
+        park_refusal(p,expected_checks[stream],compared_mask,true,true);
     }
     ParkedCommandFixture p;put(park_vector_address(p,0),V4{1,0,0,0});
     put(park_vector_address(p,1),V4{std::bit_cast<float>(0x7FC00000U),0,0,0});
@@ -253,8 +257,7 @@ void park_diagnostic_angular_fourth_exact_existing_read() {
         RetainedParkReceipt out;ParkObservationDiagnostic diagnostic;SetLastError(0xD161);
         check(!observe_retained_park(owner,p.basis,out,diagnostic) && !out.available() && GetLastError()==0xD161,
             "angular fourth diagnostic changed refusal/proof/LastError");
-        const auto expected_mask=static_cast<std::uint8_t>(supplied==0.f?1:9);
-        check(diagnostic.check==ParkCheck::angular_zero && diagnostic.lanes_known && diagnostic.failed_lanes==expected_mask &&
+        check(diagnostic.check==ParkCheck::angular_zero && diagnostic.lanes_known && diagnostic.failed_lanes==1 &&
             diagnostic.angular_fourth_available && diagnostic.angular_fourth_value==supplied && diagnostic.angular_fourth_bits==bits,
             "angular fourth value/bits did not come from the failed qualified spin read");
         check(leaves.advanced(9,4,1,3) && authority.same(p.f.slot()) && test_facts::mutations.load()==0,
@@ -269,11 +272,11 @@ void park_diagnostic_angular_fourth_exact_existing_read() {
         const auto stride=(std::uintptr_t{header.elements}*sizeof(V4)+63U)&~std::uintptr_t{63U};
         const auto planes=p.f.arena.take(stride*2);header.values=planes;header.current=1;header.planes=2;
         put(planes+body_index*sizeof(V4),V4{0,0,0,.75f});
-        put(planes+stride+body_index*sizeof(V4),V4{0,0,0,-.5f});
+        put(planes+stride+body_index*sizeof(V4),V4{.25f,0,0,-.5f});
         put(p.f.state+r::spin_ring,header);
         RetainedParkReceipt out;ParkObservationDiagnostic diagnostic;
         check(!observe_retained_park(owner,p.basis,out,diagnostic) && diagnostic.check==ParkCheck::angular_zero &&
-            diagnostic.failed_lanes==8 && diagnostic.angular_fourth_available && diagnostic.angular_fourth_value==-.5f &&
+            diagnostic.failed_lanes==1 && diagnostic.angular_fourth_available && diagnostic.angular_fourth_value==-.5f &&
             diagnostic.angular_fourth_bits==0xBF000000U,"fourth diagnostic read a stale rather than selected current plane");
     }
 }
@@ -371,5 +374,87 @@ void park_diagnostic_closing_identity_clock_and_final_age() {
         else park_at_shape(2,change,fired);
         park_refusal(p,expected_checks[fault],0,false,false,false);
         check(fired,"closing identity/clock synthetic interleaving did not execute");
+    }
+}
+
+// Regression sources for the angular-only domain correction. These call the
+// actual observer; native arrays/clock and external ABI leaves are constructed.
+// No retail setter, park mutator, ACK or SDK retirement runs in these cases.
+void park_angular_xyz_zero_accepts_only_complete_observation() {
+    for(const auto bits:std::array<std::uint32_t,6>{0x3F800000U,0xBF000000U,0x00800001U,0x3F800001U,0x49742400U,0xC9742400U}) {
+        ParkedCommandFixture p;const float fourth=std::bit_cast<float>(bits);
+        put(park_vector_address(p,1),V4{0,-0.f,0,fourth});
+        const ParkSlotSnapshot authority(p.f.slot());const ParkLeafCounts leaves;
+        RetainedParkReceipt out;ParkObservationDiagnostic diagnostic{ParkCheck::angular_zero,8,true};
+        diagnostic.angular_fourth_available=true;diagnostic.angular_fourth_value=17.f;diagnostic.angular_fourth_bits=0x41880000U;
+        SetLastError(0xD170);
+        check(observe_retained_park(owner,p.basis,out,diagnostic) && out.available() && GetLastError()==0xD170,
+            "finite W-only angular row did not pass the actual complete retained observer");
+        check(diagnostic==ParkObservationDiagnostic{ParkCheck::passed,0,false},"angular XYZ success retained stale diagnostic data");
+        check(leaves.advanced(44,20,6,8) && authority.same(p.f.slot()) && test_facts::mutations.load()==0,
+            "angular XYZ success skipped validators, changed authority or invoked a native mutation");
+        check(out.observed_epoch()==p.parked.observed_epoch() && out.observed_ms()==p.parked.observed_ms() &&
+            out.parked_ms()==p.parked.parked_ms(),"angular XYZ success changed the qualified receipt identity");
+        RetainedParkReceipt legacy;const ParkLeafCounts old_leaves;
+        check(observe_retained_park(owner,p.basis,legacy) && old_leaves.advanced(44,20,6,8) &&
+            GetLastError()==0xD170 && legacy.observed_epoch()==out.observed_epoch() && authority.same(p.f.slot()),
+            "legacy overload did not share the complete angular XYZ observer");
+    }
+}
+void park_angular_xyz_nonzero_and_invalid_fourth_refuse() {
+    for(unsigned lane=0;lane<3;++lane)for(const float sign:std::array<float,2>{-1.f,1.f}) {
+        ParkedCommandFixture p;V4 angular{0,0,0,.75f};angular[lane]=sign*.25f;
+        put(park_vector_address(p,1),angular);
+        park_refusal(p,ParkCheck::angular_zero,static_cast<std::uint8_t>(1U<<lane),true,true);
+    }
+    for(const auto bits:std::array<std::uint32_t,5>{0x7FC00000U,0x7F800000U,0xFF800000U,0x49742410U,0xC9742410U}) {
+        ParkedCommandFixture p;put(park_vector_address(p,1),V4{0,0,0,std::bit_cast<float>(bits)});
+        park_refusal(p,ParkCheck::angular_read,0,false,true);
+    }
+    ParkedCommandFixture p;put(park_vector_address(p,1),V4{0,0,0,.75f});
+    put(park_vector_address(p,0),V4{0,0,0,.5f});
+    park_refusal(p,ParkCheck::linear_zero,8,true,true);
+}
+void park_angular_xyz_zero_keeps_fourth_stability_and_headers() {
+    for(unsigned pass=0;pass<2;++pass)for(unsigned fault=0;fault<4;++fault) {
+        ParkedCommandFixture p;put(park_vector_address(p,1),V4{0,0,0,.5f});bool fired=false;
+        park_at_shape(pass?4:2,[&]{
+            if(fault==0)put(park_vector_address(p,1),V4{0,0,0,.75f});
+            if(fault==1)put(park_vector_address(p,1),V4{0,0,0,std::bit_cast<float>(0x7FC00000U)});
+            if(fault==2)put(park_vector_address(p,1),V4{0,0,0,std::bit_cast<float>(0x7F800000U)});
+            if(fault==3){auto header=load<Ring>(p.f.state+r::spin_ring);--header.elements;put(p.f.state+r::spin_ring,header);}
+        },fired);
+        const auto expected=fault==0?ParkCheck::angular_values:fault==3?ParkCheck::angular_header:ParkCheck::angular_read;
+        park_refusal(p,expected,static_cast<std::uint8_t>(fault==0?8:0),fault==0,false,false);
+        check(fired,"finite W-only regression did not reach the selected closing readback");
+    }
+}
+void park_angular_xyz_zero_keeps_later_pending_commands() {
+    for(unsigned stream=2;stream<4;++stream)for(unsigned lane=0;lane<4;++lane) {
+        ParkedCommandFixture p;put(park_vector_address(p,1),V4{0,0,0,-.5f});V4 pending{};pending[lane]=.25f;
+        put(park_vector_address(p,stream),pending);
+        park_refusal(p,stream==2?ParkCheck::force_zero:ParkCheck::torque_zero,static_cast<std::uint8_t>(1U<<lane),true,true);
+    }
+}
+void park_angular_xyz_zero_keeps_closing_identity_clock_and_age() {
+    const std::array<ParkCheck,8> expected_checks{ParkCheck::shape_current,ParkCheck::shape_current,ParkCheck::shape_current,
+        ParkCheck::closing_epoch,ParkCheck::closing_stamp,ParkCheck::closing_clock,ParkCheck::fresh_allocation,ParkCheck::clock_freshness};
+    for(unsigned fault=0;fault<expected_checks.size();++fault) {
+        ParkedCommandFixture p;put(park_vector_address(p,1),V4{0,0,0,.5f});bool fired=false;
+        const auto change=[&]{
+            if(fault==0)put(p.f.body_generations+body_index*4,body_generation+1);
+            if(fault==1)put(load<std::uintptr_t>(p.f.state+r::shape_generations)+shape_index,std::uint8_t{shape_generation+1});
+            if(fault==2)put(p.f.context+test_world_field,p.f.world+64);
+            if(fault==3){++test_clock::now;p.f.step();}
+            if(fault==4)--clock_feed.observed;
+            if(fault==5){clock_feed.serial=0;clock_feed.sequence=0;}
+            if(fault==6)put(p.f.entity+r::entity_teleport,std::uint8_t{1});
+            if(fault==7)test_clock::now=clock_feed.observed+command_lifetime_ms;
+        };
+        if(fault==6)park_at_clock(6,change,fired);
+        else if(fault==7)park_at_clock(8,change,fired);
+        else park_at_shape(2,change,fired);
+        park_refusal(p,expected_checks[fault],0,false,false,false);
+        check(fired,"finite W-only regression did not reach the selected closing fence");
     }
 }

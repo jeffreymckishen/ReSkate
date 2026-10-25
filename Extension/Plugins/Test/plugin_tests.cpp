@@ -5041,8 +5041,9 @@ void bmx_lua_persistence_keeps_terminal_records_and_public_fault_gates() {
             if persisted_work < 9 then
                 persistence = persistence or require("./bike_runtime_core_persist_tests").new_runner()
                 local result = persistence:step()
-                assert(result.work_units == persisted_work + 1 and result.total_work_units == 9 and result.total_cases == 5 and result.native_actions == 0)
-                assert(result.cases == expected_cases[result.work_units] and result.cases >= persisted and result.cases <= persisted + 1)
+                assert(type(result.work_unit_complete) == "boolean")
+                assert(result.work_units == persisted_work + (result.work_unit_complete and 1 or 0) and result.total_work_units == 9 and result.total_cases == 5 and result.native_actions == 0)
+                assert(result.cases == (result.work_units == 0 and 0 or expected_cases[result.work_units]) and result.cases >= persisted and result.cases <= persisted + 1)
                 persisted, persisted_work = result.cases, result.work_units
                 assert(result.done == (persisted_work == 9))
                 if result.done then
@@ -5061,8 +5062,16 @@ void bmx_lua_persistence_keeps_terminal_records_and_public_fault_gates() {
     TestEnvironment environment;
     Host host(environment, Side::client);
     host.apply({package("bmx-lua-persistence-tests", files)});
-    for (int tick = 0; tick < 17; ++tick) host.tick(1.0 / 60.0);
-    running(host, "bmx-lua-persistence-tests", environment);
+    bool public_completed = false;
+    for (int tick = 0; tick < 4096; ++tick) {
+        host.tick(1.0 / 60.0);
+        running(host, "bmx-lua-persistence-tests", environment);
+        if (environment.logged("BMX Lua public progress fault:")) {
+            public_completed = true;
+            break;
+        }
+    }
+    check(public_completed, "Persistence work and the public fault regression complete within 4096 callbacks\n" + environment.all());
     check(environment.logged("BMX Lua persistence:") && environment.logged("BMX Lua public progress fault:") &&
               environment.fake.calls.empty() && environment.fake.binds.empty() &&
               !environment.fake.input_pulse_requests && !environment.fake.input_pulse_reads &&
@@ -5072,6 +5081,7 @@ void bmx_lua_persistence_keeps_terminal_records_and_public_fault_gates() {
           "Public owner and persistence regressions use injected services without actual gameplay permissions\n" + environment.all());
     const auto completed = environment.all();
     host.tick(1.0 / 60.0);
+    running(host, "bmx-lua-persistence-tests", environment);
     check(environment.all() == completed, "The persistence and public progress suites run only once");
     std::cout << environment.all();
 }

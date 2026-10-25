@@ -131,26 +131,43 @@ function tests.new_runner()
     -- least one cadence; every cadence must still store the final record.
     local throttled=0
     local function append_cadence(cadence,final_cadence)
+        local f,core,phase,baseline_steps,target_steps,quiet_steps
         table.insert(work_functions, function()
-            local f,s=fake()
-            local core=Core.new(s,nil,clean_history())
-            check(core:request_stock_toggle(0),"clean constructed owner accepts one stock request")
-            local function step() f.now+=cadence;return core:step(cadence) end
-            f.menu=false
-            for _=1,200 do if f.calls.request==1 then break end;step() end
-            check(f.calls.request==1,"closed-menu neutral baseline produces one stock pulse")
-            f.state=100
-            local out,completed_at
-            for _=1,400 do
-                out=step()
-                if out.stock_requested==false then completed_at=f.now;break end
+            if not phase then
+                local s
+                f,s=fake()
+                core=Core.new(s,nil,clean_history())
+                check(core:request_stock_toggle(0),"clean constructed owner accepts one stock request")
+                f.menu=false
+                phase,baseline_steps,target_steps,quiet_steps="baseline",0,0,0
             end
-            check(completed_at and out.phase=="done" and out.detail:find("Stock target observed",1,true)~=nil,
-                "the stock target is observed and the request completes")
-            local _,last=saves(f,KEY,completed_at)
-            check(last~=nil,"the open request was saved before it completed")
-            if completed_at-last<200 then throttled+=1 end
-            for _=1,60 do step() end
+            -- Preserve the original loop caps and synthetic cadence, but let
+            -- each successful callback perform at most one simulated step.
+            local function step() f.now+=cadence;return core:step(cadence) end
+            if phase=="baseline" then
+                if f.calls.request~=1 and baseline_steps<200 then
+                    step();baseline_steps+=1
+                end
+                if f.calls.request~=1 and baseline_steps<200 then return false end
+                check(f.calls.request==1,"closed-menu neutral baseline produces one stock pulse")
+                f.state=100
+                phase="target"
+                return false
+            end
+            if phase=="target" then
+                local out=step();target_steps+=1
+                local completed_at=out.stock_requested==false and f.now or nil
+                if not completed_at and target_steps<400 then return false end
+                check(completed_at and out.phase=="done" and out.detail:find("Stock target observed",1,true)~=nil,
+                    "the stock target is observed and the request completes")
+                local _,last=saves(f,KEY,completed_at)
+                check(last~=nil,"the open request was saved before it completed")
+                if completed_at-last<200 then throttled+=1 end
+                phase="quiescent"
+                return false
+            end
+            step();quiet_steps+=1
+            if quiet_steps<60 then return false end
             local stored=f.records[KEY]
             check(stored.phase=="done" and stored.stock_requested==false and
                 stored.detail:find("Stock target observed",1,true)~=nil,
@@ -159,6 +176,7 @@ function tests.new_runner()
             if final_cadence then
                 check(throttled>0,"reproduction precondition: some completion tick fell inside the 200 ms save throttle")
             end
+            return true
         end)
     end
     for index,cadence in {16,50,100,150,200} do append_cadence(cadence,index==5) end
@@ -216,24 +234,26 @@ function tests.new_runner()
         for _=1,20 do f.now+=100;adapter:update() end
         check(f.calls.store==0,"an unrequested adapter still makes no storage call")
     end)
-    -- One case, or one independent cadence of case 2, per work unit.
+    -- Case 2 may yield incomplete work after one simulated Core step.
     -- The Core's one qualification intent per VM remains untouched.
     local completion={1,1,1,1,1,2,3,4,5}
     local completed,work_completed,failed=0,0,false
     local runner={}
-    local function snapshot()
+    local function snapshot(work_unit_complete)
         return {cases=completed,assertions=assertions,native_actions=0,total_cases=5,
-            work_units=work_completed,total_work_units=#work_functions,done=work_completed==#work_functions}
+            work_units=work_completed,total_work_units=#work_functions,work_unit_complete=work_unit_complete,done=work_completed==#work_functions}
     end
     function runner:step()
         assert(not failed,"persistence case failed; automatic replay is forbidden")
-        if work_completed==#work_functions then return snapshot() end
+        if work_completed==#work_functions then return snapshot(true) end
         failed=true
-        work_functions[work_completed+1]()
-        work_completed+=1
-        completed=completion[work_completed]
+        local complete=work_functions[work_completed+1]()~=false
+        if complete then
+            work_completed+=1
+            completed=completion[work_completed]
+        end
         failed=false
-        return snapshot()
+        return snapshot(complete)
     end
     return runner
 end

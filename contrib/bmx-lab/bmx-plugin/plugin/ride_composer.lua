@@ -25,6 +25,10 @@
 --                    accept advances the force kernel's history and retires
 --                    the hop as accepted (FORCES.md: adopt a preview only
 --                    after native acceptance).
+-- plan keeps its own copy of the read, and step runs on that copy. A tick
+-- whose protected fields no longer match it is refused by witness, a repeated
+-- plan and step (planned_*), and the refusal is final for that read. So is a
+-- read whose plan was dropped before its step (planned_read_abandoned).
 local Forces = require("./forces")
 local M = require("./force_math")
 local Mapping = require("./ride_input_mapping")
@@ -158,15 +162,28 @@ local function sample_body(raw)
         or not M.vec(body.angular_velocity, 40) then return nil end
     return body
 end
+-- A shallow copy of one plain vector-like table (an array or x/y/z); a native
+-- vector is a value already.
+local function detached(v)
+    if plain(v) then return table.clone(v) end
+    return v
+end
+-- Step runs on what plan read (Ride:step), so the read keeps its own copy of
+-- the wheel rows rather than the caller's tables: the FORCES.md sample fields
+-- forces.lua, the landing evidence and the rail contacts read. Other row
+-- fields are not traversed.
 local function rows_copy(raw)
     if not plain(raw) then return nil end
     local out = {}
     for i = 1, 2 do
         local row = raw[i]
         if not plain(row) or not plain(row.contact) then return nil end
-        local status = row.contact.status
-        if status ~= "hit" and status ~= "clear" and status ~= "unavailable" then return nil end
-        out[i] = row
+        local c = row.contact
+        if c.status ~= "hit" and c.status ~= "clear" and c.status ~= "unavailable" then return nil end
+        out[i] = { contact = { status = c.status, point = detached(c.point), normal = detached(c.normal),
+            forward = detached(c.forward), surface_velocity = detached(c.surface_velocity) },
+            separation = row.separation, verified_plane = row.verified_plane,
+            balance_normal_available = row.balance_normal_available, balance_normal = detached(row.balance_normal) }
     end
     return out
 end
@@ -215,7 +232,7 @@ local function guard_frame(t, tick)
     if not checked then return nil, "frame_" .. tostring(why) end
     if not checked.gates.focused then return nil, "frame_unfocused" end
     if checked.gates.menu_open then return nil, "frame_menu_open" end
-    return frame, "bound"
+    return checked, "bound"
 end
 
 -- The support fact trick_runtime.lua gates on. Its provenance belongs to the
@@ -282,6 +299,9 @@ function Composer.new(options)
     self._raw_crank, self._crank_display, self._steer = 0, 0, 0
     self._teleport = false
     self._ticks = 0
+    -- Reads refused by the plan/step join, by epoch (checked_pending). Weak
+    -- keys: an epoch the caller has dropped can never be presented again.
+    self._refused = setmetatable({}, { __mode = "k" })
     return self
 end
 
@@ -301,10 +321,23 @@ function Ride:_read(tick)
     if not plain(tick.gates) or type(tick.gates.focused) ~= "boolean" or type(tick.gates.menu_open) ~= "boolean" then
         return nil, "invalid_gates"
     end
-    local sample = tick.sample
+    -- Everything step later reads from the read is copied here, never held
+    -- as the caller's table: the sample, the gates and the wheel batch's
+    -- facts, beside the body, wheels and rows above.
+    local raw = tick.sample
+    local sample = { epoch = raw.epoch, serial = raw.serial, time = raw.time, seconds = raw.seconds, mass = raw.mass,
+        position = detached(raw.position), velocity = detached(raw.velocity),
+        angular_velocity = detached(raw.angular_velocity), inertia = detached(raw.inertia),
+        rotation = detached(raw.rotation) }
+    local facts = tick.wheel_query
+    local qualified = query_qualified(facts)
     local t = { tick = tick, sample = sample, body = body, epoch = sample.epoch, serial = sample.serial,
         time = sample.time, seconds = sample.seconds, owner = tick.owner, body_handle = tick.body_handle,
-        wheels = wheels, rows = rows, qualified = query_qualified(tick.wheel_query), gates = tick.gates,
+        wheels = wheels, rows = rows, qualified = qualified,
+        query = qualified and { epoch_matches = facts.epoch_matches, accounting_known = facts.accounting_known == true,
+            budget_exhausted = facts.budget_exhausted, local_actor_excluded = facts.local_actor_excluded,
+            owned_bodies_excluded = facts.owned_bodies_excluded } or nil,
+        gates = { focused = tick.gates.focused, menu_open = tick.gates.menu_open },
         support = { false, false }, hit = { false, false }, normals = {}, any = false }
     for i = 1, 2 do
         local row = rows[i]
@@ -372,6 +405,151 @@ local function raw_batch_issue(batch, epoch, lane)
     return nil
 end
 
+-- The plan/witness/step join (RIDE_COMPOSER.md, The same-table contract). The
+-- pending plan keeps its own read (p.t, the copies Ride:_read made), and step
+-- runs on it. Before a cached plan or witness is returned, and before step
+-- touches chronology or any model, the caller's original tick is read again
+-- and compared with what plan saw: for a bound plan, the guard's frozen
+-- Framev1 and the known pad values; for every plan, the outer table, epoch,
+-- serial and mount owner. Wheel facts are not compared, because nothing reads
+-- them again: the plan's copies are what step uses.
+local body_fields = { "center_of_mass", "linear_velocity", "angular_velocity", "inertia_body", "orientation" }
+local pad_fields = { "left_x", "left_y", "right_x", "right_y", "left_trigger", "right_trigger", "playstation" }
+local button_fields = { "up", "down", "left", "right", "start", "back", "left_stick", "right_stick",
+    "lb", "rb", "a", "b", "x", "y" }
+-- The mapper's own key sets (ride_input_mapping.lua pad_keys, button_keys).
+local pad_known, button_known = { buttons = true }, {}
+for _, name in ipairs(pad_fields) do pad_known[name] = true end
+for _, name in ipairs(button_fields) do button_known[name] = true end
+-- Keep only the bounded input payload the models read. nil is a pad the
+-- mapper refuses whatever its other values (ride_input_mapping.lua
+-- sample_valid), so two refused pads are the same and step's mapper refuses
+-- either: a non-plain pad or buttons table, a key outside the mapper's pad or
+-- button set, a value of the wrong type, or a NaN or infinite number (the
+-- mapper's own finite rule). The keys are walked as the mapper walks them; an
+-- unknown key's value is never read, and no table but the buttons is entered.
+-- Other invalid values are kept and compared as they are, and the mapper
+-- refuses them at step as it always did.
+local function pad_copy(input)
+    if not plain(input) or not plain(input.sample) or not plain(input.sample.pad)
+        or not plain(input.sample.pad.buttons) then return nil end
+    local pad, out = input.sample.pad, { buttons = {} }
+    for name in pairs(pad) do if not pad_known[name] then return nil end end
+    for name in pairs(pad.buttons) do if not button_known[name] then return nil end end
+    for _, name in ipairs(pad_fields) do
+        local value = rawget(pad, name)
+        if value ~= nil and type(value) ~= "number" and type(value) ~= "boolean" then return nil end
+        if type(value) == "number" and not finite(value) then return nil end
+        out[name] = value
+    end
+    for _, name in ipairs(button_fields) do
+        local value = rawget(pad.buttons, name)
+        if value ~= nil and type(value) ~= "boolean" then return nil end
+        out.buttons[name] = value
+    end
+    table.freeze(out.buttons)
+    return table.freeze(out)
+end
+local function same_number(a, b) return a == b and (a ~= 0 or 1 / a == 1 / b) end
+local function same_pad(a, b)
+    if a == nil or b == nil then return a == b end
+    for _, name in ipairs(pad_fields) do
+        if type(a[name]) == "number" and type(b[name]) == "number" then
+            if not same_number(a[name], b[name]) then return false end
+        elseif a[name] ~= b[name] then return false end
+    end
+    for _, name in ipairs(button_fields) do if a.buttons[name] ~= b.buttons[name] then return false end end
+    return true
+end
+
+local function tick_epoch(tick)
+    if plain(tick) and plain(tick.sample) and type(tick.sample.epoch) == "userdata" then return tick.sample.epoch end
+    return nil
+end
+-- The pending plan this tick is the read of, or nil. On the planned table, a
+-- different epoch is a new read: the caller reused the table, so the new read
+-- plans afresh (and a step without that plan is uncast), and the plan it
+-- replaces is abandoned (abandon). A planned table that no longer shows an
+-- epoch at all is the planned read gone invalid, and is refused. Another
+-- table carrying the planned epoch is the planned read too, and is refused
+-- (planned_tick_changed).
+local function pending_for(self, tick)
+    local p = self._pending
+    if not p then return nil end
+    local epoch = tick_epoch(tick)
+    if rawequal(p.t.tick, tick) then
+        if epoch ~= nil and not rawequal(epoch, p.epoch) then return nil end
+        return p
+    end
+    if epoch ~= nil and rawequal(epoch, p.epoch) then return p end
+    return nil
+end
+-- The refusal already recorded for the read this tick names, if any.
+local function refusal_for(self, tick)
+    local epoch = tick_epoch(tick)
+    return epoch ~= nil and self._refused[epoch] or nil
+end
+-- The first difference between pending plan p and tick, or nil.
+local function drift(self, p, tick)
+    local t, why = self:_read(tick)
+    if not t then return "planned_read_invalid_" .. why end
+    if not rawequal(p.t.tick, tick) then return "planned_tick_changed" end
+    if not rawequal(t.epoch, p.epoch) or t.serial ~= p.serial then return "planned_body_changed" end
+    if not rawequal(t.owner, p.t.owner) then return "planned_owner_changed" end
+    -- An unbound plan has no frame to compare. It submits nothing, and step
+    -- runs on its plan-time copies either way.
+    if not p.frame then return nil end
+    -- Guard's Framev1 is detached and frozen at plan time. Continuity's
+    -- duplicate verdict is deliberately weaker than this exact join.
+    local old = p.frame.query_frame
+    if t.gates.focused ~= old.gates.focused or t.gates.menu_open ~= old.gates.menu_open then
+        return "planned_gates_changed"
+    end
+    local current = guard_frame(t, tick)
+    if not current then return "planned_frame_unavailable" end
+    if not rawequal(old.body_handle, current.body_handle) or not same_number(old.time, current.time)
+        or not same_number(old.seconds, current.seconds) or not same_number(old.body.mass, current.body.mass) then
+        return "planned_body_changed"
+    end
+    for _, name in ipairs(body_fields) do
+        for i = 1, name == "orientation" and 4 or 3 do
+            if not same_number(old.body[name][i], current.body[name][i]) then return "planned_body_changed" end
+        end
+    end
+    if not rawequal(old.source.lease_handle, current.source.lease_handle) then return "planned_source_changed" end
+    for _, name in ipairs(scalar_source) do
+        if old.source[name] ~= current.source[name] then return "planned_source_changed" end
+    end
+    if not same_pad(p.pad, pad_copy(tick.input)) then return "planned_input_changed" end
+    return nil
+end
+local function checked_pending(self, p, tick)
+    local issue = self._refused[p.epoch]
+    if issue then return false, issue end
+    issue = drift(self, p, tick)
+    if issue then
+        -- Final for this read, keyed by its epoch: neither restoring the
+        -- caller's table nor planning the same read again revives it. A new
+        -- plan would bind fresh guard rays while the table may still hold
+        -- same-epoch rows cast for the old ones.
+        self._refused[p.epoch] = issue
+        return false, issue
+    end
+    return true
+end
+-- Drops the pending plan before its step: plan was given an invalid read,
+-- another read (another table, the planned table reused, a duplicate or
+-- regressed read), or a step planned its own read. The dropped read is final
+-- too (planned_read_abandoned), for the same reason as a refusal: its table
+-- may still hold same-epoch rows cast for the rays it planned, and a new plan
+-- for it would bind fresh rays they do not answer. A refusal already recorded
+-- for it is kept.
+local function abandon(self)
+    local p = self._pending
+    if p and self._refused[p.epoch] == nil then self._refused[p.epoch] = "planned_read_abandoned" end
+    self._pending = nil
+end
+
 -- The rail probe runs while the bike is known to be unsupported or grinding:
 -- grind_policy admits a lock-on only from the air, and a supported step
 -- disarms it anyway. Bail detection outranks grind detection: lanes go guard,
@@ -389,13 +567,19 @@ end
 -- judge: riding without bail protection is unsafe, so the composer fails
 -- closed rather than pushing a body nothing guards.
 function Ride:plan(tick)
+    local pending = pending_for(self, tick)
+    if pending then
+        local ok, issue = checked_pending(self, pending, tick)
+        if not ok then return frozen_plan({ valid = false, issue = issue }) end
+        return pending.plan
+    end
+    local refusal = refusal_for(self, tick)
+    if refusal then return frozen_plan({ valid = false, issue = refusal }) end
     local t, why = self:_read(tick)
     if not t then
-        self._pending = nil
+        abandon(self)
         return frozen_plan({ valid = false, issue = why })
     end
-    local p = self._pending
-    if p and rawequal(p.epoch, t.epoch) and p.serial == t.serial then return p.plan end
     if self._serial then
         local order = Identity.compare(t.serial, self._serial)
         if order <= 0 then
@@ -403,6 +587,7 @@ function Ride:plan(tick)
             local plan = frozen_plan({ valid = order == 0, issue = issue, serial = t.serial, requests = Composer.wheel_rays,
                 budget = Composer.request_budget, batches = 1, batch_allowance = self._batches, witness_batch = false,
                 rail_issue = "stale_read", guard_issue = "stale_read" })
+            abandon(self)
             self._pending = { t = t, epoch = t.epoch, serial = t.serial, stale = true, plan = plan,
                 guard_issue = "stale_read", rail_issue = "stale_read", camera = false, camera_issue = "stale_read",
                 used = Composer.wheel_rays, batches = 1, witness_batch = false }
@@ -467,18 +652,14 @@ function Ride:plan(tick)
         camera = view and view.ray or nil, requests = used, budget = Composer.request_budget, batches = batches,
         batch_allowance = self._batches, witness_batch = witness_batch,
         rail_issue = rail_issue, guard_issue = guard_plan and "none" or guard_issue, guard_binding = binding })
-    self._pending = { t = t, epoch = t.epoch, serial = t.serial, frame = frame, guard = guard_plan,
+    abandon(self)
+    self._pending = { t = t, epoch = t.epoch, serial = t.serial, frame = frame,
+        pad = frame and pad_copy(tick.input) or nil, guard = guard_plan,
         guard_issue = guard_plan and "none" or guard_issue, guard_binding = binding,
         rail = rail_plan, rail_issue = rail_issue,
         camera = view ~= nil, camera_issue = view and "none" or camera_issue, used = used, plan = plan,
         batches = batches, witness_batch = witness_batch }
     return plan
-end
-
-local function pending_for(self, tick)
-    local p = self._pending
-    if not p or not plain(tick) or not plain(tick.sample) or not rawequal(tick.sample.epoch, p.epoch) then return nil end
-    return p
 end
 
 local function no_witness(reason) return table.freeze({ available = false, reason = reason, rays = table.freeze({}) }) end
@@ -489,7 +670,9 @@ local function no_witness(reason) return table.freeze({ available = false, reaso
 -- uncast witness is never clear) and gives the guard priority next tick.
 function Ride:witness(tick)
     local p = pending_for(self, tick)
-    if not p then return no_witness("plan_required") end
+    if not p then return no_witness(refusal_for(self, tick) or "plan_required") end
+    local ok, issue = checked_pending(self, p, tick)
+    if not ok then return no_witness(issue) end
     if p.witness_done then return p.witness or no_witness(p.witness_issue) end
     if not p.guard then return no_witness(p.guard_issue) end
     if tick.guard == nil then
@@ -810,6 +993,9 @@ function Ride:step(tick)
     if not p then
         -- No plan for this read: plan now. Its queries were never cast, so
         -- rail and guard rows are unavailable and the camera resolves clear.
+        -- A read already refused stays refused (plan returns its refusal and
+        -- keeps any pending plan). Otherwise planning this read abandons
+        -- another read's pending plan.
         local plan = self:plan(tick)
         if not plan.valid then return refused(self, plan.issue) end
         p = self._pending
@@ -818,12 +1004,20 @@ function Ride:step(tick)
         p.witness_issue = p.witness_issue or "uncast"
     end
     self._pending = nil
-    local t = (p.t and rawequal(p.t.tick, tick)) and p.t or nil
-    if not t then
-        local why
-        t, why = self:_read(tick)
-        if not t then return refused(self, why) end
+    local ok, issue = checked_pending(self, p, tick)
+    if not ok then
+        -- A read nothing judged: it lends neither sweep history nor a
+        -- residual baseline to the next one.
+        self._guard_previous, self._last_command = nil, nil
+        return refused(self, issue)
     end
+    -- The plan's own read, as plan saw it. Nothing outside what
+    -- checked_pending compared is read from the caller's tick again: the
+    -- body, wheels, wheel rows and wheel batch facts are the plan's copies.
+    -- The query results the caller appended since (rail, guard, witness,
+    -- camera_hit), the input observation for the mapper, the support owner's
+    -- fact and recovered are read below, as they always were.
+    local t = p.t
     local events, h, gravity = {}, t.seconds, self._tuning.gravity
     local diagnostics = { support = { front = t.support[1], rear = t.support[2], any = t.any,
         rows_qualified = t.qualified, wheels_known = t.wheels_known, ground_known = t.ground_known },
@@ -1183,7 +1377,7 @@ function Ride:step(tick)
         local frame = read_frame(t, source)
         local scalar = {}
         for _, name in ipairs(scalar_source) do scalar[name] = source[name] end
-        local q = tick.wheel_query
+        local q = t.query
         local packet = { valid = true, binding = { body_handle = t.body_handle, physics_epoch = t.epoch,
             lease_handle = source.lease_handle }, frame = { serial = t.serial, time = t.time, seconds = h, source = scalar },
             query = { epoch_matches = q.epoch_matches, accounting_known = q.accounting_known == true,

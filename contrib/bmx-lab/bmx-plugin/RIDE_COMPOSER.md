@@ -50,6 +50,9 @@ rows count as unavailable, the camera resolves as clear, and the read submits no
 `plan` for the same read returns the same plan, and a plan for a read already stepped (a duplicate
 or a regressed serial) asks for no rail, guard or camera query and does not advance the camera.
 
+The three calls for one read share its tick table, and the composer holds the caller to that
+(see The same-table contract).
+
 ## The tick
 
 | Field | What the caller supplies |
@@ -66,6 +69,80 @@ or a regressed serial) asks for no rail, guard or camera query and does not adva
 | `rail`, `guard`, `witness` | Each is the raw `probe_batch` result for that lane's own rays, cast against this read's `sample.epoch`, and nothing else. `probe_batch` returns the epoch it was given as `batch.epoch` (`plugin_api_physics.cpp:671`), and the composer refuses any batch whose `epoch` is not this read's (`<lane>_epoch_mismatch`). A `Contact.decode` copy carries its facts under `query` and has no `epoch`, so it is refused by name (`<lane>_batch_contact_copy`), as are a missing (`<lane>_batch_missing`) or non-table (`<lane>_batch_malformed`) batch. For the rail this is the module's own rule too: `plan` builds the rail plan with `Probe.plan(body, {epoch = sample.epoch})`, and `Probe.decode` then refuses any batch not carrying that epoch as `epoch_mismatch` (`rail_probe.lua:391-392`). The guard requires the read's Framev1 epoch on the guard batch (`bail_guard.lua:376`) and that batch's epoch on the witnesses (`:448`), and runs both through the real `Contact.decode` (`contact_issue`, `:303`), so each needs `native_casts`, no `reason` when available, and `motion = "measured"` with a measured surface velocity on every hit, as `probe_batch` returns them (`plugin_api_physics.cpp:666-709`). The refusal reason is in `diagnostics.grind.rows`, `diagnostics.queries.witness` and `diagnostics.bail.guard`. A refused rail batch is a hold, never clear rows. A refused, missing or never-cast guard or witness batch leaves the read unguarded, so it submits nothing. |
 | `camera_hit` | The raycast hit for `queries.camera`, or nil. |
 | `recovered` | True on the read where the caller's own fall and recovery are done and the bike is placed again. |
+
+## The same-table contract
+
+`plan`, `witness` and `step` for one read take the same tick table, and `sample.epoch` names the
+read. The composer holds the caller to that itself (B18); it does not rely on the adapter.
+
+- **Step runs on what plan read.** `plan` keeps its own copy of the read: the body and sample, the
+  gates, the two wheels, the two wheel rows (in the FORCES.md sample fields `forces.lua`, the
+  landing evidence and the rail contacts read) and the wheel batch's facts. `step` runs on that
+  copy. A wheel speed, wheel row or `wheel_query` fact the caller changes after `plan`, in place
+  or by replacing the table, reaches no command, no submit decision and nothing else `step`
+  returns or keeps. Those facts are not compared, because nothing reads them again. What the
+  caller adds after `plan` is read in `step` as before: the `rail`, `guard` and `witness`
+  batches, `camera_hit`, `support`, `recovered`, and the `input` observation the mapper reads.
+- **What every plan compares.** Before a repeated `plan` returns its cached plan, on every
+  `witness` call (cached or not), and before `step` changes chronology or any model (only its
+  diagnostic tick count moves), the composer reads the original tick again. It must still be a
+  valid read (`planned_read_invalid_<why>`; its wheels and rows must still parse, though their
+  values are not compared), on the same outer table (another table carrying the planned epoch
+  is `planned_tick_changed`), with the same epoch and serial (`planned_body_changed`) and the
+  same mount owner (`planned_owner_changed`).
+- **Bound plans compare the rest exactly.** A bound plan is one whose `guard_binding` is `bound`,
+  whether or not its guard lane fit the allowance. Against its frozen Framev1 and a bounded copy
+  of the pad, it also compares, in this order: the gates (`planned_gates_changed`), whether the
+  read still has a qualified Framev1 (`planned_frame_unavailable`: the source gone, unavailable
+  or refused), the body handle, time, interval, mass, pose, inertia and velocities
+  (`planned_body_changed`), the selected lease and all eight source identity and observation
+  fields (`planned_source_changed`), and the four axes, two triggers, the platform flag and all
+  14 buttons (`planned_input_changed`). Equal values in replaced nested tables pass. Unknown
+  fields of the tick, sample and source are never traversed. The pad's and buttons' keys are
+  walked as the mapper walks them (below), and an unknown key's value is never read.
+- **Unbound plans get only the checks every plan gets.** That covers a read planned with no
+  source, an unavailable one, a refused frame, or an unfocused or menu-open read, and a duplicate
+  or regressed read's plan. Such a plan has no guard and submits nothing, whatever happens to
+  the tick. A source that appears later does not bind it. Its body is not compared, and it is
+  not read again either: `step` advances chronology and the models on the plan's copy. The
+  mapper reads the `input` observation at `step`, as it always did.
+- **Pad values the mapper refuses are not compared by value.** A pad that `ride_input_mapping`'s
+  `sample_valid` refuses whatever its other values (a key outside the mapper's pad or button set,
+  a NaN or infinite number, a field that is neither a number nor a boolean, a button that is not
+  a boolean, a pad or buttons table that is not plain) is recorded as refused. Two refused pads
+  are the same, and nothing reads a refused pad. A refused pad that becomes valid, or a valid one
+  that becomes refused, is drift, so adding or removing an unknown key after `plan` is drift too.
+  A NaN axis never latches a false drift: the read is planned, bound and judged, and the mapper
+  refuses its input at `step`, as before.
+- **A refusal is final for that read.** The first `planned_*` refusal is recorded against the
+  read's epoch. Restoring the table, a cached witness, a new `plan` for the same read and a `step`
+  without a plan all return that refusal, including after a newer read was planned. A new plan
+  would bind fresh guard rays while the table may still hold same-epoch rows cast for the old
+  ones. A refused `step` submits no force, torque or impulse, judges no bail, advances no serial
+  or model, and clears the guard's sweep history and the residual baseline. An older outstanding
+  command keeps its receipt debt. A later `step` of a read already refused, with no plan of its
+  own pending, returns the refusal and changes nothing.
+- **A plan dropped before its step makes its read final too.** The pending plan is dropped when
+  `plan` is given an invalid read or another read (another table, the planned table reused for a
+  new epoch, a duplicate or regressed read), and when a `step` plans a read of its own. Its read
+  is then recorded as `planned_read_abandoned`, unless a refusal is already recorded for it.
+  Nothing compared its table before the plan was dropped, so the same hazard applies: a new plan
+  would bind fresh guard rays that the table's old same-epoch rows would answer. A `plan`,
+  `witness` or `step` for it returns that refusal and changes nothing; the newer read's plan is
+  kept.
+- **A reused table is a new read.** A different epoch on the planned table is the caller's next
+  read, not drift: the pending plan is dropped (so its read is final, above), `plan` plans the new
+  read afresh, and a `step` without that plan is uncast and submits nothing. Batches left on the
+  table from the abandoned read carry its epoch and are refused (`<lane>_epoch_mismatch`). A
+  planned table that no longer shows an epoch at all (a metatable on it or on its sample, or an
+  epoch that is not userdata) is the planned read gone invalid, and is refused. When the table is
+  reused after its read was stepped, the guard sweeps from that read as it would for a fresh
+  table: it keeps the judged read's frozen Framev1, not the caller's sample. Before B18 the
+  caller's in-place rewrite aliased that sample, and the guard lost its sweep history
+  (`sample_alias_mismatch`), so a reused table now plans the same guard rays as a fresh one.
+
+This is the composer checking its own join. It is not a claim that the whole tick is immutable,
+and it qualifies no native caller: Lua cannot authenticate the userdata it compares.
 
 ## The result
 
@@ -532,6 +609,25 @@ took 10-20 s on the shared desktop.
 | no opaque handles in status or results | Every result of a barspin run with matrices, `status()` and `matrices()` hold no userdata or function. |
 | invariants, every read of every run | Valid results. Every read of a riding scenario plans its guard on a qualified Framev1, and a command leaves only from a bound read that `bail_policy` judged and accepted; every unguarded read submits no force or impulse and names its reason as the withheld issue. Every mode edge is in the graph and starts from the previous mode. Grinding begins only with a `lock_on`, bailed only with a `bail_policy` bail, and leaves only on `recovered`. Never airborne -> manual. Nothing submitted while bailed. Every command names its read. Requests within 64, no more batches than the read's allowance, every cast batch 1 to 32 rays, the composer's own batch count matching the batches cast, finite commands, and camera views `camera.look` accepts. |
 | per-tick cost | Three-run minima for the hop, the balanced rail and the barspin with and without matrices, plus the kernel's preview/adopt calibration. |
+
+`ride_composer_contract_tests.lua` covers The same-table contract:
+
+```powershell
+& 'C:\Users\Jeffr\Desktop\reskate\build\luau-runner\Release\bmx_luau_tests.exe' 'C:\Users\Jeffr\Desktop\reskate\contrib\bmx-lab\bmx-plugin\plugin' ride_composer_contract_tests
+```
+
+The run prints `cases=215 assertions=861`.
+
+| Case | What it checks |
+| --- | --- |
+| every protected field, before and after witness | 55 edits, each at both stages: the body handle, serial, time, interval, mass, pose, velocities, inertia and an aliased rotation; the mount owner; the lease and all eight source fields; focus, menu and replaced gates; an absent or unavailable source; every pad axis and trigger, the platform flag and each of the 14 buttons; an unknown pad key or button added; an invalid sample, an epoch that is not userdata, a metatable on the sample, gates, input or tick, and invalid wheels. Each is refused with its own reason, requests no witness, submits no force, torque or impulse, judges no bail and advances no serial. |
+| wheel facts reach nothing | 12 edits made after plan, each before and after witness, compared with the same read stepped unchanged: the wheel batch's facts lost or gained (in place, replaced, removed, accounting lost), wheel speeds edited or the wheels replaced, and the rows replaced (unavailable or hit) or edited in place. The submit gate, the commands, the whole result, `status()` and the kernel history the command would adopt equal the control's. Controls show that qualified and unqualified reads do differ, and that the planned facts qualify the trick packet while a read planned without accounting does not. |
+| wheel-row fields | A control of two verified hit rows with a tilted balance normal, which submits with rider controls and keeps each row's own values in the kernel history. Then 11 changes, made on both rows, covering every row field the read keeps: a clear status, a moved point, a tilted normal, a forward along the normal, a moving surface, a small and a too-deep penetration, no verified plane, no balance normal, a mirrored and an opposed balance normal. Planned with the change, each gives what the caller's own rows gave before B18: the kernel keeps the new value, or refuses the rows (`invalid_sample`, `penetration_limit`) and nothing is submitted. Made in place after plan, before or after witness, each reaches nothing: the result, `status()` and the kernel history equal the control's. |
+| a refusal is final for the read | Restoring a refused read and planning it again, keeping the drift and planning again over the table's old rows, and a read refused at witness after a newer read was planned: each new plan, witness and step is refused, and the newer read keeps its plan and is judged. |
+| a dropped plan is final for the read | A pending read whose body drifted, dropped by an invalid read planned or stepped, another table's read planned or stepped without a plan, the planned table reused and planned and then restored, or a duplicate read planned: its plan, witness and step are refused as `planned_read_abandoned`, its old rows grant nothing, and a newer planned read keeps its plan and is judged. A read dropped with no drift at all is refused the same way. |
+| a reused table is a new read | The planned table rewritten as the next read plans that read, which is judged and submits; the abandoned read's guard rows are refused there as `guard_epoch_mismatch`; a new epoch after witness steps uncast and submits nothing. A table reused after its read was stepped and accepted plans the next read with the guard's sweep history, the same plan a fresh table gets. |
+| pad values the mapper refuses | A NaN axis, an infinite trigger, a negative infinite axis, an unknown pad key and an unknown button keep the cached plan and witness, are judged, and the mapper refuses the input (passive support only). Each made valid again, before or after witness, is drift, and so is a finite axis made NaN. One refused pad for another is not: NaN for infinity, an unknown pad key for an unknown button. |
+| controls | Equal nested replacements and appended results keep the cached plan and witness and submit after judgment. Another outer table with the planned epoch is refused, and so is the original after it. Repeated plan, cached witness and outer-structure refusals stay refused. An unbound plan is not upgraded by late input, and steps on its plan-time body and gates: its result and residual baseline equal the control's despite body and wheel drift and a sample rotation edited in place, and the mapper refuses the planned gates when focus is regained (in place or by replacing the gates) or the menu closed in place. A no-plan read stays uncast. A drift refusal after an accepted read clears `_guard_previous` and `_last_command`. An older outstanding receipt survives a successor's drift and still settles. |
 
 ## Not proven
 

@@ -340,20 +340,29 @@ local function wheel_plan(frame,geometry,gravity)
     end
     return freeze(rays),centers
 end
-local function wheel_contacts(frame,decoded,centers,geometry)
+local function contact_binding(s,frame,decoded,count)
     if type(decoded)~="table" or decoded.valid~=true or type(decoded.binding)~="table"
         or decoded.binding.body_handle~=frame.body_handle or decoded.binding.physics_epoch~=frame.physics_epoch
         or decoded.binding.lease_handle~=frame.source.lease_handle or type(decoded.frame)~="table"
         or decoded.frame.serial~=frame.serial or decoded.frame.time~=frame.time or decoded.frame.seconds~=frame.seconds
         or type(decoded.frame.source)~="table"
-        or type(decoded.rays)~="table" or #decoded.rays~=2 or type(decoded.query)~="table"
-        or decoded.query.epoch_matches~=true or decoded.query.local_actor_excluded~=true
+        or type(decoded.rays)~="table" or #decoded.rays~=count or type(decoded.query)~="table"
+        or decoded.query.epoch_matches~=true
         or decoded.query.owned_bodies_excluded~=true or decoded.query.budget_exhausted~=false then
         return nil,"contact decode binding or native exclusions unavailable"
     end
     for _,name in ipairs({"generation","user","sequence","source_epoch","context_generation","observation_serial","observed_ms","packet"}) do
         if decoded.frame.source[name]~=frame.source[name] then return nil,"contact selected source identity mismatch" end
     end
+    local qualified=invoke(s,s.contact.actor_lane_qualified,decoded.query)
+    local expected=s.contact.CATEGORY_WHEEL_LANE_QUALIFIED==true and "named_categories_absent" or "identity"
+    if not qualified[1] or qualified.n~=2 or qualified[2]~=true or not qualified.current or s.stopped
+        or decoded.query.actor_lane~=expected then return nil,"contact actor lane unavailable" end
+    return true
+end
+local function wheel_contacts(s,frame,decoded,centers,geometry)
+    local bound,why=contact_binding(s,frame,decoded,2)
+    if not bound then return nil,why end
     local samples,grounded={},false
     local forward=M.turn(frame.body.orientation,{0,0,1})
     for i,ray in ipairs(decoded.rays) do
@@ -377,7 +386,37 @@ local function wheel_contacts(frame,decoded,centers,geometry)
     return {samples=samples,grounded=grounded,decoded=copy(decoded),
         support={known=true,grounded_known=true,grounded=grounded,epoch=frame.physics_epoch,
             provenance="measured_rays_authored_wheel_geometry",native_collision_contact=false,
+            actor_lane=decoded.query.actor_lane,
+            actor_tripwire=decoded.query.actor_lane=="identity" and "not_required_identity_lane" or nil,
             landing_quality_available=false,reason="landing_quality_not_qualified"}}
+end
+local function rider_tripwire_plan(frame,geometry)
+    -- These authored capsule crossings require P2 before a private trial may
+    -- qualify them. Clear rows only avoid this refusal; they grant no identity.
+    local lateral=M.mul(M.turn(frame.body.orientation,{1,0,0}),.6)
+    local rays={}
+    for i,point in ipairs({{0,.89,-.305},{0,1.085,-.225},{0,1.40,.135}}) do
+        local center=M.add(frame.body.center_of_mass,M.turn(frame.body.orientation,M.sub(point,geometry.com)))
+        local a,b=M.sub(center,lateral),M.add(center,lateral)
+        if not M.vec(a,100000) or not M.vec(b,100000) then return nil end
+        rays[i]={from=native(a),to=native(b)}
+    end
+    return freeze(rays)
+end
+local function rider_tripwire(s,frame,options)
+    local plan=rider_tripwire_plan(frame,s.geometry)
+    if not plan then return nil,"rider tripwire geometry unavailable" end
+    local probed=invoke(s,s.api.probe_batch,frame.physics_epoch,plan,options)
+    if not probed[1] or probed.n~=2 or not probed.current or s.stopped then return nil,"rider tripwire batch unavailable" end
+    local contacted=invoke(s,s.contact.decode,frame,plan,probed[2])
+    if not contacted[1] or contacted.n~=2 or not contacted.current or s.stopped then return nil,"rider tripwire decode unavailable" end
+    local decoded=contacted[2]
+    local bound=contact_binding(s,frame,decoded,3)
+    if not bound or decoded.status~="available" then return nil,"rider tripwire lane or binding unavailable" end
+    for _,row in ipairs(decoded.rays) do
+        if row.status~="clear" then return nil,"rider tripwire hit" end
+    end
+    return true
 end
 local function packet(model,companions,h)
     if type(model) ~= "table" or model.valid ~= true or not M.vec(model.force) or not M.vec(model.torque)
@@ -449,12 +488,21 @@ local function observe(s,source_frame,raw,context)
         now_ms=s.now,active=true,loaded=true,telemetry=copy(context.telemetry),observed=copy(context.observed)})
     local plan,centers=wheel_plan(frame,s.geometry,s.force.tuning.gravity)
     if not plan then stop(s,"authored wheel geometry unavailable");return end
-    local probed=invoke(s,s.api.probe_batch,sample.epoch,plan,{require_contact=true,exclude_local_actor=true})
+    local category_lane=s.contact.CATEGORY_WHEEL_LANE_QUALIFIED==true
+    local query_options=category_lane
+        and {require_contact=true,query_preset="camera",require_named_actor_categories_absent=true}
+        or {require_contact=true,exclude_local_actor=true}
+    local probed=invoke(s,s.api.probe_batch,sample.epoch,plan,query_options)
     if not probed[1] or probed.n~=2 or not probed.current or s.stopped then stop(s,"native contact batch unavailable");return end
     local contacted=invoke(s,s.contact.decode,frame,plan,probed[2])
     if not contacted[1] or contacted.n~=2 or not contacted.current or s.stopped then stop(s,"contact decode unavailable");return end
-    local contact,issue=wheel_contacts(frame,contacted[2],centers,s.geometry)
+    local contact,issue=wheel_contacts(s,frame,contacted[2],centers,s.geometry)
     if not contact then stop(s,issue);return end
+    if category_lane then
+        local clear,tripwire_issue=rider_tripwire(s,frame,query_options)
+        if not clear then stop(s,tripwire_issue);return end
+        contact.support.actor_tripwire="authored_rider_crossings_clear_v1"
+    end
     local enriched=copy(frame)
     enriched.contact,enriched.support=copy(contact),copy(contact.support)
     frame=freeze(enriched)
@@ -536,7 +584,7 @@ function Ride.new(force_api,models,options)
         submitted=0,acknowledged=0,input_queue={},input_staged=0,input_consumed=0,observed_steps=0,model_steps=0}
     if ACTIVATION_QUALIFIED then
         local valid=type(s.body)=="userdata" and s.incarnation~=nil and type(force_api)=="table"
-            and type(s.contact)=="table" and type(s.contact.decode)=="function"
+            and type(s.contact)=="table" and type(s.contact.decode)=="function" and type(s.contact.actor_lane_qualified)=="function"
         if valid then
             for _,name in ipairs({"probe_batch","submit","receipt","acknowledge"}) do
                 if type(force_api[name])~="function" then valid=false end

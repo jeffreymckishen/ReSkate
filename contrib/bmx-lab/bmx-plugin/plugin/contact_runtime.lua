@@ -1,9 +1,12 @@
 -- Decode copied query facts only. Ride owns every query, clock and effect.
 local Frame = require("./frame_identity")
 local Contact = {}
+-- Only an owner-qualified private trial copy may change this literal.
+local CATEGORY_WHEEL_LANE_QUALIFIED=false
+Contact.CATEGORY_WHEEL_LANE_QUALIFIED=CATEGORY_WHEEL_LANE_QUALIFIED
 local MAX_RAYS, MAX_CASTS = 32, 64
 local source_fields = {"generation", "user", "sequence", "source_epoch", "context_generation", "observation_serial", "observed_ms", "packet"}
-local batch_fields = {status=true,reason=true,native_casts=true,budget_exhausted=true,epoch=true,local_actor_excluded=true,owned_bodies_excluded=true,rays=true,requested_query_preset=true}
+local batch_fields = {status=true,reason=true,native_casts=true,budget_exhausted=true,epoch=true,local_actor_excluded=true,owned_bodies_excluded=true,rays=true,requested_query_preset=true,named_actor_categories_absent=true}
 local hit_fields = {status=true,position=true,fraction=true,motion=true,normal_available=true,surface_velocity_available=true,normal=true,surface_velocity=true,body=true}
 
 local function finite(v) return type(v)=="number" and v==v and math.abs(v)<math.huge end
@@ -39,7 +42,7 @@ local function freeze(t)
 end
 local function base()
     return {valid=false,status="unavailable",reason="malformed_input",rays={},
-        query={epoch_matches=false,accounting_known=false,measurements_complete=false},
+        query={epoch_matches=false,accounting_known=false,measurements_complete=false,actor_lane="none"},
         support={known=false,grounded_known=false,reason="wheel_support_not_qualified"},
         force_ready=false,force_reason="physical_support_unqualified"}
 end
@@ -52,6 +55,7 @@ local function accounting(out,batch)
     if type(batch.budget_exhausted)=="boolean" then out.query.budget_exhausted=batch.budget_exhausted end
     if type(batch.local_actor_excluded)=="boolean" then out.query.local_actor_excluded=batch.local_actor_excluded end
     if type(batch.owned_bodies_excluded)=="boolean" then out.query.owned_bodies_excluded=batch.owned_bodies_excluded end
+    if type(batch.named_actor_categories_absent)=="boolean" then out.query.named_actor_categories_absent=batch.named_actor_categories_absent end
     if batch.status=="available" or batch.status=="unavailable" then out.query.status=batch.status end
     if type(batch.reason)=="string" and #batch.reason>0 and #batch.reason<=200 then out.query.reason=batch.reason end
 end
@@ -117,10 +121,13 @@ local function decode(out,frame,plan,batch)
     local rays=plan_copy(plan)
     if not rays then return reject(out,"invalid_ray_plan") end
     local count=#rays
-    if not fields(batch,batch_fields,9) or (batch.status~="available" and batch.status~="unavailable")
+    if not fields(batch,batch_fields,10) or (batch.status~="available" and batch.status~="unavailable")
         or type(batch.budget_exhausted)~="boolean" or type(batch.local_actor_excluded)~="boolean"
         or type(batch.owned_bodies_excluded)~="boolean" or not dense(batch.rays,count)
-        or (batch.requested_query_preset~=nil and batch.requested_query_preset~="camera" and batch.requested_query_preset~="terrain") then
+        or (batch.requested_query_preset~=nil and batch.requested_query_preset~="camera" and batch.requested_query_preset~="terrain")
+        or (batch.named_actor_categories_absent~=nil and (type(batch.named_actor_categories_absent)~="boolean"
+            or batch.requested_query_preset~="camera"))
+        or (batch.named_actor_categories_absent==true and batch.local_actor_excluded) then
         return reject(out,"malformed_batch",count)
     end
     -- Request metadata only: this proves neither a filter ran nor support/exclusions.
@@ -130,7 +137,9 @@ local function decode(out,frame,plan,batch)
     if batch.native_casts~=nil and not out.query.accounting_known then return reject(out,"invalid_cast_accounting",count) end
     if batch.status=="unavailable" then
         if type(batch.reason)~="string" or #batch.reason==0 or #batch.reason>200
-            or batch.local_actor_excluded or batch.owned_bodies_excluded then return reject(out,"malformed_unavailable_batch",count) end
+            or batch.local_actor_excluded or batch.owned_bodies_excluded or batch.named_actor_categories_absent==true then
+            return reject(out,"malformed_unavailable_batch",count)
+        end
         for i=1,count do
             if not fields(batch.rays[i],{status=true},1) or batch.rays[i].status~="unavailable" then
                 return reject(out,"partial_unavailable_batch",count)
@@ -161,12 +170,20 @@ local function decode(out,frame,plan,batch)
     end
     out.valid=true;out.status="available";out.reason=nil
     out.query.measurements_complete=complete
-    if not batch.local_actor_excluded then out.force_reason="actor_exclusion_unqualified"
+    out.query.actor_lane=batch.local_actor_excluded and "identity"
+        or batch.named_actor_categories_absent==true and "named_categories_absent" or "none"
+    if out.query.actor_lane=="none" then out.force_reason="actor_exclusion_unqualified"
+    elseif out.query.actor_lane=="named_categories_absent" and not CATEGORY_WHEEL_LANE_QUALIFIED then
+        out.force_reason="actor_category_lane_unqualified"
     elseif not complete then out.force_reason="contact_measurements_unknown"
     elseif has_clear then out.force_reason="clear_force_geometry_unknown"
     elseif force_velocity_outside then out.force_reason="surface_velocity_outside_force_bounds"
     else out.force_reason="physical_support_unqualified" end
     return freeze(out)
+end
+function Contact.actor_lane_qualified(query)
+    if not plain(query) then return false end
+    return query.actor_lane=="identity" or (query.actor_lane=="named_categories_absent" and CATEGORY_WHEEL_LANE_QUALIFIED)
 end
 function Contact.decode(frame,ray_plan,batch)
     local out=base();accounting(out,batch)

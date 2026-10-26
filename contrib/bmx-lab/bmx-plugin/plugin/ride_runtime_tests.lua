@@ -48,7 +48,7 @@ local function fixture(options)
     end
     f.mapping=Mapping.new()
     f.force=Forces.new()
-    f.contact={}
+    f.contact={actor_lane_qualified=Contact.actor_lane_qualified}
     function f.contact.decode(frame,plan)
         table.insert(f.calls,"decode");f.last_frame=frame
         local rays={}
@@ -58,7 +58,7 @@ local function fixture(options)
         end
         local out={valid=true,binding={body_handle=frame.body_handle,physics_epoch=frame.physics_epoch,lease_handle=frame.source.lease_handle},
             frame={serial=frame.serial,time=frame.time,seconds=frame.seconds,source=copy(frame.source)},rays=rays,
-            query={epoch_matches=true,local_actor_excluded=true,owned_bodies_excluded=true,budget_exhausted=false},
+            query={epoch_matches=true,local_actor_excluded=true,owned_bodies_excluded=true,budget_exhausted=false,actor_lane="identity"},
             support={known=false,grounded_known=false},force_ready=false}
         if f.on_decode then f.on_decode(out) end
         return out

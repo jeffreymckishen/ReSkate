@@ -170,7 +170,8 @@ bool has_directory_ancestor(const std::filesystem::path& path, const std::filesy
 // The copy the qualified Ride suites run against, made the way
 // Extension/Plugins/Test/bmx_contact_runtime_host_fixture.inc makes it in memory: every plugin module
 // byte for byte, plus ride_runtime_qualified_fixture.lua, which is ride_runtime.lua with its one
-// inactive gate flipped. That fixture must never exist in the plugin itself, so it is refused there.
+// inactive gate flipped, plus an optional qualified Contact copy for the category-lane suites.
+// Neither fixture may exist in the plugin itself; both are refused there.
 // A rerun owns only the manifest's exact file set; a fixture filename alone proves no ownership.
 void stage_qualified_ride(const std::filesystem::path& plugin_folder, const std::filesystem::path& copy_folder) {
     namespace fs = std::filesystem;
@@ -178,10 +179,13 @@ void stage_qualified_ride(const std::filesystem::path& plugin_folder, const std:
     refuse_reparse_path(copy_folder);
     const auto source = open_folder(plugin_folder);
     const fs::path fixture = "ride_runtime_qualified_fixture.lua";
+    const fs::path category_fixture = "contact_runtime_category_qualified_fixture.lua";
     const fs::path manifest = ".bmx-qualified-ride-files-v1";
     constexpr std::string_view manifest_header = "bmx-qualified-ride-files-v1";
     if (fs::exists(source / fixture))
         throw std::runtime_error(fixture.string() + " belongs only in test copies, not in " + source.generic_string());
+    if (fs::exists(source / category_fixture))
+        throw std::runtime_error(category_fixture.string() + " belongs only in test copies, not in " + source.generic_string());
     const auto wanted = fs::weakly_canonical(copy_folder);
     if (within(source, wanted) || within(wanted, source) || has_directory_ancestor(wanted, source) ||
         (fs::exists(wanted) && has_directory_ancestor(source, wanted)))
@@ -214,6 +218,19 @@ void stage_qualified_ride(const std::filesystem::path& plugin_folder, const std:
     ride.replace(gate, inactive.size(), "local ACTIVATION_QUALIFIED = true");
     const auto modules = files.size();
     files.emplace(fixture, std::move(ride));
+    // The small staging stand-ins need no Contact module. A real plugin that
+    // has one must keep its literal false and gets only this private test copy.
+    const auto contact_file = files.find("contact_runtime.lua");
+    if (contact_file != files.end()) {
+        auto contact = contact_file->second;
+        constexpr std::string_view inactive_category = "local CATEGORY_WHEEL_LANE_QUALIFIED=false";
+        const auto category_gate = contact.find(inactive_category);
+        if (category_gate == std::string::npos ||
+            contact.find(inactive_category, category_gate + inactive_category.size()) != std::string::npos)
+            throw std::runtime_error("contact_runtime.lua must keep exactly one '" + std::string(inactive_category) + "' gate");
+        contact.replace(category_gate, inactive_category.size(), "local CATEGORY_WHEEL_LANE_QUALIFIED=true");
+        files.emplace(category_fixture, std::move(contact));
+    }
 
     std::set<fs::path> owned;
     bool earlier_copy = false;
@@ -268,7 +285,7 @@ void stage_qualified_ride(const std::filesystem::path& plugin_folder, const std:
         ownership += name.generic_string() + '\n';
     }
     write(manifest, ownership); // Commit ownership last; a partial stage is not silently adopted.
-    std::cout << "bmx_luau_tests: staged " << modules << " modules and the qualified Ride fixture in "
+    std::cout << "bmx_luau_tests: staged " << modules << " modules and qualified test fixtures in "
               << wanted.generic_string() << '\n';
 }
 
@@ -417,12 +434,42 @@ void exact_manifest(const std::filesystem::path& scratch) {
     expect(inventory(destination) == dropped, "a module dropped from the source stayed in the copy or its manifest");
 }
 
+// Contact qualification exists only in a test copy and must not change any
+// source bytes or a destination rejected by gate/ownership validation.
+void category_manifest(const std::filesystem::path& scratch) {
+    const auto source = scratch / "source";
+    make_stand_in(source);
+    constexpr std::string_view contact = "local CATEGORY_WHEEL_LANE_QUALIFIED=false\nreturn CATEGORY_WHEEL_LANE_QUALIFIED\n";
+    constexpr std::string_view qualified = "local CATEGORY_WHEEL_LANE_QUALIFIED=true\nreturn CATEGORY_WHEEL_LANE_QUALIFIED\n";
+    write_file(source / "contact_runtime.lua", contact);
+    const auto before = inventory(source);
+    const auto destination = scratch / "copy";
+    stage_qualified_ride(source, destination);
+    const auto staged = inventory(destination);
+    expect(staged.at("contact_runtime.lua") == std::string(contact), "canonical Contact changed in the copy");
+    expect(staged.at("contact_runtime_category_qualified_fixture.lua") == std::string(qualified), "Contact fixture changed more than one literal");
+    expect(staged.at(".bmx-qualified-ride-files-v1") == std::string(
+        "bmx-qualified-ride-files-v1\ncontact_runtime.lua\ncontact_runtime_category_qualified_fixture.lua\nforce_math.lua\nride_runtime.lua\nride_runtime_qualified_fixture.lua\n"),
+        "Contact fixture missing from exact ownership manifest");
+    expect(staged.size() == 6, "Contact stage has unexpected entries");
+    stage_qualified_ride(source, destination);
+    expect(inventory(destination) == staged && inventory(source) == before, "Contact rerun changed source or destination bytes");
+    write_file(source / "contact_runtime.lua", qualified);
+    expect_refused(source, destination, "must keep exactly one");
+    write_file(source / "contact_runtime.lua", std::string(contact) + std::string(contact));
+    expect_refused(source, destination, "must keep exactly one");
+    write_file(source / "contact_runtime.lua", contact);
+    write_file(source / "contact_runtime_category_qualified_fixture.lua", qualified);
+    expect_refused(source, scratch / "planted-copy", "belongs only in test copies");
+}
+
 void run_stage_regression(std::string_view name, const std::filesystem::path& scratch) {
     void (*stage_case)(const std::filesystem::path&) = nullptr;
     if (name == "unrelated-destination") stage_case = unrelated_destination;
     else if (name == "planted-fixture") stage_case = planted_fixture;
     else if (name == "exact-manifest") stage_case = exact_manifest;
-    else throw std::runtime_error("the stage regression cases are unrelated-destination, planted-fixture and exact-manifest");
+    else if (name == "category-manifest") stage_case = category_manifest;
+    else throw std::runtime_error("the stage regression cases are unrelated-destination, planted-fixture, exact-manifest and category-manifest");
     refuse_reparse_path(scratch);
     if (std::filesystem::exists(scratch))
         throw std::runtime_error("the stage regression scratch folder must not exist yet, so a case never removes "

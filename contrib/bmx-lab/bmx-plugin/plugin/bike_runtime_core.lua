@@ -18,11 +18,22 @@ local receipt_flags={"claim_known","orphaned","park_observed","native_retirement
 -- Bind only callbacks, never an SDK object or activation option. Keeping this
 -- adapter inert lets constructed tests exercise the private query path while
 -- both riding gates stay closed. Only create_ride supplies the real closures.
-function BikeRuntime.probe_batch_adapter(identity,guard,read_serial,invoke,current_owner,stop)
+function BikeRuntime.probe_batch_adapter(identity,guard,read_serial,invoke,current_owner,stop,category_lane_qualified)
+    local allow_category_lane=category_lane_qualified==true
     local last_serial,count=nil,0
     return function(epoch,rays,query_options)
-        if type(query_options)~="table" or query_options.require_contact~=true
-            or query_options.exclude_local_actor~=true or not guard(epoch) then return nil end
+        if type(query_options)~="table" or getmetatable(query_options)~=nil or query_options.require_contact~=true then return nil end
+        local identity_lane=query_options.exclude_local_actor==true
+        local category_lane=allow_category_lane and query_options.query_preset=="camera"
+            and query_options.require_named_actor_categories_absent==true
+        local count_options=0
+        for key in pairs(query_options) do
+            count_options+=1
+            if count_options>3 or not (key=="require_contact" or identity_lane and key=="exclude_local_actor"
+                or category_lane and (key=="query_preset" or key=="require_named_actor_categories_absent")) then return nil end
+        end
+        if not (identity_lane and not category_lane and count_options==2
+            or category_lane and not identity_lane and count_options==3) or not guard(epoch) then return nil end
         local serial=read_serial()
         local order=1
         if last_serial then order=identity.compare(serial,last_serial) end
@@ -602,7 +613,7 @@ local function create_ride(frame)
         function(epoch,rays,query_options)
             return call("ride.probe_batch",lookup("world.physics.probe_batch"),owner.body,epoch,rays,query_options)
         end,
-        function(epoch) return current_ride_owner(binding,epoch) end,stop_all)
+        function(epoch) return current_ride_owner(binding,epoch) end,stop_all,ride_models.contact.CATEGORY_WHEEL_LANE_QUALIFIED)
     api.submit=function(epoch,command)
         if not guard(epoch) then return false,"Core force publication guard refused before SDK call" end
         local serial=binding.sample.serial

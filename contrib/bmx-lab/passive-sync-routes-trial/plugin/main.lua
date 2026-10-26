@@ -164,7 +164,7 @@ local function create_and_begin(now,p,name)
     report.last_create={pcall_ok=r[1]==true,arity=r.n-1,value_type=typeof(r[2]),
         detail=return_detail(r)}
     report.creates[#report.creates+1]=report.last_create
-    if r[1] and r[2]==nil and r[3]=="waiting for a fresh qualified 60 Hz physics step" then
+    if r[1] and r[2]==nil and r[3]=="body_preallocation_unavailable" then
         report.creation_unknown=false
         if retried then finish("second known preallocation refusal; no body allocated") return end
         retry_available=true phase="readiness wait"

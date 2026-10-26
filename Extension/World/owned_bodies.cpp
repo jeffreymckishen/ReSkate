@@ -735,10 +735,10 @@ std::string create(std::uint64_t owner, const Definition& definition, Handle& ou
             // Preparation is generic and process-lifetime: no owner, definition,
             // position or allocation request survives this refused call.
             service.initialization_requested = true;
-            return "waiting for a fresh qualified 60 Hz physics step";
+            return "body_preallocation_unavailable";
         }
         Anchor anchor; Epoch epoch;
-        if (!capture(anchor) || !clock(anchor, epoch)) return "waiting for a fresh qualified 60 Hz physics step";
+        if (!capture(anchor) || !clock(anchor, epoch)) return "body_preallocation_unavailable";
         if (anchor.world != service.world || anchor.state != service.state || anchor.context != service.context) {
             for (auto& s : service.slots) if (s.attempted && !s.retained) retire(s, false);
             service.world = anchor.world; service.state = anchor.state; service.context = anchor.context; ++service.world_generation;
@@ -1358,7 +1358,8 @@ std::string submit(std::uint64_t owner, const Handle& handle, const Command& com
         Locked lock(service.lock); auto* s = lookup(owner, handle);
         if (!s || !s->active || s->retained || s->quarantined || s->release_requested || !fresh(*s)) return "body owner or generation changed";
         Epoch current{};
-        if (!command_clock(*s, current) || current != s->latest.epoch) return "measured native body epoch expired";
+        if (!command_clock(*s, current)) return "body_clock_unavailable";
+        if (current != s->latest.epoch) return "body_epoch_expired";
         if (service.command_sequence == std::numeric_limits<std::uint64_t>::max() ||
             !s->mailbox.submit(command, current, GetTickCount64(), service.command_sequence + 1))
             return "body command invalid, repeated, stopped, pending or receipt ring full";

@@ -149,7 +149,7 @@ reskate.on("tick", function(dt_ms)
             rotation={0,0,0,1}, capsules={{a=vector.create(0,-.25,0),b=vector.create(0,.25,0),radius=.12}}})
         log("create accepted=" .. tostring(body ~= nil) .. " detail=" .. tostring(why or "owned opaque handle"))
         if not body then
-            retry_clock = why == "waiting for a fresh qualified 60 Hz physics step"
+            retry_clock = why == "body_preallocation_unavailable"
             phase, detail = "refused", tostring(why or "no body returned")
             return -- Only this preallocation clock refusal offers an explicit retry.
         end

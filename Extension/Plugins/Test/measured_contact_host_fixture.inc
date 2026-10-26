@@ -435,7 +435,7 @@ void measured_contact_host_fixture_v1() {
         const std::string id="measured-readiness-bound";
         TestEnvironment environment; Host host(environment,Side::client); f::ready(environment,id);
         auto& game=environment.fake;
-        game.test_body_create_refusal="waiting for a fresh qualified 60 Hz physics step";
+        game.test_body_create_refusal="body_preallocation_unavailable";
         host.apply({package(id,files)}); f::show(host,environment,id); f::start(host,environment,id);
         f::close_menu(host,environment,id);
         check(game.body_create_calls==1 && !game.body_creates && !game.body_read_calls && !game.batch_calls,

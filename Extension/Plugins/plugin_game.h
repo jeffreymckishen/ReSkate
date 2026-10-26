@@ -1,4 +1,5 @@
 #pragma once
+#include "plugin_effects.h"
 #include "plugin_wave.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Game/World/body_query.h"
@@ -123,7 +124,7 @@ struct SkaterNews {
     std::vector<Fall> falls;
 };
 // One physics step of the local skater (events.physics): when (the steady clock, ms, as
-// reskate.time.now), how long it simulated, and what the body did; only the bodies touching something.
+// reskate.time.now), how long it simulated, contacts, and available body poses even in the air.
 struct PhysicsStep {
     double at{};
     float seconds{};
@@ -135,8 +136,12 @@ struct PhysicsStep {
         std::string name; // as body_hit names it
         float impact{}, slide{};
         bool board{}, vehicle{}, world{}; // world: anything but the board and vehicles
+        std::optional<Vec3> point, normal;
     };
     std::vector<Body> bodies;
+    struct Pose { EffectMatrix transform{}; Vec3 velocity{}; };
+    std::map<std::string, Pose, std::less<>> poses; // all available local bodies, including airborne ones
+    std::optional<std::uint32_t> state;
 };
 // What a plugin sets of a launch into the air, m/s, each if given: across the direction of travel
 // (+ its left), along it, and up. And a launch as it went (Extension/Skater/launches.h).
@@ -380,6 +385,16 @@ public:
     virtual bool input_lease_capture_state(std::uint64_t, input_lease::Handle, input_lease_capture::Receipt&) { return false; }
     virtual bool input_lease_capture_release(std::uint64_t, input_lease::Handle) { return false; }
     virtual bool input_lease_capture_acknowledge(std::uint64_t, input_lease::Handle) { return false; }
+    // Client-only particles and projected materials. Handles are owned by their plugin.
+    virtual std::uint64_t effect_create(std::string_view, const EffectRequest&) { return 0; }
+    virtual void effect_move(std::string_view, std::uint64_t, const EffectMatrix&) {}
+    virtual void effect_stop(std::string_view, std::uint64_t) {}
+    virtual void effect_opacity(std::string_view, std::uint64_t, float) {}
+    virtual void effect_release(std::string_view, std::uint64_t) {}
+    virtual std::vector<std::uint64_t> effects_live(std::string_view) { return {}; }
+    virtual void effects_clear(std::string_view) {}
+    virtual std::pair<bool, std::uint64_t> effects_state() { return {false, 0}; }
+
     // ---- the local skater ----------------------------------------------------------------------
     // Its physics state (100s riding, 200s in the air, 300 a wipeout, 400s grinding, 504 off the
     // board), or empty without a skater; and how many wipeouts it has had this session.

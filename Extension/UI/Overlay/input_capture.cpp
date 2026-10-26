@@ -419,22 +419,6 @@ std::atomic<dingosdk::overlay::GamepadFilter>& gamepad_filter() {
     static std::atomic<dingosdk::overlay::GamepadFilter> value{};
     return value;
 }
-// Full Bluetooth reports have a CRC over the 0xA1 input prefix and payload.
-// Windows may pad a DS4 report to 547 bytes; only its 78 wire bytes carry the CRC.
-// A stale checksum makes the native reader discard a changed report.
-void refresh_bluetooth_crc(std::uint8_t* bytes, DWORD size) noexcept {
-    if (!bytes || (size != 78 && !(size == 547 && bytes[0] == 0x11)) ||
-        (bytes[0] != 0x31 && bytes[0] != 0x11)) return;
-    std::uint32_t crc = 0xffffffffu;
-    const auto feed = [&](std::uint8_t byte) {
-        crc ^= byte;
-        for (unsigned bit = 0; bit < 8; ++bit) crc = (crc >> 1) ^ (0xedb88320u & (0u - (crc & 1u)));
-    };
-    feed(0xa1);
-    for (DWORD i = 0; i < 74; ++i) feed(bytes[i]);
-    crc = ~crc;
-    std::memcpy(bytes + 74, &crc, sizeof(crc));
-}
 void neutral_hid(const InputCaptureHooks::HidRead& read, DWORD size) {
     const auto capture=polled_capture();
     const bool menu=suppress_challenge_menu();
@@ -452,8 +436,8 @@ void neutral_hid(const InputCaptureHooks::HidRead& read, DWORD size) {
         const bool sense_full=read.kind==PlayStationPad::dualsense&&(bytes[0]==0x31||(bytes[0]==1&&!bluetooth));
         const unsigned offset=bytes[0]==0x31?2:bytes[0]==0x11?3:1;
         bytes[offset+(sense_full?8:5)]&=std::uint8_t{0xdf}; // Options/Start only.
-        refresh_bluetooth_crc(bytes,size);
     }
+    refresh_playstation_bluetooth_crc(bytes, size);
     static std::atomic<bool> reported{};
     if (capture!=input::BmxNativeCapture::none && !reported.exchange(true)) logging::printf(logging::Level::info, logging::Channel::input,
         "Native PlayStation HID report neutralized; overlay retains its independent input stream. (%s over %s, report 0x%02x of %lu bytes, "
@@ -508,8 +492,7 @@ void hide_hid_dpad(const InputCaptureHooks::HidRead& read, DWORD size) {
     const auto before = hat;
     dark_pop_hide_hat(hat);
     if (hat == before) return;
-    refresh_bluetooth_crc(bytes, size);
-
+    refresh_playstation_bluetooth_crc(bytes, size);
 }
 // The gamepad filter (DingoSDKOverlaySetGamepadFilter) on the game's own native PlayStation
 // reads, as filter_pad applies it to XInput: a DualShock 4 or DualSense read without Steam Input
@@ -555,7 +538,7 @@ void filter_hid(const InputCaptureHooks::HidRead& read, DWORD size) noexcept {
     }
     if (pad.left_x != before.left_x)
         sticks[0] = static_cast<std::uint8_t>(std::clamp(static_cast<int>(pad.left_x) / 258 + 128, 0, 255));
-    refresh_bluetooth_crc(bytes, size);
+    refresh_playstation_bluetooth_crc(bytes, size);
 }
 // A finished native PlayStation read of the game's: neutral while a menu holds the input, else
 // through the gamepad filter.
@@ -588,13 +571,15 @@ BOOL WINAPI captured_read_file(HANDLE file, LPVOID buffer, DWORD size, LPDWORD b
     InputCaptureHooks::HidRead read{file, buffer, size, PlayStationPad::none};
     if (!overlay_input_access) {
         // Some readers inspect a temporary enumeration handle, then open a
-        // second handle for reports. Identify that handle as well.
+        // second handle for reports. Identify that handle as well, by a read
+        // the size of a Sony pad's reports: up to a DualShock 4's over
+        // Bluetooth, which Windows pads to 547 bytes.
         bool known{};
         {
             std::lock_guard lock(h.hid_mutex);
             known = h.hid_devices.contains(file);
         }
-        if (!known && size >= 10 && size <= 547) {
+        if (!known && size >= 10 && size <= dualshock4_bluetooth_read_length) {
             const auto error = GetLastError();
             HIDD_ATTRIBUTES attributes{sizeof(attributes)};
             const auto okay = original<decltype(&HidD_GetAttributes)>(h.hid_attributes)(file, &attributes);

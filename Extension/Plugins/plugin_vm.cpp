@@ -382,6 +382,15 @@ void Plugin::trick(const TrickNews& news) {
     }
 }
 
+void Plugin::prune_effects() {
+    if (effect_handles_.empty()) return;
+    auto live = services_.game().effects_live(id_);
+    std::sort(live.begin(), live.end());
+    std::erase_if(effect_handles_, [&](const auto& entry) {
+        return !std::binary_search(live.begin(), live.end(), entry.first);
+    });
+}
+
 void Plugin::tick(double dt_ms) {
     if (state_ != State::running) return;
     ++tick_number_;
@@ -391,6 +400,8 @@ void Plugin::tick(double dt_ms) {
     body_prepares_ = 0;
     follow_reserves_ = follow_publishes_ = follow_reads_ = follow_stops_ = follow_acknowledgements_ = 0;
     follow_renewals_ = follow_lease_reads_ = 0;
+    effect_calls_ = 0;
+    prune_effects();
     const double now = services_.now_ms();
     std::vector<int> due;
     for (const auto& [id, timer] : timers_)

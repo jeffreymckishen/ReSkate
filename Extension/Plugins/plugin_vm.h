@@ -282,6 +282,7 @@ private:
     friend struct InputTraceApi;
     friend struct InputPulseApi;
     friend struct InputLeaseApi;
+    friend struct EffectsApi;
     std::uint64_t instance_{};
     struct Subcommand { std::string name, args, help; };
     struct Command { std::string help; int function{}; std::vector<Subcommand> subcommands; };
@@ -334,6 +335,9 @@ private:
     std::vector<double> errors_;
     double log_second_{};
     int log_lines_{};
+    std::map<std::uint64_t, bool> effect_handles_; // bool: decal
+    void prune_effects();
+    int effect_calls_{};
     int raycasts_{};                    // since the last tick
     body_query::Budget native_casts_{}; // shared by every Lua world query, including retries
     std::uint64_t body_query_sequence_{};

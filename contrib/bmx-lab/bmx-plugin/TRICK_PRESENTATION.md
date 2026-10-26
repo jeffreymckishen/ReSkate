@@ -55,7 +55,9 @@ adapter), `serial`, `time`, and:
   handlebars, left pedal, right pedal. `matrices[i]` and `offsets[i]` are that part.
 - `pose`: the eight `bike_visual` angles. Steer and wheel phases come from `base_pose` unchanged.
   `crank_phase` is the base phase plus `movement_crank_angle`. Barspin, tailwhip and the movement bike
-  pitch and roll are the adapter's targets.
+  pitch and roll are the adapter's targets. `bike_visual` turns the fork, front wheel and handlebars
+  together by the barspin angle about the steering axis, as a real barspin does; before 2026-10-26
+  it turned the handlebars alone, which would have spun them off the fork.
 - `offsets`: each part's articulation in the authored bike frame, as 16 column-major numbers. A
   neutral pose gives the identity for every part (within 1e-12). World placement is
   `[measured rotation | root] * offset`.

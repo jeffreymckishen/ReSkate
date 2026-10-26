@@ -283,7 +283,7 @@ There are three harnesses:
 | `rider_presentation_tests` | none | not run | 27 / 12,226 |
 | `rubric_metrics_tests` | none | not run | 16 / 3,933 |
 | `sim_tests` | none | not run | 12 / 208,006 |
-| `trick_presentation_tests` | none | not run | 18 / 866 |
+| `trick_presentation_tests` | none | not run | 18 / 870 |
 | `trick_runtime_tests` | none | not run | 28 / 431 |
 | `../equipment-interruption-trial/plugin/fixture_tests` | `equipment_interruption_fixture_keeps_effects_one_shot` (`call_ms` 2000) | 13 cases, 1,542 assertions | Host only |
 | `../stationary-anchor-observer/plugin/sampler_tests` | none | not run | 46 / 104 (its own folder at `2584bcd`; not in the 668 total) |

@@ -29,7 +29,9 @@ local function local_point(p,part,pose,q)
         local spindle=G.pedals[part-6]
         p=M.add(p,M.sub(rotate(spindle,1,pose.crank_phase,G.bottom_bracket),spindle))
     end
-    if part==2 or part==4 or part==6 then p=steering(p,pose.steer+(part==6 and pose.barspin or 0))
+    -- A barspin turns the whole front end (fork, front wheel and bars) about the head tube, as
+    -- steering does; turning the bars alone would spin them off the fork.
+    if part==2 or part==4 or part==6 then p=steering(p,pose.steer+pose.barspin)
     else p=steering(p,pose.tailwhip) end
     p=rotate(p,1,pose.movement_bike_pitch,G.steering_pivot)
     p=rotate(p,3,pose.movement_bike_roll,G.steering_pivot)

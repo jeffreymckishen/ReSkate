@@ -41,7 +41,7 @@ suite, and [its module list](bmx-plugin/README.md#modules-committed-since-aad424
 says more about each.
 
 - `5bd211b`: rider posture cues (`rider_presentation`, 27 / 12,226) and trick part
-  matrices (`trick_presentation`, 18 / 866), plus the first dedicated suite for the
+  matrices (`trick_presentation`, 18 / 870), plus the first dedicated suite for the
   tracked trick adapter (`trick_runtime_tests`, 28 / 431). `ride_runtime_join_tests`
   already drove that adapter through Ride.
 - `f3cc0c8`: a chase-camera policy (`camera_policy`, 20 / 57,198).

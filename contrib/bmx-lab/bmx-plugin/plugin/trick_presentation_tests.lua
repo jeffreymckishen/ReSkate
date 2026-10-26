@@ -131,7 +131,13 @@ function tests.run()
         local bars = part("reskate/bmx/handlebars")
         check(out.pose.barspin < -.1 and not same_matrix(out.matrices[bars], neutral[bars]),
             "the barspin target visibly rotates the authored handlebars matrix")
-        for _, name in ipairs({"reskate/bmx/frame", "reskate/bmx/fork", "reskate/bmx/front_wheel"}) do
+        -- The front end turns as one: fork and front wheel move with the bars by the same offset,
+        -- so the bars stay on the fork through the spin. The frame and rear stay put.
+        for _, name in ipairs({"reskate/bmx/fork", "reskate/bmx/front_wheel"}) do
+            check(not same_matrix(out.matrices[part(name)], neutral[part(name)]), "barspin turns the front end: " .. name)
+            check(same_matrix(out.offsets[part(name)], out.offsets[bars], 1e-9), "the front end shares the bars' offset: " .. name)
+        end
+        for _, name in ipairs({"reskate/bmx/frame", "reskate/bmx/rear_wheel", "reskate/bmx/cranks"}) do
             check(same_matrix(out.matrices[part(name)], neutral[part(name)]), "barspin leaves this part neutral: " .. name)
         end
         check(out.trick.model_events.units == 0 and not out.trick.model_events.combo_landed and out.actual_caught == nil,

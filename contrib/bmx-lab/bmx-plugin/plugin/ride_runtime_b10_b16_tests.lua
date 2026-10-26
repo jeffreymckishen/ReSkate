@@ -36,7 +36,8 @@ function Tests.run(case_done)
         local before=f.ride:status()
         f.on_receipt=function() return parked(f) end
         local s=f.ride:drain();f.ride:drain();f.advance();f.observe()
-        check(s.stop_requested and not s.force_pending and not s.unknown,"exact park disposition closes transport after stop")
+        check(s.stop_requested and not s.force_pending and not s.unknown and s.issue=="force body parked without successor",
+            "exact park disposition closes transport with its specific stop cause")
         check(s.acknowledged==1 and count(f,"ack")==1,"exact original command acknowledged once")
         check(s.receipt.cleanup_disposition=="parked_without_successor" and not s.receipt.successor_available,"park marker remains distinct from successor")
         check(s.model_steps==before.model_steps and #f.tricks.observed==1 and count(f,"submit")==1,"cleanup invents no model step or new command")
@@ -97,7 +98,7 @@ function Tests.run(case_done)
         check(not s.force_pending and s.acknowledged==2 and s.hop_disposition.id==1
             and s.hop_disposition.disposition=="uncertain","park ACK retires bookkeeping without accepting hop outcome")
         check(mapping.uncertain and mapping.pending_hop==nil,"uncertain hop remains diagnostic and cannot replay")
-        check(f.force:consumed_hop_event_id()==0,"park marker cannot adopt force preview event history")
+        check(f.force:consumed_hop_event_id()==1,"park ACK never rewinds previously accepted predictive hop history")
     end
     next_case() do
         local f=Fixtures.fixture();f.observe();f.advance();f.observe();f.advance()
@@ -132,8 +133,8 @@ function Tests.run(case_done)
         f.mode="queued";f.successor=nil;f.advance();f.observe()
         f.advance();f.mode="applied";f.successor=f.sample();s=f.observe()
         for i=1,2 do check(previews[3].before[i].angular_speed==second[i].angular_speed,"spin survives consecutive applied ACKs "..i) end
-        check(s.acknowledged==2 and s.submitted==3 and resets==2,"existing one-pending cadence and force-history reset remain")
-        check(f.force:consumed_hop_event_id()==0,"wheel carry never adopts full controller history")
+        check(s.acknowledged==2 and s.submitted==3 and resets==0,"queued inbox backpressure remains; ACK never resets force history")
+        check(f.force:consumed_hop_event_id()==0,"neutral history carry does not invent a consumed hop")
     end
     next_case() do
         local f=Fixtures.fixture();local original=f.force.preview

@@ -15,7 +15,7 @@ local pad_buttons={"up","down","left","right","start","back","left_stick","right
 local force_methods={"probe_batch","submit","receipt","acknowledge"}
 -- The facade's mount list after this change, in its reviewed order.
 local expected_order={"./lease_identity","./lease_source","./force_math","./bike_geometry","./bike_visual","./bike_spawn",
-    "./tire","./brake","./pump","./force_solver","./forces","./catalog","./input","./ride_input_mapping",
+    "./tire","./brake","./pump","./force_solver","./forces","./force_stage","./catalog","./input","./ride_input_mapping",
     "./frame_identity","./contact_runtime","./ride_runtime",
     "./equipment_transition","./equipment_runtime","./bike_runtime_core"}
 -- Each staged module's top-level requires, read from its source. bike_admission
@@ -30,6 +30,7 @@ local requires={
     ["./pump"]={"./force_math"},
     ["./force_solver"]={"./force_math","./brake"},
     ["./forces"]={"./force_math","./tire","./pump","./force_solver"},
+    ["./force_stage"]={"./force_math","./forces"},
     ["./input"]={"./catalog"},
     ["./ride_input_mapping"]={"./input","./lease_identity"},
     ["./frame_identity"]={"./lease_identity"},
@@ -39,7 +40,7 @@ local requires={
     ["./bike_runtime_core"]={"./equipment_runtime","./bike_admission"},
 }
 -- What prepare_backend binds, and through it what create_ride needs.
-local backend={"./lease_source","./bike_spawn","./lease_identity","./bike_geometry","./ride_runtime","./contact_runtime"}
+local backend={"./lease_source","./bike_spawn","./lease_identity","./bike_geometry","./ride_runtime","./contact_runtime","./force_stage"}
 -- The trick adapter and its own dependencies stay out until measured support exists.
 local never_staged={"./trick_runtime","./tricks","./motions"}
 

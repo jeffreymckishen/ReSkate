@@ -1077,9 +1077,10 @@ function object:prepare_backend()
     -- create_ride runs. Neither module calls reskate.* when it loads.
     local Ride=require("./ride_runtime")
     local Contact=require("./contact_runtime")
+    local ForceStage=require("./force_stage")
     if type(Ride)~="table" or type(Ride.new)~="function" or type(Contact)~="table"
-        or type(Contact.decode)~="function" then return false end
-    RideRuntime=Ride;ride_models=table.freeze({contact=Contact})
+        or type(Contact.decode)~="function" or type(ForceStage)~="table" or type(ForceStage.new)~="function" then return false end
+    RideRuntime=Ride;ride_models=table.freeze({contact=Contact,force=ForceStage.new()})
     T.ride_modules_bound=true;T.ride_trick_adapter=ride_models.tricks~=nil
     source=Source.new(input_proxy,{setup_ms=15000,capture_ms=4000,cleanup_ms=4000})
     T.source_instances=(T.source_instances or 0)+1

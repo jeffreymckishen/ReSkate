@@ -8598,8 +8598,12 @@ void bmx_lua_spawn_uses_owned_chassis_and_measured_part_placement() {
         frame.steer=angle; frame.front_wheel_phase=-angle*2; frame.rear_wheel_phase=angle*3;
         frame.crank_phase=angle*4; frame.barspin=-angle; frame.tailwhip=angle*.5f;
         frame.movement_bike_pitch=angle*.3f; frame.movement_bike_roll=-angle*.7f;
+        // The C++ reference turns only the handlebars by the barspin angle. The Lua turns the whole
+        // front end (fork, front wheel and bars) as a real barspin does (9dc29d7c), which is the
+        // reference with the barspin added to the steering and none left for the bars alone.
+        auto reference=frame; reference.steer=frame.steer+frame.barspin; reference.barspin=0;
         std::array<world::Matrix,world::part_count> expected;
-        check(world::transforms(frame,expected),"authored reference math accepts fixture");
+        check(world::transforms(reference,expected),"authored reference math accepts fixture");
         auto row=Json::object(); row["root"]=frame.position;row["q"]=frame.chassis_quaternion;row["expected"]=expected;
         row["capsules"]=Json::array();
         for (const auto& capsule : dingosdk::bmx::collision_envelope::capsules) {

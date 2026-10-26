@@ -44,6 +44,8 @@ SDK world-only policy inherited from the qualified native path; a mod cannot sup
 `create` returns opaque userdata or `nil, why`. The stable reason
 `body_preallocation_unavailable` means producer setup, actor/world capture or clock
 qualification is not ready, before any body slot is reserved or allocation is attempted.
+A plugin sealed before SDK-2 that compares the old creation-refusal text must be
+repackaged from updated sources before it runs on a runtime with SDK-2.
 A cold call only requests deferred producer setup. A later explicit create request can
 use the now-observed clock; allocation itself has no automatic retry. Partial-allocation
 or hook failures have different reasons and are not preallocation readiness refusals.
@@ -65,9 +67,9 @@ engine-wide atomic snapshot guarantee.
 `P.submit(body, sample.epoch, command)` returns `true, nil, sequence_string` or
 `false, why`. Existing callers using one or two return values keep their behavior.
 `body_clock_unavailable` means the current clock could not be qualified;
-`body_epoch_expired` means that qualified clock has moved beyond the latest body sample
-issued to the caller. Neither refusal assigns a sequence or reserves a command. An older
-command epoch submitted after a newer read keeps the existing mailbox refusal.
+`body_epoch_expired` means that qualified clock no longer matches the latest body sample,
+or the submitted epoch no longer matches that clock because a later `read` or `receipt`
+published a newer sample. Neither refusal assigns a sequence or reserves a command.
 The service assigns each accepted command a process-wide unique sequence, returned as
 a decimal string without a Lua-number uint64 conversion. `command` has
 optional `force`, `torque` and `impulse` vectors (zero when omitted), plus a positive uint32

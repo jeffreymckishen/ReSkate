@@ -1067,7 +1067,7 @@ void submit_late_refusals_preserve_command_state() {
         check(refusal == expected, "submit returned the wrong refusal token");
         check(assigned_sequence == 0, "refused submit published a sequence");
         check(service.command_sequence == sequence_before, "refused submit spent a global command sequence");
-        check(!f.slot().mailbox.pending && f.slot().mailbox.count == 0, "refused submit occupied the empty mailbox");
+        // The byte comparison also protects an applied receipt awaiting acknowledgement.
         check(std::memcmp(mailbox_before.data(), &f.slot().mailbox, mailbox_before.size()) == 0,
             "refused submit changed mailbox history");
         check(body_query::same_sample(f.slot().latest, latest_before), "refused submit changed the latest issued sample");
@@ -1084,8 +1084,8 @@ void submit_late_refusals_preserve_command_state() {
     Sample newer_sample;
     check(read(owner, f.handle, newer_sample).empty() && newer_sample.epoch.serial > issued_sample.epoch.serial,
         "submit fixture could not publish its later sample");
-    // Splitting the clock check does not rename the older-command mailbox refusal.
-    check_refusal(owner, "body command invalid, repeated, stopped, pending or receipt ring full");
+    // A newer read invalidates the earlier command even when the clock matches latest.
+    check_refusal(owner, "body_epoch_expired");
     request_command.epoch = newer_sample.epoch;
     std::uint64_t accepted_sequence = 0;
     SetLastError(0x5678);
@@ -1097,6 +1097,37 @@ void submit_late_refusals_preserve_command_state() {
         "accepted command did not reserve exactly one measured packet");
     check(test_facts::mutations.load() == native_mutations_before, "submit applied native effects instead of only queuing");
     check(accepted_last_error == 0x5678, "accepted submit changed LastError");
+    // Construct only the producer outcome; actual Service receipt() must sample
+    // the successor. No native setter or producer wrapper runs in this fixture.
+    f.step();
+    Epoch produced_epoch{};
+    Command consumed{};
+    check(command_clock(f.slot(), produced_epoch) &&
+        f.slot().mailbox.consume(produced_epoch, test_clock::now.load(), consumed) &&
+        f.slot().mailbox.finish(true, true, true), "could not construct the applied command receipt");
+    check(f.slot().mailbox.needs_successor(), "constructed receipt already had a successor");
+    f.step();
+    Receipt completed{};
+    check(receipt(owner, f.handle, accepted_sequence, completed).empty() &&
+        completed.outcome == Outcome::applied && completed.successor_available &&
+        completed.successor.epoch.serial > produced_epoch.serial && completed.successor.epoch.time > produced_epoch.time &&
+        body_query::same_sample(f.slot().latest, completed.successor),
+        "receipt did not publish its independently measured successor");
+    Epoch current_after_receipt{};
+    check(command_clock(f.slot(), current_after_receipt) && current_after_receipt == f.slot().latest.epoch,
+        "receipt regression requires the clock to match the newly published sample");
+    check_refusal(owner, "body_epoch_expired");
+    check(acknowledge(owner, f.handle, accepted_sequence).empty(), "completed receipt could not be acknowledged");
+    check_refusal(owner, "body_epoch_expired");
+    request_command.epoch = completed.successor.epoch;
+    request_command.force = {40001, 0, 0};
+    check_refusal(owner, "body command invalid, repeated, stopped, pending or receipt ring full");
+    request_command.force = {1, 0, 0};
+    check(submit(owner, f.handle, request_command, accepted_sequence).empty() && accepted_sequence == 44 &&
+        service.command_sequence == 44 && f.slot().mailbox.pending && f.slot().mailbox.count == 1 &&
+        f.slot().mailbox.command.epoch == completed.successor.epoch,
+        "receipt successor command did not reserve exactly one packet after acknowledgement");
+    check(test_facts::mutations.load() == native_mutations_before, "receipt successor path reached a native setter");
     service.command_sequence = saved_command_sequence;
 }
 

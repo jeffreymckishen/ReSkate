@@ -1359,7 +1359,7 @@ std::string submit(std::uint64_t owner, const Handle& handle, const Command& com
         if (!s || !s->active || s->retained || s->quarantined || s->release_requested || !fresh(*s)) return "body owner or generation changed";
         Epoch current{};
         if (!command_clock(*s, current)) return "body_clock_unavailable";
-        if (current != s->latest.epoch) return "body_epoch_expired";
+        if (current != s->latest.epoch || command.epoch != current) return "body_epoch_expired";
         if (service.command_sequence == std::numeric_limits<std::uint64_t>::max() ||
             !s->mailbox.submit(command, current, GetTickCount64(), service.command_sequence + 1))
             return "body command invalid, repeated, stopped, pending or receipt ring full";

@@ -15,6 +15,136 @@ local RIDE_COMPOSITION_QUALIFIED=false
 local receipt_revisions={"final_revision","final_native_epoch","returned_revision"}
 local receipt_flags={"claim_known","orphaned","park_observed","native_retirement_known","terminal"}
 
+-- The ride window and the Follow lease (B5). A ride ends at
+-- min(publish + RIDE_WINDOW_MS, lease_until - LEASE_MARGIN_MS). lease_until has
+-- one source: the documented fixed three seconds from the reserve clock read,
+-- refined only by an S2 lease report anchored to a Lua clock read taken before
+-- that call. The native clock is not reskate.time.now, so no native deadline is
+-- ever compared with a Lua timestamp; only milliseconds left are. Trial copies
+-- change RIDE_WINDOW_MS by the same reviewed substitution as the gate literals.
+local RIDE_WINDOW_MS=500
+local BASE_LEASE_MS=3000
+-- The 100 ms force command lifetime, plus clock resolution and call time.
+local LEASE_MARGIN_MS=150
+-- S2's fixed report bounds. A report that disagrees is refused, not used.
+local RENEWAL_WINDOW_MS=500
+local LIFETIME_CEILING_MS=120000
+local LEASE_REPORT="world.physics.read_follow_lease"
+-- Follow reads (B9). A following tick reads the receipt once, then once in
+-- the guard before each probe batch and before the one submit; the post-call
+-- owner checks read nothing: 1+b+1, 6 with four batches. A stop tick adds at
+-- most one throttled cleanup read: 7, under the SDK's 8 receipt reads a tick.
+-- The lease report is on its own SDK counter of 8; Core reads it at most once
+-- a following tick. Cleanup reads are one per 50 ms poll for the 20 s cleanup
+-- watchdog: 400. These replace the old per-VM cap of 400 reads.
+local SDK_FOLLOW_READS_PER_TICK=8
+local SDK_LEASE_READS_PER_TICK=8
+local FOLLOW_READS_PER_TICK=6
+local LEASE_READS_PER_TICK=1
+local FOLLOW_POLL_MS=50
+local CLEANUP_WATCHDOG_MS=20000
+local CLEANUP_READS=400
+assert(2+PROBE_BATCHES_PER_SERIAL<=FOLLOW_READS_PER_TICK and FOLLOW_READS_PER_TICK+1<=SDK_FOLLOW_READS_PER_TICK
+    and LEASE_READS_PER_TICK<=SDK_LEASE_READS_PER_TICK and CLEANUP_READS*FOLLOW_POLL_MS>=CLEANUP_WATCHDOG_MS,
+    "Follow read budget exceeds the SDK's per-tick quota or the cleanup watchdog")
+BikeRuntime.ride_limits=table.freeze({ride_window_ms=RIDE_WINDOW_MS,base_lease_ms=BASE_LEASE_MS,
+    lease_margin_ms=LEASE_MARGIN_MS,renewal_window_ms=RENEWAL_WINDOW_MS,lifetime_ceiling_ms=LIFETIME_CEILING_MS,
+    follow_reads_per_tick=FOLLOW_READS_PER_TICK,lease_reads_per_tick=LEASE_READS_PER_TICK,
+    sdk_follow_reads_per_tick=SDK_FOLLOW_READS_PER_TICK,sdk_lease_reads_per_tick=SDK_LEASE_READS_PER_TICK,
+    follow_poll_ms=FOLLOW_POLL_MS,cleanup_watchdog_ms=CLEANUP_WATCHDOG_MS,cleanup_reads=CLEANUP_READS})
+local function wall(v) return type(v)=="number" and v==v and v>=0 and v<=MAX end
+
+-- Pure read budget. Before the stop, receipt reads count per tick; after it,
+-- against the cleanup total. A read at the cap is refused before the SDK call.
+function BikeRuntime.follow_read_admitted(tick_reads,cleanup_reads,stopping)
+    local function count(v,most) return type(v)=="number" and v%1==0 and v>=0 and v<=most end
+    if stopping==true then return count(cleanup_reads,CLEANUP_READS) and cleanup_reads<CLEANUP_READS end
+    return stopping==false and count(tick_reads,FOLLOW_READS_PER_TICK) and tick_reads<FOLLOW_READS_PER_TICK
+end
+function BikeRuntime.lease_read_admitted(tick_reads)
+    return type(tick_reads)=="number" and tick_reads%1==0 and tick_reads>=0 and tick_reads<LEASE_READS_PER_TICK
+end
+
+-- One window check for publication, the following tick and every force guard.
+function BikeRuntime.lease_live(now,publish_at,lease_until)
+    return wall(now) and wall(publish_at) and wall(lease_until) and now>=publish_at
+        and now-publish_at<RIDE_WINDOW_MS and now<lease_until-LEASE_MARGIN_MS
+end
+-- The only lease fact before a report: three seconds from the last clock read
+-- before reserve_follow. That read precedes the native reserve, so it errs early.
+function BikeRuntime.lease_seed(reserve_at)
+    if not wall(reserve_at) or reserve_at+BASE_LEASE_MS>MAX then return nil end
+    return reserve_at+BASE_LEASE_MS
+end
+
+local lease_report_fields={sequence=true,renewable=true,active=true,renewals=true,last_serial=true,remaining_ms=true,
+    lifetime_remaining_ms=true,base_ms=true,renewal_ms=true,lifetime_ms=true,revocation=true,dispatch_busy=true}
+local lease_revocations={none=true,deadline=true,lifetime=true,clock=true,client_not_ready=true,focus_lost=true,
+    menu_open=true,pause_menu_open=true,debug_control=true,actor_state=true,other=true}
+-- S2's read_follow_lease report against Core's single lease source. Returns
+-- lease_until, renewals, verdict and why. "refined" may move the deadline
+-- earlier, or later only when the report shows more accepted renewals than
+-- the last one used. "ignored" leaves both unchanged: a malformed report never
+-- extends anything. "stop" is a native lease that is no longer active.
+function BikeRuntime.lease_from_report(identity,lease_until,renewals,row,before,sequence,renewable)
+    local function ignored(why) return lease_until,renewals,"ignored",why end
+    if not wall(lease_until) or not identity.is_u64(renewals) or not identity.is_nonzero_u64(sequence)
+        or type(renewable)~="boolean" then return ignored("lease_state_invalid") end
+    if not wall(before) then return ignored("lease_clock_invalid") end
+    if type(row)~="table" or getmetatable(row)~=nil then return ignored("lease_report_malformed") end
+    local n=0
+    for key in pairs(row) do
+        if not lease_report_fields[key] then return ignored("lease_report_malformed") end
+        n+=1
+    end
+    local function whole(v,most) return type(v)=="number" and v==v and v%1==0 and v>=0 and v<=most end
+    if n~=12 or row.sequence~=sequence or row.renewable~=renewable or type(row.active)~="boolean"
+        or not identity.is_u64(row.renewals) or not identity.is_u64(row.last_serial) or not identity.is_u64(row.dispatch_busy)
+        or (row.renewals=="0")~=(row.last_serial=="0") or type(row.revocation)~="string" or not lease_revocations[row.revocation]
+        or row.base_ms~=BASE_LEASE_MS or row.renewal_ms~=RENEWAL_WINDOW_MS
+        or row.lifetime_ms~=(renewable and LIFETIME_CEILING_MS or BASE_LEASE_MS)
+        or not whole(row.lifetime_remaining_ms,row.lifetime_ms) or not whole(row.remaining_ms,row.lifetime_remaining_ms)
+        or not renewable and (row.renewals~="0" or row.remaining_ms~=row.lifetime_remaining_ms)
+        or row.active and (row.revocation~="none" or row.remaining_ms==0)
+        or row.revocation~="none" and (row.remaining_ms~=0 or row.lifetime_remaining_ms~=0) then
+        return ignored("lease_report_malformed")
+    end
+    if row.revocation~="none" then return lease_until,renewals,"stop","Follow lease revoked: "..row.revocation end
+    if not row.active then return lease_until,renewals,"stop","Follow lease is no longer active" end
+    local order=identity.compare(row.renewals,renewals)
+    if order==nil or order<0 then return ignored("lease_renewals_regressed") end
+    local candidate=before+row.remaining_ms
+    if candidate>MAX then return ignored("lease_clock_invalid") end
+    if order>0 then return candidate,row.renewals,"refined","renewed" end
+    if candidate<lease_until then return candidate,renewals,"refined","shortened" end
+    return lease_until,renewals,"refined","unchanged"
+end
+
+local pad_axes={"left_x","left_y","right_x","right_y","left_trigger","right_trigger"}
+local pad_buttons={"up","down","left","right","start","back","left_stick","right_stick","lb","rb","a","b","x","y"}
+-- Pure selected-pad policy (B4), not a mount or force capability. Before
+-- publication the pad must be exactly neutral. Only the production caller
+-- supplies riding, after the private gate and observed publication join; the
+-- ride's mapper then acts on bounded axes and boolean buttons.
+function BikeRuntime.selected_pad_admitted(frame,slot,riding)
+    local function plain(v) return type(v)=="table" and getmetatable(v)==nil end
+    if type(slot)~="number" or slot%1~=0 or slot<0 or slot>3 then return false end
+    if not plain(frame) or frame.input_ok~=true or not plain(frame.sample) or frame.sample.user~=slot
+        or not plain(frame.sample.pad) or frame.sample.pad.playstation~=false
+        or not plain(frame.sample.pad.buttons) then return false end
+    local pad=frame.sample.pad
+    for _,key in ipairs(pad_axes) do
+        local value=pad[key]
+        local low=(key=="left_trigger" or key=="right_trigger") and 0 or -1
+        if type(value)~="number" or value~=value or value<low or value>1
+            or riding~=true and value~=0 then return false end
+    end
+    for _,key in ipairs(pad_buttons) do
+        if type(pad.buttons[key])~="boolean" or riding~=true and pad.buttons[key]~=false then return false end
+    end
+    return true
+end
+
 -- Bind only callbacks, never an SDK object or activation option. Keeping this
 -- adapter inert lets constructed tests exercise the private query path while
 -- both riding gates stay closed. Only create_ride supplies the real closures.
@@ -217,9 +347,13 @@ snapshot=function()
         retained_reload_marker=T.reload_blocked==true,marker_unknown=T.marker_unknown==true,
         bike_cleanup_complete=T.bike_cleanup_complete==true,
         stock_requested=T.gear_requested==true,equipment_purpose=T.gear_purpose,
-        native_follow_lease_ms=3000,qualification_ms=500,one_attempt_per_vm=true,retained_body_slot_limit=8,
-        limit_scope="Eight retained native body slots may already be exhausted; not a retry budget. No Follow renewal or body reuse.",
-        source_freshness_scope="Existing selected-input lease renewal only; no Follow lifetime extension.",
+        native_follow_lease_ms=BASE_LEASE_MS,qualification_ms=RIDE_WINDOW_MS,ride_window_ms=RIDE_WINDOW_MS,
+        lease_margin_ms=LEASE_MARGIN_MS,reserve_ms=T.reserve_at,publish_ms=T.publish_at,lease_until_ms=T.lease_until,
+        lease_renewals=T.lease_renewals,lease_reports=T.lease_reports or 0,lease_report_last=T.lease_report_last,
+        lease_report_refused=T.lease_report_refused==true,
+        one_attempt_per_vm=true,retained_body_slot_limit=8,
+        limit_scope="Eight retained native body slots may already be exhausted; not a retry budget. Core requests no Follow renewal or body reuse.",
+        source_freshness_scope="Selected-input lease renewal only. The Follow lease is the reserve seed, which a copied lease report can only shorten.",
         phase=T.phase,detail=T.detail,selected_slot=T.slot,wall_ms=T.now,arm_ms=T.arm_at,
         effect_start_ms=T.effect_at,stop_ms=T.stop_at,stop_reason=T.stop_reason,
         stop_latched=T.stop_latched==true,unloaded=T.unloaded==true,clock_unknown=T.clock_unknown==true,
@@ -240,7 +374,9 @@ snapshot=function()
         visual_remove_call_accepted=T.remove_accepted,visual_cleanup_deferred=T.visual_cleanup_deferred==true,
         calls=T.calls,call_counts=T.counts,omitted_calls=T.omitted_calls,
         equipment_storage_prefix="",ledger_limit_bytes=48000,call_history_limit=64,
-        follow_history_limit=16,follow_read_limit=400,
+        follow_history_limit=16,follow_reads_per_tick=FOLLOW_READS_PER_TICK,lease_reads_per_tick=LEASE_READS_PER_TICK,
+        follow_reads_this_tick=T.follow_reads_tick or 0,lease_reads_this_tick=T.lease_reads_tick or 0,
+        follow_cleanup_reads=CLEANUP_READS,follow_cleanup_reads_used=T.cleanup_reads or 0,
         startup={pending=T.startup_pending==true,loaded=T.startup_loaded or 0,last_module=T.startup_last,
             core_ready=T.core_ready==true,backend_ready=T.backend_ready==true,
             ride_modules_bound=T.ride_modules_bound==true,ride_trick_adapter=T.ride_trick_adapter==true,
@@ -453,16 +589,6 @@ closed_ready=function(f,grounded,stock)
     return base_ready(f,stock) and f.interface_closed and f.game_menu_closed and f.input_allowed
         and (not grounded or f.grounded)
 end
-local axes={"left_x","left_y","right_x","right_y","left_trigger","right_trigger"}
-local buttons={"up","down","left","right","start","back","left_stick","right_stick","lb","rb","a","b","x","y"}
-local function exact_zero(frame)
-    local s=frame and frame.sample
-    if frame.input_ok~=true or type(s)~="table" or s.user~=T.slot or type(s.pad)~="table" or s.pad.playstation~=false then return false end
-    for _,key in ipairs(axes) do if s.pad[key]~=0 then return false end end
-    if type(s.pad.buttons)~="table" then return false end
-    for _,key in ipairs(buttons) do if s.pad.buttons[key]~=false then return false end end
-    return true
-end
 local phases={reserved=true,following=true,stopping=true,retained=true,abandoned=true,completed=true}
 local reasons={none=true,invalid_owner=true,invalid_kind=true,unavailable=true,busy=true,receipt_capacity=true,context_changed=true,
     focus_changed=true,teleporting=true,motion_owned=true,actor_changed=true,actor_destroyed=true,world_changed=true,
@@ -519,9 +645,16 @@ local function accept_terminal(dto)
     persist(true)
 end
 local function read_follow(force)
-    if not T.follow or T.ack_attempted or T.follow_reads==400 then return false end
-    if not force and T.follow_read_at and T.now and T.now-T.follow_read_at<50 then return false end
-    T.follow_read_at=T.now;T.follow_reads=(T.follow_reads or 0)+1
+    if not T.follow or T.ack_attempted then return false end
+    if not force and T.follow_read_at and T.now and T.now-T.follow_read_at<FOLLOW_POLL_MS then return false end
+    local stopping=T.stop_latched==true
+    if not BikeRuntime.follow_read_admitted(T.follow_reads_tick or 0,T.cleanup_reads or 0,stopping) then
+        -- Core's own cap stops the ride before the SDK's quota would refuse.
+        if not stopping then stop_all("Follow receipt reads for this tick exhausted") end
+        return false
+    end
+    if stopping then T.cleanup_reads=(T.cleanup_reads or 0)+1 else T.follow_reads_tick=(T.follow_reads_tick or 0)+1 end
+    T.follow_read_at=T.now
     local r=call("follow.read",lookup("world.physics.read_follow"),T.follow)
     local dto=r[1] and r.n==2 and receipt_copy(r[2]) or nil
     if not dto then T.follow_unknown=true;stop_all("follow receipt unavailable or contradictory");return false end
@@ -535,6 +668,30 @@ local function read_follow(force)
     end
     if dto.terminal then accept_terminal(dto) end
     return true
+end
+local function lease_live(now) return BikeRuntime.lease_live(now,T.publish_at,T.lease_until) end
+local function read_lease()
+    -- Optional, feature-detected by lookup like the required list: SDKs before
+    -- S2 lack it, and without world.physics.follow.renew it raises. Either way
+    -- the reserve seed alone bounds the ride; a raise is not retried.
+    local report=lookup(LEASE_REPORT)
+    if not report or T.lease_report_refused or not T.follow or T.ack_attempted
+        or not BikeRuntime.lease_read_admitted(T.lease_reads_tick or 0) then return end
+    T.lease_reads_tick=(T.lease_reads_tick or 0)+1
+    local before=clock() -- Before the call, so call time can only shorten the lease.
+    if not before then return end
+    local r=call("follow.lease",report,T.follow)
+    if not r[1] then T.lease_report_refused=true;T.lease_report_last="lease report raised; reserve seed only";return end
+    if r.n~=2 then
+        T.lease_report_last=r.n==3 and r[2]==nil and reason(r[3]) and short(r[3]) or "lease report returned malformed results"
+        return
+    end
+    -- Core reserves the default fixed lease and requests no renewal (LUA-12).
+    local until_ms,renewals,verdict,why=BikeRuntime.lease_from_report(Identity,T.lease_until,T.lease_renewals or "0",
+        r[2],before,T.sequence,false)
+    T.lease_report_last=why
+    if verdict=="stop" then stop_all(why);return end
+    if verdict=="refined" then T.lease_until=until_ms;T.lease_renewals=renewals;T.lease_reports=(T.lease_reports or 0)+1 end
 end
 local source_identity_names={"sequence","source_epoch","context_generation"}
 local function same_selected(frame,bound)
@@ -566,17 +723,19 @@ drain_ride=function()
     local r=call("ride.drain",ride.drain,ride)
     if not r[1] or r.n~=2 or not remember_ride(r[2]) then T.ride_unknown=true end
 end
-local function current_ride_owner(binding,epoch)
+local function current_ride_owner(binding,epoch,read)
     local owner=binding.owner
     if not current(owner.generation) or ride_binding~=binding or not binding.observing
         or not T.active or T.body~=owner.body or T.follow~=owner.follow or T.input_current~=true
         or T.phase~="following" or not same_selected(selected_source_frame,owner.source)
         or not binding.sample or epoch~=binding.sample.epoch then return false end
     local now=clock()
-    if not now or not current(owner.generation) or not T.publish_at or now-T.publish_at>=500 then return false end
+    if not now or not current(owner.generation) or not lease_live(now) then return false end
     local f=facts();T.facts=f
     if not current(owner.generation) or not closed_ready(f,false) then return false end
-    if not read_follow(true) or not current(owner.generation) then return false end
+    -- A post-call owner check (read=false) keeps every Lua-side check but reuses
+    -- this tick's receipt, so each guarded SDK call costs one Follow read (B9).
+    if read~=false and (not read_follow(true) or not current(owner.generation)) then return false end
     local receipt=T.receipt
     if not receipt or receipt.phase~="following" or receipt.claim_known~=true or receipt.orphaned
         or receipt.terminal or receipt.park_observed then return false end
@@ -584,10 +743,10 @@ local function current_ride_owner(binding,epoch)
     -- another model input or native body sample. All earlier guard callbacks
     -- run first; a post-effect failure still retains the accepted sequence.
     local authorization=call("source.authorize",source.authorize,source,selected_source_frame)
-    now=clock() -- Include authorization time in the finite sampled500ms boundary.
+    now=clock() -- Include authorization time in the ride window and lease bound.
     return now~=nil and current(owner.generation) and T.body==owner.body and T.follow==owner.follow
         and T.input_current==true and same_selected(selected_source_frame,owner.source)
-        and now-T.publish_at<500 and binding.observing and binding.sample and epoch==binding.sample.epoch
+        and lease_live(now) and binding.observing and binding.sample and epoch==binding.sample.epoch
         and authorization[1] and authorization.n==2 and authorization[2]==true
 end
 local function create_ride(frame)
@@ -613,7 +772,7 @@ local function create_ride(frame)
         function(epoch,rays,query_options)
             return call("ride.probe_batch",lookup("world.physics.probe_batch"),owner.body,epoch,rays,query_options)
         end,
-        function(epoch) return current_ride_owner(binding,epoch) end,stop_all,ride_models.contact.CATEGORY_WHEEL_LANE_QUALIFIED)
+        function(epoch) return current_ride_owner(binding,epoch,false) end,stop_all,ride_models.contact.CATEGORY_WHEEL_LANE_QUALIFIED)
     api.submit=function(epoch,command)
         if not guard(epoch) then return false,"Core force publication guard refused before SDK call" end
         local serial=binding.sample.serial
@@ -631,7 +790,7 @@ local function create_ride(frame)
             binding.unknown=true;T.ride_unknown=true
         end
         binding.inflight=false
-        if not current_ride_owner(binding,epoch) then stop_all("Core guard changed during force publication") end
+        if not current_ride_owner(binding,epoch,false) then stop_all("Core guard changed during force publication") end
         if not r[1] then error("force publication outcome unknown",0) end
         return table.unpack(r,2,r.n)
     end
@@ -704,6 +863,8 @@ local function handoff_and_follow()
     local v=call("spawn.follow_visual",spawn.follow_visual,spawn,h[3],at)
     if not yes(v) or not clock() or not current(generation) then stop_all("initial follow visual refused or cancelled");return end
     T.reserve_attempted=true;T.reserve_unknown=true;T.reserve_at=T.now
+    -- The single lease source starts here, from the clock read before reserve.
+    T.lease_until=BikeRuntime.lease_seed(T.reserve_at);T.lease_renewals="0"
     -- The policy pair CE2 ran in game. callback_entry needs explicit owned_body cleanup;
     -- it changes no lease, quota, permission or receipt shape (contrib/plugin-body-follow.md).
     local reserved=call("follow.reserve",lookup("world.physics.reserve_follow"),T.body,
@@ -717,17 +878,17 @@ local function handoff_and_follow()
             and reserved[3]~="none" and reasons[reserved[3]]==true then T.reserve_unknown=false;T.reserve_refused=true end
         stop_all("follow reserve refused or unknown");release_once();return
     end
-    if not after or not current(generation) or after-T.reserve_at>=3000 then stop_all("reserve callback cancelled or exceeded native lease");return end
+    if not after or not current(generation) or not T.lease_until or after>=T.lease_until then stop_all("reserve callback cancelled or exceeded native lease");return end
     if reserved.n~=3 or reserved[3]~=nil then stop_all("partial or malformed follow reserve; never publish");return end
     read_follow(true)
     if not current(generation) or not T.receipt or T.receipt.phase~="reserved" then stop_all("reservation receipt did not qualify publication");return end
     after=clock()
-    if not after or not current(generation) or after-T.reserve_at>=3000 then stop_all("reservation lease elapsed before publish");return end
+    if not after or not current(generation) or after>=T.lease_until then stop_all("reservation lease elapsed before publish");return end
     T.publish_attempted=true;T.publish_at=after
     local published=call("follow.publish",lookup("world.physics.publish_follow"),T.follow)
     if published[1] and published[2]==true then T.published_seen=true end
     after=clock()
-    if not yes(published) or not after or not current(generation) or after-T.publish_at>=500 then stop_all("publish refused, cancelled or bounded interval elapsed");return end
+    if not yes(published) or not after or not current(generation) or not lease_live(after) then stop_all("publish refused, cancelled or bounded interval elapsed");return end
     T.phase="following";T.detail="Published one zero-force attachment; sampled alignment is not claimed."
     persist(true)
 end
@@ -741,8 +902,10 @@ local function cleanup_tick()
     -- Follow cancellation/park is immediate. It never fabricates force ACK;
     -- cleanup capabilities retain the original body after Follow clears T.body.
     drain_ride()
-    local start=T.effect_at or T.stop_at
-    if not T.cleanup_expired and T.now and start and T.now-start>=20000 then
+    -- Cleanup has its full watchdog from the stop; Source arm is only the
+    -- fallback when no clock had been read when the stop latched.
+    local start=T.stop_at or T.effect_at
+    if not T.cleanup_expired and T.now and start and T.now-start>=CLEANUP_WATCHDOG_MS then
         T.cleanup_expired=true;T.detail="Cleanup watchdog expired; unresolved duty retained for SDK VM close."
     end
     if not T.cleanup_expired then read_follow(false) end
@@ -939,6 +1102,9 @@ function object:request_stock_toggle(slot,admitted)
     return true
 end
 local function tick(dt)
+    -- Core's per-tick Follow counters reset with each Core step, which is not
+    -- an SDK tick credential: the SDK's own quota stays authoritative.
+    T.follow_reads_tick=0;T.lease_reads_tick=0
     selected_source_frame=nil
     if T.unloaded or T.phase=="blocked" then return end
     if not T.used and not T.gear_requested or T.phase=="done" and not T.gear_requested then
@@ -950,6 +1116,7 @@ local function tick(dt)
     -- The tick that completes or cancels a stock request leaves the next tick
     -- on the quiescent return above, so that terminal record is saved now.
     local stock_open=T.gear_purpose=="stock" and T.gear_requested==true and not T.gear_cancelled
+    local published_now=false
     local now=clock()
     if not finite(dt) or dt<=0 or dt>250 or now and T.last_step_at and now<=T.last_step_at then
         stop_all("invalid, stalled or reversed wall tick")
@@ -995,7 +1162,9 @@ local function tick(dt)
             if current(generation) and frame[2].input_ok then
                 T.input_seen=true;T.input_current=true
                 selected_source_frame=frame[2] -- Exact private Source output, never source_record DTO.
-                if not exact_zero(frame[2]) then stop_all("selected raw pad left exact zero")
+                local riding=RIDE_COMPOSITION_QUALIFIED and T.phase=="following" and T.published_seen==true
+                if not BikeRuntime.selected_pad_admitted(frame[2],T.slot,riding) then
+                    stop_all(riding and "selected riding pad unavailable or malformed" or "selected raw pad left exact zero")
                 elseif not T.spawn_requested then
                     T.spawn_requested=true
                     local r=call("spawn.request",spawn.request,spawn)
@@ -1012,22 +1181,25 @@ local function tick(dt)
         if not current(generation) then stop_all("cancelled during spawn callback")
         elseif not b or b.cleanup_unknown or b.phase=="closed" or b.phase=="cleanup_unknown" or b.phase=="clock_prepared" then
             stop_all("spawn stopped; no retry")
-        elseif b.phase=="spawned" then handoff_and_follow() end
+        elseif b.phase=="spawned" then handoff_and_follow();published_now=true end
     end
-    if T.phase=="following" and not T.stop_latched and T.input_current then
+    -- The publish tick has already read the reservation receipt; its first
+    -- following read, lease report and body read come on the next tick (B9).
+    if T.phase=="following" and not T.stop_latched and T.input_current and not published_now then
         now=clock()
-        if not now or now-T.publish_at>=500 then stop_all("500ms published qualification interval ended")
+        if not lease_live(now) then stop_all("ride window or Follow lease ended")
         else
             local generation=T.generation
             if not read_follow(true) and current(generation) then stop_all("bounded follow receipt unavailable before body read") end
+            if current(generation) then read_lease() end
             if current(generation) then
                 now=clock()
-                if not now or now-T.publish_at>=500 then stop_all("qualification interval elapsed during receipt read")
+                if not lease_live(now) then stop_all("ride window or Follow lease ended during receipt or lease read")
                 elseif current(generation) then
                     local measured_body=T.body
                     local r=call("body.read",lookup("world.physics.read"),measured_body)
                     now=clock()
-                    if not now or now-T.publish_at>=500 then stop_all("qualification interval elapsed during body read")
+                    if not lease_live(now) then stop_all("ride window or Follow lease ended during body read")
                     elseif not r[1] or r.n~=2 or type(r[2])~="table" then stop_all("following body observation unavailable")
                     elseif RIDE_COMPOSITION_QUALIFIED and T.body~=measured_body then
                         stop_all("body owner changed during same-read subordinate observation")
@@ -1035,9 +1207,9 @@ local function tick(dt)
                         observe_ride(selected_source_frame,r[2],now)
                         local v=current(generation) and call("spawn.follow_visual",spawn.follow_visual,spawn,r[2],now) or {false,n=1}
                         now=clock()
-                        if not yes(v) or not now or not current(generation) or now-T.publish_at>=500 then
-                            stop_all("follow visual refused, cancelled or interval elapsed")
-                        end
+                        if not yes(v) or not now or not current(generation) then
+                            stop_all("follow visual refused or cancelled")
+                        elseif not lease_live(now) then stop_all("ride window or Follow lease ended during visual update") end
                     end
                 end
             end

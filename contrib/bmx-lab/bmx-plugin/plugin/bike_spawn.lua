@@ -4,6 +4,10 @@ local M=require("./force_math")
 local G=require("./bike_geometry")
 local Visual=require("./bike_visual")
 local S={} local Runtime={} Runtime.__index=Runtime
+-- The visual envelope around the original spawn COM (B8). Trial copies change
+-- it only by the same reviewed substitution as the gate literals.
+local ENVELOPE_M=2
+S.limits=table.freeze({envelope_m=ENVELOPE_M})
 local function xyz(v) return {v.x,v.y,v.z} end
 local function vec(v) return typeof(v)=="vector" and M.vec(xyz(v),100000) end
 local function canonical(x)
@@ -115,7 +119,7 @@ function Runtime:_follow_visual(sample,now_ms)
         return false,"Body observation regressed or changed within its epoch"
     end
     local delta=M.sub(xyz(sample.position),M.add(self.root,M.turn(self.rotation,G.com)))
-    if M.length(delta)>2 then return false,"Body left the two-metre spawn envelope" end
+    if M.length(delta)>ENVELOPE_M then return false,"Body left the "..ENVELOPE_M.." m spawn envelope" end
     if order==0 then
         -- The first explicit call establishes a Lua wall baseline, not native freshness.
         local observed=self.follow_observed_at or now_ms
@@ -246,7 +250,7 @@ function Runtime:_update(dt)
         end
         -- A bounded unmounted test; no controller is allowed to chase a lost body.
         local delta=M.sub(xyz(sample.position),M.add(self.root,M.turn(self.rotation,G.com)))
-        if M.length(delta)>2 then self:stop("body left the two-metre spawn envelope") return end
+        if M.length(delta)>ENVELOPE_M then self:stop("body left the "..ENVELOPE_M.." m spawn envelope") return end
         local placed,why=self:_place(assert(Visual.from_sample(sample)))
         if not placed then self:stop(why) return end
         self.sample=sample self.read_wall=self.wall self.updates+=1

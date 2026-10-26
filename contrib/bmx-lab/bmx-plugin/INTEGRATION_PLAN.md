@@ -429,7 +429,7 @@ Purpose: run the tracked core in game for the first time, and measure what M3 to
 - Record: every stop reason with its counter; each body step without a fresh report; the largest
   report gap; every `grounded` change with its serial and whether that step had a fresh report;
   the body height over the window (S8: does native collision hold the body under zero force?).
-- Pass: the ride stops only with "500ms published qualification interval ended"; every observed
+- Pass: the ride stops only with a reason that begins "ride window or Follow lease ended"; every observed
   body step was one serial on; every receipt was `applied`; no `expired` or `rejected` receipt and no
   "measured native body epoch expired" refusal; `submitted` equals `acknowledged` (or the last one
   closes as `parked_without_successor`); `force_cleanup_clear` true; then all of M1's cleanup checks.

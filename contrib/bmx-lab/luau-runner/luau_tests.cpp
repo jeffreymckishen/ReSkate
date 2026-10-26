@@ -182,9 +182,11 @@ void stage_qualified_ride(const std::filesystem::path& plugin_folder, const std:
     const fs::path fixture = "ride_runtime_qualified_fixture.lua";
     const fs::path category_fixture = "contact_runtime_category_qualified_fixture.lua";
     const fs::path pose_fixture = "mounted_pose_qualified_fixture.lua";
+    const fs::path floor_fixture = "bike_spawn_floor_qualified_fixture.lua";
+    const fs::path follow_fixture = "bike_runtime_core_provisional_follow_fixture.lua";
     const fs::path manifest = ".bmx-qualified-ride-files-v1";
     constexpr std::string_view manifest_header = "bmx-qualified-ride-files-v1";
-    for (const auto& planted : {fixture, category_fixture, pose_fixture})
+    for (const auto& planted : {fixture, category_fixture, pose_fixture, floor_fixture, follow_fixture})
         if (fs::exists(source / planted))
             throw std::runtime_error(planted.string() + " belongs only in test copies, not in " + source.generic_string());
     const auto wanted = fs::weakly_canonical(copy_folder);
@@ -242,6 +244,30 @@ void stage_qualified_ride(const std::filesystem::path& plugin_folder, const std:
             throw std::runtime_error("mounted_pose.lua must keep exactly one '" + std::string(inactive_pose) + "' gate");
         pose.replace(pose_gate, inactive_pose.size(), "local MOUNTED_POSE_QUALIFIED = true");
         files.emplace(pose_fixture, std::move(pose));
+    }
+
+    // Floor placement stays inactive in the shipped module. Its suite alone
+    // receives the reviewed single-literal trial substitution, without an API option.
+    const auto spawn_file = files.find("bike_spawn.lua");
+    if (spawn_file != files.end()) {
+        auto spawn = spawn_file->second;
+        constexpr std::string_view inactive_floor = "local FLOOR_SPAWN_QUALIFIED=false";
+        const auto floor_gate = spawn.find(inactive_floor);
+        if (floor_gate == std::string::npos || spawn.find(inactive_floor, floor_gate + inactive_floor.size()) != std::string::npos)
+            throw std::runtime_error("bike_spawn.lua must keep exactly one '" + std::string(inactive_floor) + "' gate");
+        spawn.replace(floor_gate, inactive_floor.size(), "local FLOOR_SPAWN_QUALIFIED=true");
+        files.emplace(floor_fixture, std::move(spawn));
+    }
+
+    const auto core_file = files.find("bike_runtime_core.lua");
+    if (core_file != files.end()) {
+        auto core = core_file->second;
+        constexpr std::string_view inactive_follow = "local M1_PROVISIONAL_FOLLOW_OFFSET=false";
+        const auto follow_gate = core.find(inactive_follow);
+        if (follow_gate == std::string::npos || core.find(inactive_follow, follow_gate + inactive_follow.size()) != std::string::npos)
+            throw std::runtime_error("bike_runtime_core.lua must keep exactly one '" + std::string(inactive_follow) + "' gate");
+        core.replace(follow_gate, inactive_follow.size(), "local M1_PROVISIONAL_FOLLOW_OFFSET=true");
+        files.emplace(follow_fixture, std::move(core));
     }
 
     std::set<fs::path> owned;
@@ -501,13 +527,56 @@ void category_manifest(const std::filesystem::path& scratch) {
     expect_refused(source, scratch / "planted-copy", "belongs only in test copies");
 }
 
+// The floor gate is a separate test-only copy, with the same exact-file ownership
+// and source-byte checks. Even a true, duplicate or planted gate is refused first.
+void floor_manifest(const std::filesystem::path& scratch) {
+    const auto source = scratch / "source";
+    make_stand_in(source);
+    constexpr std::string_view spawn = "local FLOOR_SPAWN_QUALIFIED=false\r\nreturn FLOOR_SPAWN_QUALIFIED\r\n";
+    constexpr std::string_view qualified = "local FLOOR_SPAWN_QUALIFIED=true\r\nreturn FLOOR_SPAWN_QUALIFIED\r\n";
+    write_file(source / "bike_spawn.lua", spawn);
+    constexpr std::string_view core = "local M1_PROVISIONAL_FOLLOW_OFFSET=false\r\nreturn M1_PROVISIONAL_FOLLOW_OFFSET\r\n";
+    constexpr std::string_view core_qualified = "local M1_PROVISIONAL_FOLLOW_OFFSET=true\r\nreturn M1_PROVISIONAL_FOLLOW_OFFSET\r\n";
+    write_file(source / "bike_runtime_core.lua", core);
+    const auto before = inventory(source);
+    const auto destination = scratch / "copy";
+    stage_qualified_ride(source, destination);
+    const auto staged = inventory(destination);
+    expect(staged.at("bike_spawn.lua") == std::string(spawn), "canonical Spawn changed in the copy");
+    expect(staged.at("bike_runtime_core.lua") == std::string(core), "canonical Core changed in the copy");
+    expect(staged.at("bike_runtime_core_provisional_follow_fixture.lua") == std::string(core_qualified), "provisional Follow fixture changed more than one literal");
+    expect(staged.at("bike_spawn_floor_qualified_fixture.lua") == std::string(qualified), "floor fixture changed more than one literal");
+    expect(staged.at(".bmx-qualified-ride-files-v1") == std::string(
+        "bmx-qualified-ride-files-v1\nbike_runtime_core.lua\nbike_runtime_core_provisional_follow_fixture.lua\nbike_spawn.lua\nbike_spawn_floor_qualified_fixture.lua\nforce_math.lua\nride_runtime.lua\nride_runtime_qualified_fixture.lua\n"),
+        "floor fixture missing from exact ownership manifest");
+    expect(staged.size() == 8, "floor stage has unexpected entries");
+    stage_qualified_ride(source, destination);
+    expect(inventory(destination) == staged && inventory(source) == before, "floor rerun changed source or destination bytes");
+    write_file(source / "bike_spawn.lua", qualified);
+    expect_refused(source, destination, "must keep exactly one");
+    write_file(source / "bike_spawn.lua", std::string(spawn) + std::string(spawn));
+    expect_refused(source, destination, "must keep exactly one");
+    write_file(source / "bike_spawn.lua", spawn);
+    write_file(source / "bike_runtime_core.lua", core_qualified);
+    expect_refused(source, destination, "must keep exactly one");
+    write_file(source / "bike_runtime_core.lua", std::string(core) + std::string(core));
+    expect_refused(source, destination, "must keep exactly one");
+    write_file(source / "bike_runtime_core.lua", core);
+    write_file(source / "bike_runtime_core_provisional_follow_fixture.lua", core_qualified);
+    expect_refused(source, scratch / "core-planted-copy", "belongs only in test copies");
+    expect(std::filesystem::remove(source / "bike_runtime_core_provisional_follow_fixture.lua"), "could not remove the owned Core plant");
+    write_file(source / "bike_spawn_floor_qualified_fixture.lua", qualified);
+    expect_refused(source, scratch / "planted-copy", "belongs only in test copies");
+}
+
 void run_stage_regression(std::string_view name, const std::filesystem::path& scratch) {
     void (*stage_case)(const std::filesystem::path&) = nullptr;
     if (name == "unrelated-destination") stage_case = unrelated_destination;
     else if (name == "planted-fixture") stage_case = planted_fixture;
     else if (name == "exact-manifest") stage_case = exact_manifest;
     else if (name == "category-manifest") stage_case = category_manifest;
-    else throw std::runtime_error("the stage regression cases are unrelated-destination, planted-fixture, exact-manifest and category-manifest");
+    else if (name == "floor-manifest") stage_case = floor_manifest;
+    else throw std::runtime_error("the stage regression cases are unrelated-destination, planted-fixture, exact-manifest, category-manifest and floor-manifest");
     refuse_reparse_path(scratch);
     if (std::filesystem::exists(scratch))
         throw std::runtime_error("the stage regression scratch folder must not exist yet, so a case never removes "

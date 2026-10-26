@@ -12,6 +12,9 @@ local MAX=9007199254740991
 -- Source proposal only. No option, public request or manifest can open this.
 -- The separate Ride469D activation literal also remains false.
 local RIDE_COMPOSITION_QUALIFIED=false
+-- M1-derived provisional pelvis target P=(0,.95,-.10) in the body frame.
+-- Only a reviewed trial enables P-G.com; the tracked -G.com stays unchanged.
+local M1_PROVISIONAL_FOLLOW_OFFSET=false
 local receipt_revisions={"final_revision","final_native_epoch","returned_revision"}
 local receipt_flags={"claim_known","orphaned","park_observed","native_retirement_known","terminal"}
 
@@ -868,7 +871,9 @@ local function handoff_and_follow()
     -- The policy pair CE2 ran in game. callback_entry needs explicit owned_body cleanup;
     -- it changes no lease, quota, permission or receipt shape (contrib/plugin-body-follow.md).
     local reserved=call("follow.reserve",lookup("world.physics.reserve_follow"),T.body,
-        {offset_from_com=vector.create(-G.com[1],-G.com[2],-G.com[3]),root_in_body={0,0,0,1},cleanup="owned_body",motion_policy="callback_entry"})
+        {offset_from_com=M1_PROVISIONAL_FOLLOW_OFFSET
+            and vector.create(-G.com[1],.95-G.com[2],-.10-G.com[3])
+            or vector.create(-G.com[1],-G.com[2],-G.com[3]),root_in_body={0,0,0,1},cleanup="owned_body",motion_policy="callback_entry"})
     -- Adopt any returned userdata BEFORE inspecting why or cancellation.
     if reserved[1] and typeof(reserved[2])=="userdata" then T.follow=reserved[2];T.reserve_unknown=false end
     local after=clock()

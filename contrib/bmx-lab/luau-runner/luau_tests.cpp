@@ -170,8 +170,9 @@ bool has_directory_ancestor(const std::filesystem::path& path, const std::filesy
 // The copy the qualified Ride suites run against, made the way
 // Extension/Plugins/Test/bmx_contact_runtime_host_fixture.inc makes it in memory: every plugin module
 // byte for byte, plus ride_runtime_qualified_fixture.lua, which is ride_runtime.lua with its one
-// inactive gate flipped, plus an optional qualified Contact copy for the category-lane suites.
-// Neither fixture may exist in the plugin itself; both are refused there.
+// inactive gate flipped, plus an optional qualified Contact copy for the category-lane suites and an
+// optional qualified mounted_pose copy for its suite. No fixture may exist in the plugin itself; each
+// is refused there.
 // A rerun owns only the manifest's exact file set; a fixture filename alone proves no ownership.
 void stage_qualified_ride(const std::filesystem::path& plugin_folder, const std::filesystem::path& copy_folder) {
     namespace fs = std::filesystem;
@@ -180,12 +181,12 @@ void stage_qualified_ride(const std::filesystem::path& plugin_folder, const std:
     const auto source = open_folder(plugin_folder);
     const fs::path fixture = "ride_runtime_qualified_fixture.lua";
     const fs::path category_fixture = "contact_runtime_category_qualified_fixture.lua";
+    const fs::path pose_fixture = "mounted_pose_qualified_fixture.lua";
     const fs::path manifest = ".bmx-qualified-ride-files-v1";
     constexpr std::string_view manifest_header = "bmx-qualified-ride-files-v1";
-    if (fs::exists(source / fixture))
-        throw std::runtime_error(fixture.string() + " belongs only in test copies, not in " + source.generic_string());
-    if (fs::exists(source / category_fixture))
-        throw std::runtime_error(category_fixture.string() + " belongs only in test copies, not in " + source.generic_string());
+    for (const auto& planted : {fixture, category_fixture, pose_fixture})
+        if (fs::exists(source / planted))
+            throw std::runtime_error(planted.string() + " belongs only in test copies, not in " + source.generic_string());
     const auto wanted = fs::weakly_canonical(copy_folder);
     if (within(source, wanted) || within(wanted, source) || has_directory_ancestor(wanted, source) ||
         (fs::exists(wanted) && has_directory_ancestor(source, wanted)))
@@ -230,6 +231,17 @@ void stage_qualified_ride(const std::filesystem::path& plugin_folder, const std:
             throw std::runtime_error("contact_runtime.lua must keep exactly one '" + std::string(inactive_category) + "' gate");
         contact.replace(category_gate, inactive_category.size(), "local CATEGORY_WHEEL_LANE_QUALIFIED=true");
         files.emplace(category_fixture, std::move(contact));
+    }
+    // The same for the mounted pose: its gate stays false in the plugin until a game run shows the pose.
+    const auto pose_file = files.find("mounted_pose.lua");
+    if (pose_file != files.end()) {
+        auto pose = pose_file->second;
+        constexpr std::string_view inactive_pose = "local MOUNTED_POSE_QUALIFIED = false";
+        const auto pose_gate = pose.find(inactive_pose);
+        if (pose_gate == std::string::npos || pose.find(inactive_pose, pose_gate + inactive_pose.size()) != std::string::npos)
+            throw std::runtime_error("mounted_pose.lua must keep exactly one '" + std::string(inactive_pose) + "' gate");
+        pose.replace(pose_gate, inactive_pose.size(), "local MOUNTED_POSE_QUALIFIED = true");
+        files.emplace(pose_fixture, std::move(pose));
     }
 
     std::set<fs::path> owned;
@@ -303,6 +315,10 @@ constexpr std::string_view regression_fixture =
     "-- stand-in for ride_runtime.lua\nlocal ACTIVATION_QUALIFIED = true\nreturn { qualified = ACTIVATION_QUALIFIED }\n";
 constexpr std::string_view regression_math = "local force_math = {}\r\nreturn force_math\r\n";
 constexpr std::string_view regression_unrelated = "return { owner = \"someone else\" }\n";
+constexpr std::string_view regression_pose =
+    "-- stand-in for mounted_pose.lua\nlocal MOUNTED_POSE_QUALIFIED = false\nreturn { qualified = MOUNTED_POSE_QUALIFIED }\n";
+constexpr std::string_view regression_pose_fixture =
+    "-- stand-in for mounted_pose.lua\nlocal MOUNTED_POSE_QUALIFIED = true\nreturn { qualified = MOUNTED_POSE_QUALIFIED }\n";
 
 void expect(bool condition, const std::string& failure) {
     if (!condition) throw std::runtime_error("stage regression: " + failure);
@@ -402,6 +418,28 @@ void planted_fixture(const std::filesystem::path& scratch) {
     const auto clean = scratch / "clean-source";
     make_stand_in(clean);
     stage_qualified_ride(clean, scratch / "clean-copy");
+
+    // The mounted pose fixture is refused in the plugin the same way, and a plugin with mounted_pose.lua
+    // stages it with only the gate flipped; a second gate is refused.
+    const auto pose_planted = scratch / "pose-planted-source";
+    make_stand_in(pose_planted);
+    write_file(pose_planted / "mounted_pose.lua", regression_pose);
+    write_file(pose_planted / "mounted_pose_qualified_fixture.lua", regression_pose_fixture);
+    expect_refused(pose_planted, scratch / "pose-planted-copy", "belongs only in test copies");
+
+    const auto pose_source = scratch / "pose-source";
+    make_stand_in(pose_source);
+    write_file(pose_source / "mounted_pose.lua", regression_pose);
+    stage_qualified_ride(pose_source, scratch / "pose-copy");
+    const auto pose_copy = inventory(scratch / "pose-copy");
+    const auto staged_pose = pose_copy.find("mounted_pose_qualified_fixture.lua");
+    expect(staged_pose != pose_copy.end() && staged_pose->second == std::string(regression_pose_fixture),
+        "the mounted pose fixture is not mounted_pose.lua with only its gate flipped");
+
+    const auto pose_twice = scratch / "pose-twice-source";
+    make_stand_in(pose_twice);
+    write_file(pose_twice / "mounted_pose.lua", std::string(regression_pose) + "local MOUNTED_POSE_QUALIFIED = false\n");
+    expect_refused(pose_twice, scratch / "pose-twice-copy", "must keep exactly one");
 }
 
 // A fresh stage holds exactly the stand-in's .lua modules byte for byte, the fixture with only its gate

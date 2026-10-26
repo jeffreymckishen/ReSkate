@@ -45,9 +45,11 @@ Before every run that needs it, the `bmx_lua.stage_qualified_ride` fixture copie
 modules byte for byte into `build/luau-runner/qualified-plugin/` and writes the fixture there as
 `ride_runtime.lua` with its single `local ACTIVATION_QUALIFIED = false` flipped to `true`, as
 `Extension/Plugins/Test/bmx_contact_runtime_host_fixture.inc` does in memory. It refuses if that
-literal is missing or appears twice, or if the fixture already exists in the plugin. Any suite that
-mentions the fixture, `./ride_runtime_tests` or `./ride_runtime_join_tests` runs against that copy;
-the others run against the plugin folder itself. The production gates (`ACTIVATION_QUALIFIED`,
+literal is missing or appears twice, or if the fixture already exists in the plugin. The same copy also
+holds `contact_runtime_category_qualified_fixture.lua` and, when the plugin has `mounted_pose.lua`,
+`mounted_pose_qualified_fixture.lua`, each its module with its one gate flipped and each refused in the
+plugin. Any suite that mentions a fixture, `./ride_runtime_tests` or `./ride_runtime_join_tests` runs
+against that copy; the others run against the plugin folder itself. The production gates (`ACTIVATION_QUALIFIED`,
 `RIDE_COMPOSITION_QUALIFIED`) are never changed in the source.
 
 ## What it is not
@@ -86,7 +88,9 @@ clears the three folders first.
   filename heuristic took that as ownership and deleted every direct `.lua` file), or dropped into a
   real earlier copy whose manifest does not list it.
 - `stage_refuses_planted_fixture`: a source with `ride_runtime_qualified_fixture.lua` planted in it is
-  refused before any copy folder exists, and the same stand-in without the plant stages.
+  refused before any copy folder exists, and the same stand-in without the plant stages. A planted
+  `mounted_pose_qualified_fixture.lua` is refused the same way, a stand-in `mounted_pose.lua` stages
+  its fixture with only the gate flipped, and one with the gate twice is refused.
 - `stage_writes_exact_manifest`: a fresh stage holds exactly the stand-in's `.lua` modules byte for
   byte, the fixture with only its gate flipped and a manifest naming exactly those three files. A
   rerun leaves the copy identical, and a module dropped from the source leaves the copy and its

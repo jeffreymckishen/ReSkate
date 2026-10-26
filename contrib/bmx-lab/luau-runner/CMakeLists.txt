@@ -76,7 +76,7 @@ foreach(suite IN LISTS luau_runner_suites)
     get_filename_component(module "${suite}" NAME_WLE)
     file(READ "${suite}" suite_text)
     # Requiring the fixture, or a suite that requires it, means running against the copy.
-    string(REGEX MATCH "ride_runtime_qualified_fixture|contact_runtime_category_qualified_fixture|\\./ride_runtime_tests|\\./ride_runtime_join_tests"
+    string(REGEX MATCH "ride_runtime_qualified_fixture|contact_runtime_category_qualified_fixture|mounted_pose_qualified_fixture|\\./ride_runtime_tests|\\./ride_runtime_join_tests"
         needs_qualified "${suite_text}")
     if(needs_qualified)
         add_test(NAME bmx_lua.${module} COMMAND bmx_luau_tests "${luau_runner_qualified}" "${module}")

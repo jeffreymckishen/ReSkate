@@ -217,7 +217,7 @@ void the_tracked_passive_sync_trial_runs_once_and_keeps_observation_separate() {
     {
         Fixture f("two-preallocation-refusals", exact);
         auto& g = f.environment.fake;
-        g.test_body_create_refusal = "waiting for a fresh qualified 60 Hz physics step";
+        g.test_body_create_refusal = "body_preallocation_unavailable";
         f.button("arm"); f.step(7000); check(!g.body_create_calls, "open menu cannot create before either attempt");
         f.admit(); check(g.body_create_calls == 1 && !g.body_creates, "first exact refusal allocates no body");
         for (unsigned i = 0; i < 5; ++i) f.step();

@@ -355,7 +355,7 @@ struct FakeGame final : Game {
         out.routing = {128, 200, 201, 202, 203, true};
     }
     bool test_body_release_refused{};
-    std::string test_body_create_refusal;
+    std::string test_body_create_refusal, test_body_submit_refusal;
     unsigned body_create_calls{}, body_read_calls{};
     bool test_body_read_unavailable{};
     bool batch_ground_plane{};
@@ -391,6 +391,7 @@ struct FakeGame final : Game {
     std::string body_submit(std::uint64_t owner, const owned_body::Handle& h, const owned_body::Command& command, std::uint64_t& sequence) override {
         ++body_submit_entries; // Count entry even when the backend rejects a zero/invalid packet.
         sequence = 0;
+        if (!test_body_submit_refusal.empty()) return test_body_submit_refusal;
         auto* b = body_of(owner, h);
         if (!b || b->released || body_command_sequence == std::numeric_limits<std::uint64_t>::max() ||
             !b->mailbox.submit(command, b->sample.epoch, 0, body_command_sequence + 1)) return "owner, generation or packet";
@@ -1239,6 +1240,7 @@ struct FakeGame final : Game {
     // The game menu, its item grid, what is worn, and a screen capture of something turning once
     // every `turning` frames (reskate.capture, room.turn, menu.game/grid, outfit.board).
     GameMenu menu_now;
+    unsigned menu_reads{};
     std::optional<MenuGrid> grid_now;
     std::vector<WornItem> board_now, outfit_now;
     std::vector<std::string> render_settings; // more settings, each on
@@ -1253,7 +1255,7 @@ struct FakeGame final : Game {
         calls.push_back(std::format("turn {:.2f} {}", value, stick));
         return {};
     }
-    GameMenu game_menu() override { return menu_now; }
+    GameMenu game_menu() override { ++menu_reads; return menu_now; }
     std::optional<MenuGrid> menu_grid() override { return grid_now; }
     std::vector<WornItem> board_parts() override { return board_now; }
     std::vector<WornItem> outfit_worn() override { return outfit_now; }
@@ -1844,6 +1846,61 @@ void sync_probe_terminal_partial_facts_and_body_release_remain_distinct() {
     }
 }
 
+void owned_body_refusal_tokens_keep_return_shapes_and_no_command() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    game.test_body_create_refusal = "body_preallocation_unavailable";
+    Host host(environment, Side::client);
+    host.apply({script("body-refusal-tokens", R"(
+        local P, v = reskate.world.physics, vector.create
+        local definition = {mass=12, inertia=v(2,3,4), position=v(1,2,3), rotation={0,0,0,1},
+            capsules={{a=v(0,0,0), b=v(0,.5,0), radius=.1}}}
+        local denied = table.pack(P.create(definition))
+        assert(denied.n == 2 and denied[1] == nil and denied[2] == "body_preallocation_unavailable")
+        reskate.log("body create refusal preserved")
+        local body, sample
+        reskate.console.command("body_refusal_setup", "x", function()
+            body = assert(P.create(definition))
+            sample = assert(P.read(body))
+            reskate.log("body refusal setup complete")
+        end)
+        local function refused(expected)
+            local row = table.pack(P.submit(body, sample.epoch, {force=v(1,0,0)}))
+            assert(row.n == 2 and row[1] == false and row[2] == expected)
+            local receipt = assert(P.receipt(body))
+            assert(receipt.sequence == "0" and receipt.outcome == "none" and receipt.requested_serial == "0"
+                and receipt.produced_serial == "0" and receipt.force_attempted == false and receipt.torque_attempted == false)
+            reskate.log("body submit refusal preserved: " .. expected)
+        end
+        reskate.console.command("body_clock_refusal", "x", function() refused("body_clock_unavailable") end)
+        reskate.console.command("body_epoch_refusal", "x", function() refused("body_epoch_expired") end)
+    )", R"("world.physics", "console")")});
+    running(host, "body-refusal-tokens", environment);
+    check(environment.logged("body create refusal preserved") && game.body_create_calls == 1 && !game.body_creates &&
+        game.owned.empty() && !game.body_command_sequence && !game.body_submissions && !game.body_submit_entries,
+        "A typed creation refusal returns nil/reason without allocating\n" + environment.all());
+    game.test_body_create_refusal.clear();
+    check(host.run_console("body_refusal_setup") && environment.logged("body refusal setup complete") &&
+        game.body_create_calls == 2 && game.body_creates == 1 && game.owned.size() == 1,
+        "The refusal fixture has one valid measured body\n" + environment.all());
+    const auto before = game.owned.at(1).mailbox;
+    unsigned attempts{};
+    for (const auto& trial : {std::pair{"body_clock_refusal", "body_clock_unavailable"},
+        std::pair{"body_epoch_refusal", "body_epoch_expired"}}) {
+        game.test_body_submit_refusal = trial.second;
+        check(host.run_console(trial.first) && environment.logged(std::string("body submit refusal preserved: ") + trial.second),
+            "A typed submit refusal keeps false/reason and an empty receipt\n" + environment.all());
+        ++attempts;
+        const auto& after = game.owned.at(1).mailbox;
+        check(game.body_submit_entries == attempts && !game.body_submissions && !game.body_command_sequence &&
+            after.head == before.head && after.count == before.count && after.inbox == before.inbox &&
+            after.sequence == before.sequence && after.last_submitted == before.last_submitted &&
+            after.command.epoch == before.command.epoch && after.pending == before.pending &&
+            after.producing == before.producing && after.failed == before.failed,
+            "A refused command assigns no sequence and leaves mailbox admission unchanged");
+    }
+}
+
 void native_body_permission_and_client_boundary_are_enforced() {
     TestEnvironment environment; Host host(environment, Side::client);
     host.apply({script("no-body-permission", R"(
@@ -1854,7 +1911,8 @@ void native_body_permission_and_client_boundary_are_enforced() {
         end
     )")});
     running(host, "no-body-permission", environment);
-    check(environment.fake.body_creates == 0 && environment.fake.body_submissions == 0, "missing permission reached Game");
+    check(!environment.fake.body_create_calls && !environment.fake.body_submit_entries &&
+        !environment.fake.body_creates && !environment.fake.body_submissions, "missing permission reached Game");
     TestEnvironment server_environment; Host server(server_environment, Side::server);
     auto server_plugin = package("server-body", {{manifest_file, manifest(R"("world.physics","world.raycast")", "server")}, {"plugin/main.lua", R"(
         local ok,why=pcall(reskate.world.physics.create,{})
@@ -1863,7 +1921,7 @@ void native_body_permission_and_client_boundary_are_enforced() {
         assert(not ok and string.find(why,"client phase only"))
     )"}});
     server.apply({server_plugin}); running(server, "server-body", server_environment);
-    check(server_environment.fake.body_creates == 0, "server reached native body creation");
+    check(!server_environment.fake.body_create_calls, "server reached native body creation");
 }
 
 void native_actions_keep_opaque_requests_and_observed_receipts_distinct() {
@@ -6381,6 +6439,64 @@ void declared_board_colours_through_the_api() {
     check(environment.fake.declared_holds.empty(), "Unloading lets go of every one (the game puts them back to their defaults)");
 }
 
+void game_menu_distinguishes_unknown_from_closed() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    Host host(environment, Side::client);
+    host.apply({script("menu-reader", R"(
+        local function snapshot(known, open, skaters, count)
+            local row = reskate.menu.game()
+            local fields = 0
+            for key in pairs(row) do
+                assert(key == "known" or key == "open" or key == "skaters" or key == "buttons", key)
+                fields += 1
+            end
+            assert(fields == 4 and type(row.known) == "boolean" and type(row.open) == "boolean"
+                and type(row.skaters) == "boolean" and type(row.buttons) == "table")
+            assert(row.known == known and row.open == open and row.skaters == skaters and #row.buttons == count)
+            return row
+        end
+        reskate.console.command("menu_unknown", "x", function()
+            snapshot(false, false, false, 0)
+            reskate.log("unknown menu preserved")
+        end)
+        reskate.console.command("menu_closed", "x", function()
+            snapshot(true, false, false, 0)
+            reskate.log("known closed menu preserved")
+        end)
+        reskate.console.command("menu_open", "x", function()
+            local row = snapshot(true, true, true, 2)
+            assert(row.buttons[1] == "Skaters" and row.buttons[2] == "Board")
+            reskate.log("known open menu preserved")
+        end)
+        reskate.console.command("menu_buttons", "x", function()
+            local row = snapshot(true, true, false, 64)
+            assert(row.buttons[1] == "1" and row.buttons[64] == "64")
+            reskate.log("menu button bound preserved")
+        end)
+    )", R"("menu", "console")"), script("menu-denied", R"(
+        local ok, why = pcall(reskate.menu.game)
+        assert(not ok and why:find('needs the "menu" permission', 1, true), tostring(why))
+        reskate.log("menu permission denied")
+    )")});
+    running(host, "menu-reader", environment);
+    running(host, "menu-denied", environment);
+    check(environment.logged("menu permission denied") && game.menu_reads == 0,
+          "Without menu permission the backend is not entered\n" + environment.all());
+    check(host.run_console("menu_unknown") && environment.logged("unknown menu preserved"),
+          "An unknown menu retains every old field\n" + environment.all());
+    game.menu_now = {false, true, {}, true};
+    check(host.run_console("menu_closed") && environment.logged("known closed menu preserved"),
+          "A known closed menu still suppresses Skaters\n" + environment.all());
+    game.menu_now = {true, true, {"Skaters", "Board"}, true};
+    check(host.run_console("menu_open") && environment.logged("known open menu preserved"),
+          "A known open menu retains the page and button order\n" + environment.all());
+    game.menu_now = {true, false, {}, true};
+    for (unsigned i = 1; i <= 65; ++i) game.menu_now.buttons.push_back(std::to_string(i));
+    check(host.run_console("menu_buttons") && environment.logged("menu button bound preserved") && game.menu_reads == 4,
+          "The old button limit and call count remain unchanged\n" + environment.all());
+}
+
 void the_wider_set_reaches_the_game() {
     TestEnvironment environment;
     auto& game = environment.fake;
@@ -8322,9 +8438,9 @@ void bmx_lua_spawn_uses_owned_chassis_and_measured_part_placement() {
         if (scenario==1) e.fake.test_entity_boxes.erase("reskate/bmx/fork");
         if (scenario==2) e.fake.test_entity_boxes["reskate/bmx/rear_wheel"]={Vec3{-.2f,-.34f,-.34f},Vec3{.2f,.34f,.34f}};
         if (scenario==3) e.fake.test_entity_fail_id=3;
-        if (scenario==10) e.fake.test_body_create_refusal="waiting for a fresh qualified 60 Hz physics step";
+        if (scenario==10) e.fake.test_body_create_refusal="body_preallocation_unavailable";
         if (scenario==11) e.fake.test_body_create_refusal="partial native body creation retained in quarantine; allocation retry prohibited";
-        if (scenario==12) e.fake.test_body_create_refusal="waiting for a fresh qualified 60 Hz physics step";
+        if (scenario==12) e.fake.test_body_create_refusal="body_preallocation_unavailable";
         Host h(e,Side::client); h.apply({package(id,files)}); running(h,id,e);
         bounded_ticks(h,e,3); check(!e.fake.body_creates && e.fake.entities.empty(),"startup must not spawn");
         check(h.run_console("bike-spawn"),"explicit request reaches actual Lua");
@@ -8409,7 +8525,7 @@ void bmx_lua_spawn_uses_owned_chassis_and_measured_part_placement() {
         if (scenario==2) e.fake.test_entity_boxes[frame]={Vec3{std::numeric_limits<float>::infinity(),0,0},Vec3{1,1,1}};
         if (scenario==3) e.fake.test_entity_boxes.erase(std::string(world::blueprints[7]));
         if (scenario==4) e.fake.test_entity_boxes.erase(frame);
-        if (scenario==5) e.fake.test_body_create_refusal="waiting for a fresh qualified 60 Hz physics step";
+        if (scenario==5) e.fake.test_body_create_refusal="body_preallocation_unavailable";
         Host h(e,Side::client);h.apply({package(id,files)});running(h,id,e);
         check(h.run_console("bike-spawn"),"bounded preflight Arm");
         if (scenario<=2) {
@@ -8560,6 +8676,7 @@ int main() {
         run(plugins_own_typed_bodies_and_acknowledge_measured_results);
         run(plugins_pipeline_native_steps_and_select_owned_receipts);
         run(plugins_can_inspect_later_partial_failure_without_acknowledging_unmeasured_head);
+        run(owned_body_refusal_tokens_keep_return_shapes_and_no_command);
         run(native_body_permission_and_client_boundary_are_enforced);
         run(sync_probe_observations_are_opaque_bounded_and_copied);
         run(sync_probe_permissions_client_phase_and_transport_are_enforced);
@@ -8648,6 +8765,7 @@ int main() {
         run(plugins_follow_the_session_and_message_each_other);
         run(plugins_call_and_hear_each_other);
         run(web_requests_go_only_to_listed_domains);
+        run(game_menu_distinguishes_unknown_from_closed);
         run(the_wider_set_reaches_the_game);
         run(declared_board_colours_through_the_api);
         run(key_names_become_binds);

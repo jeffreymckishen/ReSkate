@@ -95,7 +95,7 @@ reskate.on("tick",function(dt_ms)
             capsules={{a=V(0,-.25,0),b=V(0,.25,0),radius=.12}}})
         reskate.log("owned-geometry-native-v1 create accepted="..tostring(body~=nil).." detail="..tostring(why))
         if not body then
-            retry_clock=why=="waiting for a fresh qualified 60 Hz physics step"
+            retry_clock=why=="body_preallocation_unavailable"
             phase,detail="refused",tostring(why); return
         end
         phase,detail="waiting sample","No command is published."

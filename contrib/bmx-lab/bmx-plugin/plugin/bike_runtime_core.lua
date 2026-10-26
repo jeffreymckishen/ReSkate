@@ -494,7 +494,7 @@ for _,method in ipairs({"create","read","release"}) do
         if name=="release" and T.transferred then return false,"spawn no longer owns body release" end
         local r=call("spawn.body."..name,lookup("world.physics."..name),...)
         if name=="create" and r[1] and r.n==3 and r[2]==nil
-            and r[3]=="waiting for a fresh qualified 60 Hz physics step" then
+            and r[3]=="body_preallocation_unavailable" then
             T.preallocation_refused=true
         end
         if name=="release" then

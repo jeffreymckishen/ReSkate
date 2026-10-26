@@ -15,7 +15,12 @@ enum class Failure {
     none, invalid, unavailable, observation_changed, budget, ray_limit, backend,
     client_phase_unavailable, local_actor_exclusion_unavailable,
     query_preconditions_unavailable, query_backend_exception,
-    body_exclusions_unavailable, contact_measurement_unavailable
+    body_exclusions_unavailable, contact_measurement_unavailable,
+    // Per ray: why one actual nearest hit was refused (Probe::failure).
+    owned_body_hit, hit_identity_unqualified,
+    // The named-actor-category requirement.
+    named_actor_categories_unavailable, hit_categories_unavailable, hit_categories_inconsistent,
+    hit_named_actor_category
 };
 inline const char* name(Failure value) noexcept {
     switch (value) {
@@ -32,17 +37,32 @@ inline const char* name(Failure value) noexcept {
     case Failure::query_backend_exception: return "query_backend_exception";
     case Failure::body_exclusions_unavailable: return "body_exclusions_unavailable";
     case Failure::contact_measurement_unavailable: return "contact_measurement_unavailable";
+    case Failure::owned_body_hit: return "owned_body_hit";
+    case Failure::hit_identity_unqualified: return "hit_identity_unqualified";
+    case Failure::named_actor_categories_unavailable: return "named_actor_categories_unavailable";
+    case Failure::hit_categories_unavailable: return "hit_categories_unavailable";
+    case Failure::hit_categories_inconsistent: return "hit_categories_inconsistent";
+    case Failure::hit_named_actor_category: return "hit_named_actor_category";
     }
     return "query_unavailable";
 }
+// The reasons a probe may give for its one ray. Each names an actual nearest hit
+// that was refused, so each needs that ray's actual cast. An identity lost while
+// reading a hit's optional values has no reason here: that loss also fails the
+// fence execute runs next, so it is reported as an observation change.
+constexpr bool per_ray(Failure value) noexcept {
+    return value == Failure::owned_body_hit || value == Failure::hit_identity_unqualified;
+}
 // A fixed native query filter, chosen by name. The Build layer owns each
 // preset's native value. Choosing one selects what the native ray tests; it
-// does not classify what a hit belongs to and excludes no actor.
-enum class QueryPreset : std::uint8_t { camera, terrain };
+// does not classify what a hit belongs to and excludes no actor. all is a
+// diagnostic filter that tests every shape with a nonzero category.
+enum class QueryPreset : std::uint8_t { camera, terrain, all };
 inline const char* name(QueryPreset value) noexcept {
     switch (value) {
     case QueryPreset::camera: return "camera";
     case QueryPreset::terrain: return "terrain";
+    case QueryPreset::all: return "all";
     }
     return nullptr; // Not a preset; callers refuse it.
 }
@@ -60,6 +80,12 @@ struct Hit {
     // It says nothing about an actor, a floor or collision-time filtering.
     std::uint32_t in_categories{};
     bool in_categories_available{};
+    // Opt-in: the hit shape's owner slot, read and fenced like in_categories.
+    // owner_assigned is false for the build's unassigned slot. The slot itself
+    // never leaves the SDK; a binding may only compare two of them. It says
+    // nothing about whose owner it is.
+    std::uint32_t owner{};
+    bool owner_available{}, owner_assigned{};
 };
 struct Request {
     owned_body::Sample observation{};
@@ -71,6 +97,11 @@ struct Request {
     bool require_contact{}; // Every hit needs qualified normal and point motion; clear stays clear.
     QueryPreset preset{QueryPreset::camera}; // Camera is the filter every earlier caller used.
     bool include_shape_categories{}; // False reads no category and adds no field.
+    // Every hit's read-time categories must overlap the preset's filter and carry
+    // no named actor category. A filter that has one is refused before any cast.
+    // This is a check on the returned hits, not actor exclusion.
+    bool require_named_actor_categories_absent{};
+    bool include_hit_owner{}; // False reads no owner slot and adds no field.
 };
 // Compare each published numeric lane exactly, including signed zero. Padding is not state.
 inline bool same_sample(const owned_body::Sample& a, const owned_body::Sample& b) noexcept {
@@ -91,7 +122,19 @@ struct Result {
     bool available{}, budget_exhausted{};
     bool accounting_valid{true};
     Failure failure{Failure::unavailable};
+    // Facts only a backend sets, and only on an available result for a request
+    // that asked for them. A binding reports these, never the request's flags.
+    bool local_actor_excluded{}, named_actor_categories_absent{};
 };
+// Turn a result into a refusal: no row, value or fact survives, and the actual
+// cast count stays. execute refuses this way, and so does an adapter's own check
+// after execute's closing fence.
+inline Result& refuse(Result& out, Failure failure) noexcept {
+    out.rays = {}; out.available = false; out.failure = failure;
+    out.budget_exhausted = failure == Failure::budget || failure == Failure::ray_limit;
+    out.local_actor_excluded = out.named_actor_categories_absent = false;
+    return out;
+}
 inline bool valid(const Ray& ray, float maximum_distance) noexcept {
     if (!owned_body::finite(ray.from, 100000) || !owned_body::finite(ray.to, 100000) ||
         !std::isfinite(maximum_distance) || maximum_distance <= 0) return false;
@@ -112,8 +155,10 @@ inline bool valid(const Request& request, float maximum_distance) noexcept {
     return true;
 }
 inline bool consistent(const Ray& ray, const Hit& hit) noexcept {
-    // A clear ray hit no shape, so it has no category either.
-    if (hit.status == Status::clear) return !hit.normal_available && !hit.surface_velocity_available && !hit.in_categories_available;
+    // A clear ray hit no shape, so it has no category or owner either.
+    if (hit.status == Status::clear) return !hit.normal_available && !hit.surface_velocity_available && !hit.in_categories_available &&
+        !hit.owner_available && !hit.owner_assigned;
+    if (hit.owner_assigned && !hit.owner_available) return false;
     if (hit.normal_available) {
         if (!owned_body::finite(hit.normal, 1.01f)) return false;
         double norm{}; for (float lane : hit.normal) norm += double(lane)*lane;
@@ -132,17 +177,15 @@ inline bool consistent(const Ray& ray, const Hit& hit) noexcept {
         if (std::abs(hit.position[i] - (ray.from[i] + (ray.to[i] - ray.from[i]) * hit.fraction)) > .025f) return false;
     return true;
 }
-struct Probe { Hit hit{}; unsigned native_casts{}; bool budget_exhausted{}; };
+// failure, on an unavailable probe, names why its actual hit was refused
+// (per_ray). Budget exhaustion still outranks it.
+struct Probe { Hit hit{}; unsigned native_casts{}; bool budget_exhausted{}; Failure failure{Failure::none}; };
 // Query is the counted native adapter. Fence requalifies the same owned body,
 // exclusions, actor and local observation epoch. A partial batch never escapes.
 template<class Query, class Fence>
 Result execute(const Request& request, unsigned allowance, float maximum_distance, Query&& query, Fence&& fence) {
     Result out; out.count = request.count <= maximum_rays ? request.count : 0;
-    const auto fail = [&](Failure failure) {
-        out.rays = {}; out.available = false; out.failure = failure;
-        out.budget_exhausted = failure == Failure::budget || failure == Failure::ray_limit;
-        return out;
-    };
+    const auto fail = [&](Failure failure) { return refuse(out, failure); };
     if (!valid(request, maximum_distance)) return fail(Failure::invalid);
     if (allowance > native_cast_limit) allowance = native_cast_limit;
     if (!allowance) return fail(Failure::budget);
@@ -161,13 +204,19 @@ Result execute(const Request& request, unsigned allowance, float maximum_distanc
             return finish_failure(Failure::backend);
         }
         out.native_casts += probe.native_casts;
-        if (probe.hit.status == Status::unavailable)
-            return finish_failure(probe.budget_exhausted ? (out.native_casts == allowance ? Failure::budget : Failure::ray_limit) :
-                out.native_casts ? Failure::unavailable : Failure::query_preconditions_unavailable);
-        if (!probe.native_casts || !consistent(request.rays[i], probe.hit)) return finish_failure(Failure::backend);
-        // A probe never carries a category. The adapter copies them in only after
-        // the closing fence below, so a later downgrade cannot leave a stale value.
-        if (probe.hit.in_categories_available) return finish_failure(Failure::backend);
+        if (probe.hit.status == Status::unavailable) {
+            if (probe.budget_exhausted) return finish_failure(out.native_casts == allowance ? Failure::budget : Failure::ray_limit);
+            // A named reason takes the generic one's place. Only a per-ray reason,
+            // with the actual cast that found the refused hit, is kept.
+            if (probe.failure != Failure::none)
+                return finish_failure(per_ray(probe.failure) && probe.native_casts ? probe.failure : Failure::backend);
+            return finish_failure(out.native_casts ? Failure::unavailable : Failure::query_preconditions_unavailable);
+        }
+        if (probe.failure != Failure::none || !probe.native_casts || !consistent(request.rays[i], probe.hit))
+            return finish_failure(Failure::backend);
+        // A probe never carries a category or owner. The adapter copies them in only
+        // after the closing fence below, so a later downgrade cannot leave a stale value.
+        if (probe.hit.in_categories_available || probe.hit.owner_available) return finish_failure(Failure::backend);
         if (request.require_contact && probe.hit.status == Status::hit &&
             (!probe.hit.normal_available || !probe.hit.surface_velocity_available))
             return finish_failure(Failure::contact_measurement_unavailable);

@@ -1,6 +1,7 @@
 #pragma once
 #include "Engine/Game/Build/fingerprint.h"
 #include "engine.h"
+#include "remote_collision.h"
 #include <array>
 #include <cstdint>
 
@@ -82,4 +83,26 @@ inline constexpr std::array<Fingerprint, 4> surface_contracts{
 // may not be tested at all.
 inline constexpr std::uint32_t camera_query_filter = 0x40080303;
 inline constexpr std::uint32_t terrain_query_filter = 0x00000001;
+// A diagnostic filter with every bit set, so the AND gate tests every shape whose
+// categories are nonzero, actors' shapes included. The game's capsule wrapper starts
+// its own mask fields at FFFFFFFF. A shape with no category is still never tested.
+inline constexpr std::uint32_t all_query_filter = 0xFFFFFFFF;
+// The categories whose definition names say character, ragdoll, character proxy,
+// skateboard or skater, plus bit 31, which only the SkateboardCollisionHelper shape
+// template carries. These are definitions and templates, not live assignments: a
+// shape with none of these bits is not shown to be free of an actor. Bits 6 and 12
+// of the Character template are left out on purpose, because the Terrain and
+// DynamicGameplay templates carry them too and would be refused as actors.
+inline constexpr unsigned category_skateboard_collision_helper = 31;
+inline constexpr std::uint32_t named_actor_categories =
+    (1u << remote_collision::category_character) | (1u << remote_collision::category_ragdoll) |
+    (1u << remote_collision::category_remote_character_proxy) | (1u << remote_collision::category_skateboard) |
+    (1u << remote_collision::category_local_skater) | (1u << remote_collision::category_character_proxy) |
+    (1u << remote_collision::category_remote_skater) | (1u << category_skateboard_collision_helper);
+static_assert(named_actor_categories == 0xB620000C);
+// Only a filter that shares no bit with them can back a claim that no returned hit
+// carried one. Camera and terrain qualify; all does not, and is refused for it.
+static_assert((camera_query_filter & named_actor_categories) == 0);
+static_assert((terrain_query_filter & named_actor_categories) == 0);
+static_assert((all_query_filter & named_actor_categories) != 0);
 }

@@ -63,7 +63,7 @@ or a regressed serial) asks for no rail, guard or camera query and does not adva
 | `gates` | `{focused, menu_open}`. |
 | `input` | The selected-source observation in `ride_input_mapping.lua`'s frame shape, or nil when there is none this step. It is also the source of the read's Framev1, which every guard plan needs: a read without it plans no guard and submits nothing (see Guard binding). |
 | `support` | The native support owner's fact for this read: `{provenance = "measured_support", grounded, point, normal, surface_velocity}` (the last three when grounded). Only a native or receipt owner may set it. Without it `trick_runtime` refuses, by design. |
-| `rail`, `guard`, `witness` | Each is the raw `probe_batch` result for that lane's own rays, cast against this read's `sample.epoch`, and nothing else. `probe_batch` returns the epoch it was given as `batch.epoch` (`plugin_api_physics.cpp:641`), and the composer refuses any batch whose `epoch` is not this read's (`<lane>_epoch_mismatch`). A `Contact.decode` copy carries its facts under `query` and has no `epoch`, so it is refused by name (`<lane>_batch_contact_copy`), as are a missing (`<lane>_batch_missing`) or non-table (`<lane>_batch_malformed`) batch. For the rail this is the module's own rule too: `plan` builds the rail plan with `Probe.plan(body, {epoch = sample.epoch})`, and `Probe.decode` then refuses any batch not carrying that epoch as `epoch_mismatch` (`rail_probe.lua:391-392`). The guard requires the read's Framev1 epoch on the guard batch (`bail_guard.lua:376`) and that batch's epoch on the witnesses (`:448`), and runs both through the real `Contact.decode` (`contact_issue`, `:303`), so each needs `native_casts`, no `reason` when available, and `motion = "measured"` with a measured surface velocity on every hit, as `probe_batch` returns them (`plugin_api_physics.cpp:636-665`). The refusal reason is in `diagnostics.grind.rows`, `diagnostics.queries.witness` and `diagnostics.bail.guard`. A refused rail batch is a hold, never clear rows. A refused, missing or never-cast guard or witness batch leaves the read unguarded, so it submits nothing. |
+| `rail`, `guard`, `witness` | Each is the raw `probe_batch` result for that lane's own rays, cast against this read's `sample.epoch`, and nothing else. `probe_batch` returns the epoch it was given as `batch.epoch` (`plugin_api_physics.cpp:671`), and the composer refuses any batch whose `epoch` is not this read's (`<lane>_epoch_mismatch`). A `Contact.decode` copy carries its facts under `query` and has no `epoch`, so it is refused by name (`<lane>_batch_contact_copy`), as are a missing (`<lane>_batch_missing`) or non-table (`<lane>_batch_malformed`) batch. For the rail this is the module's own rule too: `plan` builds the rail plan with `Probe.plan(body, {epoch = sample.epoch})`, and `Probe.decode` then refuses any batch not carrying that epoch as `epoch_mismatch` (`rail_probe.lua:391-392`). The guard requires the read's Framev1 epoch on the guard batch (`bail_guard.lua:376`) and that batch's epoch on the witnesses (`:448`), and runs both through the real `Contact.decode` (`contact_issue`, `:303`), so each needs `native_casts`, no `reason` when available, and `motion = "measured"` with a measured surface velocity on every hit, as `probe_batch` returns them (`plugin_api_physics.cpp:666-709`). The refusal reason is in `diagnostics.grind.rows`, `diagnostics.queries.witness` and `diagnostics.bail.guard`. A refused rail batch is a hold, never clear rows. A refused, missing or never-cast guard or witness batch leaves the read unguarded, so it submits nothing. |
 | `camera_hit` | The raycast hit for `queries.camera`, or nil. |
 | `recovered` | True on the read where the caller's own fall and recovery are done and the bike is placed again. |
 
@@ -283,7 +283,7 @@ One composer read needs up to four separate `probe_batch` calls, one per lane:
 Every lane still shares these fixed limits:
 
 - **A batch holds 1 to 32 rays.** `probe_batch` refuses anything else with "a ray batch has 1 to 32
-  rays" (`Extension/Plugins/plugin_api_physics.cpp:568`, from `body_query::maximum_rays = 32` at
+  rays" (`Extension/Plugins/plugin_api_physics.cpp:578`, from `body_query::maximum_rays = 32` at
   `Engine/Game/World/body_query.h:11`; `contact_runtime.lua:4` and `:67` hold plans to the same 32).
 - **Core permits four batches per native serial, including the wheels.** Its read-only
   `probe_batches_per_serial` export is the composer's default. The private adapter runs the
@@ -295,7 +295,7 @@ Every lane still shares these fixed limits:
   Guard retain their own plans and batches, and Guard additionally validates each used batch
   through `Contact.decode`.
 - **64 logical requests and 64 native casts per tick.** `plugin_vm.h:43` sets 64 requests, counted
-  per batch at `plugin_api_physics.cpp:613-615`. `body_query.h:10` sets 64 native casts with up to 2
+  per batch at `plugin_api_physics.cpp:638-640`. `body_query.h:10` sets 64 native casts with up to 2
   per ray. All four lanes plus the camera ray come to 81 in the worst case.
 
 Four batches can carry all four lanes separately. They are not merged or staged: rail plus guard
@@ -342,7 +342,7 @@ witness rays.
 
 `ride_composer_tests.lua` rides the composer through a constructed world: level ground at y = 0,
 authored 50 mm round rails along +Z, and a bar along X. Rays are cast analytically into raw
-`probe_batch` results shaped as `plugin_api_physics.cpp:636-665` builds them: `native_casts` (one
+`probe_batch` results shaped as `plugin_api_physics.cpp:666-709` builds them: `native_casts` (one
 per ray), `budget_exhausted`, the read's epoch and both exclusion facts true, and hit rows with
 vector position and normal, the fraction, and measured zero surface motion with `motion =
 "measured"`. Every read carries its selected source, so every guard plan is bound to a qualified

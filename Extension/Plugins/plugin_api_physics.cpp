@@ -32,6 +32,16 @@ int hit_body_equal(lua_State* L) {
     const auto& b = *static_cast<const HitBodyValue*>(luaL_checkudata(L, 2, hit_body_type));
     lua_pushboolean(L, a.owner == b.owner && a.batch == b.batch && a.ordinal == b.ordinal); return 1;
 }
+constexpr char hit_owner_type[] = "reskate.world.physics.hit_owner";
+// Equality only: two hit shapes with the same read-time owner slot, inside one
+// plugin instance, SDK world generation and measured epoch serial. It names no
+// owner, index, kind or generation, and grants nothing.
+struct HitOwnerValue { std::uint64_t owner{}, world{}, serial{}; std::uint32_t slot{}; };
+int hit_owner_equal(lua_State* L) {
+    const auto& a = *static_cast<const HitOwnerValue*>(luaL_checkudata(L, 1, hit_owner_type));
+    const auto& b = *static_cast<const HitOwnerValue*>(luaL_checkudata(L, 2, hit_owner_type));
+    lua_pushboolean(L, a.owner == b.owner && a.world == b.world && a.serial == b.serial && a.slot == b.slot); return 1;
+}
 int fail(lua_State* L, const std::string& why) { lua_pushnil(L); lua_pushlstring(L, why.data(), why.size()); return 2; }
 int result(lua_State* L, const std::string& why) {
     lua_pushboolean(L, why.empty()); if (why.empty()) return 1;
@@ -571,9 +581,10 @@ struct PhysicsApi {
             lua_rawgeti(L, 3, static_cast<int>(i + 1)); fields(L, -1, {"from", "to"});
             const auto at = lua_absindex(L, -1); request.rays[i] = {vec_field(L, at, "from"), vec_field(L, at, "to")}; lua_pop(L, 1);
         }
-        bool preset_requested{};
+        bool preset_requested{}, named_requested{};
         if (!lua_isnoneornil(L, 4)) {
-            fields(L, 4, {"exclude_bodies", "exclude_local_actor", "require_contact", "query_preset", "include_shape_categories"});
+            fields(L, 4, {"exclude_bodies", "exclude_local_actor", "require_contact", "query_preset", "include_shape_categories",
+                "require_named_actor_categories_absent", "include_hit_owner"});
             lua_getfield(L, 4, "query_preset");
             if (!lua_isnil(L, -1)) {
                 // Only an actual string naming a fixed preset; numbers are not coerced
@@ -581,10 +592,14 @@ struct PhysicsApi {
                 std::size_t size{};
                 const char* text = lua_type(L, -1) == LUA_TSTRING ? lua_tolstring(L, -1, &size) : nullptr;
                 bool known{};
-                for (const auto preset : {body_query::QueryPreset::camera, body_query::QueryPreset::terrain})
+                for (const auto preset : {body_query::QueryPreset::camera, body_query::QueryPreset::terrain, body_query::QueryPreset::all})
                     if (text && std::string_view(text, size) == body_query::name(preset)) { request.preset = preset; known = true; }
-                if (!known) luaL_error(L, "query_preset is \"camera\" or \"terrain\"");
+                if (!known) luaL_error(L, "query_preset is \"camera\", \"terrain\" or \"all\"");
                 preset_requested = true;
+                // "all" tests every shape with a category, actors' shapes included, so
+                // it is an observation: checked before any ray counter or backend work.
+                if (request.preset == body_query::QueryPreset::all)
+                    need(L, p, "world.physics.observe", "reskate.world.physics.probe_batch query_preset \"all\"");
             }
             lua_pop(L, 1);
             lua_getfield(L, 4, "require_contact");
@@ -605,8 +620,18 @@ struct PhysicsApi {
             // Passive hit metadata: only an actual boolean, and true also needs the
             // observation permission before any ray counter or backend work.
             if (!lua_isnil(L, -1)) { luaL_checktype(L, -1, LUA_TBOOLEAN); request.include_shape_categories = lua_toboolean(L, -1) != 0; }
+            lua_pop(L, 1); lua_getfield(L, 4, "require_named_actor_categories_absent");
+            // A refusal-only check: it adds one batch fact and shows no category, so
+            // world.physics and world.raycast are enough.
+            if (!lua_isnil(L, -1)) {
+                luaL_checktype(L, -1, LUA_TBOOLEAN); request.require_named_actor_categories_absent = lua_toboolean(L, -1) != 0;
+                named_requested = true;
+            }
+            lua_pop(L, 1); lua_getfield(L, 4, "include_hit_owner");
+            if (!lua_isnil(L, -1)) { luaL_checktype(L, -1, LUA_TBOOLEAN); request.include_hit_owner = lua_toboolean(L, -1) != 0; }
             lua_pop(L, 1);
             if (request.include_shape_categories) need(L, p, "world.physics.observe", "reskate.world.physics.probe_batch include_shape_categories");
+            if (request.include_hit_owner) need(L, p, "world.physics.observe", "reskate.world.physics.probe_batch include_hit_owner");
         }
         const float distance_limit = p.limits_.raycast_metres < 1000 ? p.limits_.raycast_metres : 1000;
         if (!body_query::valid(request, distance_limit)) luaL_error(L, "invalid ray batch: finite nonzero rays within the configured distance");
@@ -625,7 +650,12 @@ struct PhysicsApi {
         }
         if (out.available) {
             bool valid = out.count == request.count && out.failure == body_query::Failure::none &&
-                out.native_casts >= request.count && out.native_casts <= request.count * body_query::casts_per_ray;
+                out.native_casts >= request.count && out.native_casts <= request.count * body_query::casts_per_ray &&
+                // A fact is the backend's, and only for what was asked. The category
+                // claim is not identity exclusion, so no result may hold both.
+                (!out.local_actor_excluded || request.exclude_local_actor) &&
+                (!out.named_actor_categories_absent || request.require_named_actor_categories_absent) &&
+                !(out.local_actor_excluded && out.named_actor_categories_absent);
             for (std::size_t i = 0; i < request.count && valid; ++i) valid = body_query::consistent(request.rays[i], out.rays[i]) &&
                 out.rays[i].body <= request.count && (!request.require_contact || out.rays[i].status!=body_query::Status::hit ||
                     (out.rays[i].normal_available && out.rays[i].surface_velocity_available));
@@ -639,12 +669,17 @@ struct PhysicsApi {
         if (accounted) { lua_pushinteger(L, static_cast<int>(out.native_casts)); lua_setfield(L, -2, "native_casts"); }
         lua_pushboolean(L, out.budget_exhausted); lua_setfield(L, -2, "budget_exhausted");
         lua_pushvalue(L,2); lua_setfield(L,-2,"epoch");
-        lua_pushboolean(L,out.available && request.exclude_local_actor); lua_setfield(L,-2,"local_actor_excluded");
+        // What the backend established, never the request's flag.
+        lua_pushboolean(L,out.available && out.local_actor_excluded); lua_setfield(L,-2,"local_actor_excluded");
         lua_pushboolean(L,out.available); lua_setfield(L,-2,"owned_bodies_excluded");
         // Only a call that named a preset gets this field, so callers that allow-list
         // the earlier result fields see an unchanged table. It repeats the request:
         // native_casts and status say what ran, and nothing here says what was hit.
         if (preset_requested) { lua_pushstring(L, body_query::name(request.preset)); lua_setfield(L, -2, "requested_query_preset"); }
+        // Likewise only for a call that named the option, and from the backend's result.
+        if (named_requested) {
+            lua_pushboolean(L, out.available && out.named_actor_categories_absent); lua_setfield(L, -2, "named_actor_categories_absent");
+        }
         lua_createtable(L, static_cast<int>(request.count), 0);
         for (std::size_t i = 0; i < request.count; ++i) {
             const auto& hit = out.rays[i]; const bool present = out.available && hit.status == body_query::Status::hit;
@@ -659,6 +694,15 @@ struct PhysicsApi {
                 if (hit.body) { opaque(L, HitBodyValue{p.instance(), batch, hit.body}, hit_body_type); lua_setfield(L, -2, "body"); }
                 // Only a request that opted in sees it; absent means unavailable, never zero.
                 if (request.include_shape_categories && hit.in_categories_available) { lua_pushnumber(L, hit.in_categories); lua_setfield(L, -2, "in_categories"); }
+                // Absent when the slot could not be read. An assigned slot becomes an
+                // equality token; the slot itself never reaches Lua.
+                if (request.include_hit_owner && hit.owner_available) {
+                    lua_pushboolean(L, hit.owner_assigned); lua_setfield(L, -2, "owner_assigned");
+                    if (hit.owner_assigned) {
+                        opaque(L, HitOwnerValue{p.instance(), request.observation.epoch.world, request.observation.epoch.serial, hit.owner}, hit_owner_type);
+                        lua_setfield(L, -2, "owner");
+                    }
+                }
             }
             lua_rawseti(L, -2, static_cast<int>(i + 1));
         }
@@ -702,6 +746,8 @@ void install_physics_api(Plugin&, lua_State* L) {
     metatable(L, follow_type);
     luaL_newmetatable(L, hit_body_type); lua_pushstring(L, "locked"); lua_setfield(L, -2, "__metatable");
     lua_pushcfunction(L, hit_body_equal, "hit body equality"); lua_setfield(L, -2, "__eq"); lua_setreadonly(L, -1, true); lua_pop(L, 1);
+    luaL_newmetatable(L, hit_owner_type); lua_pushstring(L, "locked"); lua_setfield(L, -2, "__metatable");
+    lua_pushcfunction(L, hit_owner_equal, "hit owner equality"); lua_setfield(L, -2, "__eq"); lua_setreadonly(L, -1, true); lua_pop(L, 1);
     lua_getfield(L, -1, "world"); lua_setreadonly(L, -1, false);
     add_functions(L, "physics", {{"prepare", PhysicsApi::prepare}, {"create", PhysicsApi::create}, {"read", PhysicsApi::read}, {"submit", PhysicsApi::submit},
         {"receipt", PhysicsApi::receipt}, {"acknowledge", PhysicsApi::acknowledge}, {"release", PhysicsApi::release}, {"probe_batch", PhysicsApi::probe_batch},

@@ -179,8 +179,16 @@ int main() {
     // A named preset changes only the filter lane of the actual request the native
     // ray receives. The expected masks are literals, not the production constants.
     check(surface_query_filter(QueryPreset::camera) == 0x40080303u && surface_query_filter(QueryPreset::terrain) == 0x00000001u &&
-        !surface_query_filter(static_cast<QueryPreset>(2)) && !surface_query_filter(static_cast<QueryPreset>(255)),
-        "only the two fixed presets map to a native filter");
+        surface_query_filter(QueryPreset::all) == 0xffffffffu &&
+        !surface_query_filter(static_cast<QueryPreset>(3)) && !surface_query_filter(static_cast<QueryPreset>(255)),
+        "only the three fixed presets map to a native filter");
+    // Only a filter that shares no bit with the named actor categories can back
+    // a claim that no returned hit carried one; all is refused for that claim.
+    static_assert((dingosdk::addr::park_editor::named_actor_categories & 0x40080303u) == 0 &&
+        (dingosdk::addr::park_editor::named_actor_categories & 0x00000001u) == 0 &&
+        dingosdk::addr::park_editor::named_actor_categories == 0xB620000Cu, "a preset filter shares a named actor category");
+    check((*surface_query_filter(QueryPreset::all) & dingosdk::addr::park_editor::named_actor_categories) != 0,
+        "the all filter no longer covers the named actor categories");
     static NativeSurfaceRay seen{};
     static unsigned seen_calls{};
     auto preset_api = api;
@@ -220,7 +228,11 @@ int main() {
     check(!preset.surface.available && preset.native_casts == 1 && !preset.budget_exhausted && seen_calls == 6,
         "a malformed terrain result became clear or was retried");
     scenario = Scenario::hit;
-    for (const auto unknown : {static_cast<QueryPreset>(2), static_cast<QueryPreset>(255)}) {
+    preset = cast_surface_geometry_probe_bounded(preset_api, 1234, from, to, 2, zero_shape, false, QueryPreset::all);
+    check(preset.surface.available && preset.surface.hit && preset.surface.fraction == .25f && preset.native_casts == 1 &&
+        !preset.budget_exhausted && seen_calls == 7, "all lost the nearest hit or spent another cast");
+    check(seen.filter == 0xffffffffu && same_lanes(seen, camera_request), "all sent anything but every bit or changed another request lane");
+    for (const auto unknown : {static_cast<QueryPreset>(3), static_cast<QueryPreset>(255)}) {
         preset = cast_surface_geometry_probe_bounded(preset_api, 1234, from, to, 2, zero_shape, true, unknown);
         check(!preset.surface.available && !preset.surface.hit && !preset.native_casts && !preset.budget_exhausted,
             "an unknown preset reported a geometry result or a native call");
@@ -230,7 +242,7 @@ int main() {
         check(!cast_surface_once_counted(preset_api, 1234, from, to, nullptr, {}, nullptr, {}, discovered, zero_shape, &once, counted, false, unknown) &&
             !counted && !once.available && !once.hit && discovered.empty(), "an unknown preset reached the counted native call");
     }
-    check(seen_calls == 6 && calls - preset_calls == 6, "an unknown preset reached the native ray");
+    check(seen_calls == 7 && calls - preset_calls == 7, "an unknown preset reached the native ray");
     check(releases - preset_releases == calls - preset_calls && scopes - preset_scopes == releases - preset_releases,
         "preset requests lost native result cleanup");
 

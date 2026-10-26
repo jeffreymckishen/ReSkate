@@ -401,11 +401,19 @@ struct FakeGame final : Game {
     int batch_category_mode{};
     std::array<std::uint32_t, body_query::maximum_rays> batch_categories{};
     std::array<bool, body_query::maximum_rays> batch_category_missing{};
+    // Constructed owner slots, the same way: 1 into opted-in hits, 2 into hits even
+    // without the opt-in, 3 onto clear rows of an available result.
+    int batch_owner_mode{};
+    std::array<std::uint32_t, body_query::maximum_rays> batch_owners{};
+    std::array<bool, body_query::maximum_rays> batch_owner_missing{};
+    // Constructed backend facts, put on every result whether or not it was asked for.
+    bool batch_claims_local_actor{}, batch_claims_named_categories{};
     body_query::Result body_probe_batch(std::uint64_t owner, const owned_body::Handle& h, const body_query::Request& request, unsigned allowed) override {
         ++batch_calls; last_batch = request;
         if (batch_refusal != body_query::Failure::none) {
             body_query::Result out; out.count = request.count; out.failure = batch_refusal;
             out.native_casts = batch_refusal_casts; out.accounting_valid = batch_refusal_accounting_valid;
+            out.local_actor_excluded = batch_claims_local_actor; out.named_actor_categories_absent = batch_claims_named_categories;
             if (batch_category_mode == 4) { out.rays[0].status = body_query::Status::hit; out.rays[0].in_categories = 9; out.rays[0].in_categories_available = true; }
             native_casts += out.native_casts; return out;
         }
@@ -473,6 +481,15 @@ struct FakeGame final : Game {
                 hit.status == body_query::Status::hit && !batch_category_missing[i] &&
                 (request.include_shape_categories || batch_category_mode == 2);
             if (copied) { hit.in_categories = batch_categories[i]; hit.in_categories_available = true; }
+        }
+        for (std::size_t i = 0; result.available && batch_owner_mode >= 1 && batch_owner_mode <= 3 && i < result.count; ++i) {
+            auto& hit = result.rays[i];
+            const bool copied = batch_owner_mode == 3 ? hit.status == body_query::Status::clear :
+                hit.status == body_query::Status::hit && !batch_owner_missing[i] && (request.include_hit_owner || batch_owner_mode == 2);
+            if (copied) { hit.owner = batch_owners[i]; hit.owner_available = true; hit.owner_assigned = batch_owners[i] != 0xffffffffU; }
+        }
+        if (result.available) {
+            result.local_actor_excluded = batch_claims_local_actor; result.named_actor_categories_absent = batch_claims_named_categories;
         }
         return result;
     }
@@ -3267,7 +3284,9 @@ void body_contact_details_are_known_and_epoch_bound() {
     };
     load("contact-measured",1,false,R"(
         local out=P.probe_batch(h,epoch,rays(1),{require_contact=true,exclude_local_actor=true})
-        assert(out.status=="available" and out.epoch==epoch and out.local_actor_excluded and out.owned_bodies_excluded)
+        -- The constructed backend runs the batch but establishes no actor exclusion,
+        -- and the binding reports the backend's fact, never the request's flag.
+        assert(out.status=="available" and out.epoch==epoch and out.local_actor_excluded==false and out.owned_bodies_excluded)
         local hit=out.rays[1]
         assert(hit.motion=="measured" and hit.normal_available and hit.normal==v(0,1,0))
         assert(hit.surface_velocity_available and hit.surface_velocity==v(2,0,-1))
@@ -3407,6 +3426,7 @@ void owned_body_batches_are_permissioned_opaque_and_transactional() {
     )", R"("world.raycast")"), script("body-batch", batch_main(R"(
         local out=P.probe_batch(h,epoch,rays(2),{exclude_bodies={other,h},exclude_local_actor=true})
         assert(out.status=="available" and out.native_casts==2 and #out.rays==2 and not out.reason)
+        assert(out.local_actor_excluded==false,"a request flag alone became an exclusion fact")
         local a,b=out.rays[1],out.rays[2]
         assert(a.status=="hit" and a.position==v(0,0,0) and a.fraction==.5 and a.motion=="unknown")
         assert(type(a.body)=="userdata" and getmetatable(a.body)=="locked" and a.body==b.body)
@@ -8356,6 +8376,7 @@ void bmx_lua_spawn_uses_owned_chassis_and_measured_part_placement() {
 #include "body_follow_motion_policy_host_fixture.inc"
 #include "body_command_cleanup_host_fixture.inc"
 #include "shape_categories_host_fixture.inc"
+#include "exclusion_facts_host_fixture.inc"
 
 int main() {
     unsigned skipped = 0;
@@ -8408,6 +8429,7 @@ int main() {
         run(body_contact_details_are_known_and_epoch_bound);
         run(owned_body_batches_select_a_named_query_preset);
         run(shape_categories_host_fixture_v1);
+        run(exclusion_facts_host_fixture_v1);
         run(owned_body_batches_share_actual_and_logical_query_limits);
         run(a_plugin_loads_ticks_runs_its_commands_and_unloads);
         run(a_permission_must_be_declared);

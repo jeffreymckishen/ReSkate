@@ -1,4 +1,5 @@
 #include "Engine/Game/World/body_shape_categories.h"
+#include "Engine/Game/Build/20260929/park_editor.h"
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -275,8 +276,12 @@ q::Request request(std::size_t count, bool categories) {
     out.include_shape_categories = categories;
     return out;
 }
+// Literal masks, independent of the production constants: the camera filter, the
+// named actor categories and the Static and Terrain shape templates.
+constexpr std::uint32_t camera = 0x40080303U, named = 0xB620000CU, static_template = 0x2F90U, terrain_template = 0xAD1U;
 // The native adapter's order over fake memory: qualify the actual hit, capture
-// beside it by ray ordinal, recheck inside the fence, publish after execute.
+// beside it by ray ordinal, recheck inside the fence, judge the named-actor-category
+// requirement after execute, then publish.
 struct Adapter {
     Fixture& f;
     std::vector<std::uint32_t> shapes;
@@ -284,12 +289,13 @@ struct Adapter {
     std::function<void()> closing;
     Sidecars<q::maximum_rays> sidecars;
     std::size_t ordinal{};
+    std::uint32_t filter{camera};
     q::Result run(const q::Request& selected) {
         auto out = q::execute(selected, 64, 1000, [&](const q::Ray&, unsigned) {
             const auto index = ordinal++;
             const auto shape = Fixture::hit_shape(shapes[index]);
             if (!f.qualified(shape, Fixture::mapped_body)) return q::Probe{{}, 1};
-            if (selected.include_shape_categories && layout &&
+            if ((selected.include_shape_categories || selected.require_named_actor_categories_absent) && layout &&
                 !sidecars.capture(index, Fixture::world, Fixture::state, shape, Fixture::mapped_body, f.memory, f.oracle()))
                 return q::Probe{{}, 1};
             return q::Probe{{q::Status::hit, {1, 0, 3}, .5f, 0}, 1};
@@ -297,6 +303,11 @@ struct Adapter {
             if (ordinal == selected.count && closing) std::exchange(closing, {})();
             return !closing_refused && sidecars.current(f.memory, f.oracle());
         });
+        if (out.available && selected.require_named_actor_categories_absent) {
+            const auto failure = sidecars.require(out, filter, named);
+            if (failure != q::Failure::none) q::refuse(out, failure);
+            else out.named_actor_categories_absent = true;
+        }
         sidecars.publish(selected, out);
         return out;
     }
@@ -360,6 +371,169 @@ void batches_publish_only_surviving_optional_values() {
         check(variant != 0 || a.sidecars.identity_lost(), "identity drift inside a capture was not sticky");
     }
 }
+
+// The named-actor-category check: each hit row, in order, needs its own surviving
+// value, overlapping the filter and carrying no named bit. Clear rows pass.
+void the_named_check_judges_every_hit_in_order() {
+    namespace pe = dingosdk::addr::park_editor;
+    check(pe::camera_query_filter == camera && pe::terrain_query_filter == 1 && pe::all_query_filter == 0xffffffffU &&
+        pe::named_actor_categories == named, "the Build layer's filters or named categories changed");
+    static_assert((camera & named) == 0 && (1U & named) == 0, "a preset filter shares a bit with the named categories");
+    const auto result = [](std::initializer_list<q::Status> rows) {
+        q::Result out; out.available = true; out.failure = q::Failure::none; out.count = rows.size();
+        std::size_t i{}; for (const auto status : rows) out.rays[i++].status = status;
+        return out;
+    };
+    const auto judged = [&](std::uint32_t first, std::uint32_t second, std::uint32_t filter) {
+        Fixture f; Sidecars<4> sidecars;
+        f.memory.put(Fixture::element(Fixture::categories, 9), first);
+        f.memory.put(Fixture::element(Fixture::categories, 10), second);
+        check(sidecars.capture(0, Fixture::world, Fixture::state, Fixture::hit_shape(9), Fixture::mapped_body, f.memory, f.oracle()) &&
+            sidecars.capture(1, Fixture::world, Fixture::state, Fixture::hit_shape(10), Fixture::mapped_body, f.memory, f.oracle()) &&
+            sidecars.available(0) && sidecars.available(1), "a current hit was refused or lost its value");
+        return sidecars.require(result({q::Status::hit, q::Status::hit}), filter, named);
+    };
+    check(judged(static_template, static_template, camera) == q::Failure::none, "a Static-template hit was refused");
+    for (const unsigned bit : {2U, 3U, 21U, 25U, 26U, 28U, 29U, 31U})
+        check(judged(static_template, static_template | (1U << bit), camera) == q::Failure::hit_named_actor_category,
+            "a hit carrying a named actor category passed");
+    check(judged(static_template, 0x40U, camera) == q::Failure::hit_categories_inconsistent &&
+        judged(static_template, 0, camera) == q::Failure::hit_categories_inconsistent,
+        "a hit whose categories miss the filter was not called inconsistent");
+    // Within one row the overlap rule comes first; across rows the first row that fails wins.
+    check(judged(static_template, 0x4U, camera) == q::Failure::hit_categories_inconsistent, "the rules ran out of order in one row");
+    check(judged(static_template | 0x4U, 0x40U, camera) == q::Failure::hit_named_actor_category, "a later row's failure was returned first");
+    // The filter is the preset's own: Static lacks the Terrain bit.
+    check(judged(terrain_template, terrain_template, 1) == q::Failure::none &&
+        judged(static_template, static_template, 1) == q::Failure::hit_categories_inconsistent, "the check ignored the filter");
+    {
+        // Clear rows pass; a hit without its own value does not.
+        Fixture f; Sidecars<4> sidecars;
+        check(sidecars.require(result({q::Status::clear, q::Status::clear}), camera, named) == q::Failure::none, "clear rows were refused");
+        check(sidecars.require(result({q::Status::hit}), camera, named) == q::Failure::hit_categories_unavailable, "an absent value passed");
+        f.memory.put(Fixture::element(Fixture::categories, 9), static_template | 0x4U);
+        check(sidecars.capture(0, Fixture::world, Fixture::state, Fixture::hit_shape(9), Fixture::mapped_body, f.memory, f.oracle()),
+            "a current hit was refused");
+        check(sidecars.require(result({q::Status::hit, q::Status::clear}), camera, named) == q::Failure::hit_named_actor_category &&
+            sidecars.require(result({q::Status::clear, q::Status::hit}), camera, named) == q::Failure::hit_categories_unavailable,
+            "a value was judged on another ray's row");
+        q::Result refused; refused.failure = q::Failure::observation_changed;
+        check(sidecars.require(q::Result{}, camera, named) == q::Failure::unavailable &&
+            sidecars.require(refused, camera, named) == q::Failure::observation_changed, "a refused result was vouched for");
+    }
+    {
+        // Unreadable at capture, or dropped at the closing fence: no value, so no claim.
+        Fixture f; Sidecars<4> sidecars;
+        f.memory.put(Fixture::element(Fixture::categories, 9), static_template);
+        f.memory.put(Fixture::element(Fixture::categories, 10), static_template);
+        f.memory.bytes.erase(Fixture::element(Fixture::categories, 10) + 1);
+        check(sidecars.capture(0, Fixture::world, Fixture::state, Fixture::hit_shape(9), Fixture::mapped_body, f.memory, f.oracle()) &&
+            sidecars.capture(1, Fixture::world, Fixture::state, Fixture::hit_shape(10), Fixture::mapped_body, f.memory, f.oracle()) &&
+            sidecars.available(0) && !sidecars.available(1), "an unreadable value refused the hit or was kept");
+        check(sidecars.require(result({q::Status::hit, q::Status::hit}), camera, named) == q::Failure::hit_categories_unavailable,
+            "an unreadable value passed");
+        f.memory.put(Fixture::element(Fixture::categories, 9), static_template | 1U);
+        check(sidecars.current(f.memory, f.oracle()) && !sidecars.available(0), "a changed value survived the closing fence");
+        check(sidecars.require(result({q::Status::hit, q::Status::clear}), camera, named) == q::Failure::hit_categories_unavailable,
+            "a value dropped at the closing fence passed");
+    }
+    {
+        // A batch whose identity was lost vouches for nothing.
+        Fixture f; Sidecars<4> sidecars;
+        f.memory.put(Fixture::element(Fixture::categories, 9), static_template);
+        check(sidecars.capture(0, Fixture::world, Fixture::state, Fixture::hit_shape(9), Fixture::mapped_body, f.memory, f.oracle()),
+            "a current hit was refused");
+        f.memory.put(Fixture::element(Fixture::mappings, 9), std::uint32_t{9});
+        check(!sidecars.current(f.memory, f.oracle()) &&
+            sidecars.require(result({q::Status::hit}), camera, named) == q::Failure::hit_categories_unavailable,
+            "an identity-lost batch passed the check");
+    }
+    const std::vector<std::uint32_t> shapes{9, 10, 9};
+    const auto selected = [](bool categories) {
+        auto out = request(3, categories); out.require_named_actor_categories_absent = true; return out;
+    };
+    for (const bool categories : {false, true}) {
+        // Through the adapter: the fact is set only after the check, and values
+        // appear only when they were also asked for.
+        Fixture f; Adapter a{f, shapes};
+        f.memory.put(Fixture::element(Fixture::categories, 9), static_template);
+        f.memory.put(Fixture::element(Fixture::categories, 10), static_template);
+        const auto out = a.run(selected(categories));
+        check(out.available && out.named_actor_categories_absent && !out.local_actor_excluded && out.native_casts == 3,
+            "a passing batch lost its fact or claimed an exclusion");
+        for (const auto& hit : out.rays) {
+            if (hit.status != q::Status::hit) continue;
+            check(hit.in_categories_available == categories && (!categories || hit.in_categories == static_template),
+                "the requirement published a value nobody asked for, or lost one");
+        }
+    }
+    for (unsigned variant = 0; variant < 3; ++variant) {
+        // A named bit, a missed filter or a closing change refuses the whole batch.
+        Fixture f; Adapter a{f, shapes};
+        f.memory.put(Fixture::element(Fixture::categories, 9), static_template);
+        f.memory.put(Fixture::element(Fixture::categories, 10), variant == 0 ? static_template | (1U << 28) : variant == 1 ? 0x40U : static_template);
+        if (variant == 2) a.closing = [&] { f.memory.put(Fixture::element(Fixture::categories, 9), static_template | (1U << 26)); };
+        const auto out = a.run(selected(true));
+        const auto expected = variant == 0 ? q::Failure::hit_named_actor_category : variant == 1 ? q::Failure::hit_categories_inconsistent :
+            q::Failure::hit_categories_unavailable;
+        check(out.failure == expected && out.native_casts == 3 && !out.named_actor_categories_absent && !out.local_actor_excluded,
+            "a failing batch kept its fact, lost its casts or named the wrong rule");
+        empty(out);
+    }
+}
+
+// The owner slot follows the same rules through its own array: state+1008 at the
+// hit shape's own element, paired reads between identity checks and a closing
+// recheck. Only a request that asked for owner slots sees one.
+void owner_slots_use_their_own_array() {
+    check(r::shape_owners == 0x1008 && r::unassigned_shape_owner == 0xffffffffU, "the owner slot layout changed");
+    Fixture f; constexpr std::uintptr_t owners = 0x7c000;
+    f.memory.put(Fixture::state + 0x1008, owners);
+    f.memory.put(Fixture::element(owners, 9), std::uint32_t{0xffffffffU});
+    f.memory.put(Fixture::element(owners, 10), std::uint32_t{0x2a});
+    // A decoy at the mapped body's own index.
+    f.memory.put(Fixture::element(owners, 57), std::uint32_t{0x99});
+    Witness out;
+    check(capture(Fixture::world, Fixture::state, Fixture::hit_shape(10), Fixture::mapped_body, out, f.memory, f.oracle(), r::shape_owners) ==
+        Capture::available && out.value == 0x2a && out.categories == owners && out.field == r::shape_owners,
+        "an owner slot was not read from its own array");
+    check(f.memory.count(Fixture::state + 0x1008) == 2 && !f.memory.count(Fixture::state + 0xfe8) &&
+        !f.memory.count(Fixture::element(owners, 57)), "an owner read touched categories or the mapped body's element");
+    f.memory.reads.clear(); const auto calls = f.identity_calls;
+    check(capture(Fixture::world, Fixture::state, Fixture::hit_shape(10), Fixture::mapped_body, out, f.memory, f.oracle(), 0xff0) ==
+        Capture::unavailable && f.memory.reads.empty() && f.identity_calls == calls && !out.world, "an unknown field reached memory");
+    Sidecars<4> slots{r::shape_owners}, masks;
+    const auto add = [&](Sidecars<4>& sidecars, std::size_t ordinal, std::uint32_t index) {
+        return sidecars.capture(ordinal, Fixture::world, Fixture::state, Fixture::hit_shape(index), Fixture::mapped_body, f.memory, f.oracle());
+    };
+    check(add(slots, 0, 9) && add(slots, 1, 10) && add(masks, 0, 9) && add(masks, 1, 10), "a current hit was refused");
+    const auto rows = [] {
+        q::Result result; result.available = true; result.failure = q::Failure::none; result.count = 3;
+        result.rays[0].status = result.rays[1].status = q::Status::hit; result.rays[2].status = q::Status::clear;
+        return result;
+    };
+    q::Request owners_only; owners_only.include_hit_owner = true;
+    auto result = rows();
+    slots.publish(owners_only, result); masks.publish(owners_only, result);
+    check(result.rays[0].owner_available && !result.rays[0].owner_assigned && result.rays[0].owner == 0xffffffffU &&
+        result.rays[1].owner_available && result.rays[1].owner_assigned && result.rays[1].owner == 0x2a &&
+        !result.rays[2].owner_available && !result.rays[2].owner_assigned, "owner slots were lost, mixed or put on a clear row");
+    check(!result.rays[0].in_categories_available && !result.rays[1].in_categories_available, "an owner-only request published categories");
+    q::Request categories_only; categories_only.include_shape_categories = true;
+    result = rows();
+    slots.publish(categories_only, result); masks.publish(categories_only, result);
+    check(!result.rays[0].owner_available && !result.rays[1].owner_available && result.rays[1].in_categories_available &&
+        result.rays[1].in_categories == 1, "a categories-only request published owner slots");
+    // Owner slots cannot vouch for the named-actor-category check.
+    check(slots.require(rows(), camera, named) == q::Failure::hit_categories_unavailable, "an owner slot was judged as a category");
+    // A closing change drops only that slot; an identity change refuses.
+    f.memory.put(Fixture::element(owners, 10), std::uint32_t{0x2b});
+    check(slots.current(f.memory, f.oracle()) && slots.available(0) && !slots.available(1), "a changed owner slot survived its fence");
+    f.memory.put(Fixture::element(Fixture::mappings, 9), std::uint32_t{9});
+    check(!slots.current(f.memory, f.oracle()) && slots.identity_lost(), "owner identity drift was only a missing slot");
+    result = rows(); slots.publish(owners_only, result);
+    check(!result.rays[0].owner_available, "an identity-lost batch published an owner slot");
+}
 } // namespace
 
 int main() {
@@ -368,6 +542,7 @@ int main() {
         malformed_hits_and_field_spans_read_nothing(); unreadable_or_overflowing_storage_is_only_absence();
         the_getter_bytes_gate_the_diagnostic(); drift_inside_one_capture_is_classified();
         closing_inspection_downgrades_for_good_and_identity_is_sticky(); batches_publish_only_surviving_optional_values();
-        std::cout << "body shape categories: 8 cases, " << checks << " checks passed\n"; return 0;
+        the_named_check_judges_every_hit_in_order(); owner_slots_use_their_own_array();
+        std::cout << "body shape categories: 10 cases, " << checks << " checks passed\n"; return 0;
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }

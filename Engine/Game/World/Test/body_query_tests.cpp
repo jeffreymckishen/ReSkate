@@ -87,9 +87,9 @@ void counts_and_discard_are_bounded() {
 void query_presets_are_fixed_and_default_to_camera() {
     static_assert(static_cast<unsigned>(QueryPreset::camera) == 0, "a zeroed request must mean camera");
     check(Request{}.preset == QueryPreset::camera && request().preset == QueryPreset::camera, "default preset is not camera");
-    check(std::string_view(name(QueryPreset::camera)) == "camera" && std::string_view(name(QueryPreset::terrain)) == "terrain",
-        "preset names changed");
-    for (const auto unknown : {static_cast<QueryPreset>(2), static_cast<QueryPreset>(255)}) {
+    check(std::string_view(name(QueryPreset::camera)) == "camera" && std::string_view(name(QueryPreset::terrain)) == "terrain" &&
+        std::string_view(name(QueryPreset::all)) == "all", "preset names changed");
+    for (const auto unknown : {static_cast<QueryPreset>(3), static_cast<QueryPreset>(255)}) {
         check(!name(unknown), "an unknown preset value was given a name");
         auto bad = request(2); bad.preset = unknown;
         check(!valid(bad, 1000), "an unknown preset value passed validation");
@@ -110,7 +110,7 @@ void query_presets_are_fixed_and_default_to_camera() {
         out.hit.normal_available = out.hit.surface_velocity_available = true;
         return out;
     };
-    for (const auto preset : {QueryPreset::camera, QueryPreset::terrain}) {
+    for (const auto preset : {QueryPreset::camera, QueryPreset::terrain, QueryPreset::all}) {
         auto out = run(preset, 2, measured);
         check(out.available && out.native_casts == 2 && out.rays[1].surface_velocity == Vec{2, 0, -1},
             "a preset changed accepted measured hits or their motion");
@@ -497,6 +497,109 @@ void shape_categories_attach_only_to_hits_after_the_closing_fence() {
     }
 }
 
+// A probe may name why its one actual hit was refused. Only a per-ray reason, with
+// the cast that found the hit, replaces the generic one; budget and ray-limit
+// exhaustion and a changed closing observation still outrank it.
+void per_ray_reasons_name_the_refused_hit() {
+    check(std::string_view(name(Failure::owned_body_hit)) == "owned_body_hit" &&
+        std::string_view(name(Failure::hit_identity_unqualified)) == "hit_identity_unqualified", "per-ray reason names");
+    check(std::string_view(name(Failure::named_actor_categories_unavailable)) == "named_actor_categories_unavailable" &&
+        std::string_view(name(Failure::hit_categories_unavailable)) == "hit_categories_unavailable" &&
+        std::string_view(name(Failure::hit_categories_inconsistent)) == "hit_categories_inconsistent" &&
+        std::string_view(name(Failure::hit_named_actor_category)) == "hit_named_actor_category", "category requirement names");
+    check(Probe{}.failure == Failure::none, "a probe names a reason by default");
+    const auto fence = [] { return true; };
+    for (const auto reason : {Failure::owned_body_hit, Failure::hit_identity_unqualified}) {
+        check(per_ray(reason), "a per-ray reason was not recognised");
+        unsigned calls{};
+        auto out = execute(request(3), 64, 1000, [&](const Ray&, unsigned) {
+            if (++calls == 2) return Probe{{}, 1, false, reason};
+            return Probe{{Status::hit, {1, 0, 3}, .5f, 1}, 1};
+        }, fence);
+        check(out.failure == reason && out.native_casts == 2 && calls == 2 && !out.budget_exhausted,
+            "a per-ray reason was lost or relabelled"); empty(out);
+        // Exhaustion keeps its own mapping, whatever the probe names.
+        out = execute(request(), 64, 1000, [&](const Ray&, unsigned allowance) { return Probe{{}, allowance, true, reason}; }, fence);
+        check(out.failure == Failure::ray_limit && out.budget_exhausted && out.native_casts == 2, "a reason outranked the ray limit"); empty(out);
+        out = execute(request(), 1, 1000, [&](const Ray&, unsigned allowance) { return Probe{{}, allowance, true, reason}; }, fence);
+        check(out.failure == Failure::budget && out.budget_exhausted && out.native_casts == 1, "a reason outranked the shared budget"); empty(out);
+        // A refused hit needs the actual cast that found it.
+        out = execute(request(), 64, 1000, [&](const Ray&, unsigned) { return Probe{{}, 0, false, reason}; }, fence);
+        check(out.failure == Failure::backend && !out.native_casts, "a castless per-ray reason was accepted"); empty(out);
+        // A reason belongs only on a refused ray.
+        for (const auto status : {Status::hit, Status::clear}) {
+            out = execute(request(), 64, 1000, [&](const Ray&, unsigned) { return Probe{{status, {1, 0, 3}, .5f, 0}, 1, false, reason}; }, fence);
+            check(out.failure == Failure::backend && out.native_casts == 1, "a reason rode an accepted row"); empty(out);
+        }
+        unsigned fences{};
+        out = execute(request(), 64, 1000, [&](const Ray&, unsigned) { return Probe{{}, 1, false, reason}; }, [&] { return ++fences == 1; });
+        check(out.failure == Failure::observation_changed && fences == 2, "a per-ray reason hid a changed observation"); empty(out);
+    }
+    // No other reason can ride a probe.
+    for (const auto reason : {Failure::invalid, Failure::unavailable, Failure::observation_changed, Failure::budget, Failure::ray_limit,
+             Failure::local_actor_exclusion_unavailable, Failure::contact_measurement_unavailable,
+             Failure::named_actor_categories_unavailable, Failure::hit_categories_unavailable,
+             Failure::hit_categories_inconsistent, Failure::hit_named_actor_category}) {
+        check(!per_ray(reason), "a batch reason was treated as per ray");
+        const auto out = execute(request(), 64, 1000, [&](const Ray&, unsigned) { return Probe{{}, 1, false, reason}; }, fence);
+        check(out.failure == Failure::backend && out.native_casts == 1, "a probe forged a batch reason"); empty(out);
+    }
+    // Without a reason the generic mapping is unchanged.
+    auto out = execute(request(), 64, 1000, [](const Ray&, unsigned) { return Probe{{}, 1}; }, fence);
+    check(out.failure == Failure::unavailable && out.native_casts == 1, "the generic after-cast reason changed"); empty(out);
+    out = execute(request(), 64, 1000, [](const Ray&, unsigned) { return Probe{}; }, fence);
+    check(out.failure == Failure::query_preconditions_unavailable && !out.native_casts, "the generic zero-cast reason changed"); empty(out);
+}
+// Exclusion facts are the backend's. The core never sets one, a request flag
+// alone produces none, and every refusal, a failed closing fence included,
+// clears them with the rows while keeping the actual cast count.
+void exclusion_facts_are_backend_results() {
+    check(!Result{}.local_actor_excluded && !Result{}.named_actor_categories_absent, "a default result claims a fact");
+    auto r = request(2); r.exclude_local_actor = r.require_named_actor_categories_absent = true;
+    const auto hit = [](const Ray&, unsigned) { return Probe{{Status::hit, {1, 0, 3}, .5f, 1}, 1}; };
+    auto out = execute(r, 64, 1000, hit, [] { return true; });
+    check(out.available && !out.local_actor_excluded && !out.named_actor_categories_absent, "a request flag became a fact");
+    unsigned fences{};
+    out = execute(r, 64, 1000, hit, [&] { return ++fences < 2; });
+    check(out.failure == Failure::observation_changed && out.native_casts == 2 && fences == 2 &&
+        !out.local_actor_excluded && !out.named_actor_categories_absent, "a failed closing fence kept a fact or lost its casts"); empty(out);
+    Result claimed; claimed.available = true; claimed.count = 2; claimed.native_casts = 3; claimed.failure = Failure::none;
+    claimed.local_actor_excluded = claimed.named_actor_categories_absent = true;
+    claimed.rays[0] = {Status::hit, {1, 0, 3}, .5f, 1};
+    claimed.rays[0].in_categories_available = claimed.rays[0].owner_available = claimed.rays[0].owner_assigned = true;
+    refuse(claimed, Failure::hit_named_actor_category);
+    check(claimed.failure == Failure::hit_named_actor_category && claimed.native_casts == 3 && claimed.count == 2 &&
+        !claimed.budget_exhausted && !claimed.local_actor_excluded && !claimed.named_actor_categories_absent,
+        "a refusal kept a fact or lost its casts"); empty(claimed);
+    for (const auto& row : claimed.rays) check(!row.in_categories_available && !row.owner_available && !row.owner_assigned, "a refusal kept a value");
+    refuse(claimed, Failure::ray_limit);
+    check(claimed.budget_exhausted && claimed.failure == Failure::ray_limit, "a refusal lost its exhaustion flag");
+}
+// Owner slots follow the category rules: only a hit row may hold one, an
+// assigned slot needs its value, and a probe never carries one.
+void owner_slots_attach_only_to_hits() {
+    check(!Request{}.include_hit_owner && !Request{}.require_named_actor_categories_absent && !Hit{}.owner_available &&
+        !Hit{}.owner_assigned, "owner slots or the category requirement are not opt-in");
+    const auto base = request();
+    Hit row{Status::clear}; row.owner_available = true;
+    check(!consistent(base.rays[0], row), "a clear row carried an owner slot");
+    row = {Status::clear}; row.owner_assigned = true;
+    check(!consistent(base.rays[0], row), "a clear row claimed an assigned owner");
+    row = {Status::hit, {1, 0, 3}, .5f, 1}; row.owner_assigned = true;
+    check(!consistent(base.rays[0], row), "an assigned owner without its slot was accepted");
+    row.owner_available = true; row.owner = 0x2a;
+    check(consistent(base.rays[0], row), "a hit row cannot hold its owner slot");
+    row.owner_assigned = false; row.owner = 0xffffffffU;
+    check(consistent(base.rays[0], row), "a hit row cannot hold an unassigned slot");
+    for (const auto status : {Status::hit, Status::clear}) {
+        auto selected = request(2); selected.include_hit_owner = true;
+        auto out = execute(selected, 64, 1000, [&](const Ray&, unsigned) {
+            Probe probe{{status, {1, 0, 3}, .5f, 1}, 1}; probe.hit.owner_available = true; return probe;
+        }, [] { return true; });
+        check(out.failure == Failure::backend && out.native_casts == 1, "a probe that carried an owner slot was accepted"); empty(out);
+    }
+}
+
 void identity_address_ranges_refuse_overflow_before_callbacks() {
     const auto maximum = std::numeric_limits<std::uintptr_t>::max();
     unsigned reads{}, callbacks{}; std::uint32_t value{};
@@ -525,6 +628,7 @@ int main() {
         hit_association_uses_shape_and_body_domains(); unknown_hit_identity_stops_before_unsafe_body_reads();
         hit_association_rechecks_mapping_generations_and_array_heads(); every_returned_shape_body_pair_reaches_the_final_batch_fence();
         identity_address_ranges_refuse_overflow_before_callbacks(); shape_categories_attach_only_to_hits_after_the_closing_fence();
+        per_ray_reasons_name_the_refused_hit(); exclusion_facts_are_backend_results(); owner_slots_attach_only_to_hits();
         std::cout << "body query tests passed: " << checks << " checks\n"; return 0;
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }

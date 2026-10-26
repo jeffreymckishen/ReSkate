@@ -18,6 +18,7 @@
 #include "Extension/Skater/actor_control.h"
 #include "Extension/Skater/no_bail.h"
 #include "Extension/Profile/local_profile_runtime.h"
+#include "Extension/Objects/ParkEditor/park_editor_surface.h"
 #include <Windows.h>
 #include <intrin.h>
 #include <algorithm>
@@ -1177,6 +1178,19 @@ body_query::Result probe_batch(std::uint64_t owner, const Handle& handle, const 
         // SkaterEntity pointer held by Anchor. Actor conversion and the root
         // descriptor's actor support are unqualified; never submit that pointer.
         if (request.exclude_local_actor) { failed.failure = body_query::Failure::local_actor_exclusion_unavailable; return failed; }
+        const auto read_contact = [](std::uintptr_t at, auto& value) { return peek(at,value); };
+        // Read-time categories, when asked for or needed by the named-actor-category
+        // check, only while the pinned getter's bytes match this image.
+        const bool categories_readable = (request.include_shape_categories || request.require_named_actor_categories_absent) &&
+            body_shape_categories::layout_qualified(service.base, read_contact);
+        // That check needs the filter the native ray will actually send to share no
+        // bit with the named actor categories, and readable categories. Otherwise
+        // nothing could vouch for a returned hit, so nothing is cast.
+        const auto filter = editor::surface_query_filter(request.preset);
+        if (request.require_named_actor_categories_absent &&
+            (!filter || (*filter & addr::park_editor::named_actor_categories) || !categories_readable)) {
+            failed.failure = body_query::Failure::named_actor_categories_unavailable; return failed;
+        }
         for (const auto field : {anchor.state + r::shape_allocated_bits, anchor.state + r::shape_generations,
             anchor.state + r::shape_body_indices, anchor.world + r::world_body_generations}) {
             std::uintptr_t array{};
@@ -1200,14 +1214,15 @@ body_query::Result probe_batch(std::uint64_t owner, const Handle& handle, const 
             return world_current() && body.world==anchor.world && allocated(anchor.state,body.index) &&
                 valid_handle(service.api.body_valid,body) && allocated(anchor.state,body.index) && world_current();
         };
-        const auto read_contact = [](std::uintptr_t at, auto& value) { return peek(at,value); };
-        // Optional read-time categories, only when asked for and only while the
-        // pinned getter's bytes match this image. A mismatch leaves every value
-        // absent; it never refuses the batch. Nothing here outlives this call.
+        // Optional read-time categories. A getter byte mismatch leaves every value
+        // absent and refuses the batch only for the named-actor-category check
+        // above. Nothing here outlives this call.
         body_shape_categories::Sidecars<body_query::maximum_rays> categories;
-        const bool categories_readable = request.include_shape_categories &&
-            body_shape_categories::layout_qualified(service.base, read_contact);
-        // Around each category read: the same World/state and SDK world generation,
+        // Optional owner slots under the same rules, only when asked for. resolve()
+        // already compared set_shape_owner's bytes, which reach state+1008 through
+        // World+28 and index it by the shape's own index.
+        body_shape_categories::Sidecars<body_query::maximum_rays> hit_owners{r::shape_owners};
+        // Around each category or owner read: the same World/state and SDK world generation,
         // the requested listener epoch and sample, and the original shape/body pair.
         const auto hit_current = [&](const NativeHandle& shape, const NativeHandle& body) {
             NativeHandle current; Epoch epoch{};
@@ -1231,9 +1246,9 @@ body_query::Result probe_batch(std::uint64_t owner, const Handle& handle, const 
                 })) return false;
             for (std::size_t i=0;i<motion_count;++i)
                 if (!body_contact_read::motion_current(anchor.world,anchor.state,motions[i],read_contact,motion_body_current)) return false;
-            // Identity drift seen while capturing or rechecking a category refuses
-            // the batch and stays refused; category-only drift drops just that value.
-            if (!categories.current(read_contact, hit_current)) return false;
+            // Identity drift seen while capturing or rechecking a category or owner
+            // refuses the batch and stays refused; value-only drift drops just that value.
+            if (!categories.current(read_contact, hit_current) || !hit_owners.current(read_contact, hit_current)) return false;
             Epoch after{}; after.world = generation; after.body = selected->handle.generation;
             return world_current() && clock(anchor, after) && after == requested_epoch &&
                 body_query::same_sample(canonical, selected->latest);
@@ -1255,14 +1270,22 @@ body_query::Result probe_batch(std::uint64_t owner, const Handle& handle, const 
             if (!hit.hit) { out.hit.status = body_query::Status::clear; return out; }
             NativeHandle shape, body;
             std::memcpy(&shape, hit.hit_body.data(), sizeof(shape));
-            if (!qualify(shape, body)) return out;
+            // Each refusal of the actual hit names why, so a caller can tell an
+            // owned-body hit from a hit whose identity could not be qualified.
+            if (!qualify(shape, body)) { out.failure = body_query::Failure::hit_identity_unqualified; return out; }
             for (std::size_t i = 0; i < excluded_count; ++i)
-                if (body.world == owners[i]->body.world && body.index == owners[i]->body.index) return out;
+                if (body.world == owners[i]->body.world && body.index == owners[i]->body.index) {
+                    out.failure = body_query::Failure::owned_body_hit; return out;
+                }
             if (!witnesses.add({shape, body})) return out;
             // Only after qualification and the owned exclusion above, indexed by the
-            // original shape. The value stays beside the batch; this probe never has it.
-            if (categories_readable &&
-                !categories.capture(index, anchor.world, anchor.state, shape, body, read_contact, hit_current)) return out;
+            // original shape. The values stay beside the batch; this probe never has them.
+            // An identity loss here is sticky, so the fence execute runs next reports it
+            // as an observation change rather than as this ray's reason.
+            if ((categories_readable &&
+                    !categories.capture(index, anchor.world, anchor.state, shape, body, read_contact, hit_current)) ||
+                (request.include_hit_owner &&
+                    !hit_owners.capture(index, anchor.world, anchor.state, shape, body, read_contact, hit_current))) return out;
             out.hit.status = body_query::Status::hit; out.hit.position = hit.position; out.hit.fraction = hit.fraction;
             out.hit.normal=hit.normal; out.hit.normal_available=hit.normal_available;
             body_contact_read::Motion motion;
@@ -1276,8 +1299,18 @@ body_query::Result probe_batch(std::uint64_t owner, const Handle& handle, const 
             return out;
         };
         auto result = body_query::execute(request, allowance, 1000, query, fence);
-        // Only a result that passed execute's closing fence receives categories.
+        // The named-actor-category check judges only a result that passed execute's
+        // closing fence, over the values that survived it, before anything is
+        // published. Any failure refuses the whole batch. The fact is set only here;
+        // local_actor_excluded is never set on this path.
+        if (result.available && request.require_named_actor_categories_absent) {
+            const auto failure = categories.require(result, *filter, addr::park_editor::named_actor_categories);
+            if (failure != body_query::Failure::none) body_query::refuse(result, failure);
+            else result.named_actor_categories_absent = true;
+        }
+        // Only a result that passed execute's closing fence receives categories or owner slots.
         categories.publish(request, result);
+        hit_owners.publish(request, result);
         return result;
     } catch (...) {
         failed.native_casts = performed; failed.accounting_valid = !ray_entered;

@@ -707,7 +707,7 @@ void service_forwards_query_preset_without_relaxing_refusals() {
         check(!out.available && out.native_casts==1 && f.calls==4 && test_facts::probe_presets.back()==QueryPreset::terrain,
             "terrain owned nearest hit became clear or was recast through");
         f.hit_owned=false;
-        for(const auto unknown:{static_cast<QueryPreset>(2),static_cast<QueryPreset>(255)}) {
+        for(const auto unknown:{static_cast<QueryPreset>(3),static_cast<QueryPreset>(255)}) {
             request.preset=unknown;const auto presets=test_facts::probe_presets.size();
             out=probe_batch(owner,f.handle,request,64);
             check(!out.available && out.failure==body_query::Failure::invalid && !out.native_casts && f.calls==4 &&
@@ -799,6 +799,157 @@ void service_shape_categories_are_opt_in_shape_bound_and_fenced() {
         const auto out=probe_batch(owner,f.handle,request,64);
         check(!out.available && out.failure==Failure::observation_changed && out.native_casts==2 && none(out),
             "shape identity drift became a missing category instead of a refusal");
+    }
+}
+
+// The rest of the S-1 set over the actual Service. The named-actor-category
+// requirement is refused with zero casts unless the preset's filter and the pinned
+// getter qualify, is judged after the closing fence over the surviving values, and
+// only then sets its fact; local_actor_excluded is never set. Each refused nearest
+// hit names its reason, and hit owner slots follow the category rules.
+void service_named_actor_categories_reasons_and_hit_owners() {
+    using body_query::Failure; using body_query::QueryPreset;
+    constexpr std::uint32_t static_template=0x2F90U, terrain_template=0xAD1U;
+    const auto pin=[](ContactFixture& f,bool exact) {
+        const auto at=f.base+r::shape_in_categories.rva;
+        check(VirtualAlloc(reinterpret_cast<void*>(at&~std::uintptr_t{4095}),4096,MEM_COMMIT,PAGE_READWRITE)!=nullptr,
+            "getter byte page commit failed");
+        auto bytes=r::shape_in_categories.bytes;
+        if(!exact) bytes[0]=static_cast<unsigned char>(bytes[0]^0x01U);
+        put(at,bytes);
+    };
+    const auto masks=[](ContactFixture& f,std::uint32_t first,std::uint32_t second) {
+        put(f.categories+ContactFixture::hit_shapes[0]*4,first);
+        put(f.categories+ContactFixture::hit_shapes[1]*4,second);
+    };
+    // No value and no fact survives.
+    const auto none=[](const body_query::Result& out) {
+        for(const auto& hit:out.rays) if(hit.in_categories_available||hit.owner_available) return false;
+        return !out.local_actor_excluded && !out.named_actor_categories_absent;
+    };
+    const auto required=[](ContactFixture& f,bool contact) {
+        auto out=f.request(2,contact);out.require_named_actor_categories_absent=true;return out;
+    };
+    {
+        // Before any cast: unreadable or mismatched getter bytes, a filter with a
+        // named bit, and, first of all, the unchanged actor exclusion refusal.
+        ContactFixture f;masks(f,static_template,static_template);auto request=required(f,false);
+        test_facts::probe_presets.clear();
+        auto out=probe_batch(owner,f.handle,request,64);
+        check(!out.available && out.failure==Failure::named_actor_categories_unavailable && !out.native_casts && !f.calls && none(out),
+            "the requirement cast without readable getter bytes");
+        pin(f,false);out=probe_batch(owner,f.handle,request,64);
+        check(!out.available && out.failure==Failure::named_actor_categories_unavailable && !out.native_casts && !f.calls && none(out),
+            "the requirement cast past a getter byte mismatch");
+        pin(f,true);request.preset=QueryPreset::all;out=probe_batch(owner,f.handle,request,64);
+        check(!out.available && out.failure==Failure::named_actor_categories_unavailable && !out.native_casts && !f.calls &&
+            test_facts::probe_presets.empty() && none(out),"all reached a cast under the requirement");
+        for(const auto preset:{QueryPreset::camera,QueryPreset::all}) {
+            request.preset=preset;request.exclude_local_actor=true;out=probe_batch(owner,f.handle,request,64);
+            check(!out.available && out.failure==Failure::local_actor_exclusion_unavailable && !out.native_casts && !f.calls && none(out),
+                "the requirement displaced the zero-cast actor exclusion refusal");
+        }
+        // all as a diagnostic, without the requirement, reaches its counted query.
+        request.exclude_local_actor=request.require_named_actor_categories_absent=false;request.include_shape_categories=true;
+        out=probe_batch(owner,f.handle,request,64);
+        check(out.available && out.native_casts==2 && f.calls==2 &&
+            test_facts::probe_presets==std::vector<QueryPreset>{QueryPreset::all,QueryPreset::all} &&
+            out.rays[0].in_categories==static_template && !out.named_actor_categories_absent && !out.local_actor_excluded,
+            "the all diagnostic did not reach its counted query or claimed a fact");
+    }
+    for(const bool contact:{false,true}) {
+        // Static-template hits pass under camera, with or without measured contact,
+        // and their values appear only when they are also asked for.
+        ContactFixture f;masks(f,static_template,static_template);pin(f,true);auto request=required(f,contact);
+        auto out=probe_batch(owner,f.handle,request,64);
+        check(out.available && out.native_casts==2 && out.named_actor_categories_absent && !out.local_actor_excluded &&
+            !out.rays[0].in_categories_available && !out.rays[1].in_categories_available,
+            "a Static-template batch was refused, claimed an exclusion or showed categories");
+        check(!contact || (out.rays[0].normal_available && out.rays[1].surface_velocity_available),"the requirement lost measured contact");
+        request.include_shape_categories=true;out=probe_batch(owner,f.handle,request,64);
+        check(out.available && out.named_actor_categories_absent && out.rays[0].in_categories==static_template &&
+            out.rays[1].in_categories_available,"the requirement and the category diagnostic did not combine");
+    }
+    {
+        // The overlap rule uses the preset's own filter: Static lacks the Terrain bit.
+        ContactFixture f;masks(f,terrain_template,static_template);pin(f,true);auto request=required(f,false);
+        request.preset=QueryPreset::terrain;
+        auto out=probe_batch(owner,f.handle,request,64);
+        check(!out.available && out.failure==Failure::hit_categories_inconsistent && out.native_casts==2 && none(out),
+            "a Static-template hit passed the terrain filter's overlap rule");
+        masks(f,terrain_template,terrain_template);out=probe_batch(owner,f.handle,request,64);
+        check(out.available && out.named_actor_categories_absent && test_facts::probe_presets.back()==QueryPreset::terrain,
+            "a Terrain-template batch was refused under terrain");
+    }
+    for(const unsigned bit:{2U,3U,21U,25U,26U,28U,29U,31U}) {
+        ContactFixture f;masks(f,static_template,static_template|(1U<<bit));pin(f,true);auto request=required(f,false);
+        request.include_shape_categories=true;
+        const auto out=probe_batch(owner,f.handle,request,64);
+        check(!out.available && out.failure==Failure::hit_named_actor_category && out.native_casts==2 && none(out) &&
+            out.rays[1].status==body_query::Status::unavailable,"a hit carrying a named actor category passed or leaked");
+    }
+    for(const std::uint32_t missed:{0x40U,0U}) {
+        ContactFixture f;masks(f,static_template,missed);pin(f,true);auto request=required(f,false);
+        const auto out=probe_batch(owner,f.handle,request,64);
+        check(!out.available && out.failure==Failure::hit_categories_inconsistent && out.native_casts==2 && none(out),
+            "a hit whose categories miss the filter passed");
+    }
+    {
+        // A replacement array whose elements 0-3 lie on an unreadable page: both hit
+        // shapes' values cannot be read, while the owned shape's element 5 can.
+        ContactFixture f;pin(f,true);
+        const auto pages=f.arena.take(8192,4096);DWORD old{};
+        check(VirtualProtect(reinterpret_cast<void*>(pages),4096,PAGE_NOACCESS,&old)!=0,"category guard failed");
+        put(f.state+r::shape_categories,pages+4096-16);
+        auto request=required(f,false);
+        auto out=probe_batch(owner,f.handle,request,64);
+        check(!out.available && out.failure==Failure::hit_categories_unavailable && out.native_casts==2 && none(out),
+            "an unreadable category passed the requirement");
+        request.require_named_actor_categories_absent=false;request.include_shape_categories=true;
+        out=probe_batch(owner,f.handle,request,64);
+        check(out.available && out.native_casts==2 && !out.rays[0].in_categories_available && !out.rays[1].in_categories_available,
+            "without the requirement an unreadable category was not merely absent");
+        check(VirtualProtect(reinterpret_cast<void*>(pages),4096,PAGE_READWRITE,&old)!=0,"category guard restore failed");
+    }
+    {
+        // A value changed before the closing fence is dropped, so it cannot pass.
+        ContactFixture f;masks(f,static_template,static_template);pin(f,true);auto request=required(f,false);
+        f.during_query=[&](unsigned calls) { if(calls==2) put(f.categories+ContactFixture::hit_shapes[0]*4,static_template|1U); };
+        const auto out=probe_batch(owner,f.handle,request,64);
+        check(!out.available && out.failure==Failure::hit_categories_unavailable && out.native_casts==2 && none(out),
+            "a category dropped at the closing fence passed the requirement");
+    }
+    for(const bool requirement:{false,true}) {
+        // Each refused nearest hit names its reason, with its one actual cast.
+        ContactFixture f;masks(f,static_template,static_template);pin(f,true);auto request=f.request(2,false);
+        request.require_named_actor_categories_absent=requirement;
+        f.hit_owned=true;auto out=probe_batch(owner,f.handle,request,64);
+        check(!out.available && out.failure==Failure::owned_body_hit && out.native_casts==1 && f.calls==1 && none(out),
+            "an owned nearest hit did not name its reason");
+        f.hit_owned=false;f.hit_unknown=true;out=probe_batch(owner,f.handle,request,64);
+        check(!out.available && out.failure==Failure::hit_identity_unqualified && out.native_casts==1 && f.calls==2 && none(out),
+            "an unqualified nearest hit did not name its reason");
+    }
+    {
+        // Owner slots: read at the hit shape's own element, unassigned is not absent,
+        // only an opt-in sees them, and a change before the closing fence drops one.
+        ContactFixture f;auto request=f.request(2,false);request.include_hit_owner=true;
+        const auto slots=load<std::uintptr_t>(f.state+r::shape_owners);
+        put(slots+ContactFixture::hit_shapes[0]*4,r::unassigned_shape_owner);
+        put(slots+ContactFixture::hit_shapes[1]*4,std::uint32_t{0x2a});
+        // A decoy at the mapped foreign body's own index.
+        put(slots+ContactFixture::foreign_index*4,std::uint32_t{0x99});
+        auto out=probe_batch(owner,f.handle,request,64);
+        check(out.available && out.native_casts==2 && out.rays[0].owner_available && !out.rays[0].owner_assigned &&
+            out.rays[1].owner_available && out.rays[1].owner_assigned && out.rays[1].owner==0x2a &&
+            !out.rays[0].in_categories_available && !out.local_actor_excluded,"the Service lost, mixed or body-indexed its hit owner slots");
+        request.include_hit_owner=false;out=probe_batch(owner,f.handle,request,64);
+        check(out.available && !out.rays[0].owner_available && !out.rays[1].owner_available,"a default batch carried owner slots");
+        request.include_hit_owner=true;const auto second=f.calls+2;
+        f.during_query=[&,second,slots](unsigned calls) { if(calls==second) put(slots+ContactFixture::hit_shapes[0]*4,std::uint32_t{7}); };
+        out=probe_batch(owner,f.handle,request,64);
+        check(out.available && !out.rays[0].owner_available && out.rays[1].owner_available && out.rays[1].owner==0x2a,
+            "an owner slot change refused the batch or kept a stale slot");
     }
 }
 
@@ -1229,6 +1380,7 @@ int main() {
         run("service_actor_and_nearest_hit_refusals",service_actor_and_nearest_hit_refusals);
         run("service_forwards_query_preset_without_relaxing_refusals",service_forwards_query_preset_without_relaxing_refusals);
         run("service_shape_categories_opt_in_shape_bound_and_fenced",service_shape_categories_are_opt_in_shape_bound_and_fenced);
+        run("service_named_actor_categories_reasons_and_hit_owners",service_named_actor_categories_reasons_and_hit_owners);
         run("deferred_producer_initialization_without_allocation",deferred_initialization_stays_outside_create_and_service_lock,1);
         run("prepare_cold_queues_only_deferred_setup",prepare_cold_queues_only_deferred_setup);
         run("prepare_deferred_failure_is_terminal_without_retry",prepare_deferred_failure_is_terminal_without_retry,1);

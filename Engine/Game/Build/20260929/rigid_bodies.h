@@ -52,6 +52,9 @@ inline constexpr std::uintptr_t shape_allocated_bits = 0xf58, shape_body_indices
 // 0x25d7b10 compares a body's u32 generation in the world, not its state.
 inline constexpr std::uintptr_t world_body_generations = 0x680;
 inline constexpr std::uintptr_t shape_categories = 0xfe8, shape_collides = 0xff0, shape_owners = 0x1008;
+// An owner slot of FFFFFFFF has no owner: set_shape_owner stores the owner's u32
+// index there, -1 for none, and the native ignore lists skip their test for it.
+inline constexpr std::uint32_t unassigned_shape_owner = 0xffffffffU;
 // Stage 6: 0x25d55d0 takes a shape handle and stores DWORD (World+28)+FE8[index]
 // through its second argument, with no index, allocation or generation check.
 // The SDK never calls it. Its bytes qualify the world_state/shape_categories

@@ -33,12 +33,13 @@ struct alignas(16) NativeSurfaceResult {
 };
 static_assert(offsetof(NativeSurfaceRay, filter) == 0x20 && offsetof(NativeSurfaceRay, ignored_bodies) == 0x40);
 static_assert(offsetof(NativeSurfaceResult, scope) == 0x30 && sizeof(NativeSurfaceResult) == 0x50);
-// Only the two supported presets have a native filter. Anything else is not a
+// Only the supported presets have a native filter. Anything else is not a
 // request this build can make, so callers refuse it before any native call.
 inline std::optional<std::uint32_t> surface_query_filter(body_query::QueryPreset preset) noexcept {
     switch (preset) {
     case body_query::QueryPreset::camera: return addr::park_editor::camera_query_filter;
     case body_query::QueryPreset::terrain: return addr::park_editor::terrain_query_filter;
+    case body_query::QueryPreset::all: return addr::park_editor::all_query_filter;
     }
     return {};
 }

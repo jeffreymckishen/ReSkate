@@ -67,7 +67,7 @@ and world, and excludes the current local rider through verified body/entity loo
 `Extension/Profile/local_profile_runtime.h:92` exposes hit/clear/unavailable separately.
 It currently exposes no hit normal, material or contact impulse. A clear ray does not prove
 regional collision streaming. The sphere query `0x26c0fd0` shares a core implementation
-with the ray (`park_editor.h:58`), but has no verified typed wrapper here yet.
+with the ray (`park_editor.h:59`), but has no verified typed wrapper here yet.
 
 The six bike entities are client static-model props, not bike collision bodies
 (`Engine/Game/Build/20260929/world_props.h:4`; `native_prop.h:55`). The park editor can

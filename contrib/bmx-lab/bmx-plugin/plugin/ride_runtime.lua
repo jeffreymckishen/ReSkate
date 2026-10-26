@@ -684,6 +684,30 @@ local function observe(s,source_frame,raw,context)
     if controls.physics_epoch~=sample.epoch or controls.h~=sample.seconds or not same_observation(controls.source,model_source) then
         stop(s,"mapped native frame mismatch");return
     end
+    if s.hop_policy=="suppress" and controls.hop then
+        local id=controls.hop.id
+        local retired=invoke(s,s.mapping.retire_hop,s.mapping,id,"suppressed")
+        local confirmed=retired[1] and retired.n==3 and retired[2]==true and retired[3]=="none"
+        s.hop_disposition={id=id,disposition="suppressed",confirmed=confirmed==true}
+        if not confirmed or not retired.current or s.stopped then
+            s.unknown=true;stop(s,"hop suppression unavailable");return
+        end
+        -- Refresh the same pure action projection after local retirement. No
+        -- source observation, body step, force receipt or native hop is made.
+        local refreshed=invoke(s,s.mapping.controls,s.mapping,{physics_epoch=sample.epoch,h=sample.seconds,
+            grounded=contact.grounded,rotation_reserved=false})
+        local next_controls=refreshed[1] and refreshed.n==2 and refreshed[2] or nil
+        if not refreshed.current or s.stopped or type(next_controls)~="table" or next_controls.valid~=true
+            or next_controls.submission_allowed~=true or next_controls.physics_epoch~=sample.epoch
+            or next_controls.h~=sample.seconds or not same_observation(next_controls.source,model_source)
+            or next_controls.hop~=nil or type(next_controls.force_controls)~="table"
+            or next_controls.force_controls.hop_event_id~=0 or next_controls.force_controls.hop_strength~=0
+            or type(next_controls.actions)~="table" or next_controls.actions.hop_pressed~=false
+            or next_controls.actions.hop_strength~=0 then
+            s.unknown=true;stop(s,"hop suppression controls unavailable");return
+        end
+        controls=next_controls
+    end
     if controls.hop and not Identity.bounded_delta(key.observed_ms,controls.hop.observed_ms,100) then
         stop(s,"hop request expired before body progress");return
     end
@@ -772,8 +796,12 @@ function Ride.new(force_api,models,options)
         continuity_pending=false,continuity_skipped_steps=0,continuity_invalidations=0,
         input_queue={},input_staged=0,input_consumed=0,observed_steps=0,model_steps=0}
     if ACTIVATION_QUALIFIED then
+        -- Snapshot an immutable model capability once. Raw Forces has no hop
+        -- policy and retains its receipt-owned hop behavior unchanged.
+        s.hop_policy=s.force.hop_policy
         local valid=type(s.body)=="userdata" and s.incarnation~=nil and type(force_api)=="table"
             and type(s.contact)=="table" and type(s.contact.decode)=="function" and type(s.contact.actor_lane_qualified)=="function"
+            and (s.hop_policy==nil or s.hop_policy=="suppress")
         if valid then
             for _,name in ipairs({"probe_batch","submit","receipt","acknowledge"}) do
                 if type(force_api[name])~="function" then valid=false end

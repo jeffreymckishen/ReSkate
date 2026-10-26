@@ -36,7 +36,7 @@ local function fixture(stage,options)
     local f
     -- This observer only records the real result. It does not supply controls,
     -- model values, candidates or history; all three operations delegate exactly.
-    local observer={tuning=actual.tuning}
+    local observer={tuning=actual.tuning,hop_policy=actual.hop_policy}
     function observer:preview(...)
         local args=table.pack(...)
         local model,candidate=actual:preview(...)
@@ -145,12 +145,16 @@ function Tests.run()
         local a,b,c=plain.next(),extra.next(),neutral.next()
         check(not a.stop_requested and not b.stop_requested and a.submitted==2 and b.submitted==2,"real Mapping admits both fresh action frames")
         local mapped=extra.previews[2].args[5]
-        check(mapped.pedal==1 and mapped.brake>0 and mapped.steer~=0 and mapped.hop_strength>0,"the test actually sends pedal, brake, steering and hop into the wrapper")
+        check(mapped.pedal==1 and mapped.brake>0 and mapped.steer~=0 and mapped.hop_strength==0 and mapped.hop_event_id==0,
+            "other mapped controls reach the wrapper after fixed-policy hop suppression")
         check(equal(plain.previews[2].model,extra.previews[2].model),"nonpedal actions cannot alter the real pedal-stage model")
         check(equal(plain.commands[2],extra.commands[2]) and extra.command.impulse==nil,"nonpedal actions cannot escape into native packet fields")
         check(not c.stop_requested and c.submitted==2 and not equal(plain.previews[2].model,neutral.previews[2].model),
             "positive pedal differs from support with identical prior accepted history")
-        check(extra.mapping:status().pending_hop~=nil,"ignored hop remains a Mapping request, not fabricated receipt retirement")
+        local mapped_status=extra.mapping:status()
+        check(mapped_status.pending_hop==nil and mapped_status.hop_counter==1 and mapped_status.last_retired
+            and mapped_status.last_retired.disposition=="suppressed",
+            "the exact ignored hop is retired as local policy, not fabricated native acceptance")
     end)
     case("over-cap support stops instead of clamping",function()
         local f=fixture(LowCap);local out=f.observe()

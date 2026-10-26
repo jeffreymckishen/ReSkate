@@ -53,7 +53,10 @@ function Stage.new(...)
     assert(select("#",...)==0,"force stage accepts no runtime configuration")
     assert(STAGE=="zero_force" or STAGE=="support" or STAGE=="pedal","invalid force stage")
     local kernel=Forces.new()
-    local self=setmetatable({tuning=table.freeze({gravity=table.freeze(M.copy(kernel.tuning.gravity))})},Controller)
+    -- Every D6a stage suppresses hop intent before force preview. This fixed
+    -- policy is not a native hop outcome or a runtime stage selector.
+    local self=setmetatable({hop_policy="suppress",
+        tuning=table.freeze({gravity=table.freeze(M.copy(kernel.tuning.gravity))})},Controller)
     states[self]={kernel=kernel}
     return table.freeze(self)
 end

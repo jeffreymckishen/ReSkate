@@ -52,7 +52,7 @@ function Tests.run()
             and f.acks[1]==f.first and f.acks[2]==f.second,"both exact terminal receipts ACK in order")
         check(s.issue=="force body parked without successor","younger explicit park must survive the older generic retained row")
         check(s.metrics.stop_counts["force body parked without successor"]==1
-            and s.metrics.stop_counts["force body retained or quarantined"]==nil,"the chosen cause is the single first stop latch")
+            and s.metrics.stop_counts["force body retained or quarantined"]==2,"both generic row observations are counted while explicit park remains the first cause")
         f.ride:drain();check(#f.acks==2,"cleanup does not duplicate either ACK")
     end)
     case("an existing Core stop cause remains authoritative",function()

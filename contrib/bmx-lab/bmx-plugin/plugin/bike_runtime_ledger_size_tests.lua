@@ -363,7 +363,7 @@ function Tests.run(runner)
         "held input is measured separately from body advancement")
     check(m.report_gap_count==fresh_steps-1 and m.largest_report_gap_ms==34 and m.report_gap_unbounded==0,
         "exact long report clocks produce bounded observed gaps")
-    check(m.samples_total==model_steps and #m.samples==32 and m.samples_omitted==model_steps-32,
+    check(m.samples_total==model_steps and #m.samples==24 and m.samples_omitted==model_steps-24,
         "sample ring is full with explicit historical omission")
     check(m.grounded_transition_total>16 and #m.grounded_transitions==16
         and m.grounded_transition_omitted==m.grounded_transition_total-16,
@@ -379,16 +379,47 @@ function Tests.run(runner)
     local window_records=saved_steps
     check(window_records==model_steps and state.storage_fault~=true,"every model-window persistence was accepted")
     cases+=1
-    f.ride:stop("ledger fixture completed")
+    local reasons={"ledger fixture completed","force receipt watchdog expired",
+        "force body parked without successor","force body retained or quarantined",
+        "force acknowledgement outcome unknown","applied successor incoherent"}
+    local key_bytes=0
+    for _,why in ipairs(reasons) do key_bytes+=#encode(why) end
+    local function escaped_reason(prefix,bytes)
+        -- Include both short and six-byte escapes, unescaped slash/DEL and
+        -- multibyte UTF-8. The actual SDK-compatible writer sizes each key.
+        local value=prefix..'"\\\b\t\n\f\r\0\1/'..string.char(127,0xC3,0xA9)
+        local remaining=bytes-#encode(value)
+        assert(remaining>=0,"constructed escaped key target has room")
+        return value..string.rep("x",remaining)
+    end
+    local seventh_bytes=math.floor((1024-key_bytes)/2)
+    reasons[7]=escaped_reason("escaped cleanup A:",seventh_bytes)
+    reasons[8]=escaped_reason("escaped cleanup B:",1024-key_bytes-seventh_bytes)
+    for _,why in ipairs(reasons) do f.ride:stop(why) end
+    f.ride:stop(reasons[2]);f.ride:stop(reasons[2])
+    f.ride:stop("overflow cleanup reason");f.ride:stop("overflow cleanup reason")
+    f.ride:stop(string.char(0xFF))
+    local stopped_pending=f.ride:status()
+    local keys,bytes=0,0
+    for why in pairs(stopped_pending.metrics.stop_counts) do keys+=1;bytes+=#encode(why) end
+    check(keys==8 and bytes==1024 and stopped_pending.metrics.stop_counts_overflow==3,
+        "eight exact keys fill the encoded budget, with every excess or malformed occurrence counted")
+    check(stopped_pending.issue==reasons[1] and stopped_pending.metrics.stop_counts[reasons[2]]==3,
+        "later repeated cleanup causes are counted without replacing the first issue")
+    check(stopped_pending.pending_count==3 and #stopped_pending.metrics.samples==24
+        and #stopped_pending.metrics.grounded_transitions==16,"full stop counters coexist with all pending rows and both rings")
+    persist_step(stopped_pending,model_steps+1)
     f.withhold_successors=false
     f.advance(2)
     f.now=(f.time-model_start_time)*1000
     local stopped=f.ride:drain()
     check(stopped.stop_requested and not stopped.force_pending and not stopped.unknown,
         "late exact successors drain the constructed window")
-    check(stopped.metrics.stop_counts["ledger fixture completed"]==1,"only the first stop is counted")
-    f.ride:stop("later stop request")
-    check(f.ride:status().metrics.stop_counts["later stop request"]==nil,"repeated cleanup does not inflate stop counts")
+    check(stopped.metrics.stop_counts[reasons[1]]==1,"the initial stop occurrence remains recorded")
+    f.ride:stop(reasons[2]);f.ride:stop("later stop request")
+    stopped=f.ride:status()
+    check(stopped.metrics.stop_counts[reasons[2]]==4 and stopped.metrics.stop_counts_overflow==4,
+        "retained reasons and overflow occurrences keep counting during later cleanup")
     persist_step(stopped,model_steps+2)
     check(core:request_stop("Core fixture terminal save"),"the real Core forced-stop persistence path runs")
     check(state.storage_fault~=true and cf.saves[#cf.saves].record.ride.metrics.stop_counts["ledger fixture completed"]==1,

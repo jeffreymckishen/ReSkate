@@ -47,13 +47,67 @@ function Tests.run()
         check(m.steps==0 and m.samples_total==0 and #m.samples==0 and m.inflight==0,"inactive metrics invent no body evidence")
         check(m.submitted_count==0 and m.applied_count==0 and next(m.stop_counts)==nil,"inactive metrics invent no transport or stop")
     end)
-    case("only the first latched stop reason is counted",function()
-        local f=fixture();f.ride:stop("first fixture cause")
-        f.ride:stop("second fixture cause");f.ride:drain();f.observe()
+    case("every stop reason and repetition is counted while first cause stays latched",function()
+        local f=fixture()
+        f.ride:stop("first fixture cause")
+        f.ride:stop("force receipt watchdog expired")
+        f.ride:stop("force acknowledgement outcome unknown")
+        f.ride:stop("force receipt watchdog expired")
+        f.ride:stop("first fixture cause")
+        f.ride:drain();f.observe()
+        local status=f.ride:status();local m=status.metrics;local count=0
+        for _ in pairs(m.stop_counts) do count+=1 end
+        check(count==3 and m.stop_counts["first fixture cause"]==2
+            and m.stop_counts["force receipt watchdog expired"]==2
+            and m.stop_counts["force acknowledgement outcome unknown"]==1,
+            "later cleanup reasons and repeated requests each increment their own counter")
+        check(status.issue=="first fixture cause" and status.stop_requested,
+            "later reasons never replace the first latched cause")
+        check(m.steps==0 and m.samples_total==0,"stopped observe cannot create a diagnostic step")
+    end)
+    case("stop key count is bounded and overflow counts occurrences",function()
+        local f=fixture()
+        for i=1,8 do f.ride:stop("bounded reason "..i) end
+        for _=1,5 do f.ride:stop("ninth reason") end
+        f.ride:stop("bounded reason 3")
+        local status=f.ride:status();local m=status.metrics;local keys,total=0,m.stop_counts_overflow
+        for _,n in pairs(m.stop_counts) do keys+=1;total+=n end
+        check(keys==8 and m.stop_counts_overflow==5 and m.stop_counts["ninth reason"]==nil,
+            "a ninth reason is counted in overflow on every occurrence")
+        check(m.stop_counts["bounded reason 3"]==2 and total==14,
+            "an admitted reason still increments after cardinality exhaustion")
+        check(status.issue=="bounded reason 1","overflow cannot replace the first cause")
+    end)
+    case("escaped key bytes admit the exact boundary without truncation",function()
+        local f=fixture();local keys={}
+        -- Each JSON key is128bytes: two quotes, one digit,20 six-byte
+        -- control escapes and five printable bytes.
+        for i=1,8 do keys[i]=tostring(i)..string.rep(string.char(1),20).."xxxxx" end
+        for i=1,7 do f.ride:stop(keys[i]) end
+        f.ride:stop(keys[8].."x")
+        check(f.ride:status().metrics.stop_counts_overflow==1,
+            "a129byte candidate cannot fit the last128bytes")
+        f.ride:stop(keys[8]);f.ride:stop(keys[1]);f.ride:stop("overflow after exact boundary")
         local m=f.ride:status().metrics;local count=0
         for _ in pairs(m.stop_counts) do count+=1 end
-        check(count==1 and m.stop_counts["first fixture cause"]==1,"later stops cannot count or overwrite the original cause")
-        check(m.steps==0 and m.samples_total==0,"stopped observe cannot create a diagnostic step")
+        check(count==8 and m.stop_counts[keys[8]]==1 and m.stop_counts[keys[1]]==2,
+            "exact1024 encoded key bytes fit, and a retained key repeats at the boundary")
+        check(m.stop_counts[keys[8].."x"]==nil and m.stop_counts_overflow==2,
+            "rejected keys are never shortened or merged into an admitted key")
+    end)
+    case("full Unicode reason keys stay distinct and malformed later keys overflow",function()
+        local f=fixture();f.ride:stop("first cause")
+        local prefix=string.rep("x",179)
+        local a=prefix..string.char(0xC3,0xA9)
+        local b=prefix..string.char(0xC3,0xAA)
+        f.ride:stop(a);f.ride:stop(b)
+        for _,bad in ipairs({string.char(0xFF),string.char(0xC0,0xAF),string.char(0xED,0xA0,0x80),
+            string.char(0xF4,0x90,0x80,0x80)}) do f.ride:stop(bad) end
+        local status=f.ride:status();local m=status.metrics
+        check(m.stop_counts[a]==1 and m.stop_counts[b]==1 and m.stop_counts[prefix..string.char(0xC3)]==nil,
+            "valid reasons sharing their first180bytes retain full distinct keys")
+        check(m.stop_counts_overflow==4 and status.issue=="first cause",
+            "invalid later UTF-8 cannot poison stored keys or replace the first issue")
     end)
     case("report timestamp gap differs from no-report body streak",function()
         local f=fixture();local initial_ms=f.ms;f.observe()
@@ -189,12 +243,12 @@ function Tests.run()
             local status=f.observe();if i==1 then early=status end
         end
         local m=f.ride:status().metrics
-        check(m.steps==150 and m.samples_total==150 and #m.samples==32 and m.samples_omitted==118,
-            "wheel and body-height ring keeps only the latest 32 valid observations")
+        check(m.steps==150 and m.samples_total==150 and #m.samples==24 and m.samples_omitted==126,
+            "wheel and body-height ring keeps only the latest24 valid observations")
         check(m.grounded_transition_total==149 and #m.grounded_transitions==16 and m.grounded_transition_omitted==133,
             "transition history is separately bounded")
-        check(m.samples[32].serial==f.serial and math.abs(m.samples[32].body_height-.9)<1e-6
-            and Identity.bounded_delta(m.samples[32].serial,m.samples[1].serial,31)==31,
+        check(m.samples[24].serial==f.serial and math.abs(m.samples[24].body_height-.9)<1e-6
+            and Identity.bounded_delta(m.samples[24].serial,m.samples[1].serial,23)==23,
             "bounded rows retain exact serial ordering and sampled height")
         check(early.metrics.steps==1 and #early.metrics.samples==1,"returned diagnostics are detached from later updates")
         local fields=0

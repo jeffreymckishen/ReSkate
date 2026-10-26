@@ -10,7 +10,8 @@ local Ride, Object = {}, {}
 local states = setmetatable({}, {__mode="k"})
 local MAX_SAFE = 9007199254740991
 local MAX_PENDING = 3
-local METRIC_SAMPLE_LIMIT, METRIC_TRANSITION_LIMIT = 32, 16
+local METRIC_SAMPLE_LIMIT, METRIC_TRANSITION_LIMIT = 24, 16
+local METRIC_STOP_REASON_LIMIT, METRIC_STOP_KEY_BYTES = 8, 1024
 
 local function copy(value)
     if type(value) ~= "table" then return value end
@@ -183,7 +184,7 @@ local function wheel_copy(wheels,previous)
     return detached(out)
 end
 local function new_metrics()
-    local out={version=1,stop_counts={},steps=0,fresh_report_steps=0,steps_without_report=0,
+    local out={version=1,stop_counts={},stop_counts_overflow=0,steps=0,fresh_report_steps=0,steps_without_report=0,
         max_steps_without_report=0,report_gap_count=0,largest_report_gap_ms=0,report_gap_unbounded=0,
         grounded_changes_with_report=0,grounded_changes_without_report=0,grounded_transition_total=0,
         grounded_transition_omitted=0,grounded_transitions={},samples_total=0,samples_omitted=0,samples={},
@@ -264,12 +265,41 @@ local function metrics_finish_step(s)
     s.metrics_grounded=row.grounded
     metric_ring(m,"samples",METRIC_SAMPLE_LIMIT,row)
 end
+local function stop_key_bytes(text)
+    -- Count the compact SDK JSON key, including quotes. Refuse new malformed
+    -- UTF-8 keys rather than poisoning an otherwise serializable ledger.
+    if #text+2>METRIC_STOP_KEY_BYTES or utf8.len(text)==nil then return nil end
+    local bytes=#text+2
+    for i=1,#text do
+        local b=string.byte(text,i)
+        if b==34 or b==92 then bytes+=1
+        elseif b<32 then
+            bytes+=(b==8 or b==9 or b==10 or b==12 or b==13) and 1 or 5
+        end
+        if bytes>METRIC_STOP_KEY_BYTES then return nil end
+    end
+    return bytes
+end
+local function count_stop(s,text)
+    local counts=s.metrics.stop_counts
+    if counts[text]~=nil then counts[text]+=1;return end
+    local bytes=stop_key_bytes(text)
+    if bytes and (s.stop_reason_count or 0)<METRIC_STOP_REASON_LIMIT
+        and (s.stop_key_bytes or 0)+bytes<=METRIC_STOP_KEY_BYTES then
+        counts[text]=1
+        s.stop_reason_count=(s.stop_reason_count or 0)+1
+        s.stop_key_bytes=(s.stop_key_bytes or 0)+bytes
+    else s.metrics.stop_counts_overflow+=1 end
+end
 local function stop(s, reason)
-    -- Pure latch. Core inspects stop_requested after this subordinate returns.
-    -- There are no Source, body, Follow or owner callbacks in this module.
+    -- Count every request, including cleanup observations after the pure
+    -- lifecycle latch. Full keys remain distinct; only the first issue uses
+    -- the existing display bound. Neither counter capacity nor later reasons
+    -- can replace the first cause or advance cancellation generation again.
+    local text=tostring(reason or "unavailable")
+    count_stop(s,text)
     if not s.stopped then
-        s.stopped=true;s.generation+=1;s.issue=detail(reason)
-        s.metrics.stop_counts[s.issue]=1
+        s.stopped=true;s.generation+=1;s.issue=detail(text)
     end
     s.phase="stopped"
     s.input_queue={}

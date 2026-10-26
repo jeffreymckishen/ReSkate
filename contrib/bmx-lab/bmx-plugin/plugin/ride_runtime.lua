@@ -322,22 +322,28 @@ local function receipt_valid(row,p)
     return (row.outcome=="rejected" or row.outcome=="expired") and not row.force_attempted and not row.torque_attempted
 end
 local function poll_pending(s)
-    -- Inspect every retained command before ACKing the eligible prefix. A later
-    -- failed setter must stop drive even while an older applied row lacks its
-    -- successor. Reading a later row never authorizes an out-of-order ACK.
+    -- Inspect every retained command before choosing this poll's stop cause
+    -- and ACKing its eligible prefix. Retained/quarantined are body-level SDK
+    -- flags, so an older generic row must not hide a younger explicit outcome.
+    -- Unknown evidence outranks native failure, which outranks park cleanup.
+    -- Equal priority keeps receipt order; stop() preserves any earlier latch.
+    local causes={}
+    local function propose(reason,rank)
+        causes[#causes+1]={reason=reason,rank=rank,order=#causes+1}
+    end
     for _,p in ipairs(s.pending) do
         p.ack_ready=false
         if not p.unknown and not p.acknowledged then
             if not p.sequence then
-                p.unknown=true;s.unknown=true;stop(s,"force admission has no exact sequence")
+                p.unknown=true;s.unknown=true;propose("force admission has no exact sequence",80)
             else
                 if s.now and s.now-p.submitted_at>=1000 then
-                    p.watchdog_expired=true;stop(s,"force receipt watchdog expired")
+                    p.watchdog_expired=true;propose("force receipt watchdog expired",20)
                 end
                 local read=invoke(s,s.api.receipt,p.sequence)
                 local row=read[1] and read.n==2 and read[2] or nil
                 if not receipt_valid(row,p) then
-                    p.unknown=true;s.unknown=true;stop(s,"force receipt unavailable or identity mismatch")
+                    p.unknown=true;s.unknown=true;propose("force receipt unavailable or identity mismatch",80)
                 else
                     p.outcome=row.outcome;p.parked=row.cleanup_disposition=="parked_without_successor"
                     if row.outcome=="applied" and not p.metrics_applied then
@@ -351,10 +357,9 @@ local function poll_pending(s)
                         produced_serial=row.produced_serial,force_attempted=row.force_attempted,torque_attempted=row.torque_attempted,
                         retained=row.retained,quarantined=row.quarantined,successor_available=row.successor~=nil,
                         cleanup_disposition=row.cleanup_disposition}
-                    -- Park is an explicit cleanup cause; retain that reason
-                    -- before the generic retained-body stop can latch first.
-                    if p.parked then stop(s,"force body parked without successor")
-                    elseif row.quarantined or row.retained then stop(s,"force body retained or quarantined") end
+                    if row.quarantined then propose("force body retained or quarantined",60)
+                    elseif row.retained then propose("force body retained or quarantined",10) end
+                    if p.parked then propose("force body parked without successor",40) end
                     if p.parked then
                         p.ack_ready=true
                     elseif row.outcome=="applied" then
@@ -364,19 +369,25 @@ local function poll_pending(s)
                             if not successor or not steps or steps<2 or Identity.compare(successor.serial,row.produced_serial)<=0
                                 or successor.seconds~=p.seconds or successor.time<=p.time+p.seconds
                                 or math.abs(successor.time-p.time-steps*p.seconds)>1e-6 then
-                                p.unknown=true;s.unknown=true;stop(s,"applied successor incoherent")
+                                p.unknown=true;s.unknown=true;propose("applied successor incoherent",80)
                             else
                                 p.ack_ready=true
-                                if not sample_copy(row.successor) then stop(s,"native successor outside drive policy") end
+                                if not sample_copy(row.successor) then propose("native successor outside drive policy",50) end
                             end
                         end
                     elseif row.outcome~="queued" then
-                        stop(s,"force command "..row.outcome);p.ack_ready=true
+                        propose("force command "..row.outcome,row.outcome=="partial" and 70 or 30);p.ack_ready=true
                     end
                 end
             end
         end
     end
+    -- Keep every observed cause for diagnostics, but let the most specific
+    -- one reach the first latch before ACK callbacks or another admission.
+    table.sort(causes,function(a,b)
+        return a.rank>b.rank or a.rank==b.rank and a.order<b.order
+    end)
+    for _,cause in ipairs(causes) do stop(s,cause.reason) end
     local index=1
     while index<=#s.pending do
         local p=s.pending[index]

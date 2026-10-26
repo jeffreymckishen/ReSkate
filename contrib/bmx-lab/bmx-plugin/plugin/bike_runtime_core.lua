@@ -15,16 +15,22 @@ local RIDE_COMPOSITION_QUALIFIED=false
 -- M1-derived provisional pelvis target P=(0,.95,-.10) in the body frame.
 -- Only a reviewed trial enables P-G.com; the tracked -G.com stays unchanged.
 local M1_PROVISIONAL_FOLLOW_OFFSET=false
+-- LUA-12. Only a reviewed trial copy, whose manifest also adds
+-- world.physics.follow.renew, reserves a renewable Follow and renews it. The
+-- tracked false reserves the fixed three-second lease and never renews.
+local FOLLOW_RENEWAL_QUALIFIED=false
 local receipt_revisions={"final_revision","final_native_epoch","returned_revision"}
 local receipt_flags={"claim_known","orphaned","park_observed","native_retirement_known","terminal"}
 
 -- The ride window and the Follow lease (B5). A ride ends at
 -- min(publish + RIDE_WINDOW_MS, lease_until - LEASE_MARGIN_MS). lease_until has
 -- one source: the documented fixed three seconds from the reserve clock read,
--- refined only by an S2 lease report anchored to a Lua clock read taken before
--- that call. The native clock is not reskate.time.now, so no native deadline is
--- ever compared with a Lua timestamp; only milliseconds left are. Trial copies
--- change RIDE_WINDOW_MS by the same reviewed substitution as the gate literals.
+-- refined only by an S2 lease report or, for a renewable reserve (LUA-12), an
+-- accepted renewal, each anchored to a Lua clock read taken before that call.
+-- Only the renewal moves it later. The native clock is not reskate.time.now,
+-- so no native deadline is ever compared with a Lua timestamp; only
+-- milliseconds left are. Trial copies change RIDE_WINDOW_MS by the same
+-- reviewed substitution as the gate literals.
 local RIDE_WINDOW_MS=500
 local BASE_LEASE_MS=3000
 -- The 100 ms force command lifetime, plus clock resolution and call time.
@@ -33,6 +39,11 @@ local LEASE_MARGIN_MS=150
 local RENEWAL_WINDOW_MS=500
 local LIFETIME_CEILING_MS=120000
 local LEASE_REPORT="world.physics.read_follow_lease"
+-- S2 accepts one renewal a plugin tick; a renewable Core asks once a following
+-- tick, after the body read, and never twice in one tick.
+local RENEW_FOLLOW="world.physics.renew_follow"
+local SDK_RENEWALS_PER_TICK=1
+local RENEWALS_PER_TICK=1
 -- Follow reads (B9). A following tick reads the receipt once, then once in
 -- the guard before each probe batch and before the one submit; the post-call
 -- owner checks read nothing: 1+b+1, 6 with four batches. A stop tick adds at
@@ -48,10 +59,13 @@ local FOLLOW_POLL_MS=50
 local CLEANUP_WATCHDOG_MS=20000
 local CLEANUP_READS=400
 assert(2+PROBE_BATCHES_PER_SERIAL<=FOLLOW_READS_PER_TICK and FOLLOW_READS_PER_TICK+1<=SDK_FOLLOW_READS_PER_TICK
-    and LEASE_READS_PER_TICK<=SDK_LEASE_READS_PER_TICK and CLEANUP_READS*FOLLOW_POLL_MS>=CLEANUP_WATCHDOG_MS,
+    and LEASE_READS_PER_TICK<=SDK_LEASE_READS_PER_TICK and CLEANUP_READS*FOLLOW_POLL_MS>=CLEANUP_WATCHDOG_MS
+    and RENEWALS_PER_TICK<=SDK_RENEWALS_PER_TICK,
     "Follow read budget exceeds the SDK's per-tick quota or the cleanup watchdog")
 BikeRuntime.ride_limits=table.freeze({ride_window_ms=RIDE_WINDOW_MS,base_lease_ms=BASE_LEASE_MS,
     lease_margin_ms=LEASE_MARGIN_MS,renewal_window_ms=RENEWAL_WINDOW_MS,lifetime_ceiling_ms=LIFETIME_CEILING_MS,
+    renewals_per_tick=RENEWALS_PER_TICK,sdk_renewals_per_tick=SDK_RENEWALS_PER_TICK,
+    follow_renewal_qualified=FOLLOW_RENEWAL_QUALIFIED,
     follow_reads_per_tick=FOLLOW_READS_PER_TICK,lease_reads_per_tick=LEASE_READS_PER_TICK,
     sdk_follow_reads_per_tick=SDK_FOLLOW_READS_PER_TICK,sdk_lease_reads_per_tick=SDK_LEASE_READS_PER_TICK,
     follow_poll_ms=FOLLOW_POLL_MS,cleanup_watchdog_ms=CLEANUP_WATCHDOG_MS,cleanup_reads=CLEANUP_READS})
@@ -66,6 +80,9 @@ function BikeRuntime.follow_read_admitted(tick_reads,cleanup_reads,stopping)
 end
 function BikeRuntime.lease_read_admitted(tick_reads)
     return type(tick_reads)=="number" and tick_reads%1==0 and tick_reads>=0 and tick_reads<LEASE_READS_PER_TICK
+end
+function BikeRuntime.renew_admitted(tick_renewals)
+    return type(tick_renewals)=="number" and tick_renewals%1==0 and tick_renewals>=0 and tick_renewals<RENEWALS_PER_TICK
 end
 
 -- One window check for publication, the following tick and every force guard.
@@ -121,6 +138,31 @@ function BikeRuntime.lease_from_report(identity,lease_until,renewals,row,before,
     if order>0 then return candidate,row.renewals,"refined","renewed" end
     if candidate<lease_until then return candidate,renewals,"refined","shortened" end
     return lease_until,renewals,"refined","unchanged"
+end
+
+-- S2's renew_follow refusals (contrib/plugin-body-follow.md, Renewal), each the
+-- lease source's own fact. "stop": the Follow is stopped or no longer
+-- following. "off": this Follow cannot be renewed again, so its lease runs
+-- down. Anything else, an unknown or malformed answer included, waits for a
+-- later tick and extends nothing.
+local renewal_refusals={expired="stop",not_following="stop",client_not_ready="stop",focus_lost="stop",menu_open="stop",
+    pause_menu_open="stop",debug_control="stop",actor_state="stop",not_renewable="off",lifetime_exhausted="off"}
+-- One renew_follow result r (as table.pack(pcall(...)) packs it) against Core's
+-- single lease source. Returns lease_until, verdict and why. Only "renewed"
+-- changes the deadline: the native milliseconds left, from the clock read
+-- before the call, so call time can only shorten it.
+function BikeRuntime.renewal_outcome(lease_until,before,r)
+    if not wall(lease_until) or not wall(before) or type(r)~="table" then return lease_until,"wait","renewal_state_invalid" end
+    if not r[1] then return lease_until,"off","renewal raised; the lease runs down unrenewed" end
+    local v=r[3]
+    if r.n==3 and r[2]==true and type(v)=="number" and v%1==0 and v>=1 and v<=LIFETIME_CEILING_MS then
+        if before+v>MAX then return lease_until,"wait","lease_clock_invalid" end
+        return before+v,"renewed",before+v<lease_until and "renewed_earlier" or "renewed"
+    end
+    if r.n==3 and r[2]==false and type(v)=="string" and #v>0 and #v<=200 then
+        return lease_until,renewal_refusals[v] or "wait",v
+    end
+    return lease_until,"wait","renewal returned malformed results"
 end
 
 local pad_axes={"left_x","left_y","right_x","right_y","left_trigger","right_trigger"}
@@ -455,9 +497,15 @@ snapshot=function()
         lease_margin_ms=LEASE_MARGIN_MS,reserve_ms=T.reserve_at,publish_ms=T.publish_at,lease_until_ms=T.lease_until,
         lease_renewals=T.lease_renewals,lease_reports=T.lease_reports or 0,lease_report_last=T.lease_report_last,
         lease_report_refused=T.lease_report_refused==true,
+        follow_renewal_qualified=FOLLOW_RENEWAL_QUALIFIED,lease_renewable=T.lease_renewable==true,
+        lease_renew_calls=T.lease_renew_calls or 0,lease_renew_accepted=T.lease_renew_accepted or 0,
+        lease_renew_last=T.lease_renew_last,lease_renew_off=T.lease_renew_off==true,
+        renewals_this_tick=T.renewals_tick or 0,
         one_attempt_per_vm=true,retained_body_slot_limit=8,
-        limit_scope="Eight retained native body slots may already be exhausted; not a retry budget. Core requests no Follow renewal or body reuse.",
-        source_freshness_scope="Selected-input lease renewal only. The Follow lease is the reserve seed, which a copied lease report can only shorten.",
+        limit_scope=T.lease_renewable and "Eight retained native body slots may already be exhausted; not a retry budget. Core renews its one Follow and requests no body reuse."
+            or "Eight retained native body slots may already be exhausted; not a retry budget. Core requests no Follow renewal or body reuse.",
+        source_freshness_scope=T.lease_renewable and "Selected-input lease renewal. The Follow lease moves later only by an accepted Follow renewal; a copied lease report can only shorten it."
+            or "Selected-input lease renewal only. The Follow lease is the reserve seed, which a copied lease report can only shorten.",
         phase=T.phase,detail=T.detail,selected_slot=T.slot,wall_ms=T.now,arm_ms=T.arm_at,
         effect_start_ms=T.effect_at,stop_ms=T.stop_at,stop_reason=T.stop_reason,
         stop_latched=T.stop_latched==true,unloaded=T.unloaded==true,clock_unknown=T.clock_unknown==true,
@@ -790,12 +838,55 @@ local function read_lease()
         T.lease_report_last=r.n==3 and r[2]==nil and reason(r[3]) and short(r[3]) or "lease report returned malformed results"
         return
     end
-    -- Core reserves the default fixed lease and requests no renewal (LUA-12).
+    -- The report must match the lifetime Core reserved. Only an accepted
+    -- renewal moves the deadline later (LUA-12); a report can only shorten it,
+    -- which for a fixed lease is all lease_from_report can return anyway.
     local until_ms,renewals,verdict,why=BikeRuntime.lease_from_report(Identity,T.lease_until,T.lease_renewals or "0",
-        r[2],before,T.sequence,false)
+        r[2],before,T.sequence,T.lease_renewable==true)
     T.lease_report_last=why
     if verdict=="stop" then stop_all(why);return end
-    if verdict=="refined" then T.lease_until=until_ms;T.lease_renewals=renewals;T.lease_reports=(T.lease_reports or 0)+1 end
+    if verdict=="refined" then
+        T.lease_until=math.min(until_ms,T.lease_until);T.lease_renewals=renewals;T.lease_reports=(T.lease_reports or 0)+1
+    end
+end
+-- Feature detection that spends nothing: with no arguments, renew_follow is
+-- refused by the binding before its quota or the backend, by the missing
+-- permission first. Only the arity refusal means the permission is granted;
+-- any other answer keeps the fixed lease Core reserved before LUA-12.
+local function renewal_available()
+    local renew=lookup(RENEW_FOLLOW)
+    if not renew then T.lease_renew_last="renew_follow absent; fixed lease";return false end
+    local r=call("follow.renew_probe",renew)
+    local why=not r[1] and type(r[2])=="string" and r[2] or "renewal probe was not refused"
+    if string.find(why,"renew_follow takes",1,true) and not string.find(why,"permission",1,true) then return true end
+    T.lease_renew_last="fixed lease: "..short(why)
+    return false
+end
+-- Once a following tick, after the body read and with that read's epoch, the
+-- newest sample this VM holds. Never after a stop, never twice in one tick.
+-- Returns false only when the tick must not go on (stopped or cancelled).
+local function renew_follow_once(sample,generation)
+    if not T.lease_renewable or T.lease_renew_off then return true end
+    if not current(generation) then return false end
+    local renew=lookup(RENEW_FOLLOW)
+    if not renew or not T.follow or T.ack_attempted or not BikeRuntime.renew_admitted(T.renewals_tick or 0) then return true end
+    if typeof(sample.epoch)~="userdata" then T.lease_renew_last="body read carried no epoch";return true end
+    T.renewals_tick=(T.renewals_tick or 0)+1
+    local before=clock() -- Before the call, so call time can only shorten the lease.
+    if not before or not current(generation) then return false end
+    -- A lease Core already holds ended is stopped, never renewed.
+    if not lease_live(before) then stop_all("ride window or Follow lease ended before renewal");return false end
+    T.lease_renew_calls=(T.lease_renew_calls or 0)+1
+    local r=call("follow.renew",renew,T.follow,sample.epoch)
+    local until_ms,verdict,why=BikeRuntime.renewal_outcome(T.lease_until,before,r)
+    T.lease_renew_last=short(why)
+    if verdict=="renewed" then T.lease_until=until_ms;T.lease_renew_accepted=(T.lease_renew_accepted or 0)+1
+    elseif verdict=="off" then T.lease_renew_off=true
+    elseif verdict=="stop" then stop_all("Follow renewal refused: "..short(why));return false end
+    local after=clock()
+    if not after or not current(generation) then return false end
+    if not lease_live(after) then stop_all("ride window or Follow lease ended during renewal");return false end
+    return true
 end
 local source_identity_names={"sequence","source_epoch","context_generation"}
 local function same_selected(frame,bound)
@@ -933,15 +1024,18 @@ local function handoff_and_follow()
     local at=clock();if not at or not current(generation) then stop_all("cancelled during body handoff");return end
     local v=call("spawn.follow_visual",spawn.follow_visual,spawn,h[3],at)
     if not yes(v) or not clock() or not current(generation) then stop_all("initial follow visual refused or cancelled");return end
+    -- A renewable lease starts from the same three-second floor as the fixed one.
+    T.lease_renewable=FOLLOW_RENEWAL_QUALIFIED and renewal_available()
     T.reserve_attempted=true;T.reserve_unknown=true;T.reserve_at=T.now
     -- The single lease source starts here, from the clock read before reserve.
     T.lease_until=BikeRuntime.lease_seed(T.reserve_at);T.lease_renewals="0"
     -- The policy pair CE2 ran in game. callback_entry needs explicit owned_body cleanup;
     -- it changes no lease, quota, permission or receipt shape (contrib/plugin-body-follow.md).
-    local reserved=call("follow.reserve",lookup("world.physics.reserve_follow"),T.body,
-        {offset_from_com=M1_PROVISIONAL_FOLLOW_OFFSET
+    local attachment={offset_from_com=M1_PROVISIONAL_FOLLOW_OFFSET
             and vector.create(-G.com[1],.95-G.com[2],-.10-G.com[3])
-            or vector.create(-G.com[1],-G.com[2],-G.com[3]),root_in_body={0,0,0,1},cleanup="owned_body",motion_policy="callback_entry"})
+            or vector.create(-G.com[1],-G.com[2],-G.com[3]),root_in_body={0,0,0,1},cleanup="owned_body",motion_policy="callback_entry"}
+    if T.lease_renewable then attachment.lifetime="renewable" end
+    local reserved=call("follow.reserve",lookup("world.physics.reserve_follow"),T.body,attachment)
     -- Adopt any returned userdata BEFORE inspecting why or cancellation.
     if reserved[1] and typeof(reserved[2])=="userdata" then T.follow=reserved[2];T.reserve_unknown=false end
     local after=clock()
@@ -1194,7 +1288,7 @@ end
 local function tick(dt)
     -- Core's per-tick Follow counters reset with each Core step, which is not
     -- an SDK tick credential: the SDK's own quota stays authoritative.
-    T.follow_reads_tick=0;T.lease_reads_tick=0
+    T.follow_reads_tick=0;T.lease_reads_tick=0;T.renewals_tick=0
     selected_source_frame=nil
     if T.unloaded or T.phase=="blocked" then return end
     if not T.used and not T.gear_requested or T.phase=="done" and not T.gear_requested then
@@ -1293,7 +1387,8 @@ local function tick(dt)
                     elseif not r[1] or r.n~=2 or type(r[2])~="table" then stop_all("following body observation unavailable")
                     elseif RIDE_COMPOSITION_QUALIFIED and T.body~=measured_body then
                         stop_all("body owner changed during same-read subordinate observation")
-                    elseif current(generation) then
+                    elseif current(generation) and renew_follow_once(r[2],generation) then
+                        now=T.now -- The renewal's own clock reads, if it made any.
                         observe_ride(selected_source_frame,r[2],now)
                         local v=current(generation) and call("spawn.follow_visual",spawn.follow_visual,spawn,r[2],now) or {false,n=1}
                         now=clock()

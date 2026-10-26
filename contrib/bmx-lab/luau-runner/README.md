@@ -54,8 +54,12 @@ plugin. When `bike_spawn.lua` is present, it also receives
 plugin keeps the airborne default. A separate `floor-manifest` staging regression checks exact bytes,
 owned files, reruns and true/duplicate/planted floor gate refusals. It also stages
 `bike_runtime_core_provisional_follow_fixture.lua` from Core with only
-`local M1_PROVISIONAL_FOLLOW_OFFSET=false` changed to `true`; the same regression
-checks that independent literal and its owned file. The provisional-offset suite
+`local M1_PROVISIONAL_FOLLOW_OFFSET=false` changed to `true`, and
+`bike_runtime_core_follow_renewal_fixture.lua` from Core with only
+`local FOLLOW_RENEWAL_QUALIFIED=false` changed to `true` (LUA-12); the same regression
+checks both independent literals and their owned files. `core_follow_renewal_tests` runs the
+tracked Core and that renewal copy against constructed `renew_follow` and `read_follow_lease`
+fakes shaped like the C++ binding. The provisional-offset suite
 uses the existing staging suite's constructed service factory and the real
 public Core mount/Source, without changing existing suite counts. Any suite that mentions a fixture, `./ride_runtime_tests` or `./ride_runtime_join_tests` runs
 against that copy; the others run against the plugin folder itself. The production gates (`ACTIVATION_QUALIFIED`,

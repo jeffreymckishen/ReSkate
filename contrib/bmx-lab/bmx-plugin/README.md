@@ -95,8 +95,12 @@ reviewed Host/native development. Public main never passes that option. It is
 one zero-force Follow attempt per VM, bounded to500ms, with no automatic retry,
 body reuse or continuous Follow renewal. Existing input-lease freshness renewals
 do not extend Follow. The native Follow service independently has a fixed
-three-second lease from reservation, one process-wide receipt slot and no
-renewal API. The SDK retains at most eight native body allocation slots for the
+three-second lease from reservation and one process-wide receipt slot; its
+opt-in renewable lease (`renew_follow`, permission `world.physics.follow.renew`)
+is used only by a reviewed trial copy of `bike_runtime_core.lua` with
+`FOLLOW_RENEWAL_QUALIFIED=true` and that permission in its manifest, which
+renews once per following tick with that tick's body sample (LUA-12). The
+tracked source and manifest do neither. The SDK retains at most eight native body allocation slots for the
 process lifetime, including failed/partial attempts. Native destruction remains
 unproven and slots are not recycled; capacity may already be exhausted before
 this VM starts. One attempt per VM is not an eight-retry entitlement, and VM

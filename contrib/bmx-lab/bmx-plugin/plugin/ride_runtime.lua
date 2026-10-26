@@ -296,6 +296,8 @@ local function status(s)
         pending_sequence=p and p.sequence,ack_attempted=p and p.ack_attempted==true or false,
         pending_count=#s.pending,pending_commands=sequences,pending_limit=MAX_PENDING,
         backpressure=s.backpressure,backpressure_steps=s.backpressure_steps,last_backpressure_serial=s.last_backpressure_serial,
+        continuity={pending=s.continuity_pending,skipped_steps=s.continuity_skipped_steps,
+            invalidations=s.continuity_invalidations,gap_wheels="torque_free_coast",native_wheel_state_known=false},
         submitted=s.submitted,acknowledged=s.acknowledged,last_serial=s.last_sample and s.last_sample.serial,
         input_staged=s.input_staged,input_consumed=s.input_consumed,input_queued=#s.input_queue,
         observed_steps=s.observed_steps,model_steps=s.model_steps,receipt=s.last_receipt,
@@ -412,6 +414,12 @@ local function poll_pending(s)
             -- ACK never adopts older wheels or resets the newer prediction head.
         end
     end
+end
+local function mark_backpressure(s,reason,serial)
+    s.backpressure=reason;s.backpressure_steps+=1;s.last_backpressure_serial=serial
+    s.continuity_pending=true;s.continuity_skipped_steps+=1
+    -- The absent command applies no modeled axle torque. Keep virtual wheel
+    -- spin as an explicit coast assumption; this is not native wheel evidence.
 end
 local function command_backpressure(s)
     if #s.pending>=MAX_PENDING then return "receipt_capacity" end
@@ -694,8 +702,15 @@ local function observe(s,source_frame,raw,context)
     if s.backpressure then
         -- This measured step is visible but uncommanded. Never replay it or
         -- advance a force preview as though a packet had been accepted.
-        s.backpressure_steps+=1;s.last_backpressure_serial=sample.serial
+        mark_backpressure(s,s.backpressure,sample.serial)
         return
+    end
+    if s.continuity_pending then
+        local invalidated=invoke(s,s.force.invalidate_continuity,s.force)
+        if not invalidated[1] or invalidated.n~=1 or not invalidated.current or s.stopped then
+            s.unknown=true;stop(s,"force history continuity invalidation unavailable");return
+        end
+        s.continuity_pending=false;s.continuity_invalidations+=1
     end
     local force_controls=copy(controls.force_controls)
     force_controls.rotation_reserved=force_controls.rotation_reserved or companions.rotation_reserved==true
@@ -737,7 +752,7 @@ local function observe(s,source_frame,raw,context)
     elseif submitted[1] and submitted.n==3 and submitted[2]==false and type(submitted[3])=="string" then
         table.remove(s.pending,#s.pending)
         if submitted[3]=="force_pipeline_full" then
-            s.backpressure="core_receipt_capacity";s.backpressure_steps+=1;s.last_backpressure_serial=sample.serial
+            mark_backpressure(s,"core_receipt_capacity",sample.serial)
         else retire(s,p,"cancelled");stop(s,"force admission refused") end
     else
         p.unknown=true;s.unknown=true;retire(s,p,"uncertain");stop(s,"force admission outcome unknown")
@@ -754,6 +769,7 @@ function Ride.new(force_api,models,options)
         alignment_options=detached(options.alignment),geometry=detached(options.geometry or Geometry),
         wheels=Forces.proposed_wheels(),phase="inert",issue="native qualification required",generation=0,
         submitted=0,acknowledged=0,pending={},metrics=new_metrics(),backpressure_steps=0,
+        continuity_pending=false,continuity_skipped_steps=0,continuity_invalidations=0,
         input_queue={},input_staged=0,input_consumed=0,observed_steps=0,model_steps=0}
     if ACTIVATION_QUALIFIED then
         local valid=type(s.body)=="userdata" and s.incarnation~=nil and type(force_api)=="table"

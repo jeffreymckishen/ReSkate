@@ -117,7 +117,9 @@ function Tests.run()
         f.withhold_successors=false;f.advance();local resumed=f.observe()
         check(resumed.submitted==4 and resumed.acknowledged==3 and #f.native==1,"ordered prefix drains before one fresh command")
         check(f.commands[4].serial==f.serial and f.commands[4].serial~=skipped and #f.previews==4,"no catch-up command reuses the skipped sample")
-        check(f.previews[4].head==3 and f.resets==0,"backpressure and ACK do not pretend to rewind accepted history")
+        check(f.previews[4].head==3 and f.resets==0 and resumed.continuity.invalidations==1
+            and resumed.continuity.skipped_steps==1 and not resumed.continuity.pending,
+            "gap invalidation preserves accepted command count without calling reset")
     end)
     case("queued inbox is different from an applied row awaiting successor",function()
         local f=fixture();f.hold_inbox=true;f.observe();f.advance();local held=f.observe()

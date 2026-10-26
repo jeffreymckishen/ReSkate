@@ -61,6 +61,11 @@ function Controller:reset()
     local state=state_of(self)
     state.pending=nil;state.kernel:reset()
 end
+function Controller:invalidate_continuity()
+    local state=state_of(self)
+    state.pending=nil
+    state.kernel:invalidate_continuity()
+end
 function Controller:preview(h,body,wheels,samples,controls)
     local state=state_of(self)
     -- Only the latest valid preview can be adopted. Discarding a preview never

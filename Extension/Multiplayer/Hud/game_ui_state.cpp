@@ -22,7 +22,7 @@ struct State {
     menu_data::Value screen; // DelMar_UI_ScreenData's root, once found
     Address screen_manager{};
     Clock::time_point next_scan, next_sample;
-    bool logged{};
+    bool logged{}, found_logged{};
     GameUiState latest;
 };
 State &state() {
@@ -47,8 +47,10 @@ GameUiState read(Address base, State &s) {
             s.screen = root.model;
             break;
         }
-        if (!s.logged) {
+        // A first scan that misses must not hide the later successful discovery.
+        if (!s.logged || (s.screen.handle && !s.found_logged)) {
             s.logged = true;
+            s.found_logged = s.found_logged || s.screen.handle != 0;
             logging::log(logging::Level::info, logging::Channel::ui, "Game UI state: {}.",
                          s.screen.handle ? "found" : "not found yet (nametags and chat show in menus until it is)");
         }

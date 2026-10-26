@@ -22,10 +22,10 @@ measured body-local quaternion turns, canceled attempts and its own landing tall
 rotate a native body. The inspector does not activate this controller for riding.
 
 `plugin/forces.lua` and its math, tire, brake and pump modules now port our ordinary
-single-body riding policy. The actual Host tests passed 17 groups, 2,565 assertions,
-83 force comparisons and 18 projection comparisons against our retained C++
-model. This preserves our proposed laws; it is not recovered Streets physics or
-verified riding feel.
+single-body riding policy. The actual Host test passed 25 cases, 2,618 assertions,
+83 C++ comparisons and 18 direct projections against our retained C++ model in the
+2026-10-25 receipt listed under [Tests](#tests). This preserves our proposed laws;
+it is not recovered Streets physics or verified riding feel.
 See [FORCES.md](FORCES.md) for inputs, candidate history and remaining limits.
 The reviewed optimization reduced offline actual-Host braking from about 17.2ms
 to 0.82ms, with default slope cases around 1.79ms. The selected fixed-input runs
@@ -109,10 +109,14 @@ permanent after failed/partial reserve, and updates visuals only from supplied
 measured samples. Main never exposes its standalone diagnostic request/retry
 methods. Published/transferred visuals remain until the owner observes matching
 completed Follow cleanup and accepted ACK, or accepted ordinary caller release
-for a provably never-published abandonment. Unknown outcomes retain duty. The
-latest separate native archive reached twelve normal FOLLOW returns but stopped
-on a lifetime change with body park and retirement unresolved; it proves no
-mounted alignment, native input consumption or riding.
+for a provably never-published abandonment. Unknown outcomes retain duty. A
+native archive of 2026-10-24, from before the `callback_entry` Follow policy,
+reached twelve normal FOLLOW returns but stopped on a lifetime change with body
+park and retirement unresolved; it proves no mounted alignment, native input
+consumption or riding. Later private trials on 2026-10-25, among them CE2 and
+Codex's M3 and M4, observed park and ACK (see
+[the takeover runbook](../RUNBOOK.md#what-the-game-has-shown)); they prove none
+of those either.
 
 The manifest preserves `input`, `input.control`, `skater.read`, `menu` and
 `storage` for the inspector, bounded stock reports, current actor facts, menu
@@ -199,9 +203,11 @@ native integration boundaries remain unqualified for riding:
   input consumption or physical-device identity. The lifecycle does not infer
   those facts from a successful lease, report, capture or transport completion.
 - [Follow](../../plugin-body-follow.md) supplies a bounded local-actor/body
-  binding with strict lifetime checks. The latest normal-return evidence still
-  leaves body park/cleanup unresolved. It establishes neither mounted alignment
-  nor a renewable riding lifetime, and does not connect pose, force or recovery.
+  binding with strict lifetime checks. The normal-return evidence of 2026-10-24
+  left body park/cleanup unresolved; on 2026-10-25 CE2 and Codex's M3 and M4
+  private trials observed park and ACK with `callback_entry`, over at most 31
+  revisions. None of it establishes mounted alignment or a renewable riding
+  lifetime, and none connects the ride model's pose, forces or recovery.
 
 Upstream35824f4 adds `skater.carry`, pose/reach visibility options and
 `camera.cycle`. Reuse them in the full migration. The latter integrates the
@@ -216,3 +222,127 @@ bounded native ownership/physics/render/input/action primitives. No legacy
 BMX-specific C++ baseline is proposed as the final implementation. This first
 package changes no ride feel yet; future hop/steering policy changes belong here
 once the real generic body transport can execute and acknowledge them safely.
+
+## Tests
+
+Each tracked suite below is a Lua module whose `run()` returns its case and
+assertion counts. These are constructed tests of the Lua model and the sandbox.
+They are not in-game evidence and earn no rubric score. Commands, build rules
+and the in-game procedure are in [the takeover runbook](../RUNBOOK.md).
+
+There are three harnesses:
+
+- **Host**: CTest `plugins` (`dingosdk_plugin_tests.exe`) loads the actual modules
+  into the real plugin Host with no permissions and the default 50 ms call limit
+  (two suites raise it for themselves, as marked). It reads the Lua from the source
+  tree at run time. At `2584bcd` it runs 10 of the 31 suites in `plugin/`. Its
+  counts below come from the receipt
+  `E:\RESKATE DEV\park-diagnostic-normal-20261025T065911109Z\ctest.stdout.log`
+  (2026-10-25 06:59Z). That receipt is older than every commit since `aad4248`,
+  and the Host was not rerun for this table.
+- **Luau runner**: the tracked [`luau-runner`](../luau-runner/README.md) registers
+  every `*_tests.lua` and `tests.lua` in `plugin/` as its own CTest,
+  `bmx_lua.<suite>`, and stages the qualified Ride copy itself. Its last run in
+  `build/luau-runner` passed 39 of 39 tests at 19:49-19:50Z on 2026-10-25, against
+  the working tree of that time. It has not been run at `2584bcd`, where its glob
+  finds 31 suites and it would register 40 tests.
+- **Pure runner**: the private `presentation_luau_tests.exe <plugin folder> <module>`
+  runs one module in vendored Luau with no `reskate` API and no time limits. The
+  counts below come from a copy of the 77 tracked `plugin/` files taken out of git at
+  `2584bcd` (blob hashes checked), run on 2026-10-25 at 21:39Z. All 31 suites
+  passed: 668 cases, 479,538 assertions.
+
+| Suite | Host case | Host count (06:59Z) | Pure runner at `2584bcd` |
+| --- | --- | --- | --- |
+| `tests` | `bmx_lua_policy_runs_as_modules_and_the_inspector_starts_inert` | 12 cases, 1,216 assertions | 12 / 1,216 |
+| `equipment_tests` | `bmx_lua_equipment_requests_match_the_retained_gesture_rules` (adds C++ reference rows) | 8 cases, 1,269 assertions, 160 C++ comparisons | 7 / 309 |
+| `equipment_transition_tests` | `bmx_lua_equipment_transitions_keep_cleanup_and_target_observation_separate` | 32 cases, 2,538 assertions | 32 / 2,538 |
+| `equipment_runtime_tests` | `bmx_lua_equipment_runtime_uses_typed_services_without_native_permissions` | 13 cases, 260 assertions | 13 / 260 |
+| `recovery_tests` | `bmx_lua_recovery_policy_keeps_native_cleanup_separate` | 18 cases, 379 assertions | 18 / 379 |
+| `trick_tests` | `bmx_lua_trick_policy_uses_actual_package_modules` | 16 cases, over 300 assertions | 16 / 371 |
+| `force_tests` | `bmx_lua_forces_use_actual_modules_and_match_the_portable_kernel` (adds C++ reference rows; `call_ms` 2000) | 25 cases, 2,618 assertions | 23 / 217 |
+| `ride_runtime_tests` | `bmx_lua_contacts_use_actual_decoder_and_force_modules` | 48 cases, 128 assertions | 48 / 128 (fixture) |
+| `bike_runtime_core_persist_tests` | `bmx_lua_persistence_keeps_terminal_records_and_public_fault_gates` (added in `ad1516e`) | not in that receipt | 5 / 78 |
+| `runtime_progress_fault_tests` | the same case | not in that receipt | 1 / 12 |
+| `ride_runtime_join_tests` | none | not run | 4 / 16 (fixture) |
+| `ride_runtime_b10_b16_tests` | none | not run | 25 / 66 (fixture) |
+| `lease_source_tests` | none | not run | 43 / 178 |
+| `ride_input_tests` | none | not run | 52 / 247 |
+| `ride_input_mapping_tests` | none | not run | 42 / 321 |
+| `rider_alignment_tests` | none | not run | 21 / 3,494 |
+| `recovery_runtime_tests` | none | not run | 22 / 533 |
+| `contact_runtime_preset_echo_tests` | none | not run | 32 / 91 |
+| `core_ride_staging_tests` | none | not run | 2 / 130 |
+| `bail_policy_tests` | none | not run | 21 / 1,430 |
+| `camera_policy_tests` | none | not run | 20 / 57,198 |
+| `grind_policy_tests` | none | not run | 15 / 1,019 |
+| `input_presets_tests` | none | not run | 13 / 99,231 |
+| `manual_balance_tests` | none | not run | 28 / 11,915 |
+| `rail_probe_tests` | none | not run | 25 / 477 |
+| `ride_composer_tests` | none | not run | 27 / 72,222 |
+| `rider_presentation_tests` | none | not run | 27 / 12,226 |
+| `rubric_metrics_tests` | none | not run | 16 / 3,933 |
+| `sim_tests` | none | not run | 12 / 208,006 |
+| `trick_presentation_tests` | none | not run | 18 / 866 |
+| `trick_runtime_tests` | none | not run | 28 / 431 |
+| `../equipment-interruption-trial/plugin/fixture_tests` | `equipment_interruption_fixture_keeps_effects_one_shot` (`call_ms` 2000) | 13 cases, 1,542 assertions | Host only |
+| `../stationary-anchor-observer/plugin/sampler_tests` | none | not run | 46 / 104 (its own folder at `2584bcd`; not in the 668 total) |
+
+The Host also runs `bmx_lua_spawn_uses_owned_chassis_and_measured_part_placement`
+(22 scenarios, 2,048 comparisons) and three cases that print no count:
+`bmx_lua_first_ride_imports_stay_inert`,
+`bmx_lua_public_bike_facade_denies_mount_before_service_access` and
+`bmx_lua_menu_switches_explicit_slots_and_retains_cleanup_duty`.
+
+"Fixture" means the suite needs `ride_runtime_qualified_fixture.lua`: a copy of
+`ride_runtime.lua` with `local ACTIVATION_QUALIFIED = false` changed to `true`.
+Without it, those three suites fail on the missing file. The Host builds it in
+memory (`Extension/Plugins/Test/bmx_contact_runtime_host_fixture.inc`), and the
+Luau runner's `bmx_lua.stage_qualified_ride` test writes it into its own copy,
+`build/luau-runner/qualified-plugin/`. For the private pure runner, build it in a
+copied folder, never in this one; the public gate stays off. Equipment and forces
+count differently in the two harnesses because the Host adds C++ reference rows.
+
+Earlier figures elsewhere in this file, such as the 2026-10-23 counts, are kept as
+dated history. The 14-suite total of 341 cases and 10,115 assertions at `aad4248`
+and `8ac7917` is superseded by the table above. The "286 cases / 5,778 assertions"
+total from 2026-10-24 came from a private 71-file snapshot
+(`build/bmx/lua-force-clear-zero-camber-v1/verification/full/plugin`). At `2584bcd`
+25 of its files are not tracked, one of them the generated
+`ride_runtime_qualified_fixture.lua` (26 at `aad4248`, before `5bd211b` committed
+`trick_runtime_tests.lua`), so the total cannot be reproduced from HEAD.
+
+## Modules committed since `aad4248`
+
+These commits add or change Lua under `plugin/` after the Luau native transport
+checkpoint (`aad4248`). The new pure modules each document themselves in their own
+`.md` beside this README. None of them is loaded by `main.lua` or by the lifecycle
+it builds, both `RIDE_COMPOSITION_QUALIFIED` and `ACTIVATION_QUALIFIED` stay
+false, and none has run in game. Counts are pure-runner cases and assertions at
+`2584bcd`, from the table above.
+
+| Commit | Files | What it is | Suite: cases / assertions |
+| --- | --- | --- | --- |
+| `5bd211b` | `rider_presentation.lua`, `trick_presentation.lua` ([RIDER_PRESENTATION.md](RIDER_PRESENTATION.md), [TRICK_PRESENTATION.md](TRICK_PRESENTATION.md)) | Rider posture, crank and landing cues turned into rider offsets, and trick targets turned into the eight bike part matrices. Presentation only; no visual consumer exists yet. | `rider_presentation_tests` 27 / 12,226; `trick_presentation_tests` 18 / 866; `trick_runtime_tests` 28 / 431, the first dedicated suite for the tracked trick adapter (`ride_runtime_join_tests`, tracked since `49ae4d3`, already drove it through Ride) |
+| `f3cc0c8` | `camera_policy.lua` ([CAMERA.md](CAMERA.md)) | A chase camera that turns the bike pose and velocity into `{eye, target, fov}` for `camera.look`. The manifest has no `camera` permission. | `camera_policy_tests` 20 / 57,198 |
+| `4e5a4c2` | `input_presets.lua` ([INPUT_PRESETS.md](INPUT_PRESETS.md)) | Named control presets whose default is today's binding. The mapper does not read them yet. | `input_presets_tests` 13 / 99,231 |
+| `94f7bf2` | `manual_balance.lua` ([MANUAL_BALANCE.md](MANUAL_BALANCE.md)) | An authored manual and nose-manual balance model that produces the `manual` and `nose_manual` controls `forces.lua` takes. | `manual_balance_tests` 28 / 11,915 |
+| `439ed37` | `peg_geometry.lua`, `grind_policy.lua`, `rail_probe.lua`, `grind_contact.lua` ([GRINDS.md](GRINDS.md), [RAIL_PROBE.md](RAIL_PROBE.md)) | Peg geometry and a grind and stall policy that turns contact rows into requests; a rail probe planned as one `probe_batch`; a port of the standalone peg and rail contact solver. | `grind_policy_tests` 15 / 1,019; `rail_probe_tests` 25 / 477 |
+| `acb1dae` | `sim_world.lua`, `sim_scenarios.lua` ([SIMULATION.md](SIMULATION.md)) | Test-only tooling that rides one rigid body over an authored heightfield through the actual `input.lua` and `forces.lua`. Its numbers are model metrics, not targets. | `sim_tests` 12 / 208,006 |
+| `e2055ab` | `rubric_metrics.lua`, [`../judging/OFFLINE_METRICS.md`](../judging/OFFLINE_METRICS.md), [`../judging/rubric-v2.json`](../judging/rubric-v2.json) | Reduces simulator, grind and camera traces to rubric quantities. An offline score is not the human-judged likeness score. | `rubric_metrics_tests` 16 / 3,933 |
+| `e1dc8e0` | `bail_policy.lua`, `bail_guard.lua` ([BAIL.md](BAIL.md)) | A port of `Engine/Game/BMX/bmx_bail_policy.h` and the guard rays it needs. Every guard plan must be bound to its read's Ride Framev1, and both batches to that read's epoch. | `bail_policy_tests` 21 / 1,430 |
+| `0b4c3e3`, `2584bcd` | `ride_composer.lua` ([RIDE_COMPOSER.md](RIDE_COMPOSER.md)) | One per-read pipeline over the modules above. It fails closed: a read that `bail_policy` did not judge sends no force, torque or hop impulse, and under Core's one probe batch per read it sends nothing at all. | `ride_composer_tests` 27 / 72,222 |
+
+These commits change modules inside the lifecycle `main.lua` builds. Public Mount is
+still refused before any game call, and the ride path stays unreachable while the
+gates are false:
+
+| Commit | Files | What changed | Suite: cases / assertions |
+| --- | --- | --- | --- |
+| `ad1516e`, `3587d78` | `bike_runtime_core.lua`, `equipment_runtime.lua` | The lifecycle ledger is saved when a stock transition finishes or expires, even inside the save throttle, and a new stock intent is blocked when that save fails. This fixes, in the tracked core, the throttled-save pattern behind the CE2 board-cancel mismatch the runbook describes; the private CE2 package is unchanged. | `bike_runtime_core_persist_tests` 5 / 78; `runtime_progress_fault_tests` 1 / 12 |
+| `1b5e57f` | `ride_runtime.lua`, `ride_input_mapping.lua` | Ride accepts `parked_without_successor` as a terminal cleanup receipt and keeps the applied command's wheel speeds; the mapper re-projects held input when the ground changes between reports. | `ride_runtime_b10_b16_tests` 25 / 66; `ride_input_mapping_tests` 42 / 321 |
+| `d403c25` | `contact_runtime.lua` | Contact accepts the SDK's `requested_query_preset` echo (`camera` or `terrain`) as request metadata only. Since `3e686fc` the facade stages Contact at mount (`plugin/bike_runtime.lua:11-14`) and Core binds it in `prepare_backend` (`plugin/bike_runtime_core.lua:813-816`). | `contact_runtime_preset_echo_tests` 32 / 91 |
+| `3e686fc` | `bike_runtime_core.lua`, `bike_runtime.lua`, `bike_admission.lua` | Core builds Ride with no trick adapter, reserves Follow with `cleanup="owned_body"` and `motion_policy="callback_entry"`, requires `probe_batch`, `submit`, `receipt` and `acknowledge` before any body exists, and stages Ride, Contact and their dependencies at mount. | `core_ride_staging_tests` 2 / 130 |
+
+[INTEGRATION_PLAN.md](INTEGRATION_PLAN.md) says how these would join a first
+mounted ride and what still blocks it.

@@ -10,6 +10,70 @@ records a completed in-game controller, owned-body, zero-command and cleanup tri
 The Lua ride gate remains off; handling, rendered alignment and BMX Streets likeness
 have not passed acceptance.
 
+The read-only [stationary rider observer](stationary-anchor-observer/README.md)
+records one standing on-foot joint capture in game. It is not a mounted pose or a
+body-relative calibration.
+
+To take over the Lua work, start with the [runbook](RUNBOOK.md). It gives the
+verified state at `2584bcd`, how to run the pure-runner, Luau-runner and Host
+suites, where evidence lives, the in-game procedure that last worked, and the next
+three in-game trials. The newest Follow and force results are two private trials, the
+[M3 Follow and force checkpoint](judging/2026-10-25-combined-follow-force-checkpoint.md)
+(`588f930`) and the
+[M4 input lease, Follow and force checkpoint](judging/checkpoints/2026-10-25-m4-input-follow-force-checkpoint.md)
+(`4b75b2a`). In each, one owned body under Follow took one force command and every
+cleanup duty was acknowledged. The body was falling both times. Neither shows
+mounted riding, grounded rolling, wheel ground support, switching, rider alignment
+or likeness. Two later private terrain probes have not answered whether
+terrain-preset rays miss the rider. The first was refused before it cast a ray,
+because its first `skater.joint("root")` read returned nil. The second warmed the
+joints up and cast all six rays, but every ray came back clear, its two floor rays
+included, so it has no positive floor control and proves nothing about actor
+exclusion. The runbook has both.
+[Rubric v2](judging/rubric-v2.json) copies rubric v1 unchanged and adds grind and
+camera categories; nothing has been scored under either.
+
+Since `aad4248` these pure Lua modules have been committed to
+[bmx-plugin/plugin](bmx-plugin/plugin). None is loaded by `main.lua` or by the
+lifecycle it builds, both ride gates stay false, and none has run in game. Counts are pure-runner cases and
+assertions at `2584bcd`; the [plugin README](bmx-plugin/README.md#tests) has every
+suite, and [its module list](bmx-plugin/README.md#modules-committed-since-aad4248)
+says more about each.
+
+- `5bd211b`: rider posture cues (`rider_presentation`, 27 / 12,226) and trick part
+  matrices (`trick_presentation`, 18 / 866), plus the first dedicated suite for the
+  tracked trick adapter (`trick_runtime_tests`, 28 / 431). `ride_runtime_join_tests`
+  already drove that adapter through Ride.
+- `f3cc0c8`: a chase-camera policy (`camera_policy`, 20 / 57,198).
+- `4e5a4c2`: named control presets, not yet read by the mapper (`input_presets`,
+  13 / 99,231).
+- `94f7bf2`: a manual and nose-manual balance model (`manual_balance`, 28 / 11,915).
+- `439ed37`: peg geometry, grind and stall policy (`grind_policy`, 15 / 1,019) and
+  rail probing with peg contact (`rail_probe`, 25 / 477).
+- `acb1dae`: an offline single-body simulator over the actual force modules
+  (`sim_tests`, 12 / 208,006).
+- `e2055ab`: offline rubric metrics (`rubric_metrics`, 16 / 3,933), with
+  [OFFLINE_METRICS.md](judging/OFFLINE_METRICS.md) and rubric v2.
+- `e1dc8e0`: bail detection whose guard plans are bound to their own read's frame
+  (`bail_policy`, 21 / 1,430).
+- `0b4c3e3` and `2584bcd`: a ride composer over all of the above, which fails closed.
+  It sends no command on a read `bail_policy` did not judge, and under Core's one
+  probe batch per read it sends nothing (`ride_composer`, 27 / 72,222).
+
+Five commits change modules inside the lifecycle that `main.lua` builds. Public Mount
+is still refused before any game call, and the ride path stays unreachable while the
+gates are false. `ad1516e` and `3587d78` save stock transition completion before the
+tick goes quiet (5 / 78 and 1 / 12); that is the stock switch path, which the page's
+"Switch skateboard / on foot" reaches today, so the ride gates do not cover it.
+`1b5e57f` handles parked cleanup receipts, wheel speeds and held input in Ride
+(25 / 66 and 42 / 321), `d403c25` lets Contact accept the SDK's camera or terrain
+query echo (`contact_runtime_preset_echo`, 32 / 91), and `3e686fc` gives Core its ride
+prerequisites: no trick adapter, owned-body `callback_entry` Follow, required force
+APIs, and ride modules, Contact among them, staged at mount (2 / 130). The SDK side
+gained named camera and terrain query presets for `world.physics.probe_batch`
+(`c1ec154`), and the tracked [Luau runner](luau-runner/README.md) (`10445a3`,
+`fac039c`) runs every suite as its own CTest.
+
 The `BMX` branch includes an in-game offline prototype and a separate synthetic controls lab.
 Start with [integration-direction.md](integration-direction.md) for the source-based architecture
 review, backend boundaries, build provenance and next acceptance milestones.

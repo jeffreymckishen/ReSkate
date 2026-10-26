@@ -10,6 +10,7 @@ local Ride, Object = {}, {}
 local states = setmetatable({}, {__mode="k"})
 local MAX_SAFE = 9007199254740991
 local MAX_PENDING = 3
+local METRIC_SAMPLE_LIMIT, METRIC_TRANSITION_LIMIT = 32, 16
 
 local function copy(value)
     if type(value) ~= "table" then return value end
@@ -181,10 +182,95 @@ local function wheel_copy(wheels,previous)
     end
     return detached(out)
 end
+local function new_metrics()
+    local out={version=1,stop_counts={},steps=0,fresh_report_steps=0,steps_without_report=0,
+        max_steps_without_report=0,report_gap_count=0,largest_report_gap_ms=0,report_gap_unbounded=0,
+        grounded_changes_with_report=0,grounded_changes_without_report=0,grounded_transition_total=0,
+        grounded_transition_omitted=0,grounded_transitions={},samples_total=0,samples_omitted=0,samples={},
+        inflight=0,max_inflight=0,applied_delay_one=0,applied_delay_other=0}
+    for _,prefix in ipairs({"submitted","applied"}) do
+        for _,suffix in ipairs({"count","delta_count","delta_one","delta_other","delta_max","delta_unbounded"}) do
+            out[prefix.."_"..suffix]=0
+        end
+    end
+    return out
+end
+local function metrics_inflight(s)
+    local count=0
+    for _,p in ipairs(s.pending) do if not p.acknowledged then count+=1 end end
+    s.metrics.inflight=count
+    s.metrics.max_inflight=math.max(s.metrics.max_inflight,count)
+    return count
+end
+local function metrics_serial(s,prefix,serial)
+    local m=s.metrics
+    m[prefix.."_count"]+=1
+    local previous=s["metrics_"..prefix.."_serial"]
+    if previous then
+        m[prefix.."_delta_count"]+=1
+        local delta=Identity.bounded_delta(serial,previous,MAX_SAFE)
+        if delta then
+            local kind=delta==1 and "_delta_one" or "_delta_other"
+            m[prefix..kind]+=1
+            m[prefix.."_delta_max"]=math.max(m[prefix.."_delta_max"],delta)
+        else m[prefix.."_delta_unbounded"]+=1 end
+    end
+    s["metrics_"..prefix.."_serial"]=serial
+end
+local function metrics_report(s,key)
+    local m=s.metrics
+    s.metrics_step.report=true
+    if s.metrics_report_ms then
+        m.report_gap_count+=1
+        local delta=Identity.bounded_delta(key.observed_ms,s.metrics_report_ms,MAX_SAFE)
+        if delta then m.largest_report_gap_ms=math.max(m.largest_report_gap_ms,delta)
+        else m.report_gap_unbounded+=1 end
+    end
+    s.metrics_report_ms=key.observed_ms
+end
+local function metric_ring(m,name,limit,row)
+    local stem=name=="grounded_transitions" and "grounded_transition" or name
+    m[stem.."_total"]+=1
+    local ring=m[name]
+    if #ring==limit then table.remove(ring,1);m[stem.."_omitted"]+=1 end
+    ring[#ring+1]=row
+end
+local function metrics_finish_step(s)
+    local step=s.metrics_step
+    if not step then return end
+    s.metrics_step=nil
+    local m=s.metrics
+    m.steps+=1
+    if step.report then
+        m.fresh_report_steps+=1;s.metrics_no_report_steps=0
+    else
+        m.steps_without_report+=1
+        s.metrics_no_report_steps=(s.metrics_no_report_steps or 0)+1
+        m.max_steps_without_report=math.max(m.max_steps_without_report,s.metrics_no_report_steps)
+    end
+    local inflight=metrics_inflight(s)
+    local row=step.contact
+    if not row then return end
+    row.report=step.report
+    row.inflight=inflight
+    -- Speeds are the latest accepted Lua prediction, never native wheel state.
+    row.front_speed=s.wheels[1].angular_speed;row.rear_speed=s.wheels[2].angular_speed
+    if s.metrics_grounded~=nil and row.grounded~=s.metrics_grounded then
+        local kind=step.report and "grounded_changes_with_report" or "grounded_changes_without_report"
+        m[kind]+=1
+        metric_ring(m,"grounded_transitions",METRIC_TRANSITION_LIMIT,
+            {serial=step.serial,grounded=row.grounded,report=step.report})
+    end
+    s.metrics_grounded=row.grounded
+    metric_ring(m,"samples",METRIC_SAMPLE_LIMIT,row)
+end
 local function stop(s, reason)
     -- Pure latch. Core inspects stop_requested after this subordinate returns.
     -- There are no Source, body, Follow or owner callbacks in this module.
-    if not s.stopped then s.stopped=true;s.generation+=1;s.issue=detail(reason) end
+    if not s.stopped then
+        s.stopped=true;s.generation+=1;s.issue=detail(reason)
+        s.metrics.stop_counts[s.issue]=1
+    end
     s.phase="stopped"
     s.input_queue={}
 end
@@ -197,6 +283,7 @@ local function retire(s,pending,disposition)
     return pending.hop_retired
 end
 local function status(s)
+    metrics_inflight(s)
     local p=s.pending[1]
     local sequences={}
     for _,entry in ipairs(s.pending) do
@@ -212,7 +299,7 @@ local function status(s)
         submitted=s.submitted,acknowledged=s.acknowledged,last_serial=s.last_sample and s.last_sample.serial,
         input_staged=s.input_staged,input_consumed=s.input_consumed,input_queued=#s.input_queue,
         observed_steps=s.observed_steps,model_steps=s.model_steps,receipt=s.last_receipt,
-        model_history=s.model_history,hop_disposition=s.hop_disposition,
+        model_history=s.model_history,hop_disposition=s.hop_disposition,metrics=s.metrics,
         model={trick_status=s.trick_status,alignment_status=s.alignment_status,recovery_status=s.recovery_status}})
 end
 local function receipt_valid(row,p)
@@ -253,6 +340,13 @@ local function poll_pending(s)
                     p.unknown=true;s.unknown=true;stop(s,"force receipt unavailable or identity mismatch")
                 else
                     p.outcome=row.outcome;p.parked=row.cleanup_disposition=="parked_without_successor"
+                    if row.outcome=="applied" and not p.metrics_applied then
+                        p.metrics_applied=true
+                        metrics_serial(s,"applied",row.produced_serial)
+                        local delay=Identity.bounded_delta(row.produced_serial,p.serial,MAX_SAFE)
+                        local kind=delay==1 and "applied_delay_one" or "applied_delay_other"
+                        s.metrics[kind]+=1
+                    end
                     s.last_receipt={outcome=row.outcome,sequence=row.sequence,requested_serial=row.requested_serial,
                         produced_serial=row.produced_serial,force_attempted=row.force_attempted,torque_attempted=row.torque_attempted,
                         retained=row.retained,quarantined=row.quarantined,successor_available=row.successor~=nil,
@@ -509,6 +603,7 @@ local function observe(s,source_frame,raw,context)
     end
     s.last_sample=sample -- Consume before callbacks. This native serial cannot submit twice.
     s.observed_steps+=1
+    s.metrics_step={serial=sample.serial,report=false}
     -- One exact queued observation per body step preserves non-hop selection /
     -- release ordering without stepping Trick twice at one native epoch. Bind
     -- the frame to that real observation, never restamp it as the latest poll.
@@ -536,12 +631,19 @@ local function observe(s,source_frame,raw,context)
         if not clear then stop(s,tripwire_issue);return end
         contact.support.actor_tripwire="authored_rider_crossings_clear_v1"
     end
+    -- Contact diagnostics exist only after the complete wheel binding and,
+    -- where required, the independent rider tripwire have passed.
+    s.metrics_step.contact={serial=sample.serial,body_height=body.center_of_mass[2],
+        front_hit=contact.samples[1].contact.status=="hit",rear_hit=contact.samples[2].contact.status=="hit",
+        front_separation=contact.samples[1].separation,rear_separation=contact.samples[2].separation,
+        grounded=contact.grounded}
     local enriched=copy(frame)
     enriched.contact,enriched.support=copy(contact),copy(contact.support)
     frame=freeze(enriched)
     if input_frame then
         table.remove(s.input_queue,1)
         s.input_consumed+=1
+        metrics_report(s,model_source)
         local mapped=invoke(s,s.mapping.observe,s.mapping,input_frame,{grounded=contact.grounded,
             focused=true,menu_open=false,rotation_reserved=false})
         if not mapped[1] or mapped.n~=2 or not mapped.current or s.stopped or type(mapped[2])~="table" then
@@ -610,6 +712,7 @@ local function observe(s,source_frame,raw,context)
             stop(s,"force admission sequence did not advance");return
         end
         p.sequence=sequence;s.last_sequence=sequence;s.submitted+=1
+        metrics_serial(s,"submitted",p.serial)
         -- Prediction follows exact acceptance order, independent of later ACK.
         -- Actual N+1 application and N+2+ proof remain separate receipt facts.
         local adopted=invoke(s,s.force._adopt,s.force,candidate)
@@ -639,7 +742,8 @@ function Ride.new(force_api,models,options)
         contact=models.contact,tricks=models.tricks,recovery=models.recovery,alignment=models.alignment,
         alignment_options=detached(options.alignment),geometry=detached(options.geometry or Geometry),
         wheels=Forces.proposed_wheels(),phase="inert",issue="native qualification required",generation=0,
-        submitted=0,acknowledged=0,pending={},backpressure_steps=0,input_queue={},input_staged=0,input_consumed=0,observed_steps=0,model_steps=0}
+        submitted=0,acknowledged=0,pending={},metrics=new_metrics(),backpressure_steps=0,
+        input_queue={},input_staged=0,input_consumed=0,observed_steps=0,model_steps=0}
     if ACTIVATION_QUALIFIED then
         local valid=type(s.body)=="userdata" and s.incarnation~=nil and type(force_api)=="table"
             and type(s.contact)=="table" and type(s.contact.decode)=="function" and type(s.contact.actor_lane_qualified)=="function"
@@ -662,6 +766,7 @@ function Object:observe(source_frame,body_sample,context)
     s.busy=true
     local ok,why=pcall(observe,s,source_frame,body_sample,context)
     if not ok then stop(s,"observe exception: "..detail(why)) end
+    metrics_finish_step(s)
     s.busy=false
     return status(s)
 end

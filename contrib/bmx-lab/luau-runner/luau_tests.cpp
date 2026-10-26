@@ -6,11 +6,13 @@
 // --stage-qualified-ride builds the test-only copy the Ride suites need, and --stage-regression checks
 // that staging against a stand-in plugin. They are the only modes that write: the first only into the
 // copy folder it is given, the second only inside a scratch folder that must not exist yet.
+#include "Engine/Core/Json/json.h"
 #include "lua.h"
 #include "luacode.h"
 #include "lualib.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -43,6 +45,97 @@ namespace {
 constexpr std::uintmax_t most_module_bytes = 4u << 20;
 // A loose bound on modules loading at once. A loop through require is refused by name before this.
 constexpr std::size_t most_nested_loads = 32;
+
+// Test-only conversion mirrors Extension/Plugins/plugin_api.cpp::lua_to_json.
+// The value model and compact/pretty bytes below use the production Json::dump.
+// This is not a permissioned reskate API or plugin Host execution.
+using dingosdk::Json;
+
+// What turning Lua into JSON may cost outside the VM's own heap.
+struct Budget {
+    std::size_t values = 1u << 20;
+    std::size_t bytes = 16u << 20;
+    void spend(std::size_t count, std::size_t size) {
+        if (count > values || size > bytes) throw std::runtime_error("the value is too large to turn into JSON");
+        values -= count;
+        bytes -= size;
+    }
+};
+
+Json to_json(lua_State* L, int index, int depth, Budget& budget) {
+    if (depth > 32) throw std::runtime_error("tables nested deeper than 32 cannot be turned into JSON");
+    index = lua_absindex(L, index);
+    budget.spend(1, 0);
+    switch (lua_type(L, index)) {
+    case LUA_TNIL: return nullptr;
+    case LUA_TBOOLEAN: return lua_toboolean(L, index) != 0;
+    case LUA_TNUMBER: {
+        const double value = lua_tonumber(L, index);
+        if (!std::isfinite(value)) throw std::runtime_error("JSON has no NaN or infinity");
+        if (value == std::floor(value) && std::fabs(value) <= 9007199254740992.0) return static_cast<std::int64_t>(value);
+        return value;
+    }
+    case LUA_TSTRING: {
+        std::size_t length = 0;
+        const char* text = lua_tolstring(L, index, &length);
+        budget.spend(0, length);
+        return std::string(text, length);
+    }
+    case LUA_TVECTOR: { // a position: [x, y, z]
+        const float* v = lua_tovector(L, index);
+        if (!std::isfinite(v[0]) || !std::isfinite(v[1]) || !std::isfinite(v[2])) throw std::runtime_error("JSON has no NaN or infinity");
+        budget.spend(3, 0);
+        return Json::array({static_cast<double>(v[0]), static_cast<double>(v[1]), static_cast<double>(v[2])});
+    }
+    case LUA_TTABLE: {
+        luaL_checkstack(L, 4, "tables nested too deep");
+        const int length = lua_objlen(L, index);
+        bool list = length > 0;
+        int count = 0;
+        lua_pushnil(L);
+        while (lua_next(L, index)) {
+            ++count;
+            if (lua_type(L, -2) != LUA_TNUMBER) list = false;
+            else {
+                const double key = lua_tonumber(L, -2);
+                if (key != std::floor(key) || key < 1 || key > length) list = false;
+            }
+            lua_pop(L, 1);
+        }
+        if (list && count == length) {
+            auto result = Json::array();
+            for (int i = 1; i <= length; ++i) {
+                lua_rawgeti(L, index, i);
+                result.push_back(to_json(L, -1, depth + 1, budget));
+                lua_pop(L, 1);
+            }
+            return result;
+        }
+        auto result = Json::object();
+        lua_pushnil(L);
+        while (lua_next(L, index)) {
+            if (lua_type(L, -2) != LUA_TSTRING)
+                throw std::runtime_error("only a list (keys 1 to n) or a table with string keys can be turned into JSON");
+            std::size_t size = 0;
+            const char* key = lua_tolstring(L, -2, &size);
+            budget.spend(0, size);
+            result[std::string_view(key, size)] = to_json(L, -1, depth + 1, budget);
+            lua_pop(L, 1);
+        }
+        return result;
+    }
+    default:
+        throw std::runtime_error(std::string("a ") + lua_typename(L, lua_type(L, index)) + " cannot be turned into JSON");
+    }
+}
+
+int encode_json(lua_State* state) {
+    luaL_checkany(state, 1);
+    Budget budget;
+    const auto text = to_json(state, 1, 0, budget).dump(lua_toboolean(state, 2) ? 2 : -1);
+    lua_pushlstring(state, text.data(), text.size());
+    return 1;
+}
 
 bool module_character(char value) {
     return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z') || (value >= '0' && value <= '9') ||
@@ -678,6 +771,12 @@ public:
         luaL_openlibs(state_);
         lua_pushcfunction(state_, require_module, "require");
         lua_setglobal(state_, "require");
+        // A frozen test helper keeps byte measurement separate from SDK authority.
+        lua_createtable(state_, 0, 1);
+        lua_pushcfunction(state_, encode_json, "json_encode");
+        lua_setfield(state_, -2, "json_encode");
+        lua_setreadonly(state_, -1, true);
+        lua_setglobal(state_, "bmx_luau_runner");
         // From here globals and the standard libraries are read only, as in a plugin.
         luaL_sandbox(state_);
     }

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 project(ReSkateBmxLuauRunner LANGUAGES CXX)
 
-# Runs the BMX plugin's pure Lua suites on the vendored Luau alone. It builds no SDK target and reads
+# Runs the BMX plugin's pure Lua suites on vendored Luau with the shared JSON writer. It builds no SDK target and reads
 # no shared build output, so it can run while the main tree is mid-build or broken. The static
 # runtime keeps the test executable runnable without a Visual Studio environment on PATH.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -35,13 +35,23 @@ if(MSVC)
     target_compile_definitions(bmx_luau_runner_luau PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
+# Use the same JSON value model/writer as the SDK for test-only ledger byte measurement.
+# RapidJSON is already vendored; no plugin Host, API or game target is linked.
+add_library(bmx_luau_runner_json STATIC "${luau_runner_source_root}/Engine/Core/Json/json.cpp")
+target_compile_features(bmx_luau_runner_json PRIVATE cxx_std_20)
+set_target_properties(bmx_luau_runner_json PROPERTIES CXX_EXTENSIONS OFF)
+target_include_directories(bmx_luau_runner_json SYSTEM PRIVATE "${luau_runner_source_root}/External")
+
 add_executable(bmx_luau_tests luau_tests.cpp)
 target_compile_features(bmx_luau_tests PRIVATE cxx_std_20)
 set_target_properties(bmx_luau_tests PROPERTIES CXX_EXTENSIONS OFF)
-target_link_libraries(bmx_luau_tests PRIVATE bmx_luau_runner_luau)
+target_include_directories(bmx_luau_tests PRIVATE "${luau_runner_source_root}")
+target_link_libraries(bmx_luau_tests PRIVATE bmx_luau_runner_luau bmx_luau_runner_json)
 if(MSVC)
+    target_compile_options(bmx_luau_runner_json PRIVATE /W4 /WX /permissive- /EHsc)
     target_compile_options(bmx_luau_tests PRIVATE /W4 /WX /permissive- /EHsc)
 else()
+    target_compile_options(bmx_luau_runner_json PRIVATE -Wall -Wextra -Wpedantic -Werror)
     target_compile_options(bmx_luau_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
     if(MINGW)
         # As in contrib/bmx-lab: runnable outside the compiler's PATH.

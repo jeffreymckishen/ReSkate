@@ -16,6 +16,9 @@ local FLOOR_MAX_DROP_M=2
 local FLOOR_CLEARANCE_M=.02
 local FLOOR_HIT_LIFETIME_MS=100
 S.limits=table.freeze({envelope_m=ENVELOPE_M})
+-- Core binds the optional floor API from this same private literal. There is
+-- no caller option and no second activation flag that can drift from Spawn.
+function S.floor_spawn_qualified() return FLOOR_SPAWN_QUALIFIED end
 local function xyz(v) return {v.x,v.y,v.z} end
 local function vec(v) return typeof(v)=="vector" and M.vec(xyz(v),100000) end
 local function canonical(x)

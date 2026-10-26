@@ -6,7 +6,8 @@ There is no menu, storage value or option that enables either. With both off,
 the actor +3 m / +0.5 m airborne placement, heading, reserve offset `-G.com`, API
 calls, readiness retry and diagnostics retain the tracked defaults. LUA-5(a)
 must not ship active without at least LUA-5(b-prov). M1 and P2 keep the airborne
-spawn. A reviewed M3 trial substitutes both literals; neither is a game verdict.
+spawn. A reviewed M3 trial substitutes both literals and grants the existing
+`world.raycast` permission; neither is a game verdict.
 
 The M1 steering removes the approach displacement and supplies a provisional
 pelvis target. It does not establish a fitted rider pose or every Follow motion
@@ -58,11 +59,16 @@ The false branch still constructs exact `-G.com`. `root_in_body` remains identit
 No Follow lease, renewal, lifetime, permission or command authority is added.
 This M1-derived provisional target still needs a short native confirmation.
 
-The tracked manifest remains unchanged and lacks `world.raycast`. A coordinator-
-owned trial needs that permission and a guarded raycast forwarding path through
-Core's Spawn API, which currently forwards physics only. This change does not
-add that proxy or activate a package, and is not runtime-ready from the tracked
-manifest/proxy. No game or controller was launched for this source change.
+Core reads Spawn's private literal through `floor_spawn_qualified()` when it
+prepares the backend. Only the floor trial with an available SDK function gets
+a `world.raycast` proxy. It accounts for the one call in Core's ledger, refuses
+repeat or cancelled calls, checks cancellation after the callback, and preserves
+the returned value count. The default proxy gains no function and makes no extra
+SDK calls. The provisional attachment literal does not control this forwarding.
+
+The tracked manifest remains unchanged and lacks `world.raycast`. The
+coordinator-owned trial must grant that existing permission before activation;
+no fallback bypasses it. No game or controller was launched for this source fix.
 
 ## Pure checks
 
@@ -74,6 +80,15 @@ with the existing staging suite's shared constructed service factory and a fake
 Spawn. It captures the actual reserve attachment, then returns a known refusal:
 no Follow or force is published. Both literal branches check exact offsets and
 unchanged attachment policy. This is fixture behavior, not native ownership.
+
+The `core_floor_spawn_*_tests.lua` suites drive the real public Core mount,
+Source and Spawn with both literals off and on. They check proxy presence,
+mixed gates, exact placement and reserve offset, call accounting and order,
+missing API, callback failure, cancellation/reentry, and cleanup. Their shared
+fixture temporarily selects the existing generated Spawn's real exports while
+Core prepares its backend, then restores them on success or failure. The actual
+Spawn instance retains its module's literal; no fake Spawn is used. The runner
+needs no change because these suites import its existing generated module names.
 
 The standalone runner makes each private module copy with exactly one literal
 substitution, registers the suites in CTest, and checks exact copied bytes,

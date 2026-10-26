@@ -1020,6 +1020,22 @@ function object:prepare_backend()
     T.ride_modules_bound=true;T.ride_trick_adapter=ride_models.tricks~=nil
     source=Source.new(input_proxy,{setup_ms=15000,capture_ms=4000,cleanup_ms=4000})
     T.source_instances=(T.source_instances or 0)+1
+    if BikeSpawn.floor_spawn_qualified()==true and lookup("world.raycast") then
+        -- Keep the default proxy unchanged. The private floor query shares
+        -- Core's call ledger and cancellation boundary, with one attempt only.
+        local floor_query_used=false
+        spawn_api.world.raycast=function(...)
+            if T.stop_latched or T.unloaded or floor_query_used then
+                error("spawn floor ray cancelled or already consumed",0)
+            end
+            floor_query_used=true
+            local generation=T.generation
+            local r=call("spawn.world.raycast",lookup("world.raycast"),...)
+            if not current(generation) then error("spawn floor ray cancelled during callback",0) end
+            if not r[1] then error("spawn floor ray callback failed",0) end
+            return table.unpack(r,2,r.n)
+        end
+    end
     spawn=BikeSpawn.new(spawn_api)
     T.spawn_instances=(T.spawn_instances or 0)+1
     return true

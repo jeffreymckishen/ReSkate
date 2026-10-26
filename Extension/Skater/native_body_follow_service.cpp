@@ -53,6 +53,10 @@ const char* stop_origin_name(StopOrigin origin) noexcept {
     case StopOrigin::dispatch_prepare: return "dispatch_prepare";
     case StopOrigin::dispatch_current: return "dispatch_current";
     case StopOrigin::dispatch_forwarding_expired: return "dispatch_forwarding_expired";
+    case StopOrigin::lease_guard: return "lease_guard";
+    case StopOrigin::renew_expired: return "renew_expired";
+    case StopOrigin::dispatch_guard: return "dispatch_guard";
+    case StopOrigin::dispatch_revision_exhausted: return "dispatch_revision_exhausted";
     }
     return "unknown";
 }
@@ -68,7 +72,8 @@ const char* cleanup_origin_name(CleanupOrigin origin) noexcept {
     return "unknown";
 }
 namespace {
-constexpr std::uint64_t lease_ms = 3000;
+using body_follow_lease::Refusal;
+using body_follow_lease::Revocation;
 constexpr unsigned stopped_bit = 1, invoking_bit = 2;
 struct LastError {
     DWORD value{GetLastError()};
@@ -97,7 +102,16 @@ struct Service {
     owned_body::Handle body;
     Forwarded final;
     std::atomic<std::uint64_t> returned_revision{};
-    std::uint64_t next_sequence{}, started{}, deadline{};
+    std::uint64_t next_sequence{};
+    // Written under the lock only; every deadline edge reads it under the lock.
+    body_follow_lease::State lease;
+    // The client tick's packed revocation facts. Stored before that tick tries
+    // the lock, so no lock holder can hide them. Describes the client, not a
+    // receipt, so an ACK leaves it in place.
+    std::atomic<std::uint64_t> guard{};
+    // Callbacks that found this lock busy while the slot was live, and so were
+    // not followed. Counted outside the lock; reset at reserve and at ACK.
+    std::atomic<std::uint64_t> dispatch_busy{};
     actor_control_native::Reason reason{actor_control_native::Reason::unavailable};
     actor_control_native::Reason park_reason{actor_control_native::Reason::unavailable};
     bool occupied{}, orphaned{}, body_release_requested{}, body_release_started{}, stop_cause_recorded{}, command_cleanup_sealed{};
@@ -120,7 +134,8 @@ bool matches(const Service& s, std::uint64_t owner, Handle handle) noexcept {
 DiagnosticState diagnostic_state(const Service& s) noexcept {
     return {s.binding.sequence, s.final.revision, s.returned_revision.load(std::memory_order_acquire),
         s.binding.published, s.binding.stopped, s.release_hold.available(), s.body_release_requested,
-        s.body_release_started, s.park_fence.available(), s.park_receipt.available()};
+        s.body_release_started, s.park_fence.available(), s.park_receipt.available(),
+        s.lease.renewals, s.dispatch_busy.load(std::memory_order_relaxed), s.lease.revocation};
 }
 void cleanup_observation(Service& s, CleanupOrigin origin, const body_follow_native::Diagnostic& provider) noexcept {
     const CleanupDiagnostic next{diagnostic_state(s), origin, s.park_reason, provider, true};
@@ -146,6 +161,15 @@ void stop_locked(Service& s, actor_control_native::Reason reason, StopOrigin ori
     if (s.release_hold.available() && s.body_release_requested)
         (void)owned_bodies::request_held_release(s.binding.owner, s.release_hold);
     (void)body_follow_native::stop(s.binding);
+}
+// The same stop, from a lease edge. The revocation is latched only when this is
+// the receipt's first stop, so it always names the stop the receipt's reason
+// describes; a stop from anywhere else leaves it unset and the lease reads other.
+void lease_stop(Service& s, Revocation cause, StopOrigin origin) noexcept {
+    // Every lease edge passes a cause; never stop with reason none.
+    if (cause == Revocation::none || cause == Revocation::other) cause = Revocation::deadline;
+    if (!s.stop_cause_recorded) s.lease.revocation = cause;
+    stop_locked(s, body_follow_lease::receipt_reason(cause), origin);
 }
 bool completed(const Service& s) noexcept {
     // A published binding clears reserved only after actual exact retirement.
@@ -189,13 +213,15 @@ void acknowledge_locked(Service& s) noexcept {
     s.binding = {}; s.attachment = {}; s.park_fence = {}; s.park_receipt = {};
     s.release_hold = {}; s.body = {}; s.final = {};
     s.returned_revision.store(0, std::memory_order_release);
-    s.started = s.deadline = 0;
+    s.lease = {};
+    s.dispatch_busy.store(0, std::memory_order_relaxed);
     s.reason = s.park_reason = actor_control_native::Reason::unavailable;
     s.orphaned = s.body_release_requested = s.body_release_started = s.stop_cause_recorded = s.command_cleanup_sealed = false;
     s.first_stop = {}; s.first_cleanup = {}; s.latest_cleanup = {};
     s.stop_drained = s.cleanup_drained = s.latest_cleanup_drained = false;
     // edge remains stopped_bit. next_sequence and the actual Arbiter are never
     // reset, so stale handles cannot become valid after receipt or owner reuse.
+    // The guard word stays: it is the client's latest sample, not this receipt's.
     s.occupied = false;
 }
 void acknowledge_orphan_locked(Service& s) noexcept {
@@ -216,6 +242,11 @@ bool valid_attachment(const body_follow_native::Attachment& value) noexcept {
     if (!body_follow_api::valid_cleanup(value.cleanup)) return false;
     if (!body_follow_native::valid_motion_policy(value.motion_policy) ||
         (value.motion_policy == body_follow_native::MotionPolicy::callback_entry &&
+            value.cleanup != body_follow_native::CleanupPolicy::owned_body)) return false;
+    // A renewable lease holds the body for longer, so only the owned-body
+    // cleanup path that completed in game may carry it.
+    if (!body_follow_api::valid_lifetime(value.lifetime) ||
+        (value.lifetime == body_follow_native::Lifetime::renewable &&
             value.cleanup != body_follow_native::CleanupPolicy::owned_body)) return false;
     if (!owned_body::finite(value.offset_from_com, 10)) return false;
     double norm{};
@@ -261,10 +292,19 @@ bool reserve(std::uint64_t owner, const owned_body::Handle& body,
     if (s.occupied || s.next_sequence == std::numeric_limits<std::uint64_t>::max()) {
         reason = actor_control_native::Reason::receipt_capacity; return false;
     }
+    const bool renewable = attachment.lifetime == body_follow_native::Lifetime::renewable;
+    if (renewable) {
+        // A renewable lease starts only with every revocation fact clear, and
+        // refuses before any claim: nothing is occupied and no cleanup is owed.
+        const auto word = s.guard.load(std::memory_order_acquire);
+        const auto cause = body_follow_lease::guard_cause(word, GetTickCount64());
+        if (cause != Revocation::none) { reason = body_follow_lease::receipt_reason(cause); return false; }
+    }
     owned_bodies::MeasuredSource actual;
     if (!owned_bodies::capture_source(owner, body, actual) || !actual.same_allocation(expected) ||
         !body_query::same_sample(actual.sample(), expected.sample())) return false;
     s.occupied = true; s.body = body; s.attachment = attachment;
+    s.dispatch_busy.store(0, std::memory_order_relaxed);
     s.binding.cleanup = attachment.cleanup;
     s.binding.motion_policy = attachment.motion_policy;
     const auto sequence = ++s.next_sequence;
@@ -282,12 +322,12 @@ bool reserve(std::uint64_t owner, const owned_body::Handle& body,
         reason = actor_control_native::Reason::motion_owned;
         stop_locked(s, reason, StopOrigin::reserve_hold); return false;
     }
-    s.started = GetTickCount64();
-    if (s.started > std::numeric_limits<std::uint64_t>::max() - lease_ms) {
+    // A fixed lease ends at reservation + 3000. A renewable one has the same
+    // floor and a 120 s ceiling, both from this one reading of the clock.
+    if (!body_follow_lease::start(s.lease, GetTickCount64(), renewable)) {
         reason = actor_control_native::Reason::expired;
         stop_locked(s, reason, StopOrigin::reserve_clock); return false;
     }
-    s.deadline = s.started + lease_ms;
     s.reason = reason = actor_control_native::Reason::none;
     return true;
 }
@@ -298,28 +338,41 @@ bool publish(std::uint64_t owner, Handle handle, actor_control_native::Reason& r
     if (!TryAcquireSRWLockExclusive(&s.lock)) return false;
     Unlock unlock{s.lock};
     if (!matches(s, owner, handle) || s.binding.stopped || s.edge.load(std::memory_order_acquire) || !s.release_hold.available() ||
-        GetTickCount64() < s.started || GetTickCount64() >= s.deadline || !quiet()) return false;
+        GetTickCount64() < s.lease.started || GetTickCount64() >= s.lease.deadline || !quiet()) return false;
+    if (s.lease.renewable) {
+        const auto word = s.guard.load(std::memory_order_acquire);
+        const auto cause = body_follow_lease::guard_cause(word, GetTickCount64());
+        if (cause != Revocation::none) {
+            reason = body_follow_lease::receipt_reason(cause);
+            lease_stop(s, cause, StopOrigin::lease_guard); return false;
+        }
+    }
     bool release_requested{};
     if (!owned_bodies::release_requested(owner, s.release_hold, release_requested) || release_requested ||
         !body_follow_native::publish_binding(s.binding, reason)) {
         stop_locked(s, reason, StopOrigin::publish_binding); return false;
     }
     const auto published_ms = GetTickCount64();
-    if (s.edge.load(std::memory_order_acquire) || published_ms < s.started || published_ms >= s.deadline) {
-        reason = s.edge.load(std::memory_order_acquire) ? actor_control_native::Reason::cancelled :
-            actor_control_native::Reason::expired;
-        stop_locked(s, reason, StopOrigin::publish_closing); return false;
+    if (s.edge.load(std::memory_order_acquire) || published_ms < s.lease.started || published_ms >= s.lease.deadline) {
+        if (s.edge.load(std::memory_order_acquire)) {
+            reason = actor_control_native::Reason::cancelled;
+            stop_locked(s, reason, StopOrigin::publish_closing);
+        } else {
+            reason = actor_control_native::Reason::expired;
+            lease_stop(s, body_follow_lease::expiry(s.lease, published_ms), StopOrigin::publish_closing);
+        }
+        return false;
     }
     s.reason = reason = actor_control_native::Reason::none;
     return true;
 }
 
-bool read(std::uint64_t owner, Handle handle, Receipt& out) noexcept {
+body_follow_api::ReadStatus read_status(std::uint64_t owner, Handle handle, Receipt& out) noexcept {
     LastError error; out = {};
     auto& s = service();
-    if (!TryAcquireSRWLockExclusive(&s.lock)) return false;
+    if (!TryAcquireSRWLockExclusive(&s.lock)) return body_follow_api::ReadStatus::busy;
     Unlock unlock{s.lock};
-    if (!matches(s, owner, handle)) return false;
+    if (!matches(s, owner, handle)) return body_follow_api::ReadStatus::unavailable;
     const auto claim = actor_control_native::follow_snapshot(owner, handle.sequence, s.binding.actor);
     const bool abandoned = abandoned_ack_ready(s);
     const bool sdk_completed = completed(s);
@@ -336,7 +389,100 @@ bool read(std::uint64_t owner, Handle handle, Receipt& out) noexcept {
     // SDK ownership completion is separate from native pose-history retirement.
     // Neither actual park nor an ACK claims all native consumers forgot a pose.
     out.native_retirement_known = false;
-    return true;
+    return body_follow_api::ReadStatus::ok;
+}
+bool read(std::uint64_t owner, Handle handle, Receipt& out) noexcept {
+    return read_status(owner, handle, out) == body_follow_api::ReadStatus::ok;
+}
+
+namespace {
+// The receipt a renewal names is still this exact one: same owner, sequence and
+// body, renewable, published and not stopped. A callback inside its original
+// call is allowed; the deadline it already checked is unaffected.
+bool renewal_target(const Service& s, std::uint64_t owner, Handle handle, const owned_body::Handle& body,
+    Refusal& refusal) noexcept {
+    refusal = Refusal::not_following;
+    if (!matches(s, owner, handle) || !(s.body == body)) return false;
+    if (!s.lease.renewable) { refusal = Refusal::not_renewable; return false; }
+    return s.binding.published && !s.binding.stopped && !s.stop_cause_recorded &&
+        !(s.edge.load(std::memory_order_acquire) & stopped_bit);
+}
+// The lease check every renewal window makes first. A lapse or a revoking guard
+// stops the Follow here, through the ordinary stop and cleanup, and is never
+// renewed away. Then the checks that need no body.
+bool renewal_window(Service& s, std::uint64_t proof_serial, std::uint64_t& now, std::uint64_t& word,
+    Refusal& refusal) noexcept {
+    word = s.guard.load(std::memory_order_acquire);
+    now = GetTickCount64();
+    const auto cause = body_follow_lease::check(s.lease, now, word);
+    if (cause != Revocation::none) {
+        lease_stop(s, cause, body_follow_lease::lapse(cause) ? StopOrigin::renew_expired : StopOrigin::lease_guard);
+        refusal = body_follow_lease::refusal(cause); return false;
+    }
+    refusal = body_follow_lease::precheck(s.lease, proof_serial);
+    return refusal == Refusal::none;
+}
+} // namespace
+
+bool renew(std::uint64_t owner, Handle handle, const owned_body::Handle& body, const owned_body::Epoch& proof,
+    std::uint64_t& remaining_ms, Refusal& refusal) noexcept {
+    LastError error; remaining_ms = 0; refusal = Refusal::busy;
+    auto& s = service();
+    owned_bodies::MeasuredSource identity;
+    std::uint64_t sequence{}, now{}, word{};
+    {
+        // Window A: compare and copy only. The reserved measured source selects
+        // the exact allocation; World's check below holds no Follow lock.
+        if (!TryAcquireSRWLockExclusive(&s.lock)) return false;
+        Unlock unlock{s.lock};
+        if (!renewal_target(s, owner, handle, body, refusal) || !renewal_window(s, proof.serial, now, word, refusal)) return false;
+        identity = s.binding.source;
+        sequence = s.binding.sequence;
+    }
+    std::uint64_t current_serial{};
+    switch (owned_bodies::check_renewal_proof(owner, identity, proof, current_serial)) {
+    case owned_bodies::RenewalProof::current: break;
+    case owned_bodies::RenewalProof::busy: refusal = Refusal::busy; return false;
+    case owned_bodies::RenewalProof::not_latest:
+    case owned_bodies::RenewalProof::clock_stale: refusal = Refusal::sample_stale; return false;
+    case owned_bodies::RenewalProof::body_unavailable:
+    default: refusal = Refusal::body_unavailable; return false;
+    }
+    // Window B: the same receipt again. A stop, or an ACK and a new reserve,
+    // between the windows makes this not_following, and nothing commits.
+    if (!TryAcquireSRWLockExclusive(&s.lock)) { refusal = Refusal::busy; return false; }
+    Unlock unlock{s.lock};
+    if (!renewal_target(s, owner, handle, body, refusal) || s.binding.sequence != sequence) {
+        refusal = Refusal::not_following; return false;
+    }
+    if (!renewal_window(s, proof.serial, now, word, refusal)) return false;
+    refusal = body_follow_lease::renew(s.lease, now, proof.serial, current_serial, word, remaining_ms);
+    return refusal == Refusal::none;
+}
+
+body_follow_api::ReadStatus read_lease(std::uint64_t owner, Handle handle, body_follow_api::LeaseReceipt& out) noexcept {
+    LastError error; out = {};
+    auto& s = service();
+    if (!TryAcquireSRWLockExclusive(&s.lock)) return body_follow_api::ReadStatus::busy;
+    Unlock unlock{s.lock};
+    if (!matches(s, owner, handle)) return body_follow_api::ReadStatus::unavailable;
+    const auto now = GetTickCount64();
+    const auto& lease = s.lease;
+    const bool stopped = s.stop_cause_recorded || s.binding.stopped;
+    const bool live = !stopped && body_follow_lease::remaining(lease, now) != 0;
+    out.handle = {handle.sequence};
+    out.renewable = lease.renewable;
+    out.active = live && s.binding.published;
+    out.renewals = lease.renewals;
+    out.last_serial = lease.last_serial;
+    out.dispatch_busy = s.dispatch_busy.load(std::memory_order_relaxed);
+    out.remaining_ms = live ? lease.deadline - now : 0;
+    out.lifetime_remaining_ms = live ? lease.ceiling - now : 0;
+    out.base_ms = body_follow_lease::base_ms;
+    out.renewal_ms = body_follow_lease::renewal_ms;
+    out.lifetime_ms = lease.renewable ? body_follow_lease::maximum_lifetime_ms : body_follow_lease::base_ms;
+    out.revocation = lease.revocation != Revocation::none ? lease.revocation : stopped ? Revocation::other : Revocation::none;
+    return body_follow_api::ReadStatus::ok;
 }
 
 bool stop(std::uint64_t owner, Handle handle) noexcept {
@@ -384,7 +530,17 @@ void release_all(std::uint64_t owner) noexcept {
 }
 
 void tick(bool ready) noexcept {
+    LeaseGuard guard;
+    guard.sampled_ms = GetTickCount64();
+    guard.ready = ready;
+    tick(guard);
+}
+void tick(const LeaseGuard& guard) noexcept {
     LastError error; auto& s = service();
+    // Publish first: a missed Try below must not hide a revoking fact.
+    const auto word = body_follow_lease::pack(guard);
+    s.guard.store(word, std::memory_order_release);
+    const bool ready = guard.ready;
     if (!TryAcquireSRWLockExclusive(&s.lock)) return;
     Unlock unlock{s.lock};
     if (!s.occupied) return;
@@ -403,8 +559,16 @@ void tick(bool ready) noexcept {
         if (!release_known || release_requested)
             stop_locked(s, actor_control_native::Reason::owner_released, StopOrigin::release_query);
     }
-    if (!ready || GetTickCount64() < s.started || GetTickCount64() >= s.deadline)
-        stop_locked(s, ready ? actor_control_native::Reason::expired : actor_control_native::Reason::unavailable,
+    // A renewable lease's guard and clock, above the cleanup below, so a stop
+    // here reaches today's cleanup in this same tick.
+    const auto now = GetTickCount64();
+    if (s.lease.renewable) {
+        const auto cause = body_follow_lease::check(s.lease, now, word);
+        if (cause != Revocation::none)
+            lease_stop(s, cause, body_follow_lease::lapse(cause) ? StopOrigin::tick_expired : StopOrigin::lease_guard);
+    }
+    if (!ready || now < s.lease.started || now >= s.lease.deadline)
+        lease_stop(s, ready ? body_follow_lease::expiry(s.lease, now) : Revocation::client_not_ready,
             ready ? StopOrigin::tick_expired : StopOrigin::runtime_not_ready);
     if (!s.binding.stopped) return;
     // Retry bounded revoke/abandon. Never drop a partially acquired claim.
@@ -481,7 +645,14 @@ bool dispatch_impl(Original original, std::uintptr_t rig, std::uintptr_t context
     auto& s = service();
     std::uint64_t revision{};
     {
-        if (!original || !TryAcquireSRWLockExclusive(&s.lock)) return false;
+        if (!original) return false;
+        if (!TryAcquireSRWLockExclusive(&s.lock)) {
+            // This callback is not followed; the wrapper keeps its own writers.
+            // Count it while the slot is live so a skipped callback is visible.
+            if (!(s.edge.load(std::memory_order_relaxed) & stopped_bit))
+                s.dispatch_busy.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
         Unlock unlock{s.lock};
         if (!s.occupied || !s.binding.published || s.binding.stopped ||
             s.binding.actor.rig != rig || s.binding.actor.context != context) return false;
@@ -497,8 +668,19 @@ bool dispatch_impl(Original original, std::uintptr_t rig, std::uintptr_t context
         if (s.final.revision != s.returned_revision.load(std::memory_order_acquire)) {
             stop_locked(s, actor_control_native::Reason::unavailable, StopOrigin::dispatch_unreturned); return false;
         }
-        if (GetTickCount64() < s.started || GetTickCount64() >= s.deadline || s.final.revision == std::numeric_limits<std::uint64_t>::max()) {
-            stop_locked(s, actor_control_native::Reason::expired, StopOrigin::dispatch_expired); return false;
+        const auto now = GetTickCount64();
+        if (const auto lapsed = body_follow_lease::expiry(s.lease, now); lapsed != Revocation::none) {
+            lease_stop(s, lapsed, StopOrigin::dispatch_expired); return false;
+        }
+        // Same receipt reason as before, with its own origin so a lapse and an
+        // exhausted revision counter can be told apart.
+        if (s.final.revision == std::numeric_limits<std::uint64_t>::max()) {
+            stop_locked(s, actor_control_native::Reason::expired, StopOrigin::dispatch_revision_exhausted); return false;
+        }
+        // One atomic load under the lock this callback already holds; no allocation.
+        if (s.lease.renewable) {
+            const auto cause = body_follow_lease::guard_cause(s.guard.load(std::memory_order_acquire), now);
+            if (cause != Revocation::none) { lease_stop(s, cause, StopOrigin::dispatch_guard); return false; }
         }
         body_follow_native::Diagnostic diagnostic;
         StopOrigin origin{StopOrigin::dispatch_prepare};
@@ -512,8 +694,8 @@ bool dispatch_impl(Original original, std::uintptr_t rig, std::uintptr_t context
             stop_locked(s, s.reason, origin, diagnostic); return false;
         }
         const auto forwarding_ms = GetTickCount64();
-        if (forwarding_ms < s.started || forwarding_ms >= s.deadline) {
-            stop_locked(s, actor_control_native::Reason::expired, StopOrigin::dispatch_forwarding_expired); return false;
+        if (const auto lapsed = body_follow_lease::expiry(s.lease, forwarding_ms); lapsed != Revocation::none) {
+            lease_stop(s, lapsed, StopOrigin::dispatch_forwarding_expired); return false;
         }
         unsigned idle{};
         if (scoped && !entry->current()) return false;

@@ -557,6 +557,96 @@ void sdk_release_cannot_cross_borrow() {
     for (const auto handle : {held, leave, release_entered, release_finished}) CloseHandle(handle);
 }
 
+// A renewal proof is World's latest issued sample of the exact measured
+// allocation, with a physics step observed under 100 ms ago. One Try shared
+// lock: a callback's shared borrow never refuses it. No model query, and
+// latest and the mailbox are left as they were.
+void renewal_proof_latest_fresh_shared_and_read_only() {
+    Fixture f;
+    const auto identity = f.source();
+    Sample issued{};
+    check(read(owner, f.handle, issued).empty(), "World read did not issue a latest sample");
+    const auto latest = f.slot().latest;
+    std::array<unsigned char, sizeof(Mailbox)> mailbox{};
+    std::memcpy(mailbox.data(), &f.slot().mailbox, mailbox.size());
+    const auto models = test_facts::model_calls.load();
+    std::uint64_t current{};
+    SetLastError(0x1234);
+    check(check_renewal_proof(owner, identity, issued.epoch, current) == RenewalProof::current &&
+        current == issued.epoch.serial, "the latest issued sample with a fresh clock was refused");
+    check(GetLastError() == 0x1234, "the renewal proof changed LastError");
+    check(test_facts::model_calls.load() == models, "the renewal proof queried the multiplayer model");
+    check(body_query::same_sample(f.slot().latest, latest) &&
+        std::memcmp(mailbox.data(), &f.slot().mailbox, mailbox.size()) == 0, "the renewal proof changed latest or the mailbox");
+    {
+        HANDLE held = CreateEventW(nullptr, TRUE, FALSE, nullptr), leave = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        check(held && leave, "thread coordination failed");
+        bool borrowed{};
+        std::thread native([&] {
+            install_tls(f.context);
+            SourceBorrow b;
+            borrowed = try_borrow_source(owner, identity, b);
+            SetEvent(held);
+            WaitForSingleObject(leave, 2000);
+        });
+        const bool holding = WaitForSingleObject(held, 2000) == WAIT_OBJECT_0 && borrowed;
+        const auto shared = check_renewal_proof(owner, identity, issued.epoch, current);
+        SetEvent(leave); native.join();
+        CloseHandle(held); CloseHandle(leave);
+        check(holding, "native thread could not hold a shared borrow");
+        check(shared == RenewalProof::current, "a callback's shared borrow refused the renewal proof");
+    }
+    AcquireSRWLockExclusive(&service.lock);
+    const auto busy = check_renewal_proof(owner, identity, issued.epoch, current);
+    ReleaseSRWLockExclusive(&service.lock);
+    check(busy == RenewalProof::busy && !current, "an exclusive World holder did not read busy");
+    // A physics step holding the clock feed is busy too, not a stale clock; a
+    // feed that names another actor is still stale.
+    AcquireSRWLockExclusive(&clock_feed.lock);
+    const auto feed_busy = check_renewal_proof(owner, identity, issued.epoch, current);
+    ReleaseSRWLockExclusive(&clock_feed.lock);
+    check(feed_busy == RenewalProof::busy && !current, "a busy clock feed did not read busy");
+    const auto feed_owner = clock_feed.owner;
+    clock_feed.owner.entity += 64;
+    const auto foreign_feed = check_renewal_proof(owner, identity, issued.epoch, current);
+    clock_feed.owner = feed_owner;
+    check(foreign_feed == RenewalProof::clock_stale && !current, "another actor's clock feed did not read clock_stale");
+    check(check_renewal_proof(owner, identity, issued.epoch, current) == RenewalProof::current, "the restored clock feed was refused");
+    // A newer physics step: the proof is still the latest, and the step is reported.
+    test_clock::now = 10016; f.step();
+    check(check_renewal_proof(owner, identity, issued.epoch, current) == RenewalProof::current &&
+        current == issued.epoch.serial + 1, "a newer physics step was not reported");
+    // A newer read leaves the older genuine sample behind.
+    Sample newer{};
+    check(read(owner, f.handle, newer).empty() && newer.epoch.serial == issued.epoch.serial + 1, "the second read failed");
+    check(check_renewal_proof(owner, identity, issued.epoch, current) == RenewalProof::not_latest && !current,
+        "an older genuine sample passed as the latest");
+    check(check_renewal_proof(owner, identity, newer.epoch, current) == RenewalProof::current, "the newer sample was refused");
+    // The current step must have been observed under 100 ms ago.
+    test_clock::now = 10115;
+    check(check_renewal_proof(owner, identity, newer.epoch, current) == RenewalProof::current, "a 99 ms old step was refused");
+    test_clock::now = 10116;
+    check(check_renewal_proof(owner, identity, newer.epoch, current) == RenewalProof::clock_stale && !current,
+        "a 100 ms old step was accepted");
+    test_clock::now = 10016;
+    // The exact identity, a body still live, and the client thread only.
+    ++service.world_generation;
+    check(check_renewal_proof(owner, identity, newer.epoch, current) == RenewalProof::body_unavailable,
+        "a changed SDK world generation passed");
+    --service.world_generation;
+    f.slot().release_requested = true;
+    check(check_renewal_proof(owner, identity, newer.epoch, current) == RenewalProof::body_unavailable,
+        "a release-requested body passed");
+    f.slot().release_requested = false;
+    check(check_renewal_proof(owner + 1, identity, newer.epoch, current) == RenewalProof::body_unavailable,
+        "another owner passed");
+    RenewalProof off_thread{RenewalProof::current};
+    std::thread wrong([&] { std::uint64_t ignored{}; off_thread = check_renewal_proof(owner, identity, newer.epoch, ignored); });
+    wrong.join();
+    check(off_thread == RenewalProof::body_unavailable, "the check ran off the client thread");
+    check(check_renewal_proof(owner, identity, newer.epoch, current) == RenewalProof::current, "the restored facts were refused");
+}
+
 // These cases execute actual probe_batch/Service/Slot/Clock and body-hit
 // qualification over constructed native arrays. The one external native query
 // is a counted ABI stand-in; it does not prove retail ray safety or consumption.
@@ -1375,6 +1465,7 @@ int main() {
         run("owner_clock_and_closing_clock_refusal", owner_clock_and_closing_clock_refusal);
         run("try_locks_thread_affinity_and_last_error", try_locks_and_thread_affinity);
         run("actual_sdk_release_serialization", sdk_release_cannot_cross_borrow);
+        run("renewal_proof_latest_fresh_shared_and_read_only", renewal_proof_latest_fresh_shared_and_read_only);
         run("service_contact_opt_in_and_read_only",service_contact_opt_in_and_read_only);
         run("service_whole_batch_contact_fences",service_whole_batch_contact_fences);
         run("service_actor_and_nearest_hit_refusals",service_actor_and_nearest_hit_refusals);

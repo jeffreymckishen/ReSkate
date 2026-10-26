@@ -8,6 +8,7 @@
 
 namespace dingosdk::body_follow_native {
 using CleanupPolicy = body_follow_api::CleanupPolicy;
+using Lifetime = body_follow_api::Lifetime;
 enum class MotionPolicy : std::uint8_t { native_lifetime, callback_entry };
 constexpr bool valid_motion_policy(MotionPolicy policy) noexcept {
     return policy == MotionPolicy::native_lifetime || policy == MotionPolicy::callback_entry;
@@ -69,6 +70,8 @@ struct Attachment {
     owned_body::Quaternion root_in_body{0, 0, 0, 1};
     CleanupPolicy cleanup{CleanupPolicy::actor_lifetime};
     MotionPolicy motion_policy{MotionPolicy::native_lifetime};
+    // Read by the retaining Service only; target preparation never sees a lease.
+    Lifetime lifetime{Lifetime::fixed};
 };
 // A NEW current-epoch measured source supplies both translation and full basis.
 // Exact supplied padding words are retained. No body borrow spans original.

@@ -1,5 +1,6 @@
 #pragma once
 #include "native_body_follow.h"
+#include "Engine/Game/Skater/body_follow_lease.h"
 
 namespace dingosdk::body_follow_service {
 // Internal service only. No Lua registration or runtime admission caller is
@@ -21,7 +22,10 @@ struct Receipt {
 enum class StopOrigin : std::uint8_t {
     reserve_binding, reserve_hold, reserve_clock, publish_binding, publish_closing,
     explicit_stop, owner_release, release_query, runtime_not_ready, tick_expired,
-    dispatch_unreturned, dispatch_expired, dispatch_prepare, dispatch_current, dispatch_forwarding_expired
+    dispatch_unreturned, dispatch_expired, dispatch_prepare, dispatch_current, dispatch_forwarding_expired,
+    // A renewable lease's guard at publish, tick or renewal; a lapse found by a
+    // renewal; the guard at a callback; and revision exhaustion, apart from a lapse.
+    lease_guard, renew_expired, dispatch_guard, dispatch_revision_exhausted
 };
 enum class CleanupOrigin : std::uint8_t { capture_fence, observe_park, complete_stop, release_query, release_hold, body_release };
 struct DiagnosticState {
@@ -29,6 +33,10 @@ struct DiagnosticState {
     // Binding::stop; cleanup captures them at the first provider refusal.
     std::uint64_t sequence{}, final_revision{}, returned_revision{};
     bool published{}, stopped{}, release_hold{}, release_requested{}, release_started{}, fence{}, park{};
+    // Lease facts at the same point: accepted renewals, callbacks skipped on a
+    // busy lock, and the revocation latched by this receipt's first stop.
+    std::uint64_t renewals{}, dispatch_busy{};
+    body_follow_lease::Revocation revocation{body_follow_lease::Revocation::none};
     bool operator==(const DiagnosticState&) const = default;
 };
 struct StopDiagnostic {
@@ -63,7 +71,20 @@ bool reserve(std::uint64_t owner, const owned_body::Handle& body,
     const owned_bodies::MeasuredSource&, const body_follow_native::Attachment&,
     actor_control_native::Admission, Handle&, actor_control_native::Reason&) noexcept;
 bool publish(std::uint64_t owner, Handle, actor_control_native::Reason&) noexcept;
-bool read(std::uint64_t owner, Handle, Receipt&) noexcept;
+// One Try lock. busy is a missed Try, apart from a foreign or reset receipt.
+body_follow_api::ReadStatus read_status(std::uint64_t owner, Handle, Receipt&) noexcept;
+bool read(std::uint64_t owner, Handle, Receipt&) noexcept; // read_status(...) == ok
+// Client thread, renewable lease only. Two short Try windows on this lock with
+// World's shared Try check of the proof between them; no World work holds this
+// lock. The proof must be the followed body's latest issued sample, newer than
+// the last accepted proof and at most proof_steps behind a physics step observed
+// under 100 ms ago. A lapse or a revoking guard found here stops the Follow.
+// True moves the deadline to max(deadline, min(now + 500, ceiling)) and
+// reports the whole native milliseconds left.
+bool renew(std::uint64_t owner, Handle, const owned_body::Handle& body, const owned_body::Epoch& proof,
+    std::uint64_t& remaining_ms, body_follow_lease::Refusal&) noexcept;
+// Copied lease facts for either lifetime; one Try lock, no state change.
+body_follow_api::ReadStatus read_lease(std::uint64_t owner, Handle, body_follow_api::LeaseReceipt&) noexcept;
 bool stop(std::uint64_t owner, Handle) noexcept;
 // Explicit client-thread receipt ACK, only after exact never-published
 // abandonment and actual dependency-hold drop. It neither releases a body nor
@@ -76,6 +97,12 @@ void release_all(std::uint64_t owner) noexcept;
 // Called after actual owned-body tick, even while the VM has gone away. This
 // completes only exact stopped/drained SDK ownership plus positive park. It
 // never claims native pose-history consumption from a return or passive probe.
+// The guard is stored as one atomic word before the lock is tried, so a missed
+// Try still publishes the facts to the renewal, publish or callback that follows.
+// A fixed lease ignores every fact but ready.
+using LeaseGuard = body_follow_lease::Guard;
+void tick(const LeaseGuard&) noexcept;
+// The same tick with only readiness known; every other guard fact reads false.
 void tick(bool ready) noexcept;
 
 // Existing native wrapper calls this BEFORE IdleCall dispatch. A true result

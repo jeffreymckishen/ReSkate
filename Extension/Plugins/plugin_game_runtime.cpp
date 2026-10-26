@@ -207,7 +207,8 @@ public:
         }
         owned_bodies::MeasuredSource source;
         if (!owned_bodies::capture_source(owner, body, source)) return false;
-        const body_follow_native::Attachment native_attachment{attachment.offset_from_com, attachment.root_in_body, attachment.cleanup, native_policy};
+        const body_follow_native::Attachment native_attachment{attachment.offset_from_com, attachment.root_in_body, attachment.cleanup,
+            native_policy, attachment.lifetime};
         body_follow_service::Handle native_handle;
         const bool accepted = body_follow_service::reserve(owner, body, source, native_attachment,
             body_follow_api::eligible, native_handle, reason);
@@ -218,10 +219,12 @@ public:
     bool body_follow_publish(std::uint64_t owner, body_follow_api::Handle handle, body_follow_api::Reason& reason) override {
         return body_follow_service::publish(owner, {handle.sequence}, reason);
     }
-    bool body_follow_read(std::uint64_t owner, body_follow_api::Handle handle, body_follow_api::Receipt& out) override {
+    body_follow_api::ReadStatus body_follow_read_status(std::uint64_t owner, body_follow_api::Handle handle,
+        body_follow_api::Receipt& out) override {
         out = {};
         body_follow_service::Receipt native;
-        if (!body_follow_service::read(owner, {handle.sequence}, native)) return false;
+        const auto status = body_follow_service::read_status(owner, {handle.sequence}, native);
+        if (status != body_follow_api::ReadStatus::ok) return status;
         body_follow_api::Phase phase;
         switch (native.phase) {
         case body_follow_service::Phase::reserved: phase = body_follow_api::Phase::reserved; break;
@@ -230,13 +233,14 @@ public:
         case body_follow_service::Phase::retained: phase = body_follow_api::Phase::retained; break;
         case body_follow_service::Phase::abandoned: phase = body_follow_api::Phase::abandoned; break;
         case body_follow_service::Phase::completed: phase = body_follow_api::Phase::completed; break;
-        default: return false;
+        default: return body_follow_api::ReadStatus::unavailable;
         }
         body_follow_api::Pending pending;
         switch (native.pending) {
         case actor_control::Barrier::none: pending = body_follow_api::Pending::none; break;
         case actor_control::Barrier::body_parked: pending = body_follow_api::Pending::body_parked; break;
-        default: return false; // Do not silently reinterpret the older dual-barrier contract.
+        // Do not silently reinterpret the older dual-barrier contract.
+        default: return body_follow_api::ReadStatus::unavailable;
         }
         out.handle = handle; out.phase = phase; out.pending = pending;
         out.reason = native.reason; out.park_reason = native.park_reason;
@@ -244,7 +248,18 @@ public:
         out.returned_revision = native.returned_revision; out.in_flight = native.in_flight;
         out.claim_known = native.claim_known; out.orphaned = native.orphaned;
         out.park_observed = native.park_observed; out.native_retirement_known = native.native_retirement_known;
-        return true;
+        return body_follow_api::ReadStatus::ok;
+    }
+    bool body_follow_read(std::uint64_t owner, body_follow_api::Handle handle, body_follow_api::Receipt& out) override {
+        return body_follow_read_status(owner, handle, out) == body_follow_api::ReadStatus::ok;
+    }
+    bool body_follow_renew(std::uint64_t owner, body_follow_api::Handle handle, const owned_body::Handle& body,
+        const owned_body::Epoch& proof, std::uint64_t& remaining_ms, body_follow_lease::Refusal& refusal) override {
+        return body_follow_service::renew(owner, {handle.sequence}, body, proof, remaining_ms, refusal);
+    }
+    body_follow_api::ReadStatus body_follow_read_lease(std::uint64_t owner, body_follow_api::Handle handle,
+        body_follow_api::LeaseReceipt& out) override {
+        return body_follow_service::read_lease(owner, {handle.sequence}, out);
     }
     bool body_follow_stop(std::uint64_t owner, body_follow_api::Handle handle) override {
         return body_follow_service::stop(owner, {handle.sequence});

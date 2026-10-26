@@ -23,7 +23,9 @@ struct EpochValue { std::uint64_t owner{}; Handle handle{}; Sample sample{}; };
 struct SyncProbeValue { std::uint64_t owner{}; Handle handle{}; std::uint64_t sequence{}; };
 // An actor-scoped diagnostic request, never an SDK body or a submit epoch.
 struct MotionRefreshProbeValue { std::uint64_t owner{}, sequence{}; };
-struct FollowValue { std::uint64_t owner{}; body_follow_api::Handle handle{}; };
+// The body is copied at reserve, so a renewal's epoch can be bound to the
+// followed body here, before the backend. It grants nothing on its own.
+struct FollowValue { std::uint64_t owner{}; body_follow_api::Handle handle{}; Handle body{}; };
 // Equality only inside one returned batch. This is not a usable owned-body handle,
 // native identity, feature identity, or claim about the body's motion.
 struct HitBodyValue { std::uint64_t owner{}, batch{}; std::uint32_t ordinal{}; };
@@ -260,14 +262,17 @@ void push_motion_refresh_result(lua_State* L, const motion_refresh_probe::Result
     lua_pushboolean(L, out.routing.limit_reached); lua_setfield(L, -2, "limit_reached");
     lua_setfield(L, -2, "routing");
 }
-FollowValue follow(lua_State* L, Plugin& p) {
-    if (lua_gettop(L) != 1) luaL_error(L, "an opaque follow handle is the only argument");
-    const auto value = *static_cast<const FollowValue*>(luaL_checkudata(L, 1, follow_type));
+FollowValue follow_at(lua_State* L, Plugin& p, int at) {
+    const auto value = *static_cast<const FollowValue*>(luaL_checkudata(L, at, follow_type));
     if (value.owner != p.instance()) luaL_error(L, "follow handle belongs to another plugin instance");
     return value;
 }
+FollowValue follow(lua_State* L, Plugin& p) {
+    if (lua_gettop(L) != 1) luaL_error(L, "an opaque follow handle is the only argument");
+    return follow_at(L, p, 1);
+}
 body_follow_api::Attachment follow_attachment(lua_State* L, int at) {
-    fields(L, at, {"offset_from_com", "root_in_body", "cleanup", "motion_policy"});
+    fields(L, at, {"offset_from_com", "root_in_body", "cleanup", "motion_policy", "lifetime"});
     body_follow_api::Attachment attachment;
     attachment.offset_from_com = vec_field(L, at, "offset_from_com");
     lua_getfield(L, at, "root_in_body"); luaL_checktype(L, -1, LUA_TTABLE);
@@ -299,9 +304,24 @@ body_follow_api::Attachment follow_attachment(lua_State* L, int at) {
         else if (policy != "native_lifetime") luaL_error(L, "follow motion_policy is native_lifetime or callback_entry");
     }
     lua_pop(L, 1);
+    // Omitted, nil or "fixed" keep the three-second lease. Only the exact
+    // string "renewable" opts in; it is checked against its permission later.
+    lua_getfield(L, at, "lifetime");
+    if (!lua_isnil(L, -1)) {
+        if (lua_type(L, -1) != LUA_TSTRING) luaL_error(L, "follow lifetime is fixed or renewable");
+        std::size_t length{};
+        const auto* text = lua_tolstring(L, -1, &length);
+        const std::string_view lifetime{text, length};
+        if (lifetime == "renewable") attachment.lifetime = body_follow_api::Lifetime::renewable;
+        else if (lifetime != "fixed") luaL_error(L, "follow lifetime is fixed or renewable");
+    }
+    lua_pop(L, 1);
     if (attachment.motion_policy == body_follow_api::MotionPolicy::callback_entry &&
         attachment.cleanup != body_follow_api::CleanupPolicy::owned_body)
         luaL_error(L, "follow callback_entry requires explicit cleanup=owned_body");
+    if (attachment.lifetime == body_follow_api::Lifetime::renewable &&
+        attachment.cleanup != body_follow_api::CleanupPolicy::owned_body)
+        luaL_error(L, "follow lifetime=renewable requires explicit cleanup=owned_body");
     if (!body_follow_api::valid(attachment))
         luaL_error(L, "follow attachment needs a finite COM offset within +/-10m and a unit Hamilton XYZW rotation");
     return attachment;
@@ -341,6 +361,36 @@ void push_follow_receipt(lua_State* L, const body_follow_api::Receipt& receipt) 
     lua_pushboolean(L, receipt.native_retirement_known); lua_setfield(L, -2, "native_retirement_known");
     lua_pushboolean(L, body_follow_api::terminal(receipt.phase)); lua_setfield(L, -2, "terminal");
 }
+// Copied lease facts must agree with the SDK's fixed bounds and with each
+// other; anything else is refused rather than passed on as a lease.
+bool follow_lease(const body_follow_api::LeaseReceipt& lease, body_follow_api::Handle handle) noexcept {
+    namespace l = body_follow_lease;
+    if (!handle.sequence || lease.handle.sequence != handle.sequence || !l::revocation_name(lease.revocation) ||
+        lease.base_ms != l::base_ms || lease.renewal_ms != l::renewal_ms ||
+        lease.lifetime_ms != (lease.renewable ? l::maximum_lifetime_ms : l::base_ms) ||
+        lease.remaining_ms > lease.lifetime_remaining_ms || lease.lifetime_remaining_ms > lease.lifetime_ms ||
+        (lease.renewals == 0) != (lease.last_serial == 0)) return false;
+    if (!lease.renewable && (lease.renewals || lease.remaining_ms != lease.lifetime_remaining_ms)) return false;
+    if (lease.active && (lease.revocation != l::Revocation::none || !lease.remaining_ms)) return false;
+    if (lease.revocation != l::Revocation::none && (lease.remaining_ms || lease.lifetime_remaining_ms)) return false;
+    return true;
+}
+void push_follow_lease(lua_State* L, const body_follow_api::LeaseReceipt& lease) {
+    lua_createtable(L, 0, 12);
+    text_number(L, lease.handle.sequence); lua_setfield(L, -2, "sequence");
+    lua_pushboolean(L, lease.renewable); lua_setfield(L, -2, "renewable");
+    lua_pushboolean(L, lease.active); lua_setfield(L, -2, "active");
+    text_number(L, lease.renewals); lua_setfield(L, -2, "renewals");
+    text_number(L, lease.last_serial); lua_setfield(L, -2, "last_serial");
+    // Bounded by the checks above (at most 120000), so exact as Luau numbers.
+    lua_pushnumber(L, static_cast<double>(lease.remaining_ms)); lua_setfield(L, -2, "remaining_ms");
+    lua_pushnumber(L, static_cast<double>(lease.lifetime_remaining_ms)); lua_setfield(L, -2, "lifetime_remaining_ms");
+    lua_pushnumber(L, static_cast<double>(lease.base_ms)); lua_setfield(L, -2, "base_ms");
+    lua_pushnumber(L, static_cast<double>(lease.renewal_ms)); lua_setfield(L, -2, "renewal_ms");
+    lua_pushnumber(L, static_cast<double>(lease.lifetime_ms)); lua_setfield(L, -2, "lifetime_ms");
+    lua_pushstring(L, body_follow_lease::revocation_name(lease.revocation)); lua_setfield(L, -2, "revocation");
+    text_number(L, lease.dispatch_busy); lua_setfield(L, -2, "dispatch_busy");
+}
 int follow_result(lua_State* L, bool ok, const char* why) {
     lua_pushboolean(L, ok);
     if (ok) return 1;
@@ -370,11 +420,16 @@ struct PhysicsApi {
         auto& p = follow_plugin(L);
         if (lua_gettop(L) != 2) luaL_error(L, "reserve_follow takes one owned body and one attachment");
         const auto b = body(L, p, 1); const auto attachment = follow_attachment(L, 2);
+        // Minutes of root control are more than three seconds of it, so a
+        // renewable lease has its own permission. It is checked after the
+        // attachment and before the quota: a denied call spends no reserve.
+        if (attachment.lifetime == body_follow_api::Lifetime::renewable)
+            need(L, p, "world.physics.follow.renew", "reskate.world.physics renewable follow");
         if (p.follow_reserves_ >= body_follow_api::reserve_limit) return fail(L, "asked to reserve follow more than once in one tick");
         ++p.follow_reserves_;
         // Allocate before native admission. There is deliberately no __gc:
         // dropping userdata cannot release or acknowledge a native claim.
-        auto* value = new (lua_newuserdata(L, sizeof(FollowValue))) FollowValue{p.instance(), {}};
+        auto* value = new (lua_newuserdata(L, sizeof(FollowValue))) FollowValue{p.instance(), {}, b.handle};
         luaL_getmetatable(L, follow_type); lua_setmetatable(L, -2);
         body_follow_api::Reason reason{body_follow_api::Reason::unavailable};
         const bool accepted = p.services_.game().body_follow_reserve(p.instance(), b.handle, attachment, value->handle, reason);
@@ -405,9 +460,58 @@ struct PhysicsApi {
         if (p.follow_reads_ >= body_follow_api::read_limit) return fail(L, "asked to read follow more than 8 times in one tick");
         ++p.follow_reads_;
         body_follow_api::Receipt receipt;
-        if (!p.services_.game().body_follow_read(p.instance(), value.handle, receipt)) return fail(L, "follow receipt unavailable");
+        switch (p.services_.game().body_follow_read_status(p.instance(), value.handle, receipt)) {
+        case body_follow_api::ReadStatus::ok: break;
+        // A missed Try on the Service lock, apart from a foreign or reset receipt.
+        case body_follow_api::ReadStatus::busy: return fail(L, "follow receipt busy");
+        default: return fail(L, "follow receipt unavailable");
+        }
         if (!follow_receipt(receipt, value.handle)) return fail(L, "follow receipt returned invalid observations");
         push_follow_receipt(L, receipt); return 1;
+    }
+    static Plugin& renew_plugin(lua_State* L) {
+        auto& p = follow_plugin(L);
+        need(L, p, "world.physics.follow.renew", "reskate.world.physics follow renewal");
+        return p;
+    }
+    static int renew_follow(lua_State* L) {
+        auto& p = renew_plugin(L);
+        if (lua_gettop(L) != 2) luaL_error(L, "renew_follow takes one opaque follow handle and one measured body epoch");
+        const auto value = follow_at(L, p, 1);
+        // The epoch must be this VM's for the followed body. Whether it is still
+        // that body's latest issued sample is the runtime's check, not the binding's.
+        const auto& epoch = *static_cast<const EpochValue*>(luaL_checkudata(L, 2, epoch_type));
+        if (epoch.owner != p.instance() || epoch.handle != value.body)
+            luaL_error(L, "body epoch belongs to another body or plugin instance");
+        if (p.follow_renewals_ >= body_follow_api::renew_limit)
+            return follow_result(L, false, "asked to renew follow more than once in one tick");
+        ++p.follow_renewals_;
+        std::uint64_t remaining{};
+        auto refusal = body_follow_lease::Refusal::busy;
+        const bool ok = p.services_.game().body_follow_renew(p.instance(), value.handle, value.body, epoch.sample.epoch,
+            remaining, refusal);
+        if (ok) {
+            if (refusal != body_follow_lease::Refusal::none || !remaining || remaining > body_follow_lease::maximum_lifetime_ms)
+                return follow_result(L, false, "follow renewal returned invalid observations");
+            lua_pushboolean(L, true); lua_pushnumber(L, static_cast<double>(remaining)); return 2;
+        }
+        const char* why = body_follow_lease::refusal_name(refusal);
+        if (!why || refusal == body_follow_lease::Refusal::none) return follow_result(L, false, "follow renewal returned invalid observations");
+        return follow_result(L, false, why);
+    }
+    static int read_follow_lease(lua_State* L) {
+        auto& p = renew_plugin(L); const auto value = follow(L, p);
+        if (p.follow_lease_reads_ >= body_follow_api::lease_read_limit)
+            return fail(L, "asked to read follow lease more than 8 times in one tick");
+        ++p.follow_lease_reads_;
+        body_follow_api::LeaseReceipt lease;
+        switch (p.services_.game().body_follow_read_lease(p.instance(), value.handle, lease)) {
+        case body_follow_api::ReadStatus::ok: break;
+        case body_follow_api::ReadStatus::busy: return fail(L, "follow lease busy");
+        default: return fail(L, "follow lease unavailable");
+        }
+        if (!follow_lease(lease, value.handle)) return fail(L, "follow lease returned invalid observations");
+        push_follow_lease(L, lease); return 1;
     }
     static int stop_follow(lua_State* L) {
         auto& p = follow_plugin(L); const auto value = follow(L, p);
@@ -754,7 +858,8 @@ void install_physics_api(Plugin&, lua_State* L) {
         {"begin_sync_probe", PhysicsApi::begin_sync_probe}, {"poll_sync_probe", PhysicsApi::poll_sync_probe},
         {"begin_motion_refresh_probe", PhysicsApi::begin_motion_refresh_probe}, {"poll_motion_refresh_probe", PhysicsApi::poll_motion_refresh_probe},
         {"reserve_follow", PhysicsApi::reserve_follow}, {"publish_follow", PhysicsApi::publish_follow},
-        {"read_follow", PhysicsApi::read_follow}, {"stop_follow", PhysicsApi::stop_follow}, {"acknowledge_follow", PhysicsApi::acknowledge_follow}});
+        {"read_follow", PhysicsApi::read_follow}, {"stop_follow", PhysicsApi::stop_follow}, {"acknowledge_follow", PhysicsApi::acknowledge_follow},
+        {"renew_follow", PhysicsApi::renew_follow}, {"read_follow_lease", PhysicsApi::read_follow_lease}});
     lua_setreadonly(L, -1, true); lua_pop(L, 1);
 }
 } // namespace dingosdk::plugins

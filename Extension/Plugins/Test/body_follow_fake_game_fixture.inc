@@ -67,6 +67,65 @@
         }
         return true;
     }
+    // Renewable leases. Constructed results only: no World proof, native clock
+    // or guard is executed, so these cases show the binding, not the bounds.
+    using FollowReadStatus = dingosdk::body_follow_api::ReadStatus;
+    using FollowLease = dingosdk::body_follow_api::LeaseReceipt;
+    using FollowRefusal = dingosdk::body_follow_lease::Refusal;
+    using FollowRevocation = dingosdk::body_follow_lease::Revocation;
+    unsigned follow_renewals{}, follow_lease_reads{}, follow_lease_corruption{};
+    bool follow_read_busy{}, follow_lease_busy{};
+    FollowRefusal follow_renew_refusal{FollowRefusal::none};
+    std::uint64_t follow_renew_remaining{500}, follow_renewed{};
+    owned_body::Epoch follow_renew_epoch{};
+    FollowReadStatus body_follow_read_status(std::uint64_t owner, FollowHandle handle, FollowReceipt& out) override {
+        if (follow_read_busy) { ++follow_reads; out = {}; return FollowReadStatus::busy; }
+        return body_follow_read(owner, handle, out) ? FollowReadStatus::ok : FollowReadStatus::unavailable;
+    }
+    bool body_follow_renew(std::uint64_t owner, FollowHandle handle, const owned_body::Handle& body,
+        const owned_body::Epoch& proof, std::uint64_t& remaining_ms, FollowRefusal& refusal) override {
+        ++follow_renewals; remaining_ms = 0; refusal = FollowRefusal::not_following; follow_renew_epoch = proof;
+        if (!follows(owner, handle) || !(follow_fixture.body == body) ||
+            follow_fixture.receipt.phase != FollowPhase::following) return false;
+        if (follow_fixture.attachment.lifetime != dingosdk::body_follow_api::Lifetime::renewable) {
+            refusal = FollowRefusal::not_renewable; return false;
+        }
+        if (follow_renew_refusal != FollowRefusal::none) { refusal = follow_renew_refusal; return false; }
+        refusal = FollowRefusal::none; remaining_ms = follow_renew_remaining; ++follow_renewed;
+        return true;
+    }
+    FollowReadStatus body_follow_read_lease(std::uint64_t owner, FollowHandle handle, FollowLease& out) override {
+        ++follow_lease_reads; out = {};
+        if (follow_lease_busy) return FollowReadStatus::busy;
+        if (!follows(owner, handle)) return FollowReadStatus::unavailable;
+        const auto phase = follow_fixture.receipt.phase;
+        const bool renewable = follow_fixture.attachment.lifetime == dingosdk::body_follow_api::Lifetime::renewable;
+        const bool live = phase == FollowPhase::reserved || phase == FollowPhase::following;
+        out.handle = handle; out.renewable = renewable; out.active = phase == FollowPhase::following;
+        out.renewals = renewable ? follow_renewed : 0; out.last_serial = out.renewals ? 9007199254740990ULL + out.renewals : 0;
+        out.dispatch_busy = 9007199254740993ULL;
+        out.base_ms = 3000; out.renewal_ms = 500; out.lifetime_ms = renewable ? 120000 : 3000;
+        out.remaining_ms = live ? 1500 : 0; out.lifetime_remaining_ms = live ? (renewable ? 90000 : 1500) : 0;
+        out.revocation = live ? FollowRevocation::none : FollowRevocation::other;
+        switch (follow_lease_corruption) {
+        case 1: ++out.handle.sequence; break;
+        case 2: out.revocation = static_cast<FollowRevocation>(255); break;
+        case 3: out.base_ms = 2999; break;
+        case 4: out.renewal_ms = 0; break;
+        case 5: out.lifetime_ms = 3000; break;
+        case 6: out.remaining_ms = out.lifetime_remaining_ms + 1; break;
+        case 7: out.lifetime_remaining_ms = out.lifetime_ms + 1; break;
+        case 8: out.renewals = 1; out.last_serial = 0; break;
+        case 9: out.renewable = false; out.lifetime_ms = 3000; out.remaining_ms = out.lifetime_remaining_ms = 1500;
+            out.renewals = 1; out.last_serial = 41; break;
+        case 10: out.revocation = FollowRevocation::focus_lost; break;
+        case 11: out.remaining_ms = 0; break;
+        case 12: out.active = false; out.revocation = FollowRevocation::deadline; break;
+        case 13: out.renewable = false; out.lifetime_ms = 3000; out.lifetime_remaining_ms = 2000; out.renewals = 0;
+            out.last_serial = 0; break;
+        }
+        return FollowReadStatus::ok;
+    }
     bool body_follow_stop(std::uint64_t owner, FollowHandle handle) override {
         ++follow_stops;
         if (!follows(owner, handle)) return false;

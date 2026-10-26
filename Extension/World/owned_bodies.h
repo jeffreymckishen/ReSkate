@@ -75,6 +75,23 @@ class SourceBorrow;
 class RetirementBasis;
 class RetainedParkReceipt;
 class BodyReleaseHold;
+class MeasuredSource;
+// What World can say about a sample a plugin presents as proof for a retaining
+// service's renewal. current: the slot still holds the measured allocation, the
+// sample is the body's latest issued one (from read or a receipt's successor),
+// and the body's physics clock was observed under command_lifetime_ms ago.
+// Nothing else is claimed: no pose, no actor state, no command authority.
+// busy: World's lock or the physics clock feed's lock was held, so nothing was
+// decided and the same proof may be presented again.
+enum class RenewalProof : std::uint8_t { current, busy, body_unavailable, not_latest, clock_stale };
+// Client thread only. The identity selects the exact owner/allocation/world, as
+// in try_measure_source. One Try SHARED World lock, the same mode a callback's
+// measurement takes, so this never makes a callback's measurement fail, then the
+// clock feed's own shared Try. No
+// Anchor capture, model query or ring read; latest and the mailbox are unchanged.
+// current_serial is the physics step observed, set only for RenewalProof::current.
+RenewalProof check_renewal_proof(std::uint64_t owner, const MeasuredSource& identity,
+    const owned_body::Epoch& proof, std::uint64_t& current_serial) noexcept;
 class MeasuredSource {
 public:
     const owned_body::Sample& sample() const noexcept { return sample_; }
@@ -96,6 +113,7 @@ private:
     friend class SourceBorrow;
     friend bool capture_source(std::uint64_t, const owned_body::Handle&, MeasuredSource&) noexcept;
     friend bool try_measure_source(std::uint64_t, const MeasuredSource&, MeasuredSource&) noexcept;
+    friend RenewalProof check_renewal_proof(std::uint64_t, const MeasuredSource&, const owned_body::Epoch&, std::uint64_t&) noexcept;
     friend bool acquire_release_hold(std::uint64_t, const MeasuredSource&, BodyReleaseHold&) noexcept;
     friend bool capture_retirement_basis(std::uint64_t, const MeasuredSource&, RetirementBasis&) noexcept;
     friend bool try_borrow_source(std::uint64_t, const MeasuredSource&, SourceBorrow&) noexcept;

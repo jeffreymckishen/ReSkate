@@ -1,5 +1,6 @@
 #pragma once
 #include "Engine/Game/World/owned_body.h"
+#include "body_follow_lease.h"
 #include "native_action_policy.h"
 #include <cstdint>
 
@@ -18,11 +19,19 @@ enum class MotionPolicy : std::uint8_t { native_lifetime, callback_entry };
 constexpr bool valid_motion_policy(MotionPolicy policy) noexcept {
     return policy == MotionPolicy::native_lifetime || policy == MotionPolicy::callback_entry;
 }
+// Opt-in only. The default keeps the fixed three-second lease from reservation.
+// A renewable lease (body_follow_lease.h) needs owned-body cleanup and its own
+// permission, and is extended only by proof from a newly issued body sample.
+enum class Lifetime : std::uint8_t { fixed, renewable };
+constexpr bool valid_lifetime(Lifetime lifetime) noexcept {
+    return lifetime == Lifetime::fixed || lifetime == Lifetime::renewable;
+}
 struct Attachment {
     owned_body::Vec offset_from_com{};
     owned_body::Quaternion root_in_body{0, 0, 0, 1};
     CleanupPolicy cleanup{CleanupPolicy::actor_lifetime};
     MotionPolicy motion_policy{MotionPolicy::native_lifetime};
+    Lifetime lifetime{Lifetime::fixed};
 };
 enum class Phase : std::uint8_t { reserved, following, stopping, retained, abandoned, completed };
 enum class Pending : std::uint8_t { none, body_parked };
@@ -37,7 +46,20 @@ struct Receipt {
     bool claim_known{}, orphaned{}, park_observed{}, native_retirement_known{};
 };
 inline constexpr unsigned reserve_limit = 1, read_limit = 8, publish_limit = 1,
-    stop_limit = 1, acknowledge_limit = 1;
+    stop_limit = 1, acknowledge_limit = 1, renew_limit = 1, lease_read_limit = 8;
+// A receipt or lease read that found the Service lock busy is told apart from
+// one whose receipt is foreign, reset or unknown. Neither is a native refusal.
+enum class ReadStatus : std::uint8_t { ok, busy, unavailable };
+// Copied lease facts, separate from Receipt so the receipt keeps its fields.
+// Times are native milliseconds left, never deadlines: the native clock is not
+// the plugin clock. A stopped or lapsed lease reports zero for both.
+struct LeaseReceipt {
+    Handle handle{};
+    bool renewable{}, active{};
+    std::uint64_t renewals{}, last_serial{}, dispatch_busy{};
+    std::uint64_t remaining_ms{}, lifetime_remaining_ms{}, base_ms{}, renewal_ms{}, lifetime_ms{};
+    body_follow_lease::Revocation revocation{body_follow_lease::Revocation::none};
+};
 constexpr bool terminal(Phase phase) noexcept {
     return phase == Phase::abandoned || phase == Phase::completed;
 }
@@ -55,6 +77,8 @@ constexpr const char* phase_name(Phase phase) noexcept {
 inline bool valid(const Attachment& attachment) noexcept {
     if (!valid_cleanup(attachment.cleanup) || !valid_motion_policy(attachment.motion_policy) ||
         (attachment.motion_policy == MotionPolicy::callback_entry && attachment.cleanup != CleanupPolicy::owned_body)) return false;
+    if (!valid_lifetime(attachment.lifetime) ||
+        (attachment.lifetime == Lifetime::renewable && attachment.cleanup != CleanupPolicy::owned_body)) return false;
     if (!owned_body::finite(attachment.offset_from_com, 10)) return false;
     double norm{};
     for (const float lane : attachment.root_in_body) {

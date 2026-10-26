@@ -8537,6 +8537,7 @@ void bmx_lua_spawn_uses_owned_chassis_and_measured_part_placement() {
 #include "body_prepare_host_fixture.inc"
 #include "body_follow_host_fixture.inc"
 #include "body_follow_motion_policy_host_fixture.inc"
+#include "body_follow_renew_host_fixture.inc"
 #include "body_command_cleanup_host_fixture.inc"
 #include "shape_categories_host_fixture.inc"
 #include "exclusion_facts_host_fixture.inc"
@@ -8568,6 +8569,7 @@ int main() {
         run(body_prepare_host_fixture_v1);
         run(body_follow_host_fixture_v1);
         run(body_follow_motion_policy_host_fixture_v1);
+        run(body_follow_renew_host_fixture_v1);
         run(body_command_cleanup_host_fixture_v1);
         run(the_tracked_passive_sync_trial_runs_once_and_keeps_observation_separate);
         run(the_tracked_passive_sync_routes_trial_copies_validated_route_counts);

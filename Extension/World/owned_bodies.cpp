@@ -291,9 +291,13 @@ void physics_step(const NoBailSkater& owner, float seconds, bool) noexcept {
     f.game_context = context; f.world = world; f.state = state;
     ReleaseSRWLockExclusive(&f.lock);
 }
-bool clock(const Anchor& a, Epoch& epoch, std::uint64_t* observed = nullptr) noexcept {
+// busy, when asked for, tells a missed Try on the feed (a physics step holds it)
+// apart from a step that is stale or belongs to another actor or world.
+bool clock(const Anchor& a, Epoch& epoch, std::uint64_t* observed = nullptr, bool* busy = nullptr) noexcept {
     if (observed) *observed = 0;
-    if (!TryAcquireSRWLockShared(&clock_feed.lock)) return false;
+    const bool locked = TryAcquireSRWLockShared(&clock_feed.lock) != 0;
+    if (busy) *busy = !locked;
+    if (!locked) return false;
     const auto& f = clock_feed;
     const bool ok = f.owner.base == service.base && f.owner.entity == a.entity && f.owner.core == a.core &&
         f.owner.context == a.skater_context && f.owner.rig == a.rig && f.game_context == a.context && f.world == a.world && f.state == a.state &&
@@ -825,6 +829,35 @@ bool try_measure_source(std::uint64_t owner, const MeasuredSource& identity, Mea
     value.sample_ = measured; value.clock_observed_ms_ = observed; value.captured_ms_ = now;
     out = value;
     return true;
+}
+RenewalProof check_renewal_proof(std::uint64_t owner, const MeasuredSource& identity, const Epoch& proof,
+    std::uint64_t& current_serial) noexcept {
+    LastError error; current_serial = 0;
+    // The client thread's own identity, not eligible(): that would query the model.
+    if (!owner || owner != identity.owner_ || !service.thread || GetCurrentThreadId() != service.thread)
+        return RenewalProof::body_unavailable;
+    // Shared, like try_measure_source, so a callback's measurement is never refused here.
+    if (!TryAcquireSRWLockShared(&service.lock)) return RenewalProof::busy;
+    struct Unlock { ~Unlock() { ReleaseSRWLockShared(&service.lock); } } unlock;
+    const auto* s = lookup(owner, identity.handle_);
+    if (!s || service.base != identity.base_ || service.world != identity.world_ ||
+        service.state != identity.state_ || service.world_generation != identity.world_generation_ ||
+        s->anchor.world != identity.world_ || s->anchor.state != identity.state_ ||
+        s->body.world != identity.world_ || s->body.index != identity.body_index_ ||
+        s->body.generation != identity.body_generation_ || !callback_source_current(*s)) return RenewalProof::body_unavailable;
+    // read() and a receipt's successor both publish through sample(), which
+    // records latest; release clears it. A replayed or older genuine sample fails.
+    if (s->latest.epoch != proof) return RenewalProof::not_latest;
+    Epoch current{}; current.world = service.world_generation; current.body = s->handle.generation;
+    std::uint64_t observed{};
+    // A physics step holding the feed is a busy lock to retry, not a stale clock.
+    bool clock_busy{};
+    if (!clock(s->anchor, current, &observed, &clock_busy))
+        return clock_busy ? RenewalProof::busy : RenewalProof::clock_stale;
+    const auto now = GetTickCount64();
+    if (!observed || now < observed || now - observed >= command_lifetime_ms) return RenewalProof::clock_stale;
+    current_serial = current.serial;
+    return RenewalProof::current;
 }
 SourceBorrow::~SourceBorrow() {
     LastError error;

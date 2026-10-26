@@ -480,6 +480,10 @@ if(DINGOSDK_BUILD_PLUGIN_TESTS)
     target_include_directories(dingosdk_body_follow_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME body_follow COMMAND dingosdk_body_follow_tests)
     set_tests_properties(body_follow PROPERTIES TIMEOUT 15)
+    add_executable(dingosdk_body_follow_lease_tests Engine/Game/Skater/Test/body_follow_lease_tests.cpp)
+    target_include_directories(dingosdk_body_follow_lease_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME body_follow_lease COMMAND dingosdk_body_follow_lease_tests)
+    set_tests_properties(body_follow_lease PROPERTIES TIMEOUT 15)
     add_executable(dingosdk_actor_clock_tests Engine/Game/Skater/Test/actor_clock_tests.cpp)
     target_include_directories(dingosdk_actor_clock_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME actor_clock COMMAND dingosdk_actor_clock_tests)
@@ -524,6 +528,20 @@ if(DINGOSDK_BUILD_PLUGIN_TESTS)
         target_link_options(dingosdk_owned_body_source_tests PRIVATE /OPT:REF)
         add_test(NAME owned_body_source COMMAND dingosdk_owned_body_source_tests)
         set_tests_properties(owned_body_source PROPERTIES TIMEOUT 15)
+        # The test includes native_body_follow_service.cpp once with a test clock,
+        # over constructed binding/World/actor leaves. It links neither
+        # native_body_follow.cpp nor owned_bodies.cpp; do not add a second object.
+        add_executable(dingosdk_body_follow_service_tests Extension/Skater/Test/body_follow_service_tests.cpp)
+        target_include_directories(dingosdk_body_follow_service_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+        target_compile_definitions(dingosdk_body_follow_service_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+        target_compile_options(dingosdk_body_follow_service_tests PRIVATE /W4 /WX /Gy /Gw)
+        target_link_options(dingosdk_body_follow_service_tests PRIVATE /OPT:REF)
+        foreach(scenario fixed_unchanged renew_deadline renew_windows renew_proof guard_tick_order guard_atomic
+                guard_reserve_publish dispatch_guard_busy revision_exhausted revocation_first_only ack_reset read_busy
+                renew_expired_windows renew_guard_windows extended_deadline_lapse tick_ready_only dispatch_entry)
+            add_test(NAME body_follow_service_${scenario} COMMAND dingosdk_body_follow_service_tests ${scenario})
+            set_tests_properties(body_follow_service_${scenario} PROPERTIES TIMEOUT 15)
+        endforeach()
         # Link the actual report service against private constructed providers,
         # without the game, overlay, controller driver or production environment.
         add_executable(dingosdk_game_input_pulse_tests

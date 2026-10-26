@@ -48,6 +48,8 @@
 #include "Extension/Skater/native_recovery.h"
 #include "Extension/Skater/native_input_trace.h"
 #include "Extension/Skater/native_input_pulse.h"
+#include "Extension/Skater/native_input_pulse_environment.h"
+#include "Extension/Skater/no_bail.h"
 #include "Extension/World/owned_bodies.h"
 #include "Extension/Skater/skater_slot_override.h"
 #include "Extension/Throwdowns/native_throwdowns.h"
@@ -137,6 +139,12 @@ void log_follow_diagnostic(const char* kind, const char* origin, actor_control_n
         follow_diagnostic_check(facts.opening_snapshot.world), follow_diagnostic_check(facts.opening_snapshot.world_state),
         follow_diagnostic_check(facts.opening_snapshot.generation), follow_diagnostic_check(facts.opening_snapshot.global_epoch),
         follow_diagnostic_check(facts.opening_snapshot.actor_epoch), facts.opening_snapshot.global_epoch_values.available);
+    // The lease facts copied with the same state. A revocation of none here
+    // means the lease did not cause this receipt's first stop.
+    const auto* revocation = body_follow_lease::revocation_name(state.revocation);
+    logging::log(logging::Level::warning, logging::Channel::skater,
+        "Body follow first-{} lease: sequence={} renewals={} revocation={} dispatch_busy={}",
+        kind, state.sequence, state.renewals, revocation ? revocation : "unknown", state.dispatch_busy);
     const auto& epochs = facts.opening_snapshot.global_epoch_values;
     // Only known SDK counter values are emitted. They locate a possible World
     // epoch interval; equal/different comparisons alone cannot locate that interval.
@@ -1555,8 +1563,24 @@ void update_model(std::uintptr_t client, TickState& frame) {
     }
     {
         DINGO_PROFILE_ZONE("tick/plugins");
-        dingosdk::owned_bodies::tick(r.base, client, named_context_ready && !debug_busy && !r.requests.loading());
-        dingosdk::body_follow_service::tick(named_context_ready && !debug_busy && !r.requests.loading());
+        const bool follow_ready = named_context_ready && !debug_busy && !r.requests.loading();
+        dingosdk::owned_bodies::tick(r.base, client, follow_ready);
+        // A renewable Follow's revocation facts, sampled here once per client tick
+        // rather than at tick_native_menu, so they do not depend on the native menu
+        // being enabled and are not one tick old. Each fact can only revoke.
+        const auto game_ui = dingosdk::multiplayer::sample_game_ui_state(r.base);
+        const auto actor_watch = dingosdk::watched_physics_state();
+        dingosdk::body_follow_service::LeaseGuard follow_guard;
+        follow_guard.sampled_ms = GetTickCount64();
+        follow_guard.ready = follow_ready;
+        follow_guard.focused = dingosdk::native_input_pulse::environment::focused();
+        follow_guard.menu_closed = dingosdk::native_input_pulse::environment::menu_closed();
+        follow_guard.pause_menu_known = game_ui.available;
+        follow_guard.pause_menu_closed = !game_ui.in_menu;
+        follow_guard.debug_control_clear = !r.debug_model.noclip && !r.debug_model.free_camera;
+        follow_guard.actor_upright = dingosdk::body_follow_lease::actor_upright(
+            actor_watch.valid, actor_watch.state, actor_watch.ragdoll_known, actor_watch.ragdoll);
+        dingosdk::body_follow_service::tick(follow_guard);
         drain_follow_diagnostics();
         dingosdk::plugins::on_client_tick();
         dingosdk::plugins::tick_plugin_settings();

@@ -293,6 +293,22 @@ public:
         reason = body_follow_api::Reason::unavailable; return false;
     }
     virtual bool body_follow_read(std::uint64_t, body_follow_api::Handle, body_follow_api::Receipt&) { return false; }
+    // The same read, with a busy Service lock told apart from an unknown receipt.
+    // The default keeps a Game that only overrides body_follow_read working.
+    virtual body_follow_api::ReadStatus body_follow_read_status(std::uint64_t owner, body_follow_api::Handle handle,
+        body_follow_api::Receipt& out) {
+        return body_follow_read(owner, handle, out) ? body_follow_api::ReadStatus::ok : body_follow_api::ReadStatus::unavailable;
+    }
+    // A renewable lease only. The epoch is one this VM was issued for the
+    // followed body; whether it is still the body's latest is the runtime's check.
+    virtual bool body_follow_renew(std::uint64_t, body_follow_api::Handle, const owned_body::Handle&,
+        const owned_body::Epoch&, std::uint64_t& remaining_ms, body_follow_lease::Refusal& refusal) {
+        remaining_ms = 0; refusal = body_follow_lease::Refusal::not_following; return false;
+    }
+    virtual body_follow_api::ReadStatus body_follow_read_lease(std::uint64_t, body_follow_api::Handle,
+        body_follow_api::LeaseReceipt& out) {
+        out = {}; return body_follow_api::ReadStatus::unavailable;
+    }
     virtual bool body_follow_stop(std::uint64_t, body_follow_api::Handle) { return false; }
     virtual bool body_follow_acknowledge(std::uint64_t, body_follow_api::Handle) { return false; }
     // Actor-scoped copied diagnostics do not require an owned body.

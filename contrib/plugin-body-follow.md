@@ -19,6 +19,8 @@ refuses unknown pending duties rather than silently translating their meaning.
 ## Permission and scope
 
 Every method needs both `world.physics` and `world.physics.follow`.
+`renew_follow`, `read_follow_lease` and a reserve with `lifetime="renewable"` also
+need `world.physics.follow.renew` (see [Sustained Follow](#sustained-follow)).
 Every method is client phase only, including receipt reads and cleanup requests.
 The dedicated permission is warranted because ordinary body creation/forces do
 not authorize replacing the local actor's root transform. It grants no input
@@ -33,12 +35,13 @@ the same truthful eligible start, then a separate scoped continuation contract
 described below; it does not claim continued upright state. Whether the retail
 actor supports a usable hop/ride still needs direct testing.
 
-The underlying Service has a fixed three-second lease from reservation, one
-process-wide receipt slot, and no renewal API. `publish_follow` cannot extend it.
-This API therefore supports only a bounded first-mount interval. A longer
-ride requires separate lease/lifetime work; the motion selector also
-keeps the same three-second limit. Repeated publication or
-new Lua timers must not be used to imply renewal.
+The underlying Service has one process-wide receipt slot. A Follow reserved
+without `lifetime`, or with `lifetime="fixed"`, keeps a fixed three-second lease
+from reservation, and the motion selector does not change that. `publish_follow`
+cannot extend it, and repeated publication or new Lua timers do not renew it.
+A longer Follow opts in to a renewable lease, described under
+[Sustained Follow](#sustained-follow): it is extended only by presenting the
+followed body's latest sample, and never past two minutes from reservation.
 
 ## Calls
 
@@ -149,7 +152,9 @@ binding, including a malformed reason; it is never silently dropped.
 An admission refusal uses the Service's reason such as `unsupported_state`; the
 plugin does not invent an alternate actor state.
 
-`read_follow(handle)` returns a fresh copied receipt, or `nil, reason`. The DTO
+`read_follow(handle)` returns a fresh copied receipt, or `nil, reason`. A read
+that finds the Service lock busy returns `nil, "follow receipt busy"`; a foreign,
+reset or unknown receipt still returns `nil, "follow receipt unavailable"`. The DTO
 contains `phase`, `reason`, `park_reason`, `sequence`, `final_revision`,
 `final_native_epoch`, `returned_revision`, `pending`, `in_flight`, `claim_known`,
 `orphaned`, `park_observed`, `native_retirement_known`, and `terminal`. All four
@@ -205,12 +210,175 @@ transfer or a public proof flag. A replacement VM can reserve a fresh handle
 only after the old host cleanup succeeds; it can never adopt the old handle.
 Live owners still explicitly ACK their own completed or abandoned receipt.
 
+## Sustained Follow
+
+A Follow that should last longer than three seconds opts in at reserve with
+`lifetime="renewable"`. Nothing about it is specific to one kind of mod: any mod
+that attaches the actor to an owned body (a vehicle, a carried object, a rig)
+uses the same calls.
+
+```lua
+local P = reskate.world.physics
+local follow, why = P.reserve_follow(body, {
+    offset_from_com = vector.create(0, 0.4, 0), root_in_body = {0, 0, 0, 1},
+    cleanup = "owned_body", motion_policy = "callback_entry",
+    lifetime = "renewable",
+})
+assert(follow and why == nil) -- a non-nil why still owns cleanup, as above
+assert(P.publish_follow(follow))
+-- each tick while following:
+local sample = P.read(body)
+if sample then
+    local ok, v = P.renew_follow(follow, sample.epoch)
+    -- ok: v is the native milliseconds left on the lease
+    -- not ok: v names the refusal; the lease still bounds a retryable one
+end
+```
+
+### Opting in
+
+`lifetime` is optional. Omitted, `nil` or the exact string `"fixed"` keep the
+fixed three-second lease and need no new permission. The exact string
+`"renewable"` needs `cleanup="owned_body"` (either motion policy) and the
+permission `world.physics.follow.renew`, which also requires `world.physics` and
+`world.physics.follow`. Any other value raises before the backend, including
+another type, a case or whitespace change and a NUL suffix. The attachment is
+parsed first, then the renewal permission is checked, then the reserve quota: a
+malformed attachment raises its own error, and a denied renewable reserve raises
+without spending the tick's reserve. The lifetime is copied at reserve; editing
+the table afterwards changes nothing, and the receipt does not echo it.
+
+The permission is separate because minutes of root control are more than three
+seconds of it. It grants no input, equipment, recovery, force, raw native
+identity or new actor state.
+
+### Renewal
+
+`renew_follow(follow, epoch)` takes exactly two arguments: the opaque Follow
+handle and a body epoch from `read(body)` or a receipt's `successor`. The epoch
+must belong to this VM and to the followed body, or the call raises, as do a
+wrong arity, a forged handle and any other value. It returns `true,
+remaining_ms` (whole native milliseconds from 1 to 120000) or `false, why`.
+
+The runtime accepts the epoch only as proof that this VM holds the followed
+body's **most recently issued sample**, newer than the last accepted renewal,
+at most six physics steps behind the body's current step, with that step
+observed less than 100 ms ago. A timer, a counter, an old or replayed sample or
+repeated publication never renews. An accepted renewal moves the deadline to
+`max(deadline, min(now + 500 ms, reservation + 120 s))`; it never shortens it,
+and a lease that has lapsed is never revived.
+
+| `why` | Meaning | The Follow stops? | Try again later? |
+| --- | --- | --- | --- |
+| `not_renewable` | Reserved without `lifetime="renewable"` | no | no |
+| `not_following` | Not published, already stopped, or the receipt changed during the renewal | no (already) | no |
+| `sample_not_advanced` | The epoch is not newer than the last accepted one, for example no new physics step this tick | no | yes |
+| `sample_stale` | Not the body's latest issued sample, more than 6 steps behind, or the current step is 100 ms old or more | no | yes |
+| `body_unavailable` | The body is released, retained, quarantined or no longer the reserved allocation | no; World's release stops it on the next client tick | yes |
+| `busy` | A lock was busy: the Follow's, World's, or the physics clock's while a step wrote it | no | yes |
+| `lifetime_exhausted` | The deadline already equals the 120 s ceiling | no; it ends at the ceiling | not useful |
+| `expired` | The deadline passed before or during this renewal, so the renewal stopped the Follow | yes | no |
+| `client_not_ready`, `focus_lost`, `menu_open`, `pause_menu_open`, `debug_control`, `actor_state` | A revocation fact (below) | yes | no |
+| `asked to renew follow more than once in one tick` | Quota | no | no |
+
+A malformed backend result returns `false, "follow renewal returned invalid
+observations"`, never `true`.
+
+### Bounds
+
+| Bound | Value |
+| --- | --- |
+| Base lease from reservation, also the floor of a renewable lease | 3000 ms |
+| Window after an accepted renewal | 500 ms |
+| Ceiling from reservation | 120000 ms |
+| Renewals per plugin tick per VM | 1 |
+| Proof age | at most 6 steps behind the current step, observed under 100 ms ago |
+| Revocation facts' age | under 250 ms |
+| Lease reads per plugin tick per VM | 8, on their own counter |
+| Slots | one process-wide Follow, unchanged |
+
+A plugin that stops renewing is released at `max(reservation + 3000,
+last renewal + 500)`. Each renewable Follow still spends one of the eight
+owned-body slots that are never reused.
+
+### Revocation
+
+Once per client tick, before the Follow lock is taken, the client tick samples
+these facts and publishes them as one atomic word: the client is ready (named
+context, no debug request, not loading), the game window has focus, the ReSkate
+interface is closed, the game's own menu state was read and no game menu is up,
+no noclip or free camera is active, and the local actor is upright on foot (the
+same sampled state `504` and known non-ragdoll reading that `skater.telemetry`
+serves). For a renewable Follow, reserve, publish, the client tick, every renewal
+and every native callback refuse or stop when a fact is false or the sample is
+250 ms old or more. A Try that misses the lock never hides the facts, because
+they are stored first. A fixed Follow ignores every fact but readiness, as before.
+
+The first failing fact names the cause, in this order: `client_not_ready` (also
+an unsampled or stale guard, or an unknown game menu state), `focus_lost`,
+`menu_open`, `pause_menu_open`, `debug_control`, `actor_state`. A renewable
+reserve refused this way occupies nothing and owes no cleanup. Every other stop
+goes through the existing stop, park and ACK path.
+
+The receipt keeps its fourteen fields and its existing reason names:
+
+| Cause | Receipt `reason` | Lease `revocation` |
+| --- | --- | --- |
+| Deadline passed | `expired` | `deadline` |
+| Ceiling passed | `expired` | `lifetime` |
+| Native clock before reservation | `expired` | `clock` |
+| Client not ready, stale or unsampled facts, game menu state unknown | `unavailable` | `client_not_ready` |
+| Focus lost | `focus_changed` | `focus_lost` |
+| ReSkate interface open | `focus_changed` | `menu_open` |
+| Game menu open | `focus_changed` | `pause_menu_open` |
+| Noclip or free camera | `focus_changed` | `debug_control` |
+| Actor not upright on foot | `unsupported_state` | `actor_state` |
+| Anything else (explicit stop, VM close, level or body change, native fault, revision exhaustion) | unchanged | `other` |
+
+The revocation is kept only when the lease caused the receipt's **first** stop,
+so it always describes the same stop as `reason`.
+
+### Lease report
+
+`read_follow_lease(follow)` returns a freshly copied table, or `nil, why`
+(`"follow lease busy"`, `"follow lease unavailable"` after ACK or for a foreign
+handle, or `"follow lease returned invalid observations"`). It works for either
+lifetime.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `sequence` | u64 string | The Follow sequence, as in `read_follow` |
+| `renewable` | boolean | A renewable lease started at reserve |
+| `active` | boolean | Published, not stopped, and before the deadline now |
+| `renewals` | u64 string | Accepted renewals |
+| `last_serial` | u64 string | Body serial of the last accepted proof; `"0"` before any |
+| `remaining_ms` | number | Native milliseconds to the deadline; 0 once passed or stopped |
+| `lifetime_remaining_ms` | number | Native milliseconds to the ceiling; equal to `remaining_ms` for a fixed lease; 0 once passed or stopped |
+| `base_ms`, `renewal_ms`, `lifetime_ms` | number | 3000, 500, and 120000 (3000 for a fixed lease) |
+| `revocation` | string | One of the names in the table above, or `none` |
+| `dispatch_busy` | u64 string | Native callbacks since reserve that found the Follow lock busy and were not followed |
+
+The times are milliseconds left, never deadlines: the native clock is not
+`reskate.time.now`, so compare them only with a plugin clock read before the call.
+
+### Not established
+
+These are constructed tests and source reading only. Nobody has observed a
+published Follow longer than about half a second in game, so whether the
+callback continuation, the actor root and the body stay coherent for ten or
+thirty seconds, whether the body parks after sustained motion, and which thread
+runs the motion callbacks are open. The window, ceiling, proof age and guard age
+are authored values, not measured ones. A callback that meets a client-thread
+exclusive World window still stops the Follow at provider stage `measure`.
+
 ## Internal failure diagnostics
 
 The SDK log records the first stop separately from the first published-cleanup
 observation, using the Service's process-local, nonreused sequence. Each record
 contains its origin, reached provider stage, last evaluated actor observation
-and stored cleanup state. These records add no plugin methods or receipt fields.
+and stored cleanup state, and a lease line with the receipt's renewals, its
+latched revocation and its skipped callbacks. These records add no plugin
+methods or receipt fields.
 The client tick copies at most one record of each kind, then logs outside SDK
 locks. Native dispatch does not format or log messages.
 
@@ -224,11 +392,13 @@ parking, retirement or successful gameplay.
 ## Fixed bounds and validation
 
 Per VM per plugin tick, calls reaching a well-formed handle/body argument may
-attempt at most one reserve, one publish, eight reads, one stop, and one ACK.
-Each category has its own counter so read/publish traffic cannot exhaust the
-stop quota. Native refusals, unavailable receipts and malformed backend results
-consume their attempt. Counters reset only on the actual plugin tick. The native
-Service's one-slot capacity and three-second lease remain independent limits.
+attempt at most one reserve, one publish, eight reads, one stop, one ACK, one
+renewal and eight lease reads. Each category has its own counter so read/publish
+traffic cannot exhaust the stop quota, and lease traffic cannot exhaust the
+receipt reads. Native refusals, busy and unavailable receipts and malformed
+backend results consume their attempt. Counters reset only on the actual plugin
+tick. The native Service's one-slot capacity and its lease (three seconds fixed,
+or renewable up to two minutes) remain independent limits.
 
 Receipt serialization rejects invalid enums, foreign returned sequences,
 impossible revision relations, excess in-flight count, unknown pending duties,

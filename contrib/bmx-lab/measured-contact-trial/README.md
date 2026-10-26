@@ -25,8 +25,8 @@ contacts must be below the capsule bound; the first two points must agree within
 measurements; the script never fabricates a floor or normal, flips a normal, or
 assumes a zero surface velocity.
 
-Only the exact preallocation refusal "waiting for a fresh qualified 60 Hz
-physics step" permits one separately pressed readiness retry. Other exceptions
+Only the exact preallocation refusal `body_preallocation_unavailable` permits one
+separately pressed readiness retry. Other exceptions
 or missing handles retain allocation uncertainty and prohibit a retry. There
 are at most two create calls and one query batch. Session watchdogs bound the
 whole attempt to 120,000 ms or 36,000 callbacks; the allocated-body phase has

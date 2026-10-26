@@ -20,9 +20,8 @@ No floor or native collision result is inferred. The unmounted root begins
 three metres to the actor's right and half a metre above their reported origin.
 
 The fixture first waits for the eight entity statuses to become `ready`, then
-attempts one body creation. The exact SDK refusal, `waiting for a fresh qualified
-60 Hz physics step`, covers queued producer setup, unavailable anchor capture OR
-clock qualification in
+attempts one body creation. The exact SDK refusal, `body_preallocation_unavailable`,
+covers queued producer setup, unavailable anchor capture or clock qualification in
 `owned_bodies.cpp`. It proves that this attempt reserved no slot or body, but does
 not establish which prerequisite failed or prove clock initialization. Only that
 preallocation readiness refusal exposes **Retry after readiness wait**. This

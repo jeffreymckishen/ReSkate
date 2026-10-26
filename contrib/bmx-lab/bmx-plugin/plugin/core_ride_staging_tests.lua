@@ -302,4 +302,7 @@ function Tests.run()
     end
     return {cases=cases,assertions=assertions,native_actions=0}
 end
+-- Shared constructed service factory for the separate provisional-offset suite.
+-- This exports no real SDK handle or production activation option.
+Tests.spawn_services=services
 return Tests

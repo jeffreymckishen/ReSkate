@@ -48,7 +48,16 @@ modules byte for byte into `build/luau-runner/qualified-plugin/` and writes the 
 literal is missing or appears twice, or if the fixture already exists in the plugin. The same copy also
 holds `contact_runtime_category_qualified_fixture.lua` and, when the plugin has `mounted_pose.lua`,
 `mounted_pose_qualified_fixture.lua`, each its module with its one gate flipped and each refused in the
-plugin. Any suite that mentions a fixture, `./ride_runtime_tests` or `./ride_runtime_join_tests` runs
+plugin. When `bike_spawn.lua` is present, it also receives
+`bike_spawn_floor_qualified_fixture.lua`, with only `local FLOOR_SPAWN_QUALIFIED=false` changed to
+`true`. The floor suite checks the inactive shipped module and this private trial copy; the normal
+plugin keeps the airborne default. A separate `floor-manifest` staging regression checks exact bytes,
+owned files, reruns and true/duplicate/planted floor gate refusals. It also stages
+`bike_runtime_core_provisional_follow_fixture.lua` from Core with only
+`local M1_PROVISIONAL_FOLLOW_OFFSET=false` changed to `true`; the same regression
+checks that independent literal and its owned file. The provisional-offset suite
+uses the existing staging suite's constructed service factory and the real
+public Core mount/Source, without changing existing suite counts. Any suite that mentions a fixture, `./ride_runtime_tests` or `./ride_runtime_join_tests` runs
 against that copy; the others run against the plugin folder itself. The production gates (`ACTIVATION_QUALIFIED`,
 `RIDE_COMPOSITION_QUALIFIED`) are never changed in the source.
 

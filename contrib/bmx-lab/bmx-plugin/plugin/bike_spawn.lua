@@ -1,5 +1,6 @@
 -- Derived spawn/visual owner with an explicit external follow-trial handoff.
--- No follow, input, force or contact API is called by this module.
+-- No follow, force or contact API is called by this module. The private floor
+-- trial uses one pre-create world ray; it does not qualify contact or support.
 local M=require("./force_math")
 local G=require("./bike_geometry")
 local Visual=require("./bike_visual")
@@ -7,7 +8,17 @@ local S={} local Runtime={} Runtime.__index=Runtime
 -- The visual envelope around the original spawn COM (B8). Trial copies change
 -- it only by the same reviewed substitution as the gate literals.
 local ENVELOPE_M=2
+-- LUA-5(a) never ships without the measured provisional Follow offset. Only a
+-- reviewed trial copy changes this literal; the tracked spawn stays airborne.
+local FLOOR_SPAWN_QUALIFIED=false
+local FLOOR_RAY_DOWN_M=3
+local FLOOR_MAX_DROP_M=2
+local FLOOR_CLEARANCE_M=.02
+local FLOOR_HIT_LIFETIME_MS=100
 S.limits=table.freeze({envelope_m=ENVELOPE_M})
+-- Core binds the optional floor API from this same private literal. There is
+-- no caller option and no second activation flag that can drift from Spawn.
+function S.floor_spawn_qualified() return FLOOR_SPAWN_QUALIFIED end
 local function xyz(v) return {v.x,v.y,v.z} end
 local function vec(v) return typeof(v)=="vector" and M.vec(xyz(v),100000) end
 local function canonical(x)
@@ -31,6 +42,35 @@ local function valid(sample)
         or not vec(sample.position) or not vec(sample.velocity) or not vec(sample.angular_velocity) or not vec(sample.inertia) then return false end
     for i,axis in {"x","y","z"} do if math.abs(sample.inertia[axis]-G.inertia[i])>.001 then return false end end
     return Visual.from_sample(sample)~=nil
+end
+local function floor_root(api,root,actor_y)
+    local world=type(api.world)=="table" and api.world or nil
+    if not world or type(world.raycast)~="function" then return nil,"floor ray API unavailable" end
+    local from=vector.create(root[1],actor_y+.5,root[3])
+    local to=vector.create(root[1],actor_y-FLOOR_RAY_DOWN_M,root[3])
+    local result=table.pack(pcall(world.raycast,from,to))
+    if not result[1] then return nil,"floor ray refused or failed: "..tostring(result[2]) end
+    if result.n~=2 then return nil,"floor ray returned a malformed result" end
+    local hit=result[2]
+    -- The existing API returns nil for both a miss and an unavailable query.
+    -- Do not infer a floor, substitute actor height or try a second ray.
+    if hit==nil then return nil,"floor ray missed or is unavailable" end
+    if not vec(hit) then return nil,"floor ray returned an invalid hit" end
+    if hit.y>actor_y then return nil,"floor ray hit is above the actor" end
+    if actor_y-hit.y>FLOOR_MAX_DROP_M then return nil,"floor ray hit is too far below the actor" end
+    if math.abs(hit.x-from.x)>.025 or math.abs(hit.z-from.z)>.025 or hit.y<to.y or hit.y>from.y then
+        return nil,"floor ray hit is outside the bounded segment"
+    end
+    -- M1's provisional trial starts the body-frame origin 2 cm above the hit.
+    -- Visual.definition adds the rotated COM. The authored wheel bottoms sit
+    -- just below the origin; a point supplies no plane or support guarantee.
+    local placed={root[1],hit.y+FLOOR_CLEARANCE_M,root[3]}
+    if not M.vec(placed,99900) then return nil,"floor placement is outside body bounds" end
+    for _,axle in {G.front_axle,G.rear_axle} do
+        local clearance=placed[2]+axle[2]-G.wheel_radius-hit.y
+        if clearance<0 or clearance>.02 then return nil,"authored wheels cannot clear the returned floor hit" end
+    end
+    return placed
 end
 function S.new(api)
     return setmetatable({api=api or reskate,phase="idle",detail="No Lua bike spawned.",used=false,
@@ -66,6 +106,9 @@ function Runtime:request()
     return true
 end
 function Runtime:retry_after_clock_warmup()
+    if FLOOR_SPAWN_QUALIFIED and self.floor_query_attempted then
+        return false,"Floor spawn does not repeat or reuse its one floor query."
+    end
     if self.phase~="clock_prepared" or self.clock_retried then return false,"No preallocation readiness retry is available." end
     self.clock_retried=true self.visual_requested=false self.visual_remove_requested=false self.asset_part=1
     self.phase="armed" self.phase_wall=self.wall
@@ -169,6 +212,9 @@ function Runtime:_place(matrices)
     -- first attempted call, rather than waiting for the complete batch.
     self.visual_requested=true
     for id,matrix in matrices do
+        if FLOOR_SPAWN_QUALIFIED and (self.phase=="closed" or self.phase=="stopping" or self.phase=="cleanup_unknown") then
+            return false,"floor spawn cancelled before visual publication"
+        end
         local ok,why=self.api.entities.set(id,G.blueprints[id],{matrix=matrix},false,nil,{solid=false})
         if not ok then return false,"bike visual request refused: "..tostring(why) end
     end
@@ -189,6 +235,12 @@ function Runtime:_update(dt)
         -- Keep the unmounted body away from the local rider. No floor is inferred.
         self.root={actor.position.x+3*math.cos(actor.heading),actor.position.y+.5,actor.position.z-3*math.sin(actor.heading)}
         self.rotation={0,math.sin(actor.heading*.5),0,math.cos(actor.heading*.5)}
+        if FLOOR_SPAWN_QUALIFIED then
+            -- Heading zero faces +Z. The existing yaw already points the bike's
+            -- +Z along the rider's facing; only the private trial moves under P.
+            self.root={actor.position.x,actor.position.y+.5,actor.position.z}
+            self.floor_actor_y=actor.position.y
+        end
         self.phase="loading_assets" self.phase_wall=self.wall
     end
     if not ready then self:stop("focus/menu/gameplay changed") return end
@@ -200,18 +252,40 @@ function Runtime:_update(dt)
             self.detail=why
             return
         end
+        if FLOOR_SPAWN_QUALIFIED then
+            if self.phase~="loading_assets" then return end
+            if self.floor_query_attempted then self:stop("floor ray attempt already consumed") return end
+            self.floor_query_attempted=true -- Reserve before a callback can stop or re-enter.
+            local root,issue=floor_root(self.api,self.root,self.floor_actor_y)
+            if self.phase~="loading_assets" then return end
+            if not root then self:stop(issue) return end
+            self.root=root
+            self.floor_query_wall=self.wall
+        end
         local placed,why=self:_place(assert(Visual.matrices(self.root,self.rotation)))
+        if FLOOR_SPAWN_QUALIFIED and self.phase~="loading_assets" then return end
         if not placed then self:stop(why) return end
         self.phase="waiting_visuals" self.phase_wall=self.wall
         return
     end
     if self.phase=="waiting_visuals" then
+        if FLOOR_SPAWN_QUALIFIED and self.wall-self.floor_query_wall>FLOOR_HIT_LIFETIME_MS then
+            self:stop("floor hit expired before body creation") return
+        end
         for id=1,8 do
             local state=self.api.entities.status(id)
             if state=="missing" or state=="hidden" then self:stop("bike part is unavailable: "..id) return end
             if state~="ready" then
                 if self.wall-self.phase_wall>5000 then self:stop("bike entity readiness timed out") end
                 return
+            end
+        end
+        -- Entity callbacks can stop or re-enter the owner. Close their window
+        -- before the trial allocates; a consumed/expired hit is never replayed.
+        if FLOOR_SPAWN_QUALIFIED then
+            if self.phase~="waiting_visuals" then return end
+            if self.wall-self.floor_query_wall>FLOOR_HIT_LIFETIME_MS then
+                self:stop("floor hit expired before body creation") return
             end
         end
         local definition=assert(Visual.definition(self.root,self.rotation))
@@ -226,8 +300,12 @@ function Runtime:_update(dt)
             if warmup then self.creation_unknown=false end
             self:stop("body creation refused or unknown: "..tostring(self.detail))
             if warmup and not self.clock_retried and not self.cleanup_unknown then
-                self.phase="clock_prepared"
-                self.detail="Preallocation readiness unavailable; no slot was reserved. Use the separate readiness retry once."
+                if FLOOR_SPAWN_QUALIFIED then
+                    self.detail="Preallocation readiness unavailable; floor query consumed, so this trial cannot retry."
+                else
+                    self.phase="clock_prepared"
+                    self.detail="Preallocation readiness unavailable; no slot was reserved. Use the separate readiness retry once."
+                end
             end
             return
         end

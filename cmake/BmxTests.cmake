@@ -22,6 +22,17 @@ function(dingosdk_add_bmx_tests source_root)
             ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1"
             LABELS "BMX;Python"
             TIMEOUT 30)
+        if(WIN32)
+            # The virtual-pad driver's own suite. It patches the Win32 adapters (ctypes.WinDLL),
+            # so it runs on Windows only; like the leg suites it needs no controller package.
+            add_test(NAME bmx_virtual_gamepad_python
+                COMMAND "${Python3_EXECUTABLE}" -I -B "${source_root}/contrib/bmx-lab/Test-BmxVirtualGamepad.py")
+            set_tests_properties(bmx_virtual_gamepad_python PROPERTIES
+                WORKING_DIRECTORY "${source_root}"
+                ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1"
+                LABELS "BMX;Python"
+                TIMEOUT 30)
+        endif()
     endif()
     find_program(DINGOSDK_BMX_PWSH NAMES pwsh)
     if(DINGOSDK_BMX_PWSH)

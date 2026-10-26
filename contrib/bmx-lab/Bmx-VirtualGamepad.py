@@ -32,9 +32,11 @@ A, B, Y, LB, RB, R3 = 0x1000, 0x2000, 0x8000, 0x0100, 0x0200, 0x0080
 ALLOWED_BUTTONS = A | B | Y | LB | RB | R3
 # XUSB_GAMEPAD_START, the pad's pause key: ReSkate's challenge-menu capture hides it, with
 # VK_PAD_START and the keyboard's VK_ESCAPE, to keep the game's pause menu shut
-# (Extension/UI/Overlay/input_capture.cpp). Back has no such use. It is never an allowed button:
-# only the exact pause-menu timeline may press it. It is a pad report, not keyboard input, so the
-# guard's Escape and foreground checks are unchanged and still abort on a real Escape or focus loss.
+# (Extension/UI/Overlay/input_capture.cpp); that capture leaves Back alone. The SDK reports Start and
+# Back alike, with Escape, as a menu request (bmx_menu_requested, Engine/Game/Input/bmx_input_sample.h).
+# Start is never an allowed button: only the exact pause-menu timeline may press it. It is a pad
+# report, not keyboard input, so the guard's Escape and foreground checks are unchanged and still
+# abort on a real Escape or focus loss.
 START = 0x0010
 # TOOL-2: the exact registered long timelines may run to 30s. Every other timeline keeps the 6s
 # limit, and neutral-window-20s keeps its own exception.
@@ -122,6 +124,8 @@ def scenarios() -> dict[str, tuple[Event, ...]]:
     }
 
 
+# M6e. Like every timeline it ends 30s after go, so a 30s window opened later, at publication,
+# outlives the pad by M1's report-to-publish time (virtual-gamepad.md, the 30s timelines).
 NEUTRAL_WINDOW_30S = (Event(0, NEUTRAL), Event(30000, NEUTRAL))
 # M6c (S2 section 9) opens the game's pause menu at 3s. One Start press for 200ms, as long as
 # native-y's and native-b's pulses, then neutral to 20s as neutral-window-20s. The driver does not
@@ -129,6 +133,9 @@ NEUTRAL_WINDOW_30S = (Event(0, NEUTRAL), Event(30000, NEUTRAL))
 PAUSE_MENU_WINDOW = (Event(0, NEUTRAL), Event(3000, State(START)), Event(3200, NEUTRAL), Event(20000, NEUTRAL))
 LEAD_SCENARIO_NAMES = ("pedal-straight", "ride-10s", "ride-s01-30s")
 LONG_SCENARIO_NAMES = ("neutral-window-30s", "pause-menu-20s", "ride-10s", "ride-s01-30s")
+# Every scenario added for TOOL-1(b) and TOOL-2 runs live only behind the start gate, so its clock
+# starts at an operator's go. The nine older scenarios keep the optional gate they always had.
+GATED_SCENARIO_NAMES = ("pedal-straight", *LONG_SCENARIO_NAMES)
 
 
 def pedal_lead_ms() -> int:
@@ -880,14 +887,19 @@ def main(argv=None):
     parser.add_argument("--owner", type=Path, help="Dedicated reviewed owned-process JSON receipt; mandatory for execution")
     parser.add_argument("--dependency-receipt", type=Path, default=DEPENDENCY_RECEIPT, help="Reviewed six-file manual dependency receipt; checked before live import")
     parser.add_argument("--ledger", type=Path, help="New JSONL path inside build/bmx; never overwrites")
-    parser.add_argument("--start-gate", type=Path, help="Fresh nonexistent directory inside build/bmx for optional ready/go coordination")
-    parser.add_argument("--start-nonce", help="Exactly32 hexadecimal characters binding the optional start gate")
+    parser.add_argument("--start-gate", type=Path, help="Fresh nonexistent directory inside build/bmx for ready/go coordination; "
+                        "required with --execute for pedal-straight and the TOOL-2 timelines, optional for the others")
+    parser.add_argument("--start-nonce", help="Exactly32 hexadecimal characters binding the start gate")
     args = parser.parse_args(argv)
     if bool(args.start_gate) != bool(args.start_nonce) or (args.start_gate is not None and not args.execute):
         parser.error("--start-gate and --start-nonce require each other and --execute")
     # Before any owner, ledger, game or device step: a lead-dependent scenario refuses here
     # while PEDAL_LEAD_MS is unset.
     events = scenario_timeline(args.scenario)
+    # Then, still before any owner, ledger, game or device step: a live run of a new scenario
+    # needs the gate.
+    if args.execute and args.scenario in GATED_SCENARIO_NAMES and args.start_gate is None:
+        parser.error(f"--execute --scenario {args.scenario} requires --start-gate and --start-nonce")
     owner = load_owner(args.owner) if args.owner else None
     if args.execute and owner is None:
         parser.error("--execute requires an exact owned-process --owner receipt")

@@ -2,6 +2,7 @@
 import ctypes
 import hashlib
 import importlib.util
+import io
 import json
 from pathlib import Path, PureWindowsPath
 import re
@@ -1829,6 +1830,80 @@ class RideTimelineTests(unittest.TestCase):
                         self.assertEqual(backend.states[-2], held)
                         self.assertEqual((backend.states[-1], backend.closed, guard.closed), (h.NEUTRAL, 1, 1))
                         self.assertTrue(result["neutral_release_succeeded"] and result["disconnect_succeeded"])
+
+
+class StartGateRequirementTests(unittest.TestCase):
+    """A live run of a TOOL-1(b) or TOOL-2 scenario needs the start gate; the nine older ones do not."""
+    def test_gated_names_are_exactly_the_new_scenarios(self):
+        self.assertEqual(h.GATED_SCENARIO_NAMES, ("pedal-straight", *h.LONG_SCENARIO_NAMES))
+        self.assertEqual(set(h.GATED_SCENARIO_NAMES), set(h.scenario_names()) - set(h.scenarios()))
+
+    def test_live_new_scenario_without_gate_refuses_before_owner_ledger_game_or_device(self):
+        folder = h.WORKSPACE / "build" / "bmx"
+        with tempfile.TemporaryDirectory(prefix="virtual-pad-gate-required-test-", dir=folder) as temporary, \
+                patch.object(h, "PEDAL_LEAD_MS", 1240):
+            path = Path(temporary) / "refused.jsonl"
+            for name in h.GATED_SCENARIO_NAMES:
+                with self.subTest(name=name):
+                    with patch.object(h, "load_owner", side_effect=AssertionError("No owner read")), \
+                            patch.object(h, "StartGate", side_effect=AssertionError("No gate directory")), \
+                            patch.object(h, "WindowsGuard", side_effect=AssertionError("No game inspection")), \
+                            patch.object(h, "make_vgamepad", side_effect=AssertionError("No driver import")), \
+                            patch("sys.stderr", new_callable=io.StringIO) as stderr, \
+                            self.assertRaises(SystemExit) as error:
+                        h.main(["--execute", "--owner", "stub-receipt", "--scenario", name, "--ledger", str(path)])
+                    self.assertEqual(error.exception.code, 2)
+                    self.assertIn(f"--scenario {name} requires --start-gate and --start-nonce", stderr.getvalue())
+                    self.assertFalse(path.exists())
+
+    def test_live_new_scenario_with_gate_passes_the_check_and_reaches_the_owner_receipt(self):
+        with patch.object(h, "PEDAL_LEAD_MS", 1240):
+            for name in h.GATED_SCENARIO_NAMES:
+                with self.subTest(name=name), \
+                        patch.object(h, "load_owner", side_effect=h.Refused("owner receipt reached")), \
+                        patch.object(h, "WindowsGuard", side_effect=AssertionError("No game inspection")), \
+                        patch.object(h, "make_vgamepad", side_effect=AssertionError("No driver import")), \
+                        self.assertRaisesRegex(h.Refused, "owner receipt reached"):
+                    h.main(["--execute", "--owner", "stub-receipt", "--scenario", name,
+                            "--start-gate", "unused-gate", "--start-nonce", "a" * 32])
+
+    def test_older_scenarios_still_run_live_without_the_gate(self):
+        for name in h.scenarios():
+            with self.subTest(name=name), \
+                    patch.object(h, "load_owner", side_effect=h.Refused("owner receipt reached")), \
+                    patch.object(h, "make_vgamepad", side_effect=AssertionError("No driver import")), \
+                    self.assertRaisesRegex(h.Refused, "owner receipt reached"):
+                h.main(["--execute", "--owner", "stub-receipt", "--scenario", name])
+
+    def test_gated_live_pause_run_through_main_completes_with_fakes(self):
+        folder = h.WORKSPACE / "build" / "bmx"
+        with tempfile.TemporaryDirectory(prefix="virtual-pad-gated-main-test-", dir=folder) as temporary:
+            gate_path, ledger = Path(temporary) / "gate", Path(temporary) / "pause.jsonl"
+            go_fields = dict(schema=1, event="bmx_virtual_gamepad_go", process_id=123,
+                             process_creation_filetime="456", nonce="a" * 32)
+
+            class GoClock(h.PreviewClock):
+                def sleep(self, seconds):
+                    super().sleep(seconds)
+                    ready, go = gate_path / "ready.json", gate_path / "go.json"
+                    if ready.exists() and not go.exists():
+                        pending = gate_path / "go.pending"
+                        pending.write_text(json.dumps(go_fields))
+                        pending.rename(go)
+            clock, backend = GoClock(), Backend()
+            with patch.object(h, "load_owner", return_value=h.Owner(123, 456, "game", "A" * 64)), \
+                    patch.object(h, "WindowsGuard", return_value=Guard(clock)), patch.object(h, "Clock", return_value=clock), \
+                    patch.object(h, "make_vgamepad", return_value=backend), patch("builtins.print"):
+                code = h.main(["--execute", "--owner", "stub-receipt", "--scenario", "pause-menu-20s", "--ledger", str(ledger),
+                               "--start-gate", str(gate_path), "--start-nonce", "a" * 32])
+            self.assertEqual(code, 0)
+            rows = [json.loads(line) for line in ledger.read_text().splitlines()]
+            events = [row["event"] for row in rows]
+            self.assertLess(events.index("controller_start_gate_go"), events.index("controller_report"))
+            self.assertEqual((rows[-1]["event"], rows[-1]["report_count"], rows[-1]["completed"]),
+                             ("controller_session_end", 1001, True))
+            self.assertEqual(sum(state == h.State(h.START) for state in backend.states), 10)
+            self.assertEqual((backend.states[-1], backend.closed), (h.NEUTRAL, 1))
 
 
 if __name__ == "__main__":

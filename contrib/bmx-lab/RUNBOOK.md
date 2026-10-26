@@ -239,6 +239,29 @@ the later Lua commits; which commit's C++ it matches is not recorded in these re
 on `4B7BD8D7…` and CE2 and the stationary capture on `3B25624D…`. Re-hash before relying on the
 table.
 
+The driver row is the checkout's driver at 17:00Z. M1's package pins it, so the checkout keeps
+`B0B78C74…` until M1 has run. The tracked driver has moved on since `0d3dbd3b` (TOOL-1(b) and
+TOOL-2). With the start-gate requirement for its new scenarios it hashes to
+`802642A2C13C48DEEAC36B6B3B18ACD46A98701D513FC4C7C3EA014CEEA9F065`; re-hash and re-pin the row when
+the checkout moves to it. Two older pins match neither driver: `Bmx-SwitchLeg.py`'s
+`APPROVED_BASE_SHA256`, which the six `Test-Bmx*Leg.py` suites check, and
+`Bmx-CoupledVirtualTest.py`'s `APPROVED_DRIVER_SHA` (asserted by `Test-BmxCoupledVirtualTest.py`
+and quoted in `coupled-virtual-test.md`). Both are `3F756CE2…`, the driver at `5975efd8`, and have
+been stale since `ec0b8ea8`, so those wrappers and their suites refuse today's driver.
+
+What the driver work leaves open (details in [virtual-gamepad.md](virtual-gamepad.md)):
+
+- **TOOL-1(b) stays open.** `pedal-straight` refuses until `PEDAL_LEAD_MS` is set from TR-M1's
+  measured lead, and the two `3F756CE2…` pins are re-pinned in the change that sets it, because
+  setting it moves the driver's hash again.
+- **TOOL-2 is partly done.** `neutral-window-30s` serves M6e and `pause-menu-20s` serves M6c only;
+  `ride-10s` (M6f) and `ride-s01-30s` (M6g) refuse until the lead is set. M6d's overlay event is not
+  covered, since the overlay opens only from the keyboard and the driver sends no keyboard input.
+- **The 30 s timelines end 30 s after go**, before a 30 s window opened at publication closes. That
+  is open with COORD and the owner.
+- **The two ride input profiles** are the driver author's proposals; JUDGE or the owner accepts them
+  before M6f or M6g is judged.
+
 ## Running the tests
 
 Constructed tests prove model and sandbox behavior only. They are never in-game evidence and never

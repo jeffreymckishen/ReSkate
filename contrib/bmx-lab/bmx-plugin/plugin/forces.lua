@@ -82,6 +82,12 @@ function F.new(tuning)
     local out=setmetatable({tuning=F.tuning(tuning)},Controller) out:reset() return out
 end
 function Controller:reset() self.last_hop_event=0 self.normals={{},{}} self.travel_direction=0 self.air={} self.steering={} self.pump=Pump.new() self.pump:reset() end
+function Controller:invalidate_continuity()
+    -- A missed command breaks one-step derivative and state-machine history.
+    -- Accepted hop consumption and authored tuning remain authoritative.
+    self.normals={{},{}} self.travel_direction=0 self.air={} self.steering={}
+    self.pump=Pump.new() self.pump:reset()
+end
 function Controller:clone()
     local out=setmetatable(M.copy(self),Controller) setmetatable(out.pump,getmetatable(self.pump)) return out
 end

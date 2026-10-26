@@ -183,6 +183,107 @@ function BikeRuntime.probe_batch_adapter(identity,guard,read_serial,invoke,curre
     end
 end
 
+-- Three accepted commands leave one slot free in the SDK's four-receipt ring.
+-- Sequence and serial high-water marks are exact decimal uint64 strings, never
+-- floating point IDs. The native mailbox requires both to increase.
+local FORCE_PIPELINE_CAPACITY=3
+BikeRuntime.force_pipeline_capacity=FORCE_PIPELINE_CAPACITY
+function BikeRuntime.force_transactions_clear(binding)
+    return type(binding)=="table" and type(binding.pending)=="table" and #binding.pending==0
+        and not binding.inflight and not binding.unknown
+end
+-- Inert transport seam for constructed tests. Only create_ride supplies the
+-- original owner and SDK callbacks; this factory grants no native authority.
+function BikeRuntime.force_transaction_adapter(identity,binding,guard,read_serial,invoke,current_owner,stop,unknown)
+    assert(binding.pending==nil and not binding.inflight and not binding.unknown,"force transport already bound")
+    local original_body=binding.owner.body
+    binding.pending={}
+    local pending=binding.pending
+    local api={}
+    local function retain_unknown(why)
+        binding.unknown=true;unknown(why);stop(why)
+    end
+    local function call_transport(operation,...)
+        local wrapped=table.pack(pcall(invoke,operation,original_body,...))
+        local r=wrapped[2]
+        if not wrapped[1] then return table.pack(false,r) end
+        if wrapped.n~=2 or type(r)~="table" or type(r.n)~="number" or r.n%1~=0 or r.n<1 or r.n>8
+            or type(r[1])~="boolean" then return table.pack(false,"malformed protected force result") end
+        return r
+    end
+    local function selected(sequence)
+        if not identity.is_nonzero_u64(sequence) then return nil end
+        for _,row in ipairs(pending) do if row.sequence==sequence then return row end end
+        return nil
+    end
+    api.submit=function(epoch,command)
+        if binding.inflight or binding.unknown then
+            stop("current Core Source/Follow/body/epoch force guard refused")
+            return false,"Core force publication guard refused before SDK call"
+        end
+        local serial=read_serial()
+        local order=1
+        if binding.last_submit then order=identity.compare(serial,binding.last_submit) end
+        if not identity.is_nonzero_u64(serial) or order==nil or order<=0 then
+            stop("duplicate or regressed force publication refused")
+            return false,"one force transaction per measured serial"
+        end
+        -- Backpressure is not a publication attempt and consumes no serial,
+        -- Follow-read allowance, SDK call or receipt slot. Existing debt stays.
+        if #pending>=FORCE_PIPELINE_CAPACITY then return false,"force_pipeline_full" end
+        if not guard(epoch) then return false,"Core force publication guard refused before SDK call" end
+        binding.last_submit=serial;binding.inflight=true
+        local r=call_transport("submit",epoch,command)
+        local accepted=r[1] and r.n==4 and r[2]==true and r[3]==nil and identity.is_nonzero_u64(r[4])
+        if accepted then
+            local next_sequence=not binding.highest_sequence or identity.compare(r[4],binding.highest_sequence)==1
+            if next_sequence then
+                -- Record admission before a post-call owner check: stop/unload
+                -- cannot turn an actual late publication into a clean refusal.
+                pending[#pending+1]={sequence=r[4],serial=serial,ack_attempted=false}
+                binding.highest_sequence=r[4];binding.sequence=pending[1].sequence
+            else
+                accepted=false;retain_unknown("force publication reused or regressed its sequence")
+            end
+        elseif not (r[1] and r.n==3 and r[2]==false and type(r[3])=="string") then
+            retain_unknown("force publication outcome unknown")
+        end
+        binding.inflight=false
+        if not current_owner(epoch) then stop("Core guard changed during force publication") end
+        if (not accepted and binding.unknown) or not r[1] then error("force publication outcome unknown",0) end
+        return table.unpack(r,2,r.n)
+    end
+    api.receipt=function(sequence)
+        -- Cleanup keeps the original body after Core has cleared T.body. It
+        -- may inspect every known slot, including when another slot is unknown.
+        if binding.inflight or not selected(sequence) then
+            retain_unknown("exact original pending receipt sequence required");return nil
+        end
+        binding.inflight=true
+        local r=call_transport("receipt",sequence)
+        binding.inflight=false
+        if not r[1] or r.n~=2 or type(r[2])~="table" then retain_unknown("force receipt unknown") end
+        if not r[1] then error("force receipt unknown",0) end
+        return table.unpack(r,2,r.n)
+    end
+    api.acknowledge=function(sequence)
+        local row=selected(sequence)
+        if binding.inflight or not row or row~=pending[1] or row.ack_attempted then
+            retain_unknown("exact oldest pending sequence required")
+            return false,"exact oldest pending sequence required"
+        end
+        row.ack_attempted=true;binding.inflight=true
+        local r=call_transport("acknowledge",sequence)
+        if r[1] and r.n==2 and r[2]==true then
+            table.remove(pending,1);binding.sequence=pending[1] and pending[1].sequence or nil
+        else retain_unknown("force acknowledgement outcome unknown") end
+        binding.inflight=false
+        if not r[1] then error("force acknowledgement outcome unknown",0) end
+        return table.unpack(r,2,r.n)
+    end
+    return table.freeze(api)
+end
+
 function BikeRuntime.new(services,options,shared_state)
 local supplied=services or reskate
 local R=type(supplied)=="table" and supplied or {}
@@ -263,7 +364,7 @@ end
 local function force_clear()
     if T.ride_unknown==true then return false end
     if not ride_binding then return T.ride_construct_attempted~=true end
-    if ride_binding.inflight or ride_binding.unknown or ride_binding.sequence then return false end
+    if not BikeRuntime.force_transactions_clear(ride_binding) then return false end
     local row=T.ride_status
     -- This is only the subordinate's local force ledger gate. Native body,
     -- Follow, Source and equipment still require their independent conjunction.
@@ -773,47 +874,14 @@ local function create_ride(frame)
             return call("ride.probe_batch",lookup("world.physics.probe_batch"),owner.body,epoch,rays,query_options)
         end,
         function(epoch) return current_ride_owner(binding,epoch,false) end,stop_all,ride_models.contact.CATEGORY_WHEEL_LANE_QUALIFIED)
-    api.submit=function(epoch,command)
-        if not guard(epoch) then return false,"Core force publication guard refused before SDK call" end
-        local serial=binding.sample.serial
-        if binding.sequence or binding.last_submit==serial then
-            stop_all("pending or duplicate force publication refused")
-            return false,"one force transaction per measured serial"
-        end
-        binding.last_submit=serial;binding.inflight=true
-        local r=call("ride.submit",lookup("world.physics.submit"),owner.body,epoch,command)
-        -- Adopt the actual returned sequence even if Stop/unload ran inside SDK.
-        -- Never replace a late accepted tuple with a fabricated clean refusal.
-        if r[1] and r.n==4 and r[2]==true and r[3]==nil and Identity.is_nonzero_u64(r[4]) then
-            binding.sequence=r[4];binding.ack_attempted=false
-        elseif not (r[1] and r.n==3 and r[2]==false and type(r[3])=="string") then
-            binding.unknown=true;T.ride_unknown=true
-        end
-        binding.inflight=false
-        if not current_ride_owner(binding,epoch,false) then stop_all("Core guard changed during force publication") end
-        if not r[1] then error("force publication outcome unknown",0) end
-        return table.unpack(r,2,r.n)
-    end
-    api.receipt=function(sequence)
-        -- Original body binding survives T.body=nil, Follow ACK, stop and unload.
-        if sequence~=binding.sequence or not Identity.is_nonzero_u64(sequence) then
-            binding.unknown=true;T.ride_unknown=true;return nil
-        end
-        local r=call("ride.receipt",lookup("world.physics.receipt"),owner.body,sequence)
-        if not r[1] then binding.unknown=true;T.ride_unknown=true;error("force receipt unknown",0) end
-        return table.unpack(r,2,r.n)
-    end
-    api.acknowledge=function(sequence)
-        if sequence~=binding.sequence or binding.ack_attempted or not Identity.is_nonzero_u64(sequence) then
-            binding.unknown=true;T.ride_unknown=true;return false,"exact original pending sequence required"
-        end
-        binding.ack_attempted=true
-        local r=call("ride.acknowledge",lookup("world.physics.acknowledge"),owner.body,sequence)
-        if yes(r) then binding.sequence=nil
-        else binding.unknown=true;T.ride_unknown=true end
-        if not r[1] then error("force acknowledgement outcome unknown",0) end
-        return table.unpack(r,2,r.n)
-    end
+    local transport=BikeRuntime.force_transaction_adapter(Identity,binding,guard,
+        function() return binding.sample and binding.sample.serial end,
+        function(operation,body,...)
+            return call("ride."..operation,lookup("world.physics."..operation),body,...)
+        end,
+        function(epoch) return current_ride_owner(binding,epoch,false) end,stop_all,
+        function() T.ride_unknown=true end)
+    api.submit=transport.submit;api.receipt=transport.receipt;api.acknowledge=transport.acknowledge
     table.freeze(api)
     -- Ride and its models were bound by prepare_backend from staged modules, so
     -- this first following tick resolves no module. No trick adapter: it refuses
@@ -1009,9 +1077,10 @@ function object:prepare_backend()
     -- create_ride runs. Neither module calls reskate.* when it loads.
     local Ride=require("./ride_runtime")
     local Contact=require("./contact_runtime")
+    local ForceStage=require("./force_stage")
     if type(Ride)~="table" or type(Ride.new)~="function" or type(Contact)~="table"
-        or type(Contact.decode)~="function" then return false end
-    RideRuntime=Ride;ride_models=table.freeze({contact=Contact})
+        or type(Contact.decode)~="function" or type(ForceStage)~="table" or type(ForceStage.new)~="function" then return false end
+    RideRuntime=Ride;ride_models=table.freeze({contact=Contact,force=ForceStage.new()})
     T.ride_modules_bound=true;T.ride_trick_adapter=ride_models.tricks~=nil
     source=Source.new(input_proxy,{setup_ms=15000,capture_ms=4000,cleanup_ms=4000})
     T.source_instances=(T.source_instances or 0)+1

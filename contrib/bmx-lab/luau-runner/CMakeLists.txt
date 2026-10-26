@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 project(ReSkateBmxLuauRunner LANGUAGES CXX)
 
-# Runs the BMX plugin's pure Lua suites on the vendored Luau alone. It builds no SDK target and reads
+# Runs the BMX plugin's pure Lua suites on vendored Luau with the shared JSON writer. It builds no SDK target and reads
 # no shared build output, so it can run while the main tree is mid-build or broken. The static
 # runtime keeps the test executable runnable without a Visual Studio environment on PATH.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -35,13 +35,23 @@ if(MSVC)
     target_compile_definitions(bmx_luau_runner_luau PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
+# Use the same JSON value model/writer as the SDK for test-only ledger byte measurement.
+# RapidJSON is already vendored; no plugin Host, API or game target is linked.
+add_library(bmx_luau_runner_json STATIC "${luau_runner_source_root}/Engine/Core/Json/json.cpp")
+target_compile_features(bmx_luau_runner_json PRIVATE cxx_std_20)
+set_target_properties(bmx_luau_runner_json PROPERTIES CXX_EXTENSIONS OFF)
+target_include_directories(bmx_luau_runner_json SYSTEM PRIVATE "${luau_runner_source_root}/External")
+
 add_executable(bmx_luau_tests luau_tests.cpp)
 target_compile_features(bmx_luau_tests PRIVATE cxx_std_20)
 set_target_properties(bmx_luau_tests PROPERTIES CXX_EXTENSIONS OFF)
-target_link_libraries(bmx_luau_tests PRIVATE bmx_luau_runner_luau)
+target_include_directories(bmx_luau_tests PRIVATE "${luau_runner_source_root}")
+target_link_libraries(bmx_luau_tests PRIVATE bmx_luau_runner_luau bmx_luau_runner_json)
 if(MSVC)
+    target_compile_options(bmx_luau_runner_json PRIVATE /W4 /WX /permissive- /EHsc)
     target_compile_options(bmx_luau_tests PRIVATE /W4 /WX /permissive- /EHsc)
 else()
+    target_compile_options(bmx_luau_runner_json PRIVATE -Wall -Wextra -Wpedantic -Werror)
     target_compile_options(bmx_luau_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
     if(MINGW)
         # As in contrib/bmx-lab: runnable outside the compiler's PATH.
@@ -76,7 +86,7 @@ foreach(suite IN LISTS luau_runner_suites)
     get_filename_component(module "${suite}" NAME_WLE)
     file(READ "${suite}" suite_text)
     # Requiring the fixture, or a suite that requires it, means running against the copy.
-    string(REGEX MATCH "ride_runtime_qualified_fixture|contact_runtime_category_qualified_fixture|mounted_pose_qualified_fixture|\\./ride_runtime_tests|\\./ride_runtime_join_tests"
+    string(REGEX MATCH "ride_runtime_qualified_fixture|contact_runtime_category_qualified_fixture|mounted_pose_qualified_fixture|force_stage_[a-z_]+_fixture|\\./ride_runtime_tests|\\./ride_runtime_join_tests|\\./ride_runtime_metrics_tests"
         needs_qualified "${suite_text}")
     if(needs_qualified)
         add_test(NAME bmx_lua.${module} COMMAND bmx_luau_tests "${luau_runner_qualified}" "${module}")
@@ -107,13 +117,14 @@ set_tests_properties(bmx_lua_runner.self_test bmx_lua_runner.refuses_path_name
 
 # Staging's refusals and manifest. Each case fills a scratch folder of its own, which it must find
 # absent, with a two-module stand-in plugin and its destinations, so the real plugin is neither read
-# nor written and a case never removes a file it did not make. The setup test clears the three
+# nor written and a case never removes a file it did not make. The setup test clears the case
 # folders first. They are siblings, not one parent, so cases running in parallel never race to make
 # a shared folder.
 set(luau_runner_stage_scratch "${CMAKE_CURRENT_BINARY_DIR}/stage-regression")
 add_test(NAME bmx_lua_runner.stage_regression_reset COMMAND "${CMAKE_COMMAND}" -E rm -rf
     "${luau_runner_stage_scratch}-unrelated-destination" "${luau_runner_stage_scratch}-planted-fixture"
-    "${luau_runner_stage_scratch}-exact-manifest" "${luau_runner_stage_scratch}-category-manifest")
+    "${luau_runner_stage_scratch}-exact-manifest" "${luau_runner_stage_scratch}-category-manifest"
+    "${luau_runner_stage_scratch}-force-stage-manifest")
 set_tests_properties(bmx_lua_runner.stage_regression_reset PROPERTIES FIXTURES_SETUP bmx_lua_stage_regression)
 # Unrelated .lua files alone, beside a fixture-named file (the old heuristic deleted them there) and
 # inside a real earlier copy: each refused, with every byte left as it was.
@@ -127,8 +138,12 @@ add_test(NAME bmx_lua_runner.stage_writes_exact_manifest COMMAND bmx_luau_tests 
     exact-manifest "${luau_runner_stage_scratch}-exact-manifest")
 add_test(NAME bmx_lua_runner.stage_writes_category_manifest COMMAND bmx_luau_tests --stage-regression
     category-manifest "${luau_runner_stage_scratch}-category-manifest")
+add_test(NAME bmx_lua_runner.stage_writes_force_stage_manifest COMMAND bmx_luau_tests --stage-regression
+    force-stage-manifest "${luau_runner_stage_scratch}-force-stage-manifest")
 set_tests_properties(bmx_lua_runner.stage_refuses_unrelated_destination bmx_lua_runner.stage_refuses_planted_fixture
-    bmx_lua_runner.stage_writes_exact_manifest bmx_lua_runner.stage_writes_category_manifest PROPERTIES FIXTURES_REQUIRED bmx_lua_stage_regression)
+    bmx_lua_runner.stage_writes_exact_manifest bmx_lua_runner.stage_writes_category_manifest
+    bmx_lua_runner.stage_writes_force_stage_manifest PROPERTIES FIXTURES_REQUIRED bmx_lua_stage_regression)
 set_tests_properties(bmx_lua_runner.stage_regression_reset bmx_lua_runner.stage_refuses_unrelated_destination
-    bmx_lua_runner.stage_refuses_planted_fixture bmx_lua_runner.stage_writes_exact_manifest bmx_lua_runner.stage_writes_category_manifest PROPERTIES
+    bmx_lua_runner.stage_refuses_planted_fixture bmx_lua_runner.stage_writes_exact_manifest bmx_lua_runner.stage_writes_category_manifest
+    bmx_lua_runner.stage_writes_force_stage_manifest PROPERTIES
     TIMEOUT 60 LABELS bmx_lua_runner)

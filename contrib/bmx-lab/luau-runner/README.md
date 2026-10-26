@@ -36,8 +36,8 @@ the root build never includes either.
 ## Suites
 
 The suite list is a `CONFIGURE_DEPENDS` glob, so a new `*_tests.lua` is registered as
-`bmx_lua.<name>` on the next build without editing anything here. Each suite must return a table whose
-`run()` needs no arguments. Suites that take optional reference rows (`equipment_tests`,
+`bmx_lua.<name>` on the next build without editing anything here. Each ordinary suite returns a table
+whose `run()` needs no arguments. Suites that take optional reference rows (`equipment_tests`,
 `force_tests`) run without them here; their C++ comparisons stay in `Extension/Plugins/Test`.
 
 `ride_runtime_tests` requires `ride_runtime_qualified_fixture`, which must never ship in the plugin.
@@ -52,6 +52,23 @@ plugin. Any suite that mentions a fixture, `./ride_runtime_tests` or `./ride_run
 against that copy; the others run against the plugin folder itself. The production gates (`ACTIVATION_QUALIFIED`,
 `RIDE_COMPOSITION_QUALIFIED`) are never changed in the source.
 
+When `force_stage.lua` exists, that copy also holds six `force_stage_*_fixture.lua` modules.
+The source must keep exactly one `local STAGE = "zero_force"` and one
+`local AUTHORED_CAPS = nil`. It is copied unchanged; the fixtures replace only those literals:
+
+| Fixture suffix | Stage | Synthetic caps |
+| --- | --- | --- |
+| `support_fixture` | `support` | `{force=20000,speed=10}` |
+| `pedal_fixture` | `pedal` | `{force=20000,speed=10}` |
+| `support_uncapped_fixture` | `support` | `nil` |
+| `pedal_uncapped_fixture` | `pedal` | `nil` |
+| `low_cap_fixture` | `support` | `{force=100,speed=10}` |
+| `invalid_fixture` | `invalid_stage` | `nil` |
+
+Each full name begins with `force_stage_`. All six names are refused in the plugin source.
+Missing, repeated or nonbaseline stage/cap literals refuse before destination mutation.
+These are constructed policy values, not calibrated native force or speed limits.
+
 ## What it is not
 
 This is **not the ReSkate plugin Host** and stands in for none of its checks. Modules are compiled
@@ -60,12 +77,22 @@ from text with optimization and debug level 1 and the standard libraries sandbox
 or tick time limit, no multiplayer and no game. Every gameplay boundary a suite touches is a fixture
 the suite constructs itself, so a pass here is not in-game evidence.
 
-Differences from the Host, each stricter:
+The ordinary module-loading environment is stricter in two ways:
 
 - `require` accepts only `./name`, a `.lua` file directly in the one folder the runner was given,
   in its exact case. No `.luau`, subfolders, `..` or bare names.
 - Globals are read-only for modules too (the Host's script thread lets a chunk set its own), and a
   module that returns `nil` is refused instead of being kept as `true`.
+
+The two JSON-specific suites, `json_encoding_tests` and `bike_runtime_ledger_size_tests`, are an
+explicit harness exception: only when selected directly do they receive a frozen `run(runner)`
+argument containing `json_encode`. It uses the SDK-compatible Lua conversion and the actual
+`Engine/Core/Json` writer to measure escaped JSON bytes. It is never installed as a
+`bmx_luau_runner` global. Imported production dependencies and ordinary suites keep their ordinary
+sandbox globals; importing either JSON suite does not grant its argument.
+`runner_helper_isolation_tests` checks the actual `force_math` environment, the ordinary suite's
+zero-argument call and the refusal when an imported JSON suite is called without its helper.
+This helper proves no Host permission, persistence durability, time budget or gameplay behavior.
 
 `bmx_lua_runner.*` tests check these boundaries: the self-test confirms refused `require` forms, a
 module kept once, read-only globals and libraries and no `reskate`, and three more confirm that a bad
@@ -76,12 +103,12 @@ manifest into a separate copy folder. Fresh or empty destinations are accepted. 
 source/destination aliases and reparse paths are refused before mutation. A legacy fixture filename
 alone proves no ownership, so old copies without a manifest are refused: choose a fresh destination.
 
-Three more `bmx_lua_runner.*` tests check staging itself through `--stage-regression <case>
-<scratch-folder>`. Each case builds a two-module stand-in plugin (one module with CRLF line endings,
+The staging `bmx_lua_runner.*` tests use `--stage-regression <case>
+<scratch-folder>`. Each case builds a small stand-in plugin (one module with CRLF line endings,
 plus a non-Lua note) and its destinations in `build/luau-runner/stage-regression-<case>/`, so it
 neither reads nor writes the real plugin. A case refuses to run if its folder already exists, so it
 never removes anything an earlier run left; the `bmx_lua_runner.stage_regression_reset` setup test
-clears the three folders first.
+clears each registered case's scratch folder first.
 
 - `stage_refuses_unrelated_destination`: a destination holding someone's `unrelated.lua` is refused
   and keeps every byte, whether the file is alone, beside a file named like the fixture (the old
@@ -95,3 +122,10 @@ clears the three folders first.
   byte, the fixture with only its gate flipped and a manifest naming exactly those three files. A
   rerun leaves the copy identical, and a module dropped from the source leaves the copy and its
   manifest on the next stage.
+
+- `stage_writes_category_manifest`: the Contact test copy changes only its one category literal,
+  enters the exact manifest, survives an identical rerun and refuses malformed or planted fixtures.
+- `stage_writes_force_stage_manifest`: all six ForceStage copies preserve every other byte,
+  including CRLF endings, and enter the exact owned-file manifest. It checks an identical rerun,
+  removal when the source module is dropped, every reserved fixture name, and missing, repeated or
+  nonbaseline literals against both absent destinations and earlier owned copies.

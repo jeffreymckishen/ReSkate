@@ -77,7 +77,7 @@ local function fixture(options)
         return out
     end
     function f.tricks:cancel() self.cancelled+=1 end
-    f.api={}
+    f.api={};f.transactions={}
     function f.api.probe_batch(epoch,rays,settings)
         table.insert(f.calls,"probe")
         assert(epoch==f.read.epoch and #rays==2 and settings.require_contact and settings.exclude_local_actor)
@@ -92,20 +92,31 @@ local function fixture(options)
         f.sequence=inc(f.sequence or "9007199254744001")
         f.requested,f.requested_time=f.serial,f.time
         f.produced=inc(f.requested)
+        f.transactions[f.sequence]={requested=f.requested,requested_time=f.requested_time,produced=f.produced}
         return true,nil,f.sequence
     end
     function f.api.receipt(sequence)
-        table.insert(f.calls,"receipt");assert(sequence==f.sequence,"original exact sequence")
-        if f.on_receipt then return f.on_receipt() end
-        return {sequence=f.receipt_sequence or f.sequence,requested_serial=f.requested,
-            produced_serial=(f.mode=="queued" or f.mode=="rejected" or f.mode=="expired") and "0" or f.produced,
+        table.insert(f.calls,"receipt")
+        local transaction=f.transactions[sequence]
+        assert(transaction or sequence==f.sequence,"original exact sequence")
+        if f.on_receipt then return f.on_receipt(sequence) end
+        local requested=transaction and transaction.requested or f.requested
+        local produced=transaction and transaction.produced or f.produced
+        local successor=f.successor
+        -- A provided sample may seal older rows while the newest row still
+        -- awaits N+2. Single-command malformed-successor cases remain literal.
+        local retained=0;for _ in pairs(f.transactions) do retained+=1 end
+        if retained>1 and successor and successor.serial==produced then successor=nil end
+        return {sequence=f.receipt_sequence or sequence,requested_serial=requested,
+            produced_serial=(f.mode=="queued" or f.mode=="rejected" or f.mode=="expired") and "0" or produced,
             outcome=f.mode,force_attempted=f.mode=="applied" or f.mode=="partial",torque_attempted=f.mode=="applied",
-            retained=f.retained==true,quarantined=f.quarantined==true,successor=f.mode=="applied" and f.successor or nil,
+            retained=f.retained==true,quarantined=f.quarantined==true,successor=f.mode=="applied" and successor or nil,
             cleanup_disposition=f.cleanup_disposition or "none"}
     end
     function f.api.acknowledge(sequence)
-        table.insert(f.calls,"ack");assert(sequence==f.sequence)
+        table.insert(f.calls,"ack");assert(f.transactions[sequence] or sequence==f.sequence)
         if f.on_ack then return f.on_ack() end
+        f.transactions[sequence]=nil
         return true
     end
     local models={mapping=f.mapping,force=f.force,contact=options.actual_contact and Contact or f.contact,
@@ -142,7 +153,7 @@ function Tests.run(case_done)
         local f=fixture();local s=f.observe()
         check(s.submitted==1 and s.pending_sequence==f.sequence,"single exact u64 receipt")
         check(type(f.sequence)=="string" and #f.sequence>15,"u64 not converted to double")
-        check(f.force:consumed_hop_event_id()==0,"preview not adopted")
+        check(f.force:consumed_hop_event_id()==0,"neutral accepted history contains no hop")
         check(s.model_steps==1 and #f.tricks.observed==1,"first models observed")
         check(s.body_handle==nil and s.incarnation==nil and s.source==nil,"public report strips private binding")
         check(not pcall(function() s.submitted=7 end),"detached frozen status")
@@ -157,7 +168,7 @@ function Tests.run(case_done)
         f.mode="applied";f.successor=f.sample();f.advance();f.observe()
         check(count(f,"ack")==1 and f.ride:status().acknowledged==1,"later exact successor ACK")
         check(#f.tricks.observed==6 and f.tricks.cancelled==0,"ACK preserves Trick cadence")
-        check(f.ride:status().model_history.kind=="force_reset","only force history reset")
+        check(f.ride:status().model_history.kind=="predictive_accepted","ACK preserves the accepted predictive history")
         check(count(f,"submit")==2,"current fresh epoch may submit after resolved prior ledger")
     end
     next_case() do

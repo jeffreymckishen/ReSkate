@@ -279,13 +279,15 @@ function Mapper:retire_hop(id, disposition)
     if not integer(id, 1, maximum_hop) or not self._pending or self._pending.id ~= id then
         return false, "hop_identity_mismatch"
     end
-    if disposition ~= "accepted" and disposition ~= "cancelled" and disposition ~= "uncertain" then
+    if disposition ~= "accepted" and disposition ~= "cancelled" and disposition ~= "uncertain" and disposition ~= "suppressed" then
         return false, "invalid_disposition"
     end
     local event = copy(self._pending)
     self._pending = nil
     self._last_retired = { event = event, disposition = disposition }
-    if disposition == "accepted" then
+    -- Suppression consumes local intent under a fixed model policy. It neither
+    -- claims native application nor resets continuous input or source clocks.
+    if disposition == "accepted" or disposition == "suppressed" then
         self._actions.hop_pressed, self._actions.hop_strength = false, 0
         if self._blocked then self._blocked = nil; self:_invalidate("awaiting_fresh_observation") end
     elseif disposition == "cancelled" then

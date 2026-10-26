@@ -6,11 +6,13 @@
 // --stage-qualified-ride builds the test-only copy the Ride suites need, and --stage-regression checks
 // that staging against a stand-in plugin. They are the only modes that write: the first only into the
 // copy folder it is given, the second only inside a scratch folder that must not exist yet.
+#include "Engine/Core/Json/json.h"
 #include "lua.h"
 #include "luacode.h"
 #include "lualib.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -43,6 +45,97 @@ namespace {
 constexpr std::uintmax_t most_module_bytes = 4u << 20;
 // A loose bound on modules loading at once. A loop through require is refused by name before this.
 constexpr std::size_t most_nested_loads = 32;
+
+// Test-only conversion mirrors Extension/Plugins/plugin_api.cpp::lua_to_json.
+// The value model and compact/pretty bytes below use the production Json::dump.
+// This is not a permissioned reskate API or plugin Host execution.
+using dingosdk::Json;
+
+// What turning Lua into JSON may cost outside the VM's own heap.
+struct Budget {
+    std::size_t values = 1u << 20;
+    std::size_t bytes = 16u << 20;
+    void spend(std::size_t count, std::size_t size) {
+        if (count > values || size > bytes) throw std::runtime_error("the value is too large to turn into JSON");
+        values -= count;
+        bytes -= size;
+    }
+};
+
+Json to_json(lua_State* L, int index, int depth, Budget& budget) {
+    if (depth > 32) throw std::runtime_error("tables nested deeper than 32 cannot be turned into JSON");
+    index = lua_absindex(L, index);
+    budget.spend(1, 0);
+    switch (lua_type(L, index)) {
+    case LUA_TNIL: return nullptr;
+    case LUA_TBOOLEAN: return lua_toboolean(L, index) != 0;
+    case LUA_TNUMBER: {
+        const double value = lua_tonumber(L, index);
+        if (!std::isfinite(value)) throw std::runtime_error("JSON has no NaN or infinity");
+        if (value == std::floor(value) && std::fabs(value) <= 9007199254740992.0) return static_cast<std::int64_t>(value);
+        return value;
+    }
+    case LUA_TSTRING: {
+        std::size_t length = 0;
+        const char* text = lua_tolstring(L, index, &length);
+        budget.spend(0, length);
+        return std::string(text, length);
+    }
+    case LUA_TVECTOR: { // a position: [x, y, z]
+        const float* v = lua_tovector(L, index);
+        if (!std::isfinite(v[0]) || !std::isfinite(v[1]) || !std::isfinite(v[2])) throw std::runtime_error("JSON has no NaN or infinity");
+        budget.spend(3, 0);
+        return Json::array({static_cast<double>(v[0]), static_cast<double>(v[1]), static_cast<double>(v[2])});
+    }
+    case LUA_TTABLE: {
+        luaL_checkstack(L, 4, "tables nested too deep");
+        const int length = lua_objlen(L, index);
+        bool list = length > 0;
+        int count = 0;
+        lua_pushnil(L);
+        while (lua_next(L, index)) {
+            ++count;
+            if (lua_type(L, -2) != LUA_TNUMBER) list = false;
+            else {
+                const double key = lua_tonumber(L, -2);
+                if (key != std::floor(key) || key < 1 || key > length) list = false;
+            }
+            lua_pop(L, 1);
+        }
+        if (list && count == length) {
+            auto result = Json::array();
+            for (int i = 1; i <= length; ++i) {
+                lua_rawgeti(L, index, i);
+                result.push_back(to_json(L, -1, depth + 1, budget));
+                lua_pop(L, 1);
+            }
+            return result;
+        }
+        auto result = Json::object();
+        lua_pushnil(L);
+        while (lua_next(L, index)) {
+            if (lua_type(L, -2) != LUA_TSTRING)
+                throw std::runtime_error("only a list (keys 1 to n) or a table with string keys can be turned into JSON");
+            std::size_t size = 0;
+            const char* key = lua_tolstring(L, -2, &size);
+            budget.spend(0, size);
+            result[std::string_view(key, size)] = to_json(L, -1, depth + 1, budget);
+            lua_pop(L, 1);
+        }
+        return result;
+    }
+    default:
+        throw std::runtime_error(std::string("a ") + lua_typename(L, lua_type(L, index)) + " cannot be turned into JSON");
+    }
+}
+
+int encode_json(lua_State* state) {
+    luaL_checkany(state, 1);
+    Budget budget;
+    const auto text = to_json(state, 1, 0, budget).dump(lua_toboolean(state, 2) ? 2 : -1);
+    lua_pushlstring(state, text.data(), text.size());
+    return 1;
+}
 
 bool module_character(char value) {
     return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z') || (value >= '0' && value <= '9') ||
@@ -171,7 +264,8 @@ bool has_directory_ancestor(const std::filesystem::path& path, const std::filesy
 // Extension/Plugins/Test/bmx_contact_runtime_host_fixture.inc makes it in memory: every plugin module
 // byte for byte, plus ride_runtime_qualified_fixture.lua, which is ride_runtime.lua with its one
 // inactive gate flipped, plus an optional qualified Contact copy for the category-lane suites and an
-// optional qualified mounted_pose copy for its suite. No fixture may exist in the plugin itself; each
+// optional qualified mounted_pose copy for its suite. Optional force_stage copies use synthetic
+// stage/cap literals for policy tests. No fixture may exist in the plugin itself; each
 // is refused there.
 // A rerun owns only the manifest's exact file set; a fixture filename alone proves no ownership.
 void stage_qualified_ride(const std::filesystem::path& plugin_folder, const std::filesystem::path& copy_folder) {
@@ -182,9 +276,16 @@ void stage_qualified_ride(const std::filesystem::path& plugin_folder, const std:
     const fs::path fixture = "ride_runtime_qualified_fixture.lua";
     const fs::path category_fixture = "contact_runtime_category_qualified_fixture.lua";
     const fs::path pose_fixture = "mounted_pose_qualified_fixture.lua";
+    const fs::path force_support_fixture = "force_stage_support_fixture.lua";
+    const fs::path force_pedal_fixture = "force_stage_pedal_fixture.lua";
+    const fs::path force_support_uncapped_fixture = "force_stage_support_uncapped_fixture.lua";
+    const fs::path force_pedal_uncapped_fixture = "force_stage_pedal_uncapped_fixture.lua";
+    const fs::path force_low_cap_fixture = "force_stage_low_cap_fixture.lua";
+    const fs::path force_invalid_fixture = "force_stage_invalid_fixture.lua";
     const fs::path manifest = ".bmx-qualified-ride-files-v1";
     constexpr std::string_view manifest_header = "bmx-qualified-ride-files-v1";
-    for (const auto& planted : {fixture, category_fixture, pose_fixture})
+    for (const auto& planted : {fixture, category_fixture, pose_fixture, force_support_fixture, force_pedal_fixture,
+             force_support_uncapped_fixture, force_pedal_uncapped_fixture, force_low_cap_fixture, force_invalid_fixture})
         if (fs::exists(source / planted))
             throw std::runtime_error(planted.string() + " belongs only in test copies, not in " + source.generic_string());
     const auto wanted = fs::weakly_canonical(copy_folder);
@@ -242,6 +343,33 @@ void stage_qualified_ride(const std::filesystem::path& plugin_folder, const std:
             throw std::runtime_error("mounted_pose.lua must keep exactly one '" + std::string(inactive_pose) + "' gate");
         pose.replace(pose_gate, inactive_pose.size(), "local MOUNTED_POSE_QUALIFIED = true");
         files.emplace(pose_fixture, std::move(pose));
+    }
+
+    // Force stages and their caps are authored in Lua. These synthetic copies exercise
+    // policy branches only; the shipped source must remain zero-force and uncapped.
+    const auto force_file = files.find("force_stage.lua");
+    if (force_file != files.end()) {
+        const auto& force = force_file->second;
+        constexpr std::string_view inactive_stage = "local STAGE = \"zero_force\"";
+        constexpr std::string_view inactive_caps = "local AUTHORED_CAPS = nil";
+        const auto stage_at = force.find(inactive_stage);
+        const auto caps_at = force.find(inactive_caps);
+        if (stage_at == std::string::npos || force.find(inactive_stage, stage_at + inactive_stage.size()) != std::string::npos)
+            throw std::runtime_error("force_stage.lua must keep exactly one '" + std::string(inactive_stage) + "' literal");
+        if (caps_at == std::string::npos || force.find(inactive_caps, caps_at + inactive_caps.size()) != std::string::npos)
+            throw std::runtime_error("force_stage.lua must keep exactly one '" + std::string(inactive_caps) + "' literal");
+        const auto add_force_fixture = [&](const fs::path& name, std::string_view stage, std::string_view caps) {
+            auto copy = force;
+            copy.replace(copy.find(inactive_stage), inactive_stage.size(), "local STAGE = \"" + std::string(stage) + "\"");
+            copy.replace(copy.find(inactive_caps), inactive_caps.size(), "local AUTHORED_CAPS = " + std::string(caps));
+            files.emplace(name, std::move(copy));
+        };
+        add_force_fixture(force_support_fixture, "support", "{force=20000,speed=10}");
+        add_force_fixture(force_pedal_fixture, "pedal", "{force=20000,speed=10}");
+        add_force_fixture(force_support_uncapped_fixture, "support", "nil");
+        add_force_fixture(force_pedal_uncapped_fixture, "pedal", "nil");
+        add_force_fixture(force_low_cap_fixture, "support", "{force=100,speed=10}");
+        add_force_fixture(force_invalid_fixture, "invalid_stage", "nil");
     }
 
     std::set<fs::path> owned;
@@ -501,13 +629,87 @@ void category_manifest(const std::filesystem::path& scratch) {
     expect_refused(source, scratch / "planted-copy", "belongs only in test copies");
 }
 
+// The shipped force stage stays zero-force with no authored caps. Only these private
+// copies differ, and a malformed source or a planted fixture leaves every destination byte alone.
+void force_stage_manifest(const std::filesystem::path& scratch) {
+    namespace fs = std::filesystem;
+    constexpr std::string_view force =
+        "-- stand-in for force_stage.lua\r\nlocal STAGE = \"zero_force\"\r\nlocal AUTHORED_CAPS = nil\r\n"
+        "return { stage = STAGE, caps = AUTHORED_CAPS }\r\n";
+    struct Fixture {
+        fs::path name;
+        std::string_view stage, caps;
+    };
+    const std::vector<Fixture> fixtures{
+        {"force_stage_support_fixture.lua", "support", "{force=20000,speed=10}"},
+        {"force_stage_pedal_fixture.lua", "pedal", "{force=20000,speed=10}"},
+        {"force_stage_support_uncapped_fixture.lua", "support", "nil"},
+        {"force_stage_pedal_uncapped_fixture.lua", "pedal", "nil"},
+        {"force_stage_low_cap_fixture.lua", "support", "{force=100,speed=10}"},
+        {"force_stage_invalid_fixture.lua", "invalid_stage", "nil"}};
+    const auto source = scratch / "source";
+    make_stand_in(source);
+    write_file(source / "force_stage.lua", force);
+    const auto before = inventory(source);
+    const auto destination = scratch / "copy";
+    stage_qualified_ride(source, destination);
+    const auto staged = inventory(destination);
+    expect(staged.at("force_stage.lua") == std::string(force), "canonical ForceStage changed in the copy");
+    for (const auto& fixture : fixtures) {
+        const auto expected = "-- stand-in for force_stage.lua\r\nlocal STAGE = \"" + std::string(fixture.stage) +
+            "\"\r\nlocal AUTHORED_CAPS = " + std::string(fixture.caps) + "\r\nreturn { stage = STAGE, caps = AUTHORED_CAPS }\r\n";
+        expect(staged.at(fixture.name) == expected, fixture.name.string() + " changed bytes beyond its two authored literals");
+    }
+    expect(staged.at(".bmx-qualified-ride-files-v1") == std::string(
+        "bmx-qualified-ride-files-v1\nforce_math.lua\nforce_stage.lua\nforce_stage_invalid_fixture.lua\n"
+        "force_stage_low_cap_fixture.lua\nforce_stage_pedal_fixture.lua\nforce_stage_pedal_uncapped_fixture.lua\n"
+        "force_stage_support_fixture.lua\nforce_stage_support_uncapped_fixture.lua\nride_runtime.lua\n"
+        "ride_runtime_qualified_fixture.lua\n"), "force fixtures missing from exact ownership manifest");
+    expect(staged.size() == 11, "force stage has unexpected entries");
+    stage_qualified_ride(source, destination);
+    expect(inventory(destination) == staged && inventory(source) == before, "force rerun changed source or destination bytes");
+
+    for (const auto& fixture : fixtures) {
+        write_file(source / fixture.name, regression_unrelated);
+        expect_refused(source, destination, "belongs only in test copies");
+        expect_refused(source, scratch / (fixture.name.stem().string() + "-absent-copy"), "belongs only in test copies");
+        expect(fs::remove(source / fixture.name), "could not remove the planted stand-in fixture");
+    }
+    const std::vector<std::string> malformed{
+        "local STAGE = \"support\"\nlocal AUTHORED_CAPS = nil\n",
+        "local AUTHORED_CAPS = nil\n",
+        std::string(force) + "local STAGE = \"zero_force\"\n",
+        "local STAGE = \"zero_force\"\n",
+        std::string(force) + "local AUTHORED_CAPS = nil\n",
+        "local STAGE = \"zero_force\"\nlocal AUTHORED_CAPS = {force=20000,speed=10}\n"};
+    std::size_t invalid_index = 0;
+    for (const auto& invalid : malformed) {
+        write_file(source / "force_stage.lua", invalid);
+        expect_refused(source, destination, "force_stage.lua must keep exactly one");
+        expect_refused(source, scratch / ("invalid-force-" + std::to_string(invalid_index++) + "-copy"),
+            "force_stage.lua must keep exactly one");
+    }
+    write_file(source / "force_stage.lua", force);
+    expect(inventory(source) == before, "force refusal checks changed other source bytes");
+
+    expect(fs::remove(source / "force_stage.lua"), "could not drop force_stage.lua from the stand-in");
+    stage_qualified_ride(source, destination);
+    const Inventory dropped{
+        {".bmx-qualified-ride-files-v1",
+            std::string("bmx-qualified-ride-files-v1\nforce_math.lua\nride_runtime.lua\nride_runtime_qualified_fixture.lua\n")},
+        {"force_math.lua", std::string(regression_math)}, {"ride_runtime.lua", std::string(regression_ride)},
+        {"ride_runtime_qualified_fixture.lua", std::string(regression_fixture)}};
+    expect(inventory(destination) == dropped, "dropped ForceStage or its fixtures stayed in the copy or manifest");
+}
+
 void run_stage_regression(std::string_view name, const std::filesystem::path& scratch) {
     void (*stage_case)(const std::filesystem::path&) = nullptr;
     if (name == "unrelated-destination") stage_case = unrelated_destination;
     else if (name == "planted-fixture") stage_case = planted_fixture;
     else if (name == "exact-manifest") stage_case = exact_manifest;
     else if (name == "category-manifest") stage_case = category_manifest;
-    else throw std::runtime_error("the stage regression cases are unrelated-destination, planted-fixture, exact-manifest and category-manifest");
+    else if (name == "force-stage-manifest") stage_case = force_stage_manifest;
+    else throw std::runtime_error("the stage regression cases are unrelated-destination, planted-fixture, exact-manifest, category-manifest and force-stage-manifest");
     refuse_reparse_path(scratch);
     if (std::filesystem::exists(scratch))
         throw std::runtime_error("the stage regression scratch folder must not exist yet, so a case never removes "
@@ -520,10 +722,12 @@ void run_stage_regression(std::string_view name, const std::filesystem::path& sc
 // The suite driver. Fields beyond the two counts (comparisons, native_actions and so on) are
 // printed so a run shows what a suite skipped without its C++ reference rows, but not judged.
 constexpr std::string_view suite_driver = R"lua(
-local module_name = ...
+local module_name, json_helper = ...
 local suite = require("./" .. module_name)
 assert(type(suite) == "table" and type(suite.run) == "function", module_name .. " has no run() function")
-local result = suite.run()
+local result
+if json_helper ~= nil then result = suite.run(json_helper)
+else result = suite.run() end
 assert(type(result) == "table", module_name .. ".run() must return a table with cases and assertions")
 for _, field in {"cases", "assertions"} do
     local count = result[field]
@@ -554,6 +758,8 @@ end
 local force_math = require("./force_math")
 assert(type(force_math) == "table" and require("./force_math") == force_math, "a module runs once and its table is kept")
 assert(reskate == nil, "the runner offers no reskate API: it is not the plugin Host")
+assert(bmx_luau_runner == nil and getfenv(force_math.finite).bmx_luau_runner == nil,
+    "ordinary modules cannot see the JSON test helper")
 assert(not pcall(function() bmx_luau_runner_probe = true end), "globals are read only")
 assert(not pcall(function() string.bmx_luau_runner_probe = true end), "standard libraries are read only")
 print("bmx_luau_tests: self-test passed: ./name in one folder only, modules kept once, read-only globals, no reskate API")
@@ -569,6 +775,7 @@ public:
         luaL_openlibs(state_);
         lua_pushcfunction(state_, require_module, "require");
         lua_setglobal(state_, "require");
+
         // From here globals and the standard libraries are read only, as in a plugin.
         luaL_sandbox(state_);
     }
@@ -579,13 +786,14 @@ public:
     void run_suite(std::string_view module) {
         if (!valid_module_name(module))
             throw std::runtime_error("a suite name is 1 to 128 letters, digits, underscores or hyphens, with no path or extension");
-        execute(suite_driver, "@bmx_luau_tests", module);
+        const bool json_helper = module == "json_encoding_tests" || module == "bike_runtime_ledger_size_tests";
+        execute(suite_driver, "@bmx_luau_tests", module, json_helper);
     }
 
-    void run_self_test() { execute(self_test, "@bmx_luau_tests_self_test", {}); }
+    void run_self_test() { execute(self_test, "@bmx_luau_tests_self_test", {}, false); }
 
 private:
-    void execute(std::string_view source, const std::string& chunk, std::string_view argument) {
+    void execute(std::string_view source, const std::string& chunk, std::string_view argument, bool json_helper) {
         lua_settop(state_, 0);
         lua_pushcfunction(state_, traceback, "traceback");
         if (!compile(state_, source, chunk)) throw std::runtime_error(top_text());
@@ -593,6 +801,15 @@ private:
         if (!argument.empty()) {
             lua_pushlstring(state_, argument.data(), argument.size());
             arguments = 1;
+        }
+        // Only the two serialization suites receive this explicit run() argument.
+        // Required production modules use the ordinary globals and never see it.
+        if (json_helper) {
+            lua_createtable(state_, 0, 1);
+            lua_pushcfunction(state_, encode_json, "json_encode");
+            lua_setfield(state_, -2, "json_encode");
+            lua_setreadonly(state_, -1, true);
+            ++arguments;
         }
         if (lua_pcall(state_, arguments, 0, 1) != 0) throw std::runtime_error(top_text());
         lua_settop(state_, 0);

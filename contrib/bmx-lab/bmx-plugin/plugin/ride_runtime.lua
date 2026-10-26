@@ -9,6 +9,9 @@ local Geometry = require("./bike_geometry")
 local Ride, Object = {}, {}
 local states = setmetatable({}, {__mode="k"})
 local MAX_SAFE = 9007199254740991
+local MAX_PENDING = 3
+local METRIC_SAMPLE_LIMIT, METRIC_TRANSITION_LIMIT = 24, 16
+local METRIC_STOP_REASON_LIMIT, METRIC_STOP_KEY_BYTES = 8, 1024
 
 local function copy(value)
     if type(value) ~= "table" then return value end
@@ -180,10 +183,124 @@ local function wheel_copy(wheels,previous)
     end
     return detached(out)
 end
+local function new_metrics()
+    local out={version=1,stop_counts={},stop_counts_overflow=0,steps=0,fresh_report_steps=0,steps_without_report=0,
+        max_steps_without_report=0,report_gap_count=0,largest_report_gap_ms=0,report_gap_unbounded=0,
+        grounded_changes_with_report=0,grounded_changes_without_report=0,grounded_transition_total=0,
+        grounded_transition_omitted=0,grounded_transitions={},samples_total=0,samples_omitted=0,samples={},
+        inflight=0,max_inflight=0,applied_delay_one=0,applied_delay_other=0}
+    for _,prefix in ipairs({"submitted","applied"}) do
+        for _,suffix in ipairs({"count","delta_count","delta_one","delta_other","delta_max","delta_unbounded"}) do
+            out[prefix.."_"..suffix]=0
+        end
+    end
+    return out
+end
+local function metrics_inflight(s)
+    local count=0
+    for _,p in ipairs(s.pending) do if not p.acknowledged then count+=1 end end
+    s.metrics.inflight=count
+    s.metrics.max_inflight=math.max(s.metrics.max_inflight,count)
+    return count
+end
+local function metrics_serial(s,prefix,serial)
+    local m=s.metrics
+    m[prefix.."_count"]+=1
+    local previous=s["metrics_"..prefix.."_serial"]
+    if previous then
+        m[prefix.."_delta_count"]+=1
+        local delta=Identity.bounded_delta(serial,previous,MAX_SAFE)
+        if delta then
+            local kind=delta==1 and "_delta_one" or "_delta_other"
+            m[prefix..kind]+=1
+            m[prefix.."_delta_max"]=math.max(m[prefix.."_delta_max"],delta)
+        else m[prefix.."_delta_unbounded"]+=1 end
+    end
+    s["metrics_"..prefix.."_serial"]=serial
+end
+local function metrics_report(s,key)
+    local m=s.metrics
+    s.metrics_step.report=true
+    if s.metrics_report_ms then
+        m.report_gap_count+=1
+        local delta=Identity.bounded_delta(key.observed_ms,s.metrics_report_ms,MAX_SAFE)
+        if delta then m.largest_report_gap_ms=math.max(m.largest_report_gap_ms,delta)
+        else m.report_gap_unbounded+=1 end
+    end
+    s.metrics_report_ms=key.observed_ms
+end
+local function metric_ring(m,name,limit,row)
+    local stem=name=="grounded_transitions" and "grounded_transition" or name
+    m[stem.."_total"]+=1
+    local ring=m[name]
+    if #ring==limit then table.remove(ring,1);m[stem.."_omitted"]+=1 end
+    ring[#ring+1]=row
+end
+local function metrics_finish_step(s)
+    local step=s.metrics_step
+    if not step then return end
+    s.metrics_step=nil
+    local m=s.metrics
+    m.steps+=1
+    if step.report then
+        m.fresh_report_steps+=1;s.metrics_no_report_steps=0
+    else
+        m.steps_without_report+=1
+        s.metrics_no_report_steps=(s.metrics_no_report_steps or 0)+1
+        m.max_steps_without_report=math.max(m.max_steps_without_report,s.metrics_no_report_steps)
+    end
+    local inflight=metrics_inflight(s)
+    local row=step.contact
+    if not row then return end
+    row.report=step.report
+    row.inflight=inflight
+    -- Speeds are the latest accepted Lua prediction, never native wheel state.
+    row.front_speed=s.wheels[1].angular_speed;row.rear_speed=s.wheels[2].angular_speed
+    if s.metrics_grounded~=nil and row.grounded~=s.metrics_grounded then
+        local kind=step.report and "grounded_changes_with_report" or "grounded_changes_without_report"
+        m[kind]+=1
+        metric_ring(m,"grounded_transitions",METRIC_TRANSITION_LIMIT,
+            {serial=step.serial,grounded=row.grounded,report=step.report})
+    end
+    s.metrics_grounded=row.grounded
+    metric_ring(m,"samples",METRIC_SAMPLE_LIMIT,row)
+end
+local function stop_key_bytes(text)
+    -- Count the compact SDK JSON key, including quotes. Refuse new malformed
+    -- UTF-8 keys rather than poisoning an otherwise serializable ledger.
+    if #text+2>METRIC_STOP_KEY_BYTES or utf8.len(text)==nil then return nil end
+    local bytes=#text+2
+    for i=1,#text do
+        local b=string.byte(text,i)
+        if b==34 or b==92 then bytes+=1
+        elseif b<32 then
+            bytes+=(b==8 or b==9 or b==10 or b==12 or b==13) and 1 or 5
+        end
+        if bytes>METRIC_STOP_KEY_BYTES then return nil end
+    end
+    return bytes
+end
+local function count_stop(s,text)
+    local counts=s.metrics.stop_counts
+    if counts[text]~=nil then counts[text]+=1;return end
+    local bytes=stop_key_bytes(text)
+    if bytes and (s.stop_reason_count or 0)<METRIC_STOP_REASON_LIMIT
+        and (s.stop_key_bytes or 0)+bytes<=METRIC_STOP_KEY_BYTES then
+        counts[text]=1
+        s.stop_reason_count=(s.stop_reason_count or 0)+1
+        s.stop_key_bytes=(s.stop_key_bytes or 0)+bytes
+    else s.metrics.stop_counts_overflow+=1 end
+end
 local function stop(s, reason)
-    -- Pure latch. Core inspects stop_requested after this subordinate returns.
-    -- There are no Source, body, Follow or owner callbacks in this module.
-    if not s.stopped then s.stopped=true;s.generation+=1;s.issue=detail(reason) end
+    -- Count every request, including cleanup observations after the pure
+    -- lifecycle latch. Full keys remain distinct; only the first issue uses
+    -- the existing display bound. Neither counter capacity nor later reasons
+    -- can replace the first cause or advance cancellation generation again.
+    local text=tostring(reason or "unavailable")
+    count_stop(s,text)
+    if not s.stopped then
+        s.stopped=true;s.generation+=1;s.issue=detail(text)
+    end
     s.phase="stopped"
     s.input_queue={}
 end
@@ -196,15 +313,25 @@ local function retire(s,pending,disposition)
     return pending.hop_retired
 end
 local function status(s)
-    local p=s.pending
+    metrics_inflight(s)
+    local p=s.pending[1]
+    local sequences={}
+    for _,entry in ipairs(s.pending) do
+        sequences[#sequences+1]={sequence=entry.sequence,serial=entry.serial,ack_attempted=entry.ack_attempted==true,
+            acknowledged=entry.acknowledged==true,unknown=entry.unknown==true,outcome=entry.outcome}
+    end
     -- Opaque body/lease/incarnation/epoch stay private; this is diagnostic only.
     return detached({phase=s.phase,issue=s.issue,activation_qualified=ACTIVATION_QUALIFIED,
         stop_requested=s.stopped==true,force_pending=p~=nil,unknown=s.unknown==true or p and p.unknown==true or false,
         pending_sequence=p and p.sequence,ack_attempted=p and p.ack_attempted==true or false,
+        pending_count=#s.pending,pending_commands=sequences,pending_limit=MAX_PENDING,
+        backpressure=s.backpressure,backpressure_steps=s.backpressure_steps,last_backpressure_serial=s.last_backpressure_serial,
+        continuity={pending=s.continuity_pending,skipped_steps=s.continuity_skipped_steps,
+            invalidations=s.continuity_invalidations,gap_wheels="torque_free_coast",native_wheel_state_known=false},
         submitted=s.submitted,acknowledged=s.acknowledged,last_serial=s.last_sample and s.last_sample.serial,
         input_staged=s.input_staged,input_consumed=s.input_consumed,input_queued=#s.input_queue,
         observed_steps=s.observed_steps,model_steps=s.model_steps,receipt=s.last_receipt,
-        model_history=s.model_history,hop_disposition=s.hop_disposition,
+        model_history=s.model_history,hop_disposition=s.hop_disposition,metrics=s.metrics,
         model={trick_status=s.trick_status,alignment_status=s.alignment_status,recovery_status=s.recovery_status}})
 end
 local function receipt_valid(row,p)
@@ -227,60 +354,109 @@ local function receipt_valid(row,p)
     return (row.outcome=="rejected" or row.outcome=="expired") and not row.force_attempted and not row.torque_attempted
 end
 local function poll_pending(s)
-    local p=s.pending
-    if not p or p.unknown then return end
-    if not p.sequence then p.unknown=true;s.unknown=true;stop(s,"force admission has no exact sequence");return end
-    if s.now and s.now-p.submitted_at>=1000 then
-        p.watchdog_expired=true;stop(s,"force receipt watchdog expired")
+    -- Inspect every retained command before choosing this poll's stop cause
+    -- and ACKing its eligible prefix. Retained/quarantined are body-level SDK
+    -- flags, so an older generic row must not hide a younger explicit outcome.
+    -- Unknown evidence outranks native failure, which outranks park cleanup.
+    -- Equal priority keeps receipt order; stop() preserves any earlier latch.
+    local causes={}
+    local function propose(reason,rank)
+        causes[#causes+1]={reason=reason,rank=rank,order=#causes+1}
     end
-    local read=invoke(s,s.api.receipt,p.sequence)
-    local row=read[1] and read.n==2 and read[2] or nil
-    if not receipt_valid(row,p) then
-        p.unknown=true;s.unknown=true;stop(s,"force receipt unavailable or identity mismatch");return
-    end
-    -- Keep only bounded scalar receipt diagnostics. Never publish its successor.
-    s.last_receipt={outcome=row.outcome,sequence=row.sequence,requested_serial=row.requested_serial,
-        produced_serial=row.produced_serial,force_attempted=row.force_attempted,torque_attempted=row.torque_attempted,
-        retained=row.retained,quarantined=row.quarantined,successor_available=row.successor~=nil,
-        cleanup_disposition=row.cleanup_disposition}
-    if row.outcome=="queued" then return end
-    local parked=row.cleanup_disposition=="parked_without_successor"
-    if parked then
-        -- This is terminal transport cleanup, never a successor or an accepted model result.
-        stop(s,"force body parked without successor")
-    elseif row.outcome=="applied" then
-        if row.successor==nil then return end -- Outer lifecycle alone cannot replace native evidence.
-        local successor=receipt_sample_copy(row.successor)
-        local steps=successor and Identity.bounded_delta(successor.serial,p.serial,MAX_SAFE)
-        if not successor or not steps or steps<2 or Identity.compare(successor.serial,row.produced_serial)<=0
-            or successor.seconds~=p.seconds or successor.time<=p.time+p.seconds
-            or math.abs(successor.time-p.time-steps*p.seconds)>1e-6 then
-            p.unknown=true;s.unknown=true;stop(s,"applied successor incoherent");return
+    for _,p in ipairs(s.pending) do
+        p.ack_ready=false
+        if not p.unknown and not p.acknowledged then
+            if not p.sequence then
+                p.unknown=true;s.unknown=true;propose("force admission has no exact sequence",80)
+            else
+                if s.now and s.now-p.submitted_at>=1000 then
+                    p.watchdog_expired=true;propose("force receipt watchdog expired",20)
+                end
+                local read=invoke(s,s.api.receipt,p.sequence)
+                local row=read[1] and read.n==2 and read[2] or nil
+                if not receipt_valid(row,p) then
+                    p.unknown=true;s.unknown=true;propose("force receipt unavailable or identity mismatch",80)
+                else
+                    p.outcome=row.outcome;p.parked=row.cleanup_disposition=="parked_without_successor"
+                    if row.outcome=="applied" and not p.metrics_applied then
+                        p.metrics_applied=true
+                        metrics_serial(s,"applied",row.produced_serial)
+                        local delay=Identity.bounded_delta(row.produced_serial,p.serial,MAX_SAFE)
+                        local kind=delay==1 and "applied_delay_one" or "applied_delay_other"
+                        s.metrics[kind]+=1
+                    end
+                    s.last_receipt={outcome=row.outcome,sequence=row.sequence,requested_serial=row.requested_serial,
+                        produced_serial=row.produced_serial,force_attempted=row.force_attempted,torque_attempted=row.torque_attempted,
+                        retained=row.retained,quarantined=row.quarantined,successor_available=row.successor~=nil,
+                        cleanup_disposition=row.cleanup_disposition}
+                    if row.quarantined then propose("force body retained or quarantined",60)
+                    elseif row.retained then propose("force body retained or quarantined",10) end
+                    if p.parked then propose("force body parked without successor",40) end
+                    if p.parked then
+                        p.ack_ready=true
+                    elseif row.outcome=="applied" then
+                        if row.successor~=nil then
+                            local successor=receipt_sample_copy(row.successor)
+                            local steps=successor and Identity.bounded_delta(successor.serial,p.serial,MAX_SAFE)
+                            if not successor or not steps or steps<2 or Identity.compare(successor.serial,row.produced_serial)<=0
+                                or successor.seconds~=p.seconds or successor.time<=p.time+p.seconds
+                                or math.abs(successor.time-p.time-steps*p.seconds)>1e-6 then
+                                p.unknown=true;s.unknown=true;propose("applied successor incoherent",80)
+                            else
+                                p.ack_ready=true
+                                if not sample_copy(row.successor) then propose("native successor outside drive policy",50) end
+                            end
+                        end
+                    elseif row.outcome~="queued" then
+                        propose("force command "..row.outcome,row.outcome=="partial" and 70 or 30);p.ack_ready=true
+                    end
+                end
+            end
         end
-        if not sample_copy(row.successor) then stop(s,"native successor outside drive policy") end
-    else
-        stop(s,"force command "..row.outcome)
     end
-    if p.ack_attempted then p.unknown=true;s.unknown=true;return end
-    p.ack_attempted=true -- At most one attempt; an exception may follow native ACK.
-    local ack=invoke(s,s.api.acknowledge,p.sequence)
-    if not ack[1] or ack.n~=2 or ack[2]~=true then
-        p.unknown=true;s.unknown=true;stop(s,"force acknowledgement outcome unknown");return
+    -- Keep every observed cause for diagnostics, but let the most specific
+    -- one reach the first latch before ACK callbacks or another admission.
+    table.sort(causes,function(a,b)
+        return a.rank>b.rank or a.rank==b.rank and a.order<b.order
+    end)
+    for _,cause in ipairs(causes) do stop(s,cause.reason) end
+    local index=1
+    while index<=#s.pending do
+        local p=s.pending[index]
+        if p.acknowledged then
+            -- Positive ACK frees native capacity but cannot erase uncertainty.
+            index+=1
+        elseif p.unknown or not p.ack_ready then break
+        else
+            if p.ack_attempted then p.unknown=true;s.unknown=true;break end
+            p.ack_attempted=true -- A thrown call may have completed natively.
+            local ack=invoke(s,s.api.acknowledge,p.sequence)
+            if not ack[1] or ack.n~=2 or ack[2]~=true then
+                p.unknown=true;s.unknown=true;stop(s,"force acknowledgement outcome unknown");break
+            end
+            p.acknowledged=true;s.acknowledged+=1
+            local disposition=p.parked and "uncertain" or p.outcome=="applied" and "accepted"
+                or p.outcome=="partial" and "uncertain" or "cancelled"
+            local retired=retire(s,p,disposition)
+            if p.outcome=="partial" or not retired then
+                p.unknown=true;s.unknown=true;index+=1
+            else table.remove(s.pending,index) end
+            -- ACK never adopts older wheels or resets the newer prediction head.
+        end
     end
-    s.acknowledged+=1
-    if row.outcome=="partial" then
-        retire(s,p,"uncertain");p.unknown=true;s.unknown=true;return
+end
+local function mark_backpressure(s,reason,serial)
+    s.backpressure=reason;s.backpressure_steps+=1;s.last_backpressure_serial=serial
+    s.continuity_pending=true;s.continuity_skipped_steps+=1
+    -- The absent command applies no modeled axle torque. Keep virtual wheel
+    -- spin as an explicit coast assumption; this is not native wheel evidence.
+end
+local function command_backpressure(s)
+    if #s.pending>=MAX_PENDING then return "receipt_capacity" end
+    for _,p in ipairs(s.pending) do
+        if not p.acknowledged and p.outcome=="queued" then return "native_inbox_queued" end
     end
-    if not retire(s,p,parked and "uncertain" or row.outcome=="applied" and "accepted" or "cancelled") then p.unknown=true;return end
-    s.pending=nil
-    -- A one-step preview is older than the SDK's N+2 successor. Reset ONLY
-    -- force policy histories. Mapping/Trick already observed intervening epochs.
-    local reset=invoke(s,s.force.reset,s.force)
-    if not reset[1] or reset.n~=1 then s.unknown=true;stop(s,"force history reset unavailable");return end
-    -- Carry predicted spin only for the exact applied command after coherent successor and ACK.
-    -- Force policy histories still reset; these wheels are not native wheel observations.
-    if row.outcome=="applied" and not parked then s.wheels=p.wheels end
-    s.model_history={kind="force_reset",serial=p.serial,reason="terminal_force_receipt",native_wheel_state_known=false}
+    return nil
 end
 local function companion_result(s,frame,contact,actions)
     local out = {rotation_reserved=false,requests={},events={}}
@@ -476,6 +652,7 @@ local function observe(s,source_frame,raw,context)
     end
     s.last_sample=sample -- Consume before callbacks. This native serial cannot submit twice.
     s.observed_steps+=1
+    s.metrics_step={serial=sample.serial,report=false}
     -- One exact queued observation per body step preserves non-hop selection /
     -- release ordering without stepping Trick twice at one native epoch. Bind
     -- the frame to that real observation, never restamp it as the latest poll.
@@ -503,12 +680,19 @@ local function observe(s,source_frame,raw,context)
         if not clear then stop(s,tripwire_issue);return end
         contact.support.actor_tripwire="authored_rider_crossings_clear_v1"
     end
+    -- Contact diagnostics exist only after the complete wheel binding and,
+    -- where required, the independent rider tripwire have passed.
+    s.metrics_step.contact={serial=sample.serial,body_height=body.center_of_mass[2],
+        front_hit=contact.samples[1].contact.status=="hit",rear_hit=contact.samples[2].contact.status=="hit",
+        front_separation=contact.samples[1].separation,rear_separation=contact.samples[2].separation,
+        grounded=contact.grounded}
     local enriched=copy(frame)
     enriched.contact,enriched.support=copy(contact),copy(contact.support)
     frame=freeze(enriched)
     if input_frame then
         table.remove(s.input_queue,1)
         s.input_consumed+=1
+        metrics_report(s,model_source)
         local mapped=invoke(s,s.mapping.observe,s.mapping,input_frame,{grounded=contact.grounded,
             focused=true,menu_open=false,rotation_reserved=false})
         if not mapped[1] or mapped.n~=2 or not mapped.current or s.stopped or type(mapped[2])~="table" then
@@ -530,6 +714,30 @@ local function observe(s,source_frame,raw,context)
     if controls.physics_epoch~=sample.epoch or controls.h~=sample.seconds or not same_observation(controls.source,model_source) then
         stop(s,"mapped native frame mismatch");return
     end
+    if s.hop_policy=="suppress" and controls.hop then
+        local id=controls.hop.id
+        local retired=invoke(s,s.mapping.retire_hop,s.mapping,id,"suppressed")
+        local confirmed=retired[1] and retired.n==3 and retired[2]==true and retired[3]=="none"
+        s.hop_disposition={id=id,disposition="suppressed",confirmed=confirmed==true}
+        if not confirmed or not retired.current or s.stopped then
+            s.unknown=true;stop(s,"hop suppression unavailable");return
+        end
+        -- Refresh the same pure action projection after local retirement. No
+        -- source observation, body step, force receipt or native hop is made.
+        local refreshed=invoke(s,s.mapping.controls,s.mapping,{physics_epoch=sample.epoch,h=sample.seconds,
+            grounded=contact.grounded,rotation_reserved=false})
+        local next_controls=refreshed[1] and refreshed.n==2 and refreshed[2] or nil
+        if not refreshed.current or s.stopped or type(next_controls)~="table" or next_controls.valid~=true
+            or next_controls.submission_allowed~=true or next_controls.physics_epoch~=sample.epoch
+            or next_controls.h~=sample.seconds or not same_observation(next_controls.source,model_source)
+            or next_controls.hop~=nil or type(next_controls.force_controls)~="table"
+            or next_controls.force_controls.hop_event_id~=0 or next_controls.force_controls.hop_strength~=0
+            or type(next_controls.actions)~="table" or next_controls.actions.hop_pressed~=false
+            or next_controls.actions.hop_strength~=0 then
+            s.unknown=true;stop(s,"hop suppression controls unavailable");return
+        end
+        controls=next_controls
+    end
     if controls.hop and not Identity.bounded_delta(key.observed_ms,controls.hop.observed_ms,100) then
         stop(s,"hop request expired before body progress");return
     end
@@ -543,7 +751,21 @@ local function observe(s,source_frame,raw,context)
     s.recovery_status=companions.recovery and companions.recovery.phase or nil
     -- Every coherent observed model step happens before the command gate.
     poll_pending(s)
-    if s.pending or s.stopped or s.unknown then return end
+    if s.stopped or s.unknown then return end
+    s.backpressure=command_backpressure(s)
+    if s.backpressure then
+        -- This measured step is visible but uncommanded. Never replay it or
+        -- advance a force preview as though a packet had been accepted.
+        mark_backpressure(s,s.backpressure,sample.serial)
+        return
+    end
+    if s.continuity_pending then
+        local invalidated=invoke(s,s.force.invalidate_continuity,s.force)
+        if not invalidated[1] or invalidated.n~=1 or not invalidated.current or s.stopped then
+            s.unknown=true;stop(s,"force history continuity invalidation unavailable");return
+        end
+        s.continuity_pending=false;s.continuity_invalidations+=1
+    end
     local force_controls=copy(controls.force_controls)
     force_controls.rotation_reserved=force_controls.rotation_reserved or companions.rotation_reserved==true
     local preview=invoke(s,s.force.preview,s.force,sample.seconds,body,s.wheels,contact.samples,force_controls)
@@ -559,14 +781,33 @@ local function observe(s,source_frame,raw,context)
         hop_id=model.hop_applied and model.hop_event_id or nil,wheels=wheels}
     -- Core's closures enforce exact live ownership before AND after effects.
     -- This local reservation survives stop during submit and unknown admission.
-    s.pending=p
+    table.insert(s.pending,p)
     local submitted=invoke(s,s.api.submit,sample.epoch,command)
     if submitted[1] and submitted.n==4 and submitted[2]==true and submitted[3]==nil
         and Identity.is_nonzero_u64(submitted[4]) then
-        p.sequence=submitted[4];s.submitted+=1
-        if not submitted.current or s.stopped then stop(s,"stopped during force admission") end
+        local sequence=submitted[4]
+        if s.last_sequence and Identity.compare(sequence,s.last_sequence)~=1 then
+            -- Never alias an older receipt when an admitted ID repeats/regresses.
+            p.returned_sequence=sequence;p.unknown=true;s.unknown=true
+            stop(s,"force admission sequence did not advance");return
+        end
+        p.sequence=sequence;s.last_sequence=sequence;s.submitted+=1
+        metrics_serial(s,"submitted",p.serial)
+        -- Prediction follows exact acceptance order, independent of later ACK.
+        -- Actual N+1 application and N+2+ proof remain separate receipt facts.
+        local adopted=invoke(s,s.force._adopt,s.force,candidate)
+        if not adopted[1] or adopted.n~=1 then
+            p.history_unknown=true;s.unknown=true;stop(s,"accepted force history adoption unavailable");return
+        end
+        s.wheels=wheels
+        s.model_history={kind="predictive_accepted",serial=p.serial,sequence=sequence,
+            reason="exact_force_admission",native_wheel_state_known=false}
+        if not submitted.current or not adopted.current or s.stopped then stop(s,"stopped during force admission") end
     elseif submitted[1] and submitted.n==3 and submitted[2]==false and type(submitted[3])=="string" then
-        s.pending=nil;retire(s,p,"cancelled");stop(s,"force admission refused")
+        table.remove(s.pending,#s.pending)
+        if submitted[3]=="force_pipeline_full" then
+            mark_backpressure(s,"core_receipt_capacity",sample.serial)
+        else retire(s,p,"cancelled");stop(s,"force admission refused") end
     else
         p.unknown=true;s.unknown=true;retire(s,p,"uncertain");stop(s,"force admission outcome unknown")
     end
@@ -581,10 +822,16 @@ function Ride.new(force_api,models,options)
         contact=models.contact,tricks=models.tricks,recovery=models.recovery,alignment=models.alignment,
         alignment_options=detached(options.alignment),geometry=detached(options.geometry or Geometry),
         wheels=Forces.proposed_wheels(),phase="inert",issue="native qualification required",generation=0,
-        submitted=0,acknowledged=0,input_queue={},input_staged=0,input_consumed=0,observed_steps=0,model_steps=0}
+        submitted=0,acknowledged=0,pending={},metrics=new_metrics(),backpressure_steps=0,
+        continuity_pending=false,continuity_skipped_steps=0,continuity_invalidations=0,
+        input_queue={},input_staged=0,input_consumed=0,observed_steps=0,model_steps=0}
     if ACTIVATION_QUALIFIED then
+        -- Snapshot an immutable model capability once. Raw Forces has no hop
+        -- policy and retains its receipt-owned hop behavior unchanged.
+        s.hop_policy=s.force.hop_policy
         local valid=type(s.body)=="userdata" and s.incarnation~=nil and type(force_api)=="table"
             and type(s.contact)=="table" and type(s.contact.decode)=="function" and type(s.contact.actor_lane_qualified)=="function"
+            and (s.hop_policy==nil or s.hop_policy=="suppress")
         if valid then
             for _,name in ipairs({"probe_batch","submit","receipt","acknowledge"}) do
                 if type(force_api[name])~="function" then valid=false end
@@ -604,17 +851,18 @@ function Object:observe(source_frame,body_sample,context)
     s.busy=true
     local ok,why=pcall(observe,s,source_frame,body_sample,context)
     if not ok then stop(s,"observe exception: "..detail(why)) end
+    metrics_finish_step(s)
     s.busy=false
     return status(s)
 end
 function Object:drain()
     local s=states[self]
-    if not ACTIVATION_QUALIFIED or not s.pending then return status(s) end
+    if not ACTIVATION_QUALIFIED or #s.pending==0 then return status(s) end
     if s.busy then stop(s,"reentrant drain");return status(s) end
     s.busy=true
     local ok,why=pcall(poll_pending,s)
     if not ok then
-        s.unknown=true;if s.pending then s.pending.unknown=true end
+        s.unknown=true;for _,p in ipairs(s.pending) do if not p.acknowledged then p.unknown=true end end
         stop(s,"drain exception: "..detail(why))
     end
     s.busy=false

@@ -72,6 +72,8 @@ in `judging/checkpoints/`, except the two Follow and force checkpoints of 2026-1
 | M4 | PID 15648, namespace `LuaUIInputFollowOneForceM4_20261025_r1`. As M3, plus one observe-mode input lease on XInput user 0 (21 reads, 19 renewals, released, ACK). Applied receipt 4189 to 4191; all three ACKs before the removals. The body fell from Y 201.314 to 201.219. Independent review: 9.4/10, no likeness score. | [M4 input, Follow and force checkpoint](judging/checkpoints/2026-10-25-m4-input-follow-force-checkpoint.md) (`4b75b2a`); `E:\RESKATE DEV\ui-input-follow-one-force-m4-native-pass-v1-20261025T2044Z` |
 | Terrain probe r1 | PID 20772. Refused before creating a body: the first `skater.joint("root")` returned nil. See below. | `build\bmx\claude-handoff\to-claude\terrain-probe-trial-20261025T2130Z\RESULT.md`; `build\bmx\terrain-probe-actual-v1\` |
 | Terrain probe r2 | PID 25760, namespace `LuaTerrainActorProbe_20261025_r2`. The joint warm-up worked: root, hips, spine and head each read nil once (`warm_nil` 4), then finite. One diagnostic body was created, and one `terrain` batch with `exclude_local_actor=false` came back `available` with `native_casts` 6. All six rays were clear, both floor rays included, so there is no positive floor control. Release accepted; phase `done_retained`. Review HOLD. See below. | `build\bmx\claude-handoff\to-claude\terrain-probe-trial-r2-20261025T2202Z\RESULT.md`; `build\bmx\terrain-probe-actual-v2\`; `E:\RESKATE DEV\terrain-probe-native-all-clear-v2-20261025T2202Z` |
+| Alignment r3 | PID 2812, namespace `LuaRiderBikeAlignment_20261026_r3`. The eight-part bike rendered upright beside the sampled rider, then between the rider's legs pointing the rider's way, from `reskate.entities.set` with numeric ids 101-108 and 201-208; Stop removed all 16. No body, Follow, force or bone write. Wheel-to-floor contact and seat fit were not measured. | `build\bmx\alignment-actual-v3\RESULT.md`; `E:\RESKATE DEV\alignment-native-r3-20261026T0155Z` |
+| S1 category probe P1 | PID 29704, namespace `LuaS1CategoryProbe_20261026_p1`, runtime `E21F6710…` (BMX `4613baa6`). Verdict `P1_PASS_CANDIDATE`: Q1-Q3, Q6, Q7 and Q8 pass. The `camera` preset hit the MPR floor at y 274.361 with `in_categories` 0x00002FF0 (no named-actor bit). The production request (camera plus `require_named_actor_categories_absent`) was available with `named_actor_categories_absent=true` and 3 floor hits at T0 and at T30. `all` rays through the rider hit the rider proxy 0x10000040 and the local skater shape 0x04001008, neither of which shares a bit with camera, and camera rays on the same segments stayed clear. The zero-command body was still falling at T30, so S8 is unanswered. | `build\bmx\s1-p1-actual-v2\RESULT.md`; `E:\RESKATE DEV\s1-p1-native-20261026T1339Z` |
 
 "M3" and "M4" are Codex's trial labels. They are not the milestones M3 and M4 of
 [INTEGRATION_PLAN.md](bmx-plugin/INTEGRATION_PLAN.md#milestone-status-at-2584bcd), which need the
@@ -80,7 +82,8 @@ tracked core with the gates flipped in a trial copy.
 Not shown in game: mounted riding, grounded rolling, wheel ground support, a force on a body
 standing on the floor, calibrated force units, a mounted rider pose, rider alignment on the bike,
 bike-to-board switching through Lua, fall recovery through Lua, tricks, grinds, a BMX camera, a
-floor hit from a `terrain`-preset ray, local actor exclusion, and any likeness score. The retired
+floor hit from a `terrain`-preset ray, local actor exclusion, and any likeness score. P1 showed a
+`camera`-preset floor hit and a rider-free production wheel request, on sampled segments only. The retired
 C++ prototype's in-game runs are history, not evidence for the Lua mod.
 
 ### The terrain probe r1 refusal at 21:25Z
@@ -203,29 +206,34 @@ Prep, Follow and Board each arm once per plugin VM:
 
 ### Machine state
 
-At 22:25Z on 2026-10-25 no `Skate.exe` or `ReSkateLauncher.exe` was running. The M3, M4 and
-both terrain probe lifetimes each ended with an ordinary Alt+F4 and exit code 0, with a held-exit
-receipt in their evidence folders. Two mod folders in `build\bmx-game\Mods` have an enabled
-`reskate-plugin.json`: `LuaTerrainActorProbe_20261025_r2` (spent) and
-`LuaUIOnlyParkPrepare_20261025_v4` (Prep V4, which the M3, M4 and both terrain runs used). The r1
-folder has no manifest: the r2 deployment moved it out, preserved as
-`build\bmx\terrain-probe-actual-v2\spent-r1-reskate-plugin.json`, and left r1's source and storage
-in place. Disable the spent r2 probe before the next run by renaming its manifest. The CE2
-operators' `Assert-SpentDisabled` (`common.ps1:57`) refuses any other enabled mod folder, and
-their `Assert-Ce2Closed` (`common.ps1:110`) expects closure receipts that the CE2 lifetime never
+At 17:00Z on 2026-10-26 no `Skate.exe` or `ReSkateLauncher.exe` was running. Every lifetime since
+M3, including alignment r3 and P1, ended with an ordinary close and exit code 0, with a held-exit
+receipt in its evidence folder. Two mod folders in `build\bmx-game\Mods` have an enabled
+`reskate-plugin.json`: `LuaS1CategoryProbe_20261026_p1` (spent) and
+`LuaUIOnlyParkPrepare_20261025_v4` (Prep V4, which every run since M3 armed first). Each
+deployment since the terrain probes moved the previous probe's manifest into its own evidence
+folder (for example `build\bmx\s1-p1-actual-v1\spent-alignment-r3-reskate-plugin.json`). Retire the
+spent P1 manifest the same way before the next run; `build\bmx\m1-operator-v1\launch-m1.ps1` does.
+The CE2 operators' `Assert-SpentDisabled` (`common.ps1:57`) refuses any other enabled mod folder,
+and their `Assert-Ce2Closed` (`common.ps1:110`) expects closure receipts that the CE2 lifetime never
 got; a CE2-derived run needs a revised operator.
 
-SHA-256 values, re-hashed at 22:28Z:
+The isolated game has run `ReSkate.dll` `E21F6710…` since P1. It was built from BMX `4613baa6`
+(the S1 SDK set and the upstream merge to `3d706383`); it has no renewable Follow (S2, `5ec1fd90`).
+The previous runtime is kept byte-exact as `build\bmx-game\ReSkate.dll.EAFD2EFB.bak`.
+
+SHA-256 values, re-hashed at 17:00Z on 2026-10-26:
 
 | File | SHA-256 |
 | --- | --- |
 | `build\bmx-game\Skate.exe` | `FBCE74D5E28EF525DBBA2CB4ADBEBC13405BDBD88F31BC940BCA45E4AE88B8F9` |
-| `build\bmx-game\ReSkate.dll` (same as `build\vs2022-x64\Release\ReSkate.dll`) | `EAFD2EFB9D0A25CD2957998D6527F55BCB82A7509AA3E3C07675E178117C6E4D` |
+| `build\bmx-game\ReSkate.dll` | `E21F67106D3DDB57A1C73509361FDC6C0EE8A87AE86FC4F1300008AE07B00B56` |
+| `build\bmx-game\ReSkate.dll.EAFD2EFB.bak` | `EAFD2EFB9D0A25CD2957998D6527F55BCB82A7509AA3E3C07675E178117C6E4D` |
 | `build\bmx-game\ReSkateLauncher.exe` | `E4B0AE99637C018C386ED2117BAC85E6CA0CEAE044574EA7CBB6162C66D0DA55` |
 | `contrib\bmx-lab\Bmx-VirtualGamepad.py` | `B0B78C74B77D1651188BFC5A1AC71E362A45BB5F1FAEA3AE25F2946C0E1D8986` |
 | `build\bmx\gamepad-setup\dependency-verification.json` | `635314F50ECE83E1456ED5E4A0318DBF6BD51CBD2006355865145979C310DB67` |
 
-The PID 40988 trials, M3, M4 and both terrain probes all ran on runtime `EAFD2EFB…`. The M3
+Alignment r3 also ran on `EAFD2EFB…`, and P1 on `E21F6710…`. The PID 40988 trials, M3, M4 and both terrain probes all ran on runtime `EAFD2EFB…`. The M3
 checkpoint describes it as compiled from the whole C++ worktree of that time, not rebuilt from
 the later Lua commits; which commit's C++ it matches is not recorded in these receipts. Force7 ran
 on `4B7BD8D7…` and CE2 and the stationary capture on `3B25624D…`. Re-hash before relying on the

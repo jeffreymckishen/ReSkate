@@ -13,7 +13,9 @@ which is also `origin/BMX`. The header, "Where things stand", the call path, the
 were re-read at HEAD, and their line numbers are HEAD's. The milestone details, the risks and the
 decisions keep their first-read line numbers except where a line was rechecked; Core, Ride and the
 composer have changed since, so recheck those before review. Terrain probe r2, which ended at
-22:01Z, was added at about 22:30Z to the in-game table, S1, the milestone status and M2. Paths
+22:01Z, was added at about 22:30Z to the in-game table, S1, the milestone status and M2. On
+2026-10-26 at about 17:00Z the commit list, the in-game table and the S1 and S2 rows were brought up
+to `f40a866c`; nothing else was re-read then. Paths
 under `build/` are gitignored private packages on the development machine, and paths under
 `E:/RESKATE DEV/` are on the evidence drive. Paths starting `plugin/` are relative to this folder;
 all others are relative to the repository root. Three checkpoints are abbreviated:
@@ -64,6 +66,14 @@ none has run in game.
   (rider and trick presentation), `f3cc0c8` (camera), `4e5a4c2` (input presets), `acb1dae`
   (simulator) and `e2055ab` (rubric metrics) add pure modules. Neither `main.lua` nor Core loads
   any of them.
+- On 2026-10-26: `71f0b9d1` adds `require_named_actor_categories_absent`, `query_preset="all"`,
+  `include_hit_owner` and per-ray refusal reasons to `probe_batch` (S1). `6a19f97c` lets Contact,
+  Core and Ride accept that lane behind `CATEGORY_WHEEL_LANE_QUALIFIED=false`. `818dfa32` is the
+  composer's plan/step contract (B18). `c69b0ca8` adds `plugin/mounted_pose.lua`, gated off and
+  unwired ([MOUNTED_POSE.md](MOUNTED_POSE.md)). `5ec1fd90` adds renewable Follow to the SDK
+  (`renew_follow`, `read_follow_lease`, permission `world.physics.follow.renew`). `f40a866c`
+  (LUA-4) gives Core one lease deadline, refined from `read_follow_lease` when it exists, and a
+  per-tick Follow read budget.
 
 **In game, all on build 20260929 with the native BMX options off:**
 
@@ -78,6 +88,9 @@ none has run in game.
 | Codex M4, PID 15648 | The same, plus one observe-mode input lease on XInput user 0 (21 reads, 19 renewals, released, ACK). Applied receipt 4189 to 4191; all three ACKs came before the removals. The body fell from Y 201.314 to 201.219. | `M4CP` |
 | Terrain probe r1, PID 20772 | Refused before creating a body: the first `skater.joint("root")` returned nil, so none of its six rays was cast. | `build/bmx/claude-handoff/to-claude/terrain-probe-trial-20261025T2130Z/RESULT.md` |
 | Terrain probe r2, PID 25760 | A joint warm-up worked (each of four joints read nil once, then finite). One diagnostic body was created, and one `terrain` batch with `exclude_local_actor=false` came back `available` with `native_casts=6`. All six rays were clear, both floor rays included, so the batch has no positive floor control. Release accepted; phase `done_retained`; review HOLD. | `build/bmx/claude-handoff/to-claude/terrain-probe-trial-r2-20261025T2202Z/RESULT.md`; `build/bmx/terrain-probe-actual-v2/INDEPENDENT-REVIEW.md` |
+
+| Alignment r3, PID 2812 (2026-10-26) | The eight-part bike rendered upright beside the sampled rider and then between the rider's legs, from `reskate.entities.set`; Stop removed all 16 requests. No body, Follow or force. | `build/bmx/alignment-actual-v3/RESULT.md` |
+| S1 category probe P1, PID 29704 (2026-10-26) | `P1_PASS_CANDIDATE` on runtime `E21F6710…` (`4613baa6`). The `camera` preset hit the MPR floor (y 274.361, `in_categories` 0x00002FF0). The production request, camera plus `require_named_actor_categories_absent`, was available with `named_actor_categories_absent=true` and 3 floor hits at T0 and T30. `all` rays through the rider hit 0x10000040 and 0x04001008, disjoint from camera; camera rays on the same segments stayed clear. The zero-command body was still falling at T30. | `build/bmx/s1-p1-actual-v2/RESULT.md` |
 
 Both checkpoints record a falling body and say grounding, rolling, riding, force units, rider
 alignment and actor exclusion are not proven (`M3CP`, `M4CP` "Not proven").
@@ -262,8 +275,8 @@ the M3 to M5 numbers.
 
 | # | Capability | Evidence of the gap | Needed by |
 | --- | --- | --- | --- |
-| S1 | Actor-safe wheel rays. `exclude_local_actor=true` returns `local_actor_exclusion_unavailable` before any cast. `query_preset="terrain"` sends one category bit, but nobody has measured whether the rider's shapes carry it. Terrain probe r1 was refused before casting. Terrain probe r2 cast all six of its rays and every one came back clear, its two floor rays included, so with no positive floor control its clear rider crossings answer nothing, and it says nothing about actor exclusion. Static research found that the native query compares shape-owner indices against an ignore list and that the nominated skater-creation query passes an empty list, but a complete current local-actor owner set is not yet producible from the qualified evidence. | `contrib/plugin-body-query.md:52-53`, `:96-121`, `:140`; `Engine/Game/Build/20260929/park_editor.h:75-84`; `Extension/World/owned_bodies.cpp:1178`; `build/bmx/actor-exclusion-research-v1/STAGE-2.md`, `STAGE-3.md`, `STAGE-4.md` | M3 |
-| S2 | Sustained Follow. The lease is 3 s from reservation with no renewal. `callback_entry` continuation has been seen for 31 revisions (about half a second). | `contrib/plugin-body-follow.md:36-41`; `CP:185` | M6 |
+| S1 | Actor-safe wheel rays. **Lane D1c (2026-10-26):** `71f0b9d1` adds `require_named_actor_categories_absent`, and P1 showed in game that the production request (camera preset plus that flag) hits the MPR floor and that camera rays crossing the rider stay clear, on sampled segments only. P2 (riding pose under Follow, with visual parts, falsifier F8) must pass before `CATEGORY_WHEEL_LANE_QUALIFIED` flips in a trial copy. Before that: `exclude_local_actor=true` returns `local_actor_exclusion_unavailable` before any cast. `query_preset="terrain"` sends one category bit, but nobody has measured whether the rider's shapes carry it. Terrain probe r1 was refused before casting. Terrain probe r2 cast all six of its rays and every one came back clear, its two floor rays included, so with no positive floor control its clear rider crossings answer nothing, and it says nothing about actor exclusion. Static research found that the native query compares shape-owner indices against an ignore list and that the nominated skater-creation query passes an empty list, but a complete current local-actor owner set is not yet producible from the qualified evidence. | `contrib/plugin-body-query.md:52-53`, `:96-121`, `:140`; `Engine/Game/Build/20260929/park_editor.h:75-84`; `Extension/World/owned_bodies.cpp:1178`; `build/bmx/actor-exclusion-research-v1/STAGE-2.md`, `STAGE-3.md`, `STAGE-4.md` | M3 |
+| S2 | Sustained Follow. The lease is 3 s from reservation with no renewal in any runtime that has run in game. `5ec1fd90` adds an opt-in renewable lease (500 ms per accepted proof of the body's latest sample, 120 s ceiling) and `read_follow_lease`; it is built and tested on BMX but has not run in game. `callback_entry` continuation has been seen for 31 revisions (about half a second). | `contrib/plugin-body-follow.md:36-41`; `CP:185` | M6 |
 | S3 | Evidence that nonzero forces move a body under the ride model. Three private trials applied one horizontal magnitude-106 command each and acknowledged it, twice on a body under Follow. Each body was falling, force units are uncalibrated, and no command has pushed a body standing on the floor. | `7b12f43`; `M3CP`; `M4CP`; `Engine/Game/World/owned_body.h:15`, `:107-117` | M4 |
 | S4 | Park after motion. Park requires zero linear and angular velocity, force and torque. Codex's M3 and M4 observed park and ACK after one force on a falling body, and `0e0ddc8` made the angular zero check use XYZ. Park after sustained, Lua-driven motion on the ground is unproven; CE1's moving body never parked. | `Extension/World/owned_bodies.cpp:1066-1070`; `M3CP`; `M4CP`; `CP:65-70` | M4 |
 | S5 | A body lifetime that can be reused. Eight body slots per process, parked bodies are never reused, so every body trial spends one slot. | `Engine/Game/World/owned_body.h:12`; `Extension/World/owned_bodies.cpp:744`; `CP:85-91` | M6 and later |

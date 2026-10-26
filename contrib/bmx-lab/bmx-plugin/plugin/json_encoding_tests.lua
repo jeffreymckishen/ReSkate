@@ -1,12 +1,15 @@
 -- Standalone runner conformance for the SDK-compatible table conversion and the
 -- real Engine/Core/Json writer. No plugin Host or permission checks are claimed.
+local Math=require("./force_math")
 local Tests={}
-function Tests.run()
+function Tests.run(runner)
     local cases,assertions=0,0
     local function check(ok,why) assertions+=1;assert(ok,why) end
     local function case(run) cases+=1;run() end
-    check(reskate==nil and type(bmx_luau_runner)=="table","runner helper has no reskate authority")
-    local encode=bmx_luau_runner.json_encode
+    check(reskate==nil and bmx_luau_runner==nil,"JSON helper is never a module global")
+    check(type(runner)=="table" and table.isfrozen(runner),"runner helper argument is required and frozen")
+    check(getfenv(Math.finite).bmx_luau_runner==nil,"an imported production dependency has no JSON helper")
+    local encode=runner.json_encode
     check(type(encode)=="function","actual Json writer helper is available")
     local function refused(value,reason)
         local ok,message=pcall(encode,value)
@@ -67,7 +70,7 @@ function Tests.run()
         local function trap() invoked+=1;error("JSON invoked metatable",0) end
         local value=setmetatable({a=1},{__pairs=trap,__index=trap,__len=trap,__tostring=trap})
         check(encode(value)=='{"a":1}' and invoked==0,"SDK raw iteration ignores metatable behavior")
-        check(not pcall(function() bmx_luau_runner.json_encode=nil end),"test helper is read-only")
+        check(not pcall(function() runner.json_encode=nil end),"test helper is read-only")
     end)
     return {cases=cases,assertions=assertions,native_actions=0}
 end

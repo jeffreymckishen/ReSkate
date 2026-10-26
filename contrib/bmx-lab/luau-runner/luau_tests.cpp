@@ -722,10 +722,12 @@ void run_stage_regression(std::string_view name, const std::filesystem::path& sc
 // The suite driver. Fields beyond the two counts (comparisons, native_actions and so on) are
 // printed so a run shows what a suite skipped without its C++ reference rows, but not judged.
 constexpr std::string_view suite_driver = R"lua(
-local module_name = ...
+local module_name, json_helper = ...
 local suite = require("./" .. module_name)
 assert(type(suite) == "table" and type(suite.run) == "function", module_name .. " has no run() function")
-local result = suite.run()
+local result
+if json_helper ~= nil then result = suite.run(json_helper)
+else result = suite.run() end
 assert(type(result) == "table", module_name .. ".run() must return a table with cases and assertions")
 for _, field in {"cases", "assertions"} do
     local count = result[field]
@@ -756,6 +758,8 @@ end
 local force_math = require("./force_math")
 assert(type(force_math) == "table" and require("./force_math") == force_math, "a module runs once and its table is kept")
 assert(reskate == nil, "the runner offers no reskate API: it is not the plugin Host")
+assert(bmx_luau_runner == nil and getfenv(force_math.finite).bmx_luau_runner == nil,
+    "ordinary modules cannot see the JSON test helper")
 assert(not pcall(function() bmx_luau_runner_probe = true end), "globals are read only")
 assert(not pcall(function() string.bmx_luau_runner_probe = true end), "standard libraries are read only")
 print("bmx_luau_tests: self-test passed: ./name in one folder only, modules kept once, read-only globals, no reskate API")
@@ -771,12 +775,7 @@ public:
         luaL_openlibs(state_);
         lua_pushcfunction(state_, require_module, "require");
         lua_setglobal(state_, "require");
-        // A frozen test helper keeps byte measurement separate from SDK authority.
-        lua_createtable(state_, 0, 1);
-        lua_pushcfunction(state_, encode_json, "json_encode");
-        lua_setfield(state_, -2, "json_encode");
-        lua_setreadonly(state_, -1, true);
-        lua_setglobal(state_, "bmx_luau_runner");
+
         // From here globals and the standard libraries are read only, as in a plugin.
         luaL_sandbox(state_);
     }
@@ -787,13 +786,14 @@ public:
     void run_suite(std::string_view module) {
         if (!valid_module_name(module))
             throw std::runtime_error("a suite name is 1 to 128 letters, digits, underscores or hyphens, with no path or extension");
-        execute(suite_driver, "@bmx_luau_tests", module);
+        const bool json_helper = module == "json_encoding_tests" || module == "bike_runtime_ledger_size_tests";
+        execute(suite_driver, "@bmx_luau_tests", module, json_helper);
     }
 
-    void run_self_test() { execute(self_test, "@bmx_luau_tests_self_test", {}); }
+    void run_self_test() { execute(self_test, "@bmx_luau_tests_self_test", {}, false); }
 
 private:
-    void execute(std::string_view source, const std::string& chunk, std::string_view argument) {
+    void execute(std::string_view source, const std::string& chunk, std::string_view argument, bool json_helper) {
         lua_settop(state_, 0);
         lua_pushcfunction(state_, traceback, "traceback");
         if (!compile(state_, source, chunk)) throw std::runtime_error(top_text());
@@ -801,6 +801,15 @@ private:
         if (!argument.empty()) {
             lua_pushlstring(state_, argument.data(), argument.size());
             arguments = 1;
+        }
+        // Only the two serialization suites receive this explicit run() argument.
+        // Required production modules use the ordinary globals and never see it.
+        if (json_helper) {
+            lua_createtable(state_, 0, 1);
+            lua_pushcfunction(state_, encode_json, "json_encode");
+            lua_setfield(state_, -2, "json_encode");
+            lua_setreadonly(state_, -1, true);
+            ++arguments;
         }
         if (lua_pcall(state_, arguments, 0, 1) != 0) throw std::runtime_error(top_text());
         lua_settop(state_, 0);

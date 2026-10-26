@@ -219,11 +219,15 @@ local function source_fixture(encode,options)
     return f,core,state
 end
 
-function Tests.run()
+function Tests.run(runner)
     local cases,assertions=0,0
     local function check(ok,why) assertions+=1;assert(ok,why) end
-    check(reskate==nil and type(bmx_luau_runner)=="table","size proof uses only the standalone helper")
-    local encode=bmx_luau_runner.json_encode
+    check(reskate==nil and bmx_luau_runner==nil,"JSON helper is never a module global")
+    check(type(runner)=="table" and table.isfrozen(runner) and type(runner.json_encode)=="function",
+        "runner helper argument supplies only the standalone JSON encoder")
+    check(getfenv(Forces.new).bmx_luau_runner==nil and getfenv(Core.new).bmx_luau_runner==nil,
+        "imported production Force/Core modules have no ambient JSON helper")
+    local encode=runner.json_encode
     local target_window_ms=2500
     local native_step_ms=Forces.native_seconds*1000
     local model_steps=math.ceil(target_window_ms/native_step_ms)

@@ -91,7 +91,7 @@ local function floor_root(api,root,actor_y)
         local clearance=placed[2]+axle[2]-G.wheel_radius-hit.y
         if clearance<0 or clearance>.02 then return nil,"authored wheels cannot clear the returned floor hit" end
     end
-    return placed
+    return placed,nil,hit.y
 end
 function S.new(api)
     return setmetatable({api=api or reskate,phase="idle",detail="No Lua bike spawned.",used=false,
@@ -157,6 +157,12 @@ function Runtime:stop(reason)
     self.phase=self.cleanup_unknown and "cleanup_unknown" or "closed"
 end
 function Runtime:owned_measurement() return self.body,self.sample end
+-- The height of the one floor hit the private floor trial accepted and placed
+-- the bike on, or nil: the tracked airborne path casts no floor ray, and a
+-- refused, missed or cancelled ray keeps none. It stays known after a stop. A
+-- caller that lays something on the floor reads it (board_drop.lua, the
+-- rider's dropped board); nothing infers a floor from it.
+function Runtime:floor_height() return self.floor_y end
 function Runtime:handoff_follow()
     if self.phase~="spawned" or self.follow_handed_off or self.body_release_attempted
         or self.creation_unknown or typeof(self.body)~="userdata" or not valid(self.sample) then
@@ -282,10 +288,10 @@ function Runtime:_update(dt)
             if self.phase~="loading_assets" then return end
             if self.floor_query_attempted then self:stop("floor ray attempt already consumed") return end
             self.floor_query_attempted=true -- Reserve before a callback can stop or re-enter.
-            local root,issue=floor_root(self.api,self.root,self.floor_actor_y)
+            local root,issue,floor_y=floor_root(self.api,self.root,self.floor_actor_y)
             if self.phase~="loading_assets" then return end
             if not root then self:stop(issue) return end
-            self.root=root
+            self.root=root self.floor_y=floor_y
             self.floor_query_wall=self.wall
         end
         local placed,why=self:_place(assert(Visual.matrices(self.root,self.rotation)))

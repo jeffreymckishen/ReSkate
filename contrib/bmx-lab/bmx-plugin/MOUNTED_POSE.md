@@ -344,6 +344,43 @@ None of the following has been seen:
   out.
 - `MOUNTED_POSE_QUALIFIED` stays false until a supervised game run has shown the pose.
 
+## The board while riding
+
+The posed rider is still, to the game, a skater on foot in state 504, and 504 is the state in which the skater
+carries his board. Without more, the board is drawn in his hand all through the ride. `plugin/board_drop.lua` makes
+him drop it as he mounts and gives it back when the ride ends. `plugin/board_drop_tests.lua` checks it against fakes
+of `reskate.board` that keep the SDK's argument checks, messages, rate and one-owner rule.
+
+- **What happens.** At the mount, `Dropper:drop(floor)` reads `board.bones()` once and keeps bones 1 and 2 for
+  calibration. Then it calls `board.toss({2}, {velocity = (0, 0.6, 0), spin = (0, 1.5, 0), ground = floor +
+  GROUND_OFFSET_M})`. Bone 2, the deck's mount, carries the deck, trucks and wheels, so the whole visible board leaves
+  his hand as one piece. It rises about 2 cm, falls, lands flat pointing the way it was, slides a little and lies where
+  he got on. When the ride ends, `Dropper:restore()` calls `board.clear()` once and the board is in his hand again.
+- **Why a drop and not `board.hide`.** A board that falls and lies where he got on reads as put down, and the same
+  board comes back to his hand at the end. A hidden one would vanish from his hand.
+- **The ground.** A board in the hand does not tell where the floor is: a piece tossed from there hung at hand height
+  (`contrib/board-break.md`). The drop uses the floor the spawn measured with its one ray: `bike_spawn.lua`
+  `Runtime:floor_height()`, the height of the hit it accepted. Without a measured floor nothing is dropped. The piece
+  lands when its frame, the board's place (bone 1), reaches `floor + GROUND_OFFSET_M`. `GROUND_OFFSET_M = 0` assumes
+  bone 1 lies on the wheels' contact plane when the board lies flat, which is unproved. If the board floats d m above
+  the floor, set -d; if it sinks d m into it, set +d. The recorded bone 2 says how far the deck's mount sits above
+  bone 1.
+- **Only this screen.** Only what this machine draws changes. The game still has the skater carrying the board, and
+  toss is local: other players are sent the board as the game holds it, in his hand. Only `board.hide` with
+  `others = true` filters the pose that is sent.
+- **Unload.** The SDK clears what a plugin holds of the board when the plugin unloads or the Host stops it
+  (`plugin_game_runtime.cpp` release), so a board left lying by a crash comes back then.
+- **Another plugin.** One plugin holds the local board at a time. While another holds it, toss refuses ("<plugin>
+  holds the board"), the board stays in his hand, nothing is cleared and the ride goes on. Toss also shares the SDK's
+  four-a-second control rate with input leases and pulses; a refusal there is kept the same way.
+- **Not in tracked Core yet.** Tracked Core does not mount the pose, so it does not drop the board either. The private
+  trial packages wire the drop with the pose: once, right after the Poser's first accepted mount, and the restore
+  wherever the pose ends (every stop and the unload). The manifest lists `board`.
+
+None of this has been seen in the game: where the board lands, whether it lands on its wheels or upside down (that
+follows how bone 1 is turned in the hand), whether bone 1 lies on the contact plane, and how the piece looks while the
+rider rides away.
+
 ## Review 1: what changed and why
 
 Every finding was checked with probes on a scratch copy before it was changed, and all of them held. Each is fixed;

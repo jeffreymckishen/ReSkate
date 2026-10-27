@@ -49,11 +49,13 @@ local function fixture(options)
         f.passive.capture_reserved = retained == true
         if f.passive.terminal then f.passive.source_released = not retained end
     end
-    function f.publish(pad, equal_ms)
+    -- rest is the SDK's sample.neutral; leaving it nil models a runtime without it.
+    function f.publish(pad, equal_ms, rest)
         f.serial = increment(f.serial)
         if not equal_ms then f.native_ms = increment(f.native_ms) end
         f.sample = metadata({sequence=f.sequence,source_epoch=f.source_epoch,context_generation=f.context,
-            observation_serial=f.serial,observed_ms=f.native_ms,user=f.user,packet=f.packet,pad=copy(pad or neutral())})
+            observation_serial=f.serial,observed_ms=f.native_ms,user=f.user,packet=f.packet,pad=copy(pad or neutral()),
+            neutral=rest})
         if f.passive then
             f.passive.status, f.passive.observed_ms, f.passive.last_observation = "active", f.native_ms, f.serial
         end
@@ -277,6 +279,45 @@ function Tests.run()
         local f=fixture();check(f.start().input_ok,"fault begins from constructed admitted input")
         fault(f);denied(f.step(),"regression/replacement/inconsistent source or capture facts revoke input")
         check(f.count("lease")==1,"loss never automatically acquires a replacement lease")
+    end
+    do
+        cases += 1
+        -- The SDK's rest fact is copied as given, so Core uses it without thresholds of its own.
+        local f=fixture();local active=f.start()
+        check(active.input_ok and active.sample.neutral==nil,"a runtime without the fact leaves it nil")
+        local noisy=neutral();noisy.left_x,noisy.right_trigger=.2,.1
+        f.publish(noisy,false,true)
+        local frame=f.step()
+        check(frame.input_ok and frame.sample.neutral==true and frame.sample.pad.left_x==.2,
+            "the SDK's neutral fact is copied beside the pad")
+        local pushed=neutral();pushed.left_x=.9
+        f.publish(pushed,false,false)
+        frame=f.step()
+        check(frame.input_ok and frame.sample.neutral==false,"a false fact is copied too")
+    end
+    local contradictions={
+        {"string",function(pad) return pad,"true" end},
+        {"number",function(pad) return pad,1 end},
+        {"pressed button called neutral",function(pad) pad.buttons.a=true;return pad,true end},
+        {"exact zero called active",function(pad) return pad,false end},
+    }
+    for _, spec in ipairs(contradictions) do
+        cases += 1
+        local f=fixture();check(f.start().input_ok,"constructed admitted input")
+        local pad,value=spec[2](neutral())
+        f.publish(pad,false,value)
+        denied(f.step(),"a malformed or contradictory neutral fact stops input: "..spec[1])
+        check(f.source:status().reason=="invalid neutral fact","the stop names the neutral fact: "..spec[1])
+        check(f.count("lease")==1,"a bad fact never acquires a replacement lease")
+    end
+    do
+        cases += 1
+        local f=fixture();check(f.start().input_ok,"constructed admitted input")
+        local noisy=neutral();noisy.left_y=-.1
+        f.publish(noisy,false,true);check(f.step().input_ok,"a fresh neutral observation is admitted")
+        f.sample.neutral=false
+        denied(f.step(),"a duplicate observation whose neutral fact changed stops input")
+        check(f.source:status().reason=="changed duplicate observation","the stop names the changed duplicate")
     end
     do
         cases += 1

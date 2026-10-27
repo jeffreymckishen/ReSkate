@@ -168,9 +168,12 @@ end
 local pad_axes={"left_x","left_y","right_x","right_y","left_trigger","right_trigger"}
 local pad_buttons={"up","down","left","right","start","back","left_stick","right_stick","lb","rb","a","b","x","y"}
 -- Pure selected-pad policy (B4), not a mount or force capability. Before
--- publication the pad must be exactly neutral. Only the production caller
--- supplies riding, after the private gate and observed publication join; the
--- ride's mapper then acts on bounded axes and boolean buttons.
+-- publication the selected pad must be neutral: the SDK's sample.neutral, its
+-- XInput rest thresholds, which Core does not copy, so a controller resting in
+-- the hands passes. Without that fact (an older runtime) the pad must be exactly
+-- zero, as before. Only the production caller supplies riding, after the private
+-- gate and observed publication join; the ride's mapper then acts on bounded
+-- axes and boolean buttons.
 function BikeRuntime.selected_pad_admitted(frame,slot,riding)
     local function plain(v) return type(v)=="table" and getmetatable(v)==nil end
     if type(slot)~="number" or slot%1~=0 or slot<0 or slot>3 then return false end
@@ -178,16 +181,22 @@ function BikeRuntime.selected_pad_admitted(frame,slot,riding)
         or not plain(frame.sample.pad) or frame.sample.pad.playstation~=false
         or not plain(frame.sample.pad.buttons) then return false end
     local pad=frame.sample.pad
+    local zero=true
     for _,key in ipairs(pad_axes) do
         local value=pad[key]
         local low=(key=="left_trigger" or key=="right_trigger") and 0 or -1
-        if type(value)~="number" or value~=value or value<low or value>1
-            or riding~=true and value~=0 then return false end
+        if type(value)~="number" or value~=value or value<low or value>1 then return false end
+        zero=zero and value==0
     end
+    local pressed=false
     for _,key in ipairs(pad_buttons) do
-        if type(pad.buttons[key])~="boolean" or riding~=true and pad.buttons[key]~=false then return false end
+        if type(pad.buttons[key])~="boolean" then return false end
+        pressed=pressed or pad.buttons[key]
     end
-    return true
+    if riding==true then return true end
+    local neutral=frame.sample.neutral
+    if neutral==nil then return zero and not pressed end
+    return neutral==true and not pressed
 end
 
 -- Bind only callbacks, never an SDK object or activation option. Keeping this
@@ -1245,7 +1254,7 @@ function object:request_mount(slot,admitted)
         T.initial_facts=observed;T.facts=observed;T.active=true
         if persist(true) and current(generation) then
             if observed.state==100 then accepted=begin_equipment(slot,"mount",100)
-            else T.phase="armed";T.detail="Armed once; close both menus and keep the selected raw pad exactly zero.";accepted=true end
+            else T.phase="armed";T.detail="Armed once; close both menus and rest the selected controller: sticks centred, triggers and buttons released.";accepted=true end
         end
     end
     T.intent_inflight=false;T.busy=false
@@ -1348,7 +1357,7 @@ local function tick(dt)
                 selected_source_frame=frame[2] -- Exact private Source output, never source_record DTO.
                 local riding=RIDE_COMPOSITION_QUALIFIED and T.phase=="following" and T.published_seen==true
                 if not BikeRuntime.selected_pad_admitted(frame[2],T.slot,riding) then
-                    stop_all(riding and "selected riding pad unavailable or malformed" or "selected raw pad left exact zero")
+                    stop_all(riding and "selected riding pad unavailable or malformed" or "selected pad left neutral")
                 elseif not T.spawn_requested then
                     T.spawn_requested=true
                     local r=call("spawn.request",spawn.request,spawn)

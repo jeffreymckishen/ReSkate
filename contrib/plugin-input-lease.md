@@ -71,13 +71,32 @@ returns unavailable. The API does not invent a connection or force a poll.
 | `user` | Selected numeric XInput slot 0..3 |
 | `packet` | Original observed uint32 packet counter, exactly representable as a number |
 | `pad` | Saved original-source pad described below |
+| `neutral` | Boolean: `pad` is at rest, by the rule below. Capture and `input.pulse` use the same rule |
 
 The pad fields are `sample.pad.left_x`, `sample.pad.left_y`,
 `sample.pad.right_x`, `sample.pad.right_y`, `sample.pad.left_trigger`,
 `sample.pad.right_trigger`, `sample.pad.buttons` and `sample.pad.playstation`.
 Sticks are linearly normalized to [-1,1], preserving both endpoints; triggers
-are normalized to [0,1]. No stick deadzone is applied. `playstation=false` names
+are normalized to [0,1]. No stick deadzone is applied to these values. `playstation=false` names
 this XInput representation, not the physical hardware behind it.
+
+`sample.neutral` is the SDK's one definition of a pad at rest, so a plugin does
+not need its own copy of the thresholds. A controller resting in the hands
+reports small stick and trigger noise, so rest uses XInput's own dead zones on
+the raw values, not exact zero:
+
+- no button is pressed;
+- each trigger is at most 30 of 255 (`XINPUT_GAMEPAD_TRIGGER_THRESHOLD`);
+- each stick is inside a circle: `x*x + y*y` is at most 7849² for the left stick
+  and 8689² for the right (`XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE`,
+  `XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE`), on the raw -32768..32767 values.
+  Normalized, that is a radius of about 0.240 and 0.265.
+
+The stick test is radial because XInput gives these values as radii. A square of
+the same size would count a diagonal push at 1.41 times the radius, about a third
+of full travel, as rest. `sample.neutral` sits beside `pad`, not inside it, and
+like every other field it is reachable only through `lease_read`, so it needs
+`input.lease`.
 
 The Boolean button names are `up`, `down`, `left`, `right`, `start`, `back`,
 `left_stick`, `right_stick`, `lb`, `rb`, `a`, `b`, `x`, `y`.
@@ -132,8 +151,12 @@ This is stricter than ordinary renewal. A `busy` admission can refuse without
 capturing; do not infer suppression from a request or a Boolean permission.
 
 Successful `lease_capture` initially admits `waiting_neutral`. Capture begins
-only on a strictly later fresh outer report whose complete original pad is
-exactly zero: all buttons, triggers and both sticks. There is no deadzone.
+only on a strictly later fresh outer report whose original pad is neutral, by the
+rule under [Read observations](#read-observations) that `sample.neutral` reports:
+no button, triggers at most 30, sticks inside XInput's dead-zone circles. A pad
+resting in the hands therefore starts capture; a pushed stick, held trigger or
+any button does not. While capturing, the reports it writes are exactly zero,
+whatever noise the pad reports.
 Admission itself need not prove that later neutral report exists.
 
 Once capture publishes neutral reports, the original pad remains available from
@@ -163,8 +186,9 @@ Its metadata is `transport="xinput"`, `source_identity="observed_stream"`,
 
 Phases are `waiting_neutral`, `capturing`, `releasing`, and `complete`; `terminal`
 means `complete`. `publications` counts confirmed owned output-buffer writes;
-`neutral_releases` counts confirmed neutral handoffs. Neither is proof the wrapper
-returned normally or that native gameplay consumed the report.
+`neutral_releases` counts confirmed handoffs: the owned report that ends a release,
+in which every control still held back is neutral (see below). Neither is proof the
+wrapper returned normally or that native gameplay consumed the report.
 
 ## Release, retained duty and acknowledgement
 
@@ -173,13 +197,43 @@ and also requests stop for its associated capture. Stopping does not invent an
 asynchronous neutral handoff. Release before any possible owned write can
 complete without debt; a published or uncertain attempted write retains debt.
 
-Debt clears only after a later qualifying clean, same-source, raw-neutral report
-is successfully published as neutral. Returning to neutral matters during release
-as well as admission. Source change/loss can quarantine retained debt; a new
-source epoch cannot discharge the old stream's duty. Competing filters, captures
-or scripts can defer cleanup even if their bytes happen to equal neutral.
-Loss of capture authority stops assertion; cleanup uses its separate safe
-same-source/freshness/interference checks. Expiry never clears debt by itself.
+Release hands the controls back one at a time. At the stop every control is held
+back. On each later clean, fresh, same-source report, a control leaves that set
+the first time the original shows it at rest (the rule above, per control), and
+the published report is the original with the controls still held back made
+neutral. So a control at rest reaches the game at once, and one held through the
+stop reaches it only after it has rested, as a new press or push rather than a
+sudden one. Debt clears on the confirmed report in which nothing is still held, so
+a pad resting in the hands finishes on its first report.
+
+While the release is open, the controls still held back stay neutral in every
+same-source report, not only the clean ones the capture writes: a report another
+filter or script owns passes as it is except for those controls. Rest is read
+from the original, so a control seen at rest under such a filter is handed back
+all the same; only a clean report completes the handoff. A full neutral report
+the SDK writes during a release (a delayed completion of an earlier call, or the
+stale-stage fallback) also takes back what was already handed back, so every
+control is held again until it rests. That re-arming never moves the bound.
+
+A release is bounded: **1000 ms** from its first sync or report. A clean
+same-source report at or after the bound ends it anyway, as a confirmed handoff
+(`neutral_releases` counts it), and the SDK keeps holding back whatever is still
+held after the capture completes: each such control stays neutral in that
+stream's reports until an in-order original shows it at rest, and a new source
+epoch drops it. The slot frees and can be acknowledged, but a held
+control still never leaks into the game.
+
+Source change/loss quarantines retained debt; a new source epoch cannot
+discharge the old stream's duty or receive its held controls. A lost stream can
+never show rest, so at the bound its release ends `complete` with
+`quarantined=true`, no debt and no added `neutral_releases`, rather than
+reserving the slot and refusing pulses and leases for good. Competing filters,
+captures or scripts can defer cleanup even if their bytes happen to equal
+neutral; a release that meets one waits for a clean report, which then finishes
+it if the bound has passed, and meanwhile held controls stay neutral in that
+filter's reports. Loss of capture authority stops assertion; cleanup
+uses its separate safe same-source/freshness/interference checks. Lease expiry
+never clears debt by itself.
 
 `capture_reserved=true` means associated capture duty or in-flight source calls
 still reserve the source. It can coexist with a terminal observation receipt
@@ -200,8 +254,11 @@ example that assumes future polls or successful cleanup:
 2. Read an actual fresh snapshot. If capture is needed, request it with that
    snapshot's epoch and wait for measured `capturing` state. Keep original-source
    reads and exact-epoch renewal bounded; stop on failed authority or watchdog.
-3. Request capture release and passive lease release. Keep controls neutral and
-   inspect retained receipts; do not replace unobserved cleanup with a timeout.
+3. Request capture release and passive lease release. Inspect retained receipts
+   until the handoff completes: within the 1000 ms release bound while clean
+   polls continue, or later while another filter holds the stream, since
+   completion waits for a clean report. Do not replace unobserved cleanup with a
+   caller timeout of your own.
 4. Acknowledge capture only after its actual complete/debt-free/drained handoff;
    respect an acknowledgement refusal. Then require terminal passive state,
    `source_released=true`, and `capture_reserved=false` before acknowledging the lease.

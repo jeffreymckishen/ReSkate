@@ -30,7 +30,15 @@ struct Source {
     lease::Source observation;
     std::uint64_t in_flight{};
     bool capture_eligible{};
+    // Controls a capture release finished at its bound while they were still
+    // held, and the stream epoch they belong to. The capture slot is free, but
+    // each stays out of this stream's reports until it is seen at rest.
+    capture::Held held_back;
+    std::uint64_t held_epoch{};
 };
+static_assert(policy::left_stick_rest == XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE &&
+    policy::right_stick_rest == XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE &&
+    policy::trigger_rest == XINPUT_GAMEPAD_TRIGGER_THRESHOLD, "the SDK's rest thresholds are XInput's own");
 struct Entry {
     model::Receipt receipt;
     Actor actor;
@@ -86,6 +94,9 @@ void publication_advance() noexcept {
 policy::Pad pad(const XINPUT_GAMEPAD& value) noexcept {
     return {value.wButtons, value.bLeftTrigger, value.bRightTrigger,
         value.sThumbLX, value.sThumbLY, value.sThumbRX, value.sThumbRY};
+}
+XINPUT_GAMEPAD gamepad(const policy::Pad& value) noexcept {
+    return {value.buttons, value.left_trigger, value.right_trigger, value.left_x, value.left_y, value.right_x, value.right_y};
 }
 void increment(std::uint64_t& value) noexcept {
     if (value != std::numeric_limits<std::uint64_t>::max()) ++value;
@@ -150,6 +161,10 @@ void capture_sync(const lease::Guard& guard) noexcept {
         else if (!guard.interference_clear) shared.capture.revoke(capture::Reason::interference);
         else if (receipt.key.context_generation != guard.context_generation) shared.capture.revoke(capture::Reason::context_changed);
         else if (guard.now_ms >= receipt.expires_ms) shared.capture.revoke(capture::Reason::deadline);
+    }
+    if (receipt.phase == capture::Phase::releasing && receipt.key.user < 4) {
+        const auto& source = shared.sources[receipt.key.user];
+        shared.capture.sync(guard.now_ms, source.connected && source.epoch == receipt.key.source_epoch);
     }
     capture_cleanup();
 }
@@ -804,6 +819,32 @@ static DWORD finish_core(Poll& poll, const PublicationScope& scope, bool outer, 
                     capture_plan.pad.left_x, capture_plan.pad.left_y, capture_plan.pad.right_x, capture_plan.pad.right_y};
             }
         }
+        // After the capture has planned (it compares returned with raw), held
+        // controls stay neutral in the owed stream's reports. The private lane
+        // writes its own report below, so nothing is held back from it.
+        bool withheld{};
+        const auto withhold = [&](const capture::Held& held) {
+            if (private_lane) return;
+            const auto before = pad(returned.Gamepad), masked = held.mask(before);
+            withheld = withheld || masked != before;
+            returned.Gamepad = gamepad(masked);
+        };
+        // While a release is open, on every report the capture does not write
+        // itself: one another filter or script owns, or one it could not plan.
+        // Otherwise a control held through the stop would reach the game at once.
+        const auto& owed = shared.capture.state();
+        if (!capture_plan.suppress && owed.phase == capture::Phase::releasing && owed.key.user == user &&
+            source.connected && source.epoch == owed.key.source_epoch) withhold(shared.capture.held());
+        // What a bounded release left held, until an in-order original shows it
+        // at rest. A new epoch is a new stream.
+        if (source.held_back.any()) {
+            if (!source.connected || source.epoch != source.held_epoch) source.held_back = {};
+            else {
+                if (observation_updated && original_result == ERROR_SUCCESS && original_output_known)
+                    source.held_back.rest(raw_pad);
+                withhold(source.held_back);
+            }
+        }
         if (continuation) returned.Gamepad = {};
         // A stale scripted/filter stage never lends even one pressed button to
         // a pulse. The approved bounded fallback is one full neutral report.
@@ -820,9 +861,13 @@ static DWORD finish_core(Poll& poll, const PublicationScope& scope, bool outer, 
         }
         returned.dwPacketNumber = source.packets.translate(source.epoch, revision,
             raw_packet, returned.dwPacketNumber, raw_pad, pad(returned.Gamepad),
-            plan.press_candidate || capture_plan.suppress || continuation || stale_stage);
+            plan.press_candidate || capture_plan.suppress || continuation || stale_stage || withheld);
         const bool published = publish(output, returned);
-        if (capture_plan.suppress) (void)shared.capture.confirm(capture_plan, published);
+        if (capture_plan.suppress && shared.capture.confirm(capture_plan, published) && capture_plan.release &&
+            capture_plan.held.any()) {
+            if (source.held_epoch != source.epoch) source.held_back = {};
+            source.held_back.hold(capture_plan.held); source.held_epoch = source.epoch;
+        }
         if (continuation) shared.capture.continuation_result(continuation_key, published);
         if (fallback_owned) shared.capture.neutralization_result(fallback_key, published);
         if (entry && entry->started && !private_lane) {

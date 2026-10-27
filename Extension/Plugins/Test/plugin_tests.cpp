@@ -2874,6 +2874,7 @@ void input_lease_api_observes_only_qualified_owner_scoped_streams() {
     {
         ++scenarios;
         LeaseEnvironment e; Host host(e, Side::client);
+        // lease_read is the only route to sample.neutral, so the rest fact is behind input.lease too.
         host.apply({script("lease-denied", R"(
             for _,name in {"lease","lease_read","lease_renew","lease_release","lease_state","lease_acknowledge"} do
                 local ok,why=pcall(reskate.input[name],{}, {}, {})
@@ -2943,6 +2944,7 @@ void input_lease_api_observes_only_qualified_owner_scoped_streams() {
                     local p=s.pad
                     assert(p.left_x==-1 and p.left_y==1 and p.right_x==-1/32768 and p.right_y==1/32767)
                     assert(p.left_trigger==1/255 and p.right_trigger==1 and p.playstation==false)
+                    assert(s.neutral==false,'full deflection and held buttons are not at rest')
                     local n=0; for name,value in p.buttons do assert(type(value)=='boolean' and value,name); n+=1 end
                     assert(n==14 and p.buttons.y and p.buttons.start and p.buttons.left_stick)
                     local opaque=s.epoch
@@ -2968,6 +2970,36 @@ void input_lease_api_observes_only_qualified_owner_scoped_streams() {
         check(e.logged("qualified stream released") && e.fake.renewals == 2 && e.fake.source.pad == pad_before &&
             e.fake.source.packet == 4294967295u && !e.fake.explicit_pulse_requests && !e.fake.broker.active().sequence,
             "qualified held-pad observation failed, rewrote a report or requested an actuator");
+    }
+    {
+        ++scenarios;
+        LeaseEnvironment e; Host host(e, Side::client);
+        host.apply({main_script("lease-neutral", R"(
+            local P=reskate.input
+            local h=assert(P.lease(2)); local last
+            reskate.on('tick',function()
+                local s=P.lease_read(h)
+                if s and s.observation_serial~=last then
+                    last=s.observation_serial
+                    assert(type(s.neutral)=='boolean' and s.pad.neutral==nil)
+                    reskate.log(s.neutral and 'sample neutral' or 'sample active')
+                end
+            end)
+        )")});
+        running_lease(host, "lease-neutral", e);
+        // A pad resting in the hands, then one control at a time just past XInput's rest thresholds.
+        struct Sample { lease::Pad pad; bool neutral; };
+        const Sample samples[] = {
+            {{0, 30, 12, 7000, -3000, -8000, 2000}, true}, {{0, 0, 0, 5550, 5550, 0, 8689}, true},
+            {{0, 0, 0, 6000, 6000, 0, 0}, false}, {{0, 0, 0, 0, 0, 0, 8690}, false},
+            {{0, 0, 31, 0, 0, 0, 0}, false}, {{0x0020, 0, 0, 0, 0, 0, 0}, false}, {{}, true}};
+        for (const auto& sample : samples) {
+            e.fake.source.pad = sample.pad; e.logs.clear();
+            e.fake.observe(); tick(host, e); running_lease(host, "lease-neutral", e);
+            check(e.logged(sample.neutral ? "sample neutral" : "sample active") &&
+                !e.logged(sample.neutral ? "sample active" : "sample neutral"),
+                "lease_read's neutral fact disagrees with the SDK's XInput rest thresholds");
+        }
     }
     {
         ++scenarios;
@@ -3486,6 +3518,44 @@ void input_lease_capture_api_keeps_publication_duty_owner_scoped() {
         tick(host,e);running_capture(host,"capture-lifecycle",e);
         check(e.logged("capture duty resolved and acknowledged")&&e.fake.fixture_buffer_writes==2&&!e.fake.pulse_requests,
             "capture lifecycle lost debt, claimed native consumption or used pulse ownership");
+    }
+    {
+        // A pad resting in the hands reads neutral, starts capture and releases it;
+        // a stick pushed past its rest radius does not start it.
+        ++scenarios;CaptureEnvironment e;Host host(e,Side::client);
+        host.apply({captured_script("capture-resting-noise",R"(
+            local P=reskate.input;local h=assert(P.lease(2));local stage=0
+            reskate.on('tick',function()
+                if stage==0 then
+                    local s=assert(P.lease_read(h))
+                    assert(s.neutral==true and s.pad.left_x~=0 and s.pad.left_trigger>0)
+                    assert(P.lease_capture(h,s.epoch));stage=1;return
+                elseif stage==1 then
+                    local r=assert(P.lease_capture_state(h));assert(r.phase=='capturing' and r.report_debt)
+                    assert(P.lease_release_capture(h));stage=2;return
+                elseif stage==2 then
+                    local r=assert(P.lease_capture_state(h))
+                    assert(r.phase=='complete' and not r.report_debt and r.neutral_releases=='1' and not r.quarantined)
+                    assert(P.lease_acknowledge_capture(h) and P.lease_acknowledge(h))
+                    reskate.log('resting noise captured and released');stage=3
+                end
+            end)
+        )")});
+        const lease::Pad resting{0,30,12,7000,-3000,-8000,2000};
+        running_capture(host,"capture-resting-noise",e);e.fake.observe(resting);tick(host,e);
+        running_capture(host,"capture-resting-noise",e);
+        const auto pushed=e.fake.publish_fixture({0,0,0,6000,6000,0,0});
+        check(!pushed.suppress&&e.fake.capture_policy.state().phase==capture::Phase::waiting_neutral,
+            "a diagonal push past the stick's rest radius started capture");
+        const auto first=e.fake.publish_fixture(resting);
+        check(first.suppress&&first.start&&first.pad==lease::Pad{},"resting noise did not start capture with an exact neutral report");
+        tick(host,e);running_capture(host,"capture-resting-noise",e);
+        const auto release=e.fake.publish_fixture(resting);
+        check(release.suppress&&release.release&&release.pad==resting&&!release.held.any(),
+            "a resting pad did not finish the handoff on its first report");
+        tick(host,e);running_capture(host,"capture-resting-noise",e);
+        check(e.logged("resting noise captured and released")&&e.fake.fixture_buffer_writes==2,
+            "a resting pad's capture lifecycle did not resolve");
     }
     {
         ++scenarios;CaptureEnvironment e;Host host(e,Side::client);

@@ -10,6 +10,23 @@ struct Pad {
     std::int16_t left_x{}, left_y{}, right_x{}, right_y{};
     bool operator==(const Pad&) const = default;
 };
+// The SDK's one definition of a pad at rest. A controller resting in the hands
+// reports small stick and trigger noise, so rest is the XInput SDK's own dead
+// zones (XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE, XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE,
+// XINPUT_GAMEPAD_TRIGGER_THRESHOLD), not exact zero. XInput gives the stick
+// values as radii, so a stick rests inside a circle: a square of the same size
+// would count a diagonal push at 1.41 times the radius as rest. A trigger above
+// the threshold counts as pressed, as XInput says. No button has a dead zone.
+inline constexpr std::int32_t left_stick_rest = 7849, right_stick_rest = 8689, trigger_rest = 30;
+constexpr bool stick_at_rest(std::int16_t x, std::int16_t y, std::int32_t radius) noexcept {
+    const std::int64_t dx = x, dy = y, r = radius;
+    return dx * dx + dy * dy <= r * r;
+}
+constexpr bool trigger_at_rest(std::uint8_t value) noexcept { return value <= trigger_rest; }
+constexpr bool neutral(const Pad& pad) noexcept {
+    return !pad.buttons && trigger_at_rest(pad.left_trigger) && trigger_at_rest(pad.right_trigger) &&
+        stick_at_rest(pad.left_x, pad.left_y, left_stick_rest) && stick_at_rest(pad.right_x, pad.right_y, right_stick_rest);
+}
 struct Key {
     std::uint64_t owner{}, sequence{}, source_epoch{}, actor_ticket{};
     std::uint32_t source{};
@@ -101,7 +118,7 @@ public:
     bool defer_warmup(Ticket ticket, const Input& in, Output& passthrough) noexcept {
         if (ticket.generation != generation_ || phase_ != Phase::warming || failed_ || debt_ || rejection_recorded_ ||
             in.key != key_ || !in.outer_game_poll || in.original_result != 0 || !in.has_output ||
-            !in.source_fresh || !in.transport_matches || !in.interference_clear || in.returned != in.raw || in.raw != Pad{} ||
+            !in.source_fresh || !in.transport_matches || !in.interference_clear || in.returned != in.raw || !neutral(in.raw) ||
             !in.focused || !in.gameplay || !in.menu_closed || in.actor_current ||
             in.serial != 0 || in.clock_observed_ms != 0 || in.seconds != 0 ||
             in.now_ms < last_now_ || !in.source_observed_ms || in.source_observed_ms > in.now_ms ||
@@ -165,8 +182,11 @@ public:
                 serial_ = in.serial;
                 seconds_ = in.seconds;
             }
+            // Neutral is the rest rule above, not exact zero, so a controller
+            // resting in the hands warms, presses and releases; its noise passes
+            // through untouched beside the pressed button.
             if (phase_ == Phase::warming) {
-                if (in.raw != Pad{}) {
+                if (!neutral(in.raw)) {
                     warm_started_ = 0;
                     samples_ = 0;
                 } else {
@@ -180,7 +200,7 @@ public:
                 }
             }
             if (phase_ == Phase::press) {
-                if (in.raw != Pad{}) {
+                if (!neutral(in.raw)) {
                     // Preserve physical input rather than creating a chord or clearing a press.
                     remember_rejection(failure_bit(FailedCheck::physical_activity));
                     (void)revoke(key_);
@@ -195,7 +215,7 @@ public:
             }
             // Returning the original neutral report removes our overlay. It
             // neither touches an old actor nor needs that actor's step clock.
-            if (phase_ == Phase::releasing && in.raw == Pad{}) out.release_candidate = debt_;
+            if (phase_ == Phase::releasing && neutral(in.raw)) out.release_candidate = debt_;
         }
         out.revision = revision_;
         out.generation = generation_;

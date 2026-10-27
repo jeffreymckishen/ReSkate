@@ -145,7 +145,7 @@ tests; none has run in game.
 | B1 | `probe_batch` needs `world.raycast`, which the manifest lacks. The call raises a Lua error. | `Extension/Plugins/plugin_api_physics.cpp:561`; `reskate-plugin.json:5` | **Open.** Add the permission in the trial manifest at M2 and in the tracked manifest at promotion. |
 | B2 | Ride, Core and Contact demand `exclude_local_actor=true` and `local_actor_excluded==true`. The SDK refuses that option before any cast. | `plugin/ride_runtime.lua:452`, `:350-352`; `plugin/bike_runtime_core.lua:572-573`; `contrib/plugin-body-query.md:52-53`, `:112-113`; `Extension/World/owned_bodies.cpp:1178` | **Open: actor-safe wheel contacts (S1).** The second half of the first version's B2 is done: Contact rejected the SDK's `requested_query_preset` field as `malformed_batch`, and since `d403c25` it accepts `"camera"` or `"terrain"` as request metadata only (`plugin/contact_runtime.lua:6`, `:120-127`). |
 | B3 | Core built Ride with `tricks=Trick.new()`. The trick adapter refuses support that is not `measured_support`, which Contact never reports, and Ride stopped on that refusal. | `plugin/bike_runtime_core.lua:816`, `:628`; `plugin/trick_runtime.lua:97-101` | **Done in `3e686fc`.** Core passes `{contact=Contact}` with no trick adapter; status reports `ride_trick_adapter=false`. A trick adapter returns at M8. |
-| B4 | Core stops when the selected pad leaves exact zero. | `plugin/bike_runtime_core.lua:418-425`, `:963` | **Open.** Ride mode admits input after publication; core change. |
+| B4 | Core stops when the selected pad leaves neutral (the SDK's `sample.neutral`; exact zero on a runtime without it). | `plugin/bike_runtime_core.lua:418-425`, `:963` | **Open.** Ride mode admits input after publication; core change. |
 | B5 | The whole following phase, and every force guard, ends 500 ms after publish. | `plugin/bike_runtime_core.lua:536`, `:550`, `:695`, `:984`, `:990`, `:995`, `:1003` | **Open.** A ride-window constant, bounded by the Follow lease (B6). |
 | B6 | Follow has a fixed 3 s lease from reservation and no renewal. | `contrib/plugin-body-follow.md:36-41`; `Extension/Skater/native_body_follow_service.cpp:71` | **Open: sustained Follow (S2).** SDK work for anything past about 2.9 s. |
 | B7 | The tracked core reserved Follow with the default `native_lifetime` policy. | `plugin/bike_runtime_core.lua:674-675` | **Done in `3e686fc`.** Core reserves with `cleanup="owned_body"`, `motion_policy="callback_entry"`, the pair CE2, Codex's M3 and M4 ran. The tracked core has not run with it in game (M1). |
@@ -312,7 +312,7 @@ S1 has two possible paths, and decision D1 picks one:
 | `RIDE_COMPOSITION_QUALIFIED` | `plugin/bike_runtime_core.lua:12` | false | True only in private frozen trial copies from M3. In the tracked tree, only after M5 passes review; public Mount is still denied by the row above. |
 | `ACTIVATION_QUALIFIED` | `plugin/ride_runtime.lua:3` | false | Together with the row above, by the same reviewed source transform the Host fixture uses (`Extension/Plugins/Test/bmx_contact_runtime_host_fixture.inc:16-22`). |
 | Stage literal (proposed) | The D6a wrapper's trial copy; under D6b, Ride's composer lane | Neither exists. `plugin/ride_composer.lua` has no stage literal (its `Composer.modes`, `:76`, are riding modes). | `zero_force` M3, `support` M4, `pedal` M5; the full composer at M7 (D6b). |
-| Ride limits (proposed literals in Core and `bike_spawn.lua`) | B4, B5, B8, B9 | exact zero, 500 ms, 2 m, 400 reads | Raised in the M5 trial copy only; see M5. |
+| Ride limits (proposed literals in Core and `bike_spawn.lua`) | B4, B5, B8, B9 | neutral pad, 500 ms, 2 m, 400 reads | Raised in the M5 trial copy only; see M5. |
 | `world.raycast` permission | `reskate-plugin.json:5` | absent | M2 trial manifest; tracked manifest at promotion. |
 | `camera` permission | same | absent | M8. |
 
@@ -481,14 +481,15 @@ Purpose: run the tracked core in game for the first time, and measure what M3 to
     `Extension/Skater/native_body_follow_service.cpp:71`).
   - Visual envelope: 2 m to 6 m (`plugin/bike_spawn.lua:118`, `:249`).
   - Follow read cap: sized to five reads per tick over the window (B9).
-  - Input: exact zero until Follow publishes, as today; after that the mapper's actions.
+  - Input: a neutral pad (the SDK's `sample.neutral`) until Follow publishes, as today; after that the mapper's actions.
   - An authored cap on speed and force (D5).
 - Scenario: a new fixed timeline. Hold neutral for a lead taken from M1's report-to-publish time
   plus a margin, press A for 1,000 ms, then neutral to 6 s. The driver allows fixed timelines up
   to 6 s only (`contrib/bmx-lab/virtual-gamepad.md:77`). The existing `ground-pump` row presses A
   at 240 ms (`contrib/bmx-lab/virtual-gamepad.md:85`), before publication, so Core would stop on
   B4 first. The new scenario needs its own reviewed driver change (decision D4). It must end
-  neutral, or the capture keeps report debt (`contrib/plugin-input-lease.md:171-177`).
+  neutral: a control still held at the stop is held back from the game until it rests, and the
+  release ends within its 1000 ms bound (`contrib/plugin-input-lease.md:200-215`).
 - Record: as M3, plus distance, speed and yaw over the window.
 - Pass: while A is held, the body moves along its own +Z by between 0.3 m and 3 m, its speed rises,
   lateral drift stays under 0.3 m and yaw change under 0.2 rad; the actor root follows as in M1; the
@@ -576,7 +577,7 @@ Purpose: run the tracked core in game for the first time, and measure what M3 to
 - **D7.** B15 tolerance. `1b5e57f` implements the proposal: for a ground change between reports a
   primed mapper re-derives its actions from its last admitted raw snapshot with zero elapsed time
   instead of resetting, and a late report keeps stopping, since the lease itself treats
-  observations older than 100 ms as stale (`contrib/plugin-input-lease.md:96`). The Ride and
+  observations older than 100 ms as stale (`contrib/plugin-input-lease.md:115`). The Ride and
   Mapper owners confirm or change it.
 - **D8.** Wheel speeds (B16). `1b5e57f` implements the proposal: Ride keeps the wheel speeds of the
   command whose receipt was `applied`. The Ride owner confirms or changes it.

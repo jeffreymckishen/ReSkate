@@ -1,4 +1,5 @@
 #include "Engine/Game/Input/input_lease_policy.h"
+#include "Engine/Game/Input/input_lease_capture_policy.h"
 #include <array>
 #include <cstdint>
 #include <cstdlib>
@@ -7,6 +8,7 @@
 #include <string_view>
 
 namespace lease = dingosdk::input_lease;
+namespace capture = dingosdk::input_lease_capture;
 
 namespace {
 unsigned checks{}, cases{};
@@ -581,6 +583,174 @@ void deadline_overflow() {
         check(same_receipt(state(broker, handle), before), "overflow refusal leaves original bounded deadline intact");
     }
 }
+
+// The portable capture policy alone, over constructed clean same-source reports:
+// one report per call, never a native write or a physical-controller claim.
+struct CaptureRig {
+    capture::Capture policy{10, 20};
+    capture::Key key{7, 1, 91, 17, 2};
+    std::uint64_t serial{41}, now{1000}, epoch{91};
+    capture::Input report(const lease::Pad& pad) {
+        capture::Input in;
+        in.source_epoch = epoch; in.context_generation = 17; in.user = 2;
+        in.observation_serial = ++serial; in.observed_ms = in.now_ms = ++now;
+        in.raw = in.returned = pad;
+        in.safety = {true, true, true, true, true, true};
+        in.outer_game_poll = in.has_output = in.source_connected = true;
+        return in;
+    }
+    capture::Plan publish(const lease::Pad& pad) {
+        const auto plan = policy.plan(policy.ticket(), report(pad));
+        if (plan.suppress) check(policy.confirm(plan, true), "constructed owned report confirms");
+        return plan;
+    }
+    void admit() {
+        capture::Reason reason{};
+        const auto in = report({});
+        check(policy.request(key, now + 200, in, false, reason) && reason == capture::Reason::none,
+            "constructed capture admits");
+    }
+    void capturing() {
+        admit();
+        check(publish({}).start && policy.state().phase == capture::Phase::capturing, "a neutral report starts capture");
+    }
+    void release() { check(policy.release(key) && policy.state().phase == capture::Phase::releasing, "owner ends capture"); }
+};
+constexpr lease::Pad resting{0, 30, 12, 7000, -3000, -8000, 2000};
+constexpr std::uint16_t button_a = 0x1000, button_b = 0x2000;
+
+void capture_rest_admission() {
+    start("capture admits and releases a resting pad, not an active one");
+    CaptureRig rig; rig.admit();
+    for (const lease::Pad active : {lease::Pad{0, 0, 0, 6000, 6000, 0, 0}, lease::Pad{0, 0, 0, 0, 0, 0, 8690},
+             lease::Pad{0, 31, 0, 0, 0, 0, 0}, lease::Pad{0, 0, 255, 0, 0, 0, 0}, lease::Pad{0x0020, 0, 0, 0, 0, 0, 0}}) {
+        const auto plan = rig.publish(active);
+        check(!plan.suppress && plan.pad == active && rig.policy.state().phase == capture::Phase::waiting_neutral,
+            "a pushed stick, held trigger or button neither starts capture nor is rewritten");
+    }
+    const auto first = rig.publish(resting);
+    check(first.suppress && first.start && first.pad == lease::Pad{} && rig.policy.state().phase == capture::Phase::capturing,
+        "resting noise starts capture, which writes an exact neutral report");
+    rig.release();
+    const auto handoff = rig.publish(resting);
+    check(handoff.suppress && handoff.release && handoff.pad == resting && !handoff.held.any(),
+        "a resting pad finishes the handoff on its first report, noise and all");
+    const auto& receipt = rig.policy.state();
+    check(receipt.phase == capture::Phase::complete && !receipt.debt && receipt.neutral_releases == 1,
+        "the resting handoff is a witnessed neutral release");
+}
+
+void capture_held_hand_back() {
+    start("release hands each control back once it rests");
+    CaptureRig rig; rig.capturing();
+    check(rig.publish({button_a, 0, 0, 20000, 0, 0, 0}).pad == lease::Pad{}, "capture suppresses held controls");
+    rig.release();
+    auto plan = rig.publish({button_a, 0, 0, 20000, 0, 0, 0});
+    capture::Held held{button_a}; held.left_stick = true;
+    check(plan.pad == lease::Pad{} && !plan.release && plan.held == held,
+        "A and the pushed stick stay held back; resting controls are handed back");
+    plan = rig.publish({button_a, 0, 200, 0, 0, 0, 0});
+    check(plan.pad == lease::Pad{0, 0, 200, 0, 0, 0, 0} && !plan.release && plan.held == capture::Held{button_a},
+        "a control seen at rest reaches the game at once; A stays out");
+    plan = rig.publish({button_a | button_b, 0, 0, 20000, 0, 0, 0});
+    check(plan.pad == lease::Pad{button_b, 0, 0, 20000, 0, 0, 0} && !plan.release,
+        "after resting once, a new push or press passes while A is still held back");
+    plan = rig.publish({button_b, 0, 0, 0, 0, 0, 0});
+    check(plan.release && plan.pad == lease::Pad{button_b, 0, 0, 0, 0, 0, 0} && !plan.held.any() &&
+        rig.policy.state().phase == capture::Phase::complete && !rig.policy.state().debt,
+        "releasing A completes the handoff");
+}
+
+void capture_release_bound() {
+    start("release ends at its bound and hands what is held to the caller");
+    CaptureRig rig; rig.capturing(); rig.release();
+    auto plan = rig.publish({button_a, 0, 0, 0, 0, 0, 0});
+    const auto started = rig.now;
+    check(!plan.release && plan.pad == lease::Pad{} && plan.held == capture::Held{button_a}, "the clock starts, A held back");
+    rig.now = started + capture::Capture::maximum_release_ms - 2;
+    plan = rig.publish({button_a, 0, 0, 0, 0, 0, 0});
+    check(!plan.release && rig.policy.state().phase == capture::Phase::releasing, "inside its bound a held A keeps the release open");
+    plan = rig.publish({button_a, 0, 0, 0, 0, 0, 0});
+    check(rig.now - started == capture::Capture::maximum_release_ms, "constructed report lands on the bound");
+    check(plan.suppress && plan.release && plan.pad == lease::Pad{} && plan.held == capture::Held{button_a},
+        "at the bound the last owned report still holds A back and hands it to the caller");
+    const auto& receipt = rig.policy.state();
+    check(receipt.phase == capture::Phase::complete && !receipt.debt && !receipt.quarantined && receipt.neutral_releases == 1,
+        "the slot frees with a witnessed release");
+    check(rig.policy.acknowledge(rig.key), "the bounded release acknowledges");
+    capture::Held held{button_a};
+    held.rest({button_a, 0, 0, 0, 0, 0, 0});
+    check(held.mask({button_a | button_b, 9, 9, 9, 9, 9, 9}) == lease::Pad{button_b, 9, 9, 9, 9, 9, 9},
+        "the caller's hand-back keeps only A out while it is held");
+    held.rest({});
+    check(!held.any() && held.mask({button_a, 0, 0, 0, 0, 0, 0}) == lease::Pad{button_a, 0, 0, 0, 0, 0, 0},
+        "once A rests, a new press passes");
+}
+
+void capture_lost_source_bound() {
+    start("a lost stream's release ends quarantined at the bound");
+    CaptureRig rig; rig.capturing(); rig.release();
+    const auto publications = rig.policy.state().publications;
+    rig.epoch = 92;
+    check(!rig.publish({button_a, 0, 0, 0, 0, 0, 0}).suppress, "a new epoch is never rewritten");
+    const auto started = rig.now;
+    check(rig.policy.state().phase == capture::Phase::releasing && rig.policy.state().quarantined,
+        "the old stream's debt is quarantined");
+    rig.policy.sync(started + capture::Capture::maximum_release_ms - 1, false);
+    check(rig.policy.state().phase == capture::Phase::releasing && rig.policy.state().debt, "inside its bound it waits");
+    CaptureRig present; present.capturing(); present.release();
+    (void)present.publish({button_a, 0, 0, 0, 0, 0, 0});
+    present.policy.sync(present.now + capture::Capture::maximum_release_ms, true);
+    check(present.policy.state().phase == capture::Phase::releasing,
+        "a present stream finishes only on a report, which carries its hand-back");
+    rig.policy.sync(started + capture::Capture::maximum_release_ms, false);
+    const auto& receipt = rig.policy.state();
+    check(receipt.phase == capture::Phase::complete && !receipt.debt && receipt.quarantined &&
+        receipt.neutral_releases == 0 && receipt.publications == publications,
+        "at the bound it ends quarantined, without a neutral release");
+    check(rig.policy.acknowledge(rig.key), "the ended capture acknowledges");
+}
+
+void capture_interfered_release() {
+    start("an interfered release leaves held controls to the caller and still sees rest");
+    CaptureRig rig; rig.capturing(); rig.release();
+    check(rig.policy.held() == capture::Held::all(), "at the stop every control is held back");
+    auto in = rig.report({button_a, 0, 0, 20000, 0, 0, 0});
+    in.safety.interference_clear = false;
+    auto plan = rig.policy.plan(rig.policy.ticket(), in);
+    capture::Held held{button_a}; held.left_stick = true;
+    check(!plan.suppress && plan.pad == in.returned && rig.policy.held() == held,
+        "another filter's report is not rewritten; what stays held is the caller's to keep neutral in it");
+    in = rig.report({button_a, 0, 0, 0, 0, 0, 0});
+    in.returned = {button_a | button_b, 0, 0, 0, 0, 0, 0};
+    plan = rig.policy.plan(rig.policy.ticket(), in);
+    check(!plan.suppress && rig.policy.held() == capture::Held{button_a},
+        "the stick, at rest under a script's report, is handed back all the same");
+    check(rig.policy.state().phase == capture::Phase::releasing && rig.policy.state().debt, "only a clean report ends it");
+    plan = rig.publish({});
+    check(plan.release && rig.policy.state().phase == capture::Phase::complete && !rig.policy.held().any(),
+        "a clean resting report completes it, and nothing is held after");
+}
+
+void capture_neutral_write_rearms() {
+    start("a full neutral report during a release holds every control again");
+    CaptureRig rig; rig.capturing(); rig.release();
+    const auto started = rig.now + 1;
+    capture::Held stick; stick.left_stick = true;
+    check(rig.publish({0, 0, 0, 20000, 0, 0, 0}).held == stick, "only the pushed stick stays held");
+    rig.policy.continuation_result(rig.key, true);
+    check(rig.policy.held() == capture::Held::all(), "a delayed report written fully neutral re-arms every control");
+    auto plan = rig.publish({button_a, 0, 0, 20000, 0, 0, 0});
+    capture::Held held{button_a}; held.left_stick = true;
+    check(plan.pad == lease::Pad{} && plan.held == held && !plan.release,
+        "A, handed back before, now stays out until it rests");
+    check(rig.policy.retain_neutralization(rig.key) && rig.policy.held() == capture::Held::all(),
+        "a stale-stage neutral fallback re-arms every control too");
+    rig.now = started + capture::Capture::maximum_release_ms - 1;
+    plan = rig.publish({button_a, 0, 0, 0, 0, 0, 0});
+    check(plan.release && plan.held == capture::Held{button_a},
+        "re-arming never moves the bound: the release still ends there and hands A to the caller");
+}
 }
 
 int main() {
@@ -602,5 +772,11 @@ int main() {
     capacity_and_acknowledgement();
     opaque_integer_limits();
     deadline_overflow();
+    capture_rest_admission();
+    capture_held_hand_back();
+    capture_release_bound();
+    capture_lost_source_bound();
+    capture_interfered_release();
+    capture_neutral_write_rearms();
     std::cout << "input lease policy: " << cases << " cases, " << checks << " checks passed\n";
 }

@@ -115,7 +115,7 @@ still reports known/pending, and successful native-phase reads retain the existi
 Before any press candidate, press publication, neutral publication or report debt, the same
 warming request may discard one sample whose complete typed observation identifies only
 `controls_profile_lock`/`unavailable`: call admission succeeded, inspection actually ran and
-refused at that edge, and the actor clock was skipped. The original source, exact raw-neutral
+refused at that edge, and the actor clock was skipped. The original source, raw-neutral
 report, clean transport, focus, gameplay, closed menu and wall/deadline guards must still pass.
 That sample publishes no SDK button, claims no actor or native-clock success, and resets the
 neutral dwell/sample count. It keeps the original key, native high-water marks and one-second
@@ -212,16 +212,19 @@ readiness facts need a real producer; changing booleans in a test is not that pr
 
 ## Report behavior
 
-The caller selects one valid XInput button bit. Before pressing, the policy requires exact raw
+The caller selects one valid XInput button bit. Before pressing, the policy requires raw
 neutral input, four distinct advancing native samples, at least 100 wall milliseconds of neutral
-warmup, and an advancing sample at launch. Repeated samples cannot complete the warmup. Exact
-neutral means all buttons, triggers and axes are zero; this component defines no stick deadzone.
-Native observations and owned poll gaps may be at most 100 ms old. Native time must be finite and
+warmup, and an advancing sample at launch. Repeated samples cannot complete the warmup. Neutral
+is the SDK's one rest rule, the one `sample.neutral` reports and capture uses
+([plugin-input-lease.md](plugin-input-lease.md#read-observations)): no button, triggers at most
+30 and sticks inside XInput's dead-zone circles. A controller resting in the hands can therefore
+pulse, and its noise passes through unchanged beside the pressed button. Native observations and owned poll gaps may be at most 100 ms old. Native time must be finite and
 monotonic; a gap exceeding .25 simulated seconds revokes assertion.
 
 The only pad edit is OR of the selected button while raw remains neutral. Any physical activity
-revokes further assertion, preserving every physical field rather than making an unintended chord
-or clearing a real button. Failed-original return codes and output values remain unchanged.
+(raw leaving that rule) revokes further assertion, preserving every physical field rather than
+making an unintended chord or clearing a real button. Failed-original return codes and output
+values remain unchanged.
 Inner/overlay polls and other user slots pass through without altering the bound transaction.
 Existing scripted replacement, filters and hidden-button transformations must be excluded or
 accounted for by the broker; full raw/returned equality alone does not establish clean ownership.

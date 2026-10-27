@@ -108,8 +108,8 @@ inline int manhole_position_self_test() {
     });
     run("binary16 infinities and NaNs have no finite replacement", [&] {
         constexpr std::array<std::pair<std::uint16_t, Binary16Class>, 5> known{{
-            {0x7c00, Binary16Class::positive_infinity}, {0xfc00, Binary16Class::negative_infinity},
-            {0x7e00, Binary16Class::nan}, {0x7c01, Binary16Class::nan}, {0xffff, Binary16Class::nan}}};
+            {std::uint16_t{0x7c00}, Binary16Class::positive_infinity}, {std::uint16_t{0xfc00}, Binary16Class::negative_infinity},
+            {std::uint16_t{0x7e00}, Binary16Class::nan}, {std::uint16_t{0x7c01}, Binary16Class::nan}, {std::uint16_t{0xffff}, Binary16Class::nan}}};
         for (const auto& [bits, classification] : known) {
             const auto decoded = inspect_binary16_word(bits);
             check(decoded.classification == classification, "all special encodings retain their class and infinity sign");

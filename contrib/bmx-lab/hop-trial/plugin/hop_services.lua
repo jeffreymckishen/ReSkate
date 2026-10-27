@@ -3,6 +3,7 @@
 local Services={}
 local watched={
     ["time.now"]=true,["skater.pose"]=true,["world.probe"]=true,
+    ["world.physics.prepare"]=true,
     ["world.physics.create"]=true,["world.physics.read"]=true,["world.physics.release"]=true,
     ["world.physics.probe_batch"]=true,["world.physics.submit"]=true,
     ["world.physics.receipt"]=true,["world.physics.acknowledge"]=true,

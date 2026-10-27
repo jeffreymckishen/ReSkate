@@ -1,14 +1,14 @@
 # Private P0/H1 hop trial source
 
 This folder prepares a bounded lab trial against the production Lua modules at
-`430b98c5`. It is not a rideable public mod, a game result or a completed BMX port.
+`062db162248d6b21c686f588924e0abc5954e99c`. It is not a rideable public mod, a game result or a completed BMX port.
 `plugin/hop_config.lua` has `admission_enabled=false`. The source directory is
 intentionally incomplete as an installed package: the reviewed stager supplies
 hash-pinned production modules in a new output directory. Nothing in this folder
 installs, deploys, launches the game or drives a controller.
 
 The main ReSkate chat owns execution and deployment. Work here is restricted to
-this new folder in `reskate-native-hop-harness-20261027`. Production files, the
+this new revision in `reskate-hop-prepare-20261027`. Production files, the
 other worktrees and the game packages remain outside this source lane. During
 an exclusive game window there is no Git, build, test, import, staging or game
 input from this lane. Both coordinator HID-HOLD files must be absent before
@@ -32,7 +32,15 @@ not enable them.
 
 `source-pins.json` records exact bytes and SHA-256 for the 59 production modules
 used as the copy source. Its commit label is provenance; the file hashes are the
-actual content check. Production `main.lua`, tests and fixtures are excluded.
+actual content check. The canonical source root for this revision is the sealed
+`E:\RESKATE DEV\worktrees\reskate-native-prepare-20261027` checkout. Core and Admission
+are the only changed canonical pins. `forces.lua` remains exactly 37,599 bytes with
+SHA-256 `3BB16CB48F0A3304F651346FBD97A97D8CF4FE023E12B0E7FC7073429DD9C5E5`.
+A mixed-line-ending integration checkout is not an interchangeable source: no
+normalization or fallback is permitted. Frozen `cfcabecf` worktrees, packages,
+receipts and operator instructions remain intact; this revision needs a fresh
+run identity and its own reviewed operator package.
+Production `main.lua`, tests and fixtures are excluded.
 The stager must refuse changed, missing, added or duplicate input, and must not
 rewrite the source tree. Its declared private transformations are reviewed in
 `stage-plan.json`; closed admission leaves production gates closed.
@@ -88,6 +96,26 @@ The guard does not convert a refusal into SDK acceptance. A native hop attempt
 is spent even if its result is refused, unknown or raises; no replay is allowed.
 Neutral support/landing work after the one hop remains subject to the same
 identity, receipt and cap checks. A preview alone does not spend an attempt.
+
+## Native preparation and evidence
+
+The copied production Core now calls the existing `world.physics.prepare()`
+within the original admitted mount deadline, before equipment, Source, floor
+sampling or body creation. No companion preparation plugin is needed for this
+revision. Construction and backend binding remain inert. Exact setup-pending or
+fresh-physics-step responses permit a later call; all other failures close the
+intent. Stop, unload and lost readiness cancel it. A pending phase with no acquired
+authority may wait through a long setup tick without calling preparation again or
+extending the deadline. After success, later ticks still qualify acquisition.
+
+The service observer forwards each actual return or exception unchanged and
+records it under a separate `prepare` category. The bounded terminal copy keeps
+`native_preparation` and `mount_deadline_ms`; opaque handles and native identities
+are not preparation evidence. Pending calls consume the existing evidence budget;
+exhaustion stops and disqualifies the trial rather than increasing capacity.
+Preparation success is sampled readiness, not allocation, a Follow receipt,
+cleanup completion, reuse authority or native body/ride qualification. A later
+create refusal still consumes the existing floor query and cannot restart warmup.
 
 ## Evidence and failure handling
 
@@ -154,8 +182,8 @@ recorder and composition contracts; they cannot prove native motion or lifetime.
 
 At source handoff, the main chat should validate the stager/refusal cases and
 run the new Lua suites in isolated output using the existing vendored runner.
-The production runner's 113-suite result predates these new tests. Builds,
-new tests, staging and in-game checks are **not run by this helper lane**.
+The production warmup validation is separate from these revised private tests.
+Builds, new tests, staging and in-game checks are **not run by this helper lane**.
 Record their eventual exact commands, source/package/runtime hashes and results
 in the execution evidence rather than changing this boundary by assumption.
 
@@ -168,17 +196,20 @@ parent must already exist, and the output directory must be new and named
 `BMX_Hop_Trial_<RunId>`.
 
 ```powershell
-$trialSource = 'E:\RESKATE DEV\worktrees\reskate-native-hop-harness-20261027'
-$trialTools = Join-Path $trialSource 'contrib\bmx-lab\hop-trial'
+$trialSource = 'E:\RESKATE DEV\worktrees\reskate-native-prepare-20261027'
+$trialTools = 'E:\RESKATE DEV\worktrees\reskate-hop-prepare-20261027\contrib\bmx-lab\hop-trial'
 & (Join-Path $trialTools 'Stage-Trial.Tests.ps1') -SourceRoot $trialSource -RunReviewedTests
 ```
 
-For the three pure Lua suites, first stage a **closed**, test-only artifact into
+For the five pure Lua suites, first stage a **closed**, test-only artifact into
 a new output directory with `Stage-Trial.ps1 -Mode Stage -SourceRoot $trialSource
 -OutputDirectory <new-output> -IncludeTests`, then use the same arguments with
 `-Mode Verify`. Run the existing, separately reviewed `bmx_luau_tests.exe` against
-its `plugin` directory and each module `hop_guard_tests`, `hop_recorder_tests`
-and `hop_composition_tests`. The test-only lexical fixture wraps exact private
+its `plugin` directory and each module `hop_guard_tests`, `hop_recorder_tests`,
+`hop_composition_tests`, `hop_prepare_evidence_tests` and `hop_prepare_cancel_tests`,
+each in a fresh runner process. The runtime inventory remains 72 files; the test
+artifact has 78. The unchanged 13 production transforms and four private identity
+transforms remain the only admitted substitutions. The test-only lexical fixture wraps exact private
 `main.lua` bytes with injected SDK/module-loader parameters; it tests entry
 control flow without changing production or registering a new native API. It
 must be absent from runtime output.

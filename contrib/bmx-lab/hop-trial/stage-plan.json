@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "source_commit": "430b98c5",
+  "source_commit": "062db162248d6b21c686f588924e0abc5954e99c",
   "source_directory": "contrib/bmx-lab/bmx-plugin",
-  "source_pins_sha256": "529ED8E62B3791A4FF5811E85E3F156B970FFC830E7DD2C4F7AD79B58E68CA44",
+  "source_pins_sha256": "3E7FF0DE0DBCEF178B8CCF3B0D8237A71E364F0F35F20C6397DE01F34C92E7E1",
   "canonical_module_count": 59,
   "default_mode": "Verify",
   "default_admission": false,
@@ -24,7 +24,9 @@
   "optional_tests": [
     "hop_guard_tests.lua",
     "hop_recorder_tests.lua",
-    "hop_composition_tests.lua"
+    "hop_composition_tests.lua",
+    "hop_prepare_evidence_tests.lua",
+    "hop_prepare_cancel_tests.lua"
   ],
   "transforms": [
     {

@@ -90,6 +90,20 @@ local function receipt(row)
     if plain(get(row,"successor")) then out.successor=body(row.successor) end
     return out
 end
+-- These are observed SDK result shapes, never permission to create or reuse.
+local prepare_pending="native body producer setup pending; call prepare again explicitly"
+local prepare_clock_wait="waiting for a fresh qualified 60 Hz physics step"
+local function preparation(args,result)
+    local out={phase="malformed",arguments=args.n}
+    if result[1]==false then out.phase="raised"
+    elseif result[1]==true and args.n==0 then
+        if result.n==2 and result[2]==true then out.phase="ready"
+        elseif result.n==3 and result[2]==false and type(result[3])=="string" then
+            out.phase=(result[3]==prepare_pending or result[3]==prepare_clock_wait) and "pending" or "refused"
+        end
+    end
+    return out
+end
 local follow_names="phase reason park_reason sequence final_revision final_native_epoch returned_revision in_flight claim_known orphaned park_observed native_retirement_known terminal"
 local lease_names="phase status reason revocation user sequence source_epoch context_generation requested_ms expires_ms observed_ms last_observation renewals source_released capture_reserved orphaned capturing report_debt generation revision publications neutral_releases terminal quarantined last_serial remaining_ms lifetime_remaining_ms base_ms renewal_ms lifetime_ms renewable active"
 local function force_pending(row)
@@ -207,7 +221,8 @@ function Object:observe_service(path,args,result)
     end
     local row,kind
     local value;if result[1] then value=result[2] end
-    if path=="world.physics.read" then kind="body";row=body(value)
+    if path=="world.physics.prepare" then kind="prepare";row=preparation(args,result)
+    elseif path=="world.physics.read" then kind="body";row=body(value)
     elseif path=="world.probe" then
         kind="contact";row=fields(value,"status reason")
         row.rays={vectors(fields(value,"status motion fraction normal_available surface_velocity_available"),value,"position normal surface_velocity")}

@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "source_commit": "430b98c5",
+  "source_commit": "062db162248d6b21c686f588924e0abc5954e99c",
   "source_directory": "contrib/bmx-lab/bmx-plugin",
   "selection": "All top-level plugin/*.lua except main.lua, *_tests.lua and names containing fixture",
   "files": [
@@ -16,8 +16,8 @@
     },
     {
       "path": "plugin/bike_admission.lua",
-      "sha256": "1CBD095058D32E4D9B35276516A1D8B3CAC128D8C61A1CCD509FDD40A9EB8C0C",
-      "bytes": 8297
+      "sha256": "194879251D8F5BCEBFE1197D0B36431598233F44587FFD4996C6001F75B4B244",
+      "bytes": 8321
     },
     {
       "path": "plugin/bike_geometry.lua",
@@ -26,8 +26,8 @@
     },
     {
       "path": "plugin/bike_runtime_core.lua",
-      "sha256": "E6A26DF781F5468BAFADB568B193BF19C0E55E962F6DE428A52DAE46AEA75D46",
-      "bytes": 138178
+      "sha256": "887D5405D4AEB685EE2C3D2B24542827E623D1307064CDEAFF7685329DD67257",
+      "bytes": 142816
     },
     {
       "path": "plugin/bike_runtime.lua",

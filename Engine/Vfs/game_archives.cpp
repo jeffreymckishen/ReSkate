@@ -19,6 +19,78 @@ std::string lower(std::string text) {
     for (auto& c : text) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
     return text;
 }
+
+[[noreturn]] void bounded_failure(const char* reason) {
+    throw std::runtime_error(std::string("Bounded CAS: ") + reason);
+}
+
+const native_db::Node* unique_field(const native_db::Node& node, std::string_view key) {
+    const native_db::Node* found{};
+    for (const auto& field : node.children) {
+        if (field.name != key) continue;
+        if (found) return nullptr;
+        found = &field;
+    }
+    return found;
+}
+
+#ifdef _WIN32
+class BoundedHandle {
+public:
+    explicit BoundedHandle(HANDLE handle) noexcept : handle_(handle) {}
+    ~BoundedHandle() { if (handle_ != INVALID_HANDLE_VALUE) CloseHandle(handle_); }
+    BoundedHandle(const BoundedHandle&) = delete;
+    BoundedHandle& operator=(const BoundedHandle&) = delete;
+    HANDLE get() const noexcept { return handle_; }
+private:
+    HANDLE handle_;
+};
+
+std::uint64_t joined_words(DWORD high, DWORD low) noexcept {
+    return (std::uint64_t{high} << 32) | low;
+}
+
+BY_HANDLE_FILE_INFORMATION bounded_information(HANDLE handle) {
+    BY_HANDLE_FILE_INFORMATION information{};
+    if (!GetFileInformationByHandle(handle, &information)) bounded_failure("file_identity_unavailable");
+    return information;
+}
+
+fs::path bounded_final_path(HANDLE handle) {
+    constexpr DWORD maximum_path_characters = 32768;
+    const auto required = GetFinalPathNameByHandleW(handle, nullptr, 0, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+    if (!required || required > maximum_path_characters) bounded_failure("file_path_unavailable");
+    std::wstring path(required, L'\0');
+    const auto copied = GetFinalPathNameByHandleW(handle, path.data(), required, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+    if (!copied || copied >= required) bounded_failure("file_path_unavailable");
+    path.resize(copied);
+    return fs::path(path).lexically_normal();
+}
+
+bool same_path_component(const fs::path& left, const fs::path& right) {
+    const auto& a = left.native();
+    const auto& b = right.native();
+    return a.size() == b.size() && CompareStringOrdinal(a.data(), static_cast<int>(a.size()),
+                                                       b.data(), static_cast<int>(b.size()), TRUE) == CSTR_EQUAL;
+}
+
+bool beneath_directory(const fs::path& path, const fs::path& directory) {
+    auto part = path.begin();
+    for (const auto& base : directory) {
+        if (part == path.end() || !same_path_component(*part, base)) return false;
+        ++part;
+    }
+    return part != path.end();
+}
+
+bool same_file_information(const BY_HANDLE_FILE_INFORMATION& before, const BY_HANDLE_FILE_INFORMATION& after) noexcept {
+    return before.dwVolumeSerialNumber == after.dwVolumeSerialNumber &&
+        before.nFileIndexHigh == after.nFileIndexHigh && before.nFileIndexLow == after.nFileIndexLow &&
+        before.nFileSizeHigh == after.nFileSizeHigh && before.nFileSizeLow == after.nFileSizeLow &&
+        before.ftLastWriteTime.dwHighDateTime == after.ftLastWriteTime.dwHighDateTime &&
+        before.ftLastWriteTime.dwLowDateTime == after.ftLastWriteTime.dwLowDateTime;
+}
+#endif
 }
 
 std::string archive_file(std::uint16_t archive) {
@@ -109,6 +181,28 @@ GameArchives::GameArchives(fs::path root, const native_db::Node& layout) : root_
             chunkDirectory_.emplace(id, lower(name->text));
         }
     }
+    // The strict reader must distinguish one explicit declaration from the
+    // legacy first-match and inferred mappings. Keep those legacy paths intact.
+    const auto* strict_manifest = unique_field(layout, "installManifest");
+    const auto* strict_chunks = strict_manifest ? unique_field(*strict_manifest, "installChunks") : nullptr;
+    if (strict_chunks) {
+        for (const auto& entry : strict_chunks->children) {
+            const auto* index = unique_field(entry, "persistentIndex");
+            const auto* name = unique_field(entry, "name");
+            // Record every recognizable ID in an ambiguous row as unusable,
+            // rather than letting another valid-looking row hide that ambiguity.
+            for (const auto& field : entry.children) {
+                if (field.name != "persistentIndex" || field.type != 8 || field.payload().size() != 4) continue;
+                const auto value = field.payload();
+                const auto id = static_cast<std::uint32_t>(value[0]) | (static_cast<std::uint32_t>(value[1]) << 8) |
+                    (static_cast<std::uint32_t>(value[2]) << 16) | (static_cast<std::uint32_t>(value[3]) << 24);
+                auto& binding = explicit_directories_[id];
+                ++binding.declarations;
+                binding.valid = binding.declarations == 1 && index == &field && name && name->type == 7 && !name->text.empty();
+                if (binding.valid) binding.name = lower(name->text);
+            }
+        }
+    }
 
     // Chunks the manifest does not name are matched by their archives.
     for (const auto* field : {"layeredInstallChunkFiles", "unlayeredInstallChunkFiles"}) {
@@ -183,6 +277,70 @@ std::vector<std::byte> GameArchives::read(const fs::path& root, const fb::CasIde
     if (size && !input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(size)))
         throw std::runtime_error("Cannot read " + path_utf8(path));
     return bytes;
+}
+
+BoundedArchiveRead GameArchives::read_bounded(const fb::CasIdentifier& location, std::uint32_t offset,
+                                              std::uint32_t size, std::size_t maximum_encoded_size, bool expected_patch) const {
+    if (!size || size > maximum_encoded_size) bounded_failure("encoded_size_out_of_bounds");
+    if (location.patch != expected_patch) bounded_failure("layer_mismatch");
+    const auto found = explicit_directories_.find(location.installChunk);
+    if (found == explicit_directories_.end()) bounded_failure("explicit_directory_unavailable");
+    const auto& binding = found->second;
+    if (binding.declarations != 1) bounded_failure("explicit_directory_ambiguous");
+    if (!binding.valid) bounded_failure("explicit_directory_unavailable");
+    if (binding.name.size() > 32768 || binding.name.find('\0') != std::string::npos ||
+        binding.name.find_first_of("<>:\"|?*") != std::string::npos)
+        bounded_failure("unsafe_directory");
+    const fs::path directory(binding.name);
+    if (directory.empty() || directory.has_root_path()) bounded_failure("unsafe_directory");
+    for (const auto& part : directory) {
+        const auto text = part.native();
+        if (text.empty() || part == "." || part == ".." || text.back() == ' ' || text.back() == '.')
+            bounded_failure("unsafe_directory");
+    }
+#ifdef _WIN32
+    // The configured data root may itself be a chosen link. Subordinate links
+    // must still land below its canonical Win32 directory.
+    const BoundedHandle root(CreateFileW(root_.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ, nullptr,
+                                        OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr));
+    if (root.get() == INVALID_HANDLE_VALUE) bounded_failure("root_open_failed");
+    if (!(bounded_information(root.get()).dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) bounded_failure("root_not_directory");
+    const auto allowed_root = bounded_final_path(root.get()) / L"Win32";
+    const auto requested = root_ / L"Win32" / directory / fs::path(archive_file(location.archive));
+    const BoundedHandle file(CreateFileW(requested.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+    if (file.get() == INVALID_HANDLE_VALUE) bounded_failure("file_open_failed");
+    if (GetFileType(file.get()) != FILE_TYPE_DISK) bounded_failure("not_disk_file");
+    const auto before = bounded_information(file.get());
+    if (before.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) bounded_failure("not_disk_file");
+    const auto actual = bounded_final_path(file.get());
+    if (!beneath_directory(actual, allowed_root)) bounded_failure("path_outside_root");
+    const auto length = joined_words(before.nFileSizeHigh, before.nFileSizeLow);
+    if (offset > length || size > length - offset) bounded_failure("range_outside_file");
+    BoundedArchiveRead result;
+    result.path = actual;
+    result.archive_size = length;
+    result.volume_serial = before.dwVolumeSerialNumber;
+    result.file_index = joined_words(before.nFileIndexHigh, before.nFileIndexLow);
+    result.last_write_time = joined_words(before.ftLastWriteTime.dwHighDateTime, before.ftLastWriteTime.dwLowDateTime);
+    result.encoded.resize(size);
+    LARGE_INTEGER position{};
+    position.QuadPart = offset;
+    if (!SetFilePointerEx(file.get(), position, nullptr, FILE_BEGIN)) bounded_failure("seek_failed");
+    for (std::uint32_t done = 0; done < size;) {
+        DWORD received{};
+        if (!ReadFile(file.get(), result.encoded.data() + done, size - done, &received, nullptr) ||
+            !received || received > size - done) bounded_failure("short_read");
+        done += received;
+    }
+    const auto after = bounded_information(file.get());
+    if (!same_file_information(before, after) || bounded_final_path(file.get()) != actual)
+        bounded_failure("file_changed_during_read");
+    return result;
+#else
+    (void)offset;
+    bounded_failure("platform_unavailable");
+#endif
 }
 
 std::string GameArchives::describe(const fb::CasIdentifier& location) const {

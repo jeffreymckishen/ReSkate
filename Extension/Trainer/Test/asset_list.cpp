@@ -3,6 +3,7 @@
 //   dingosdk_trainer_asset_list <Skate folder> --dump <asset name>   every plain value, by name
 #include "asset_chunk_locator.h"
 #include "asset_chunk_locator_tests.h"
+#include "asset_manhole_candidate_tests.h"
 #include "Engine/Resource/ebx_document.h"
 #include "Engine/Resource/mesh_set.h"
 #include "Engine/Vfs/game_bundles.h"
@@ -580,6 +581,10 @@ int mesh_metadata_command(int argc, char** argv) {
 } // namespace
 
 int main(int argc, char **argv) {
+    if (argc >= 2 && std::string_view(argv[1]) == "--self-test-manhole-candidate") {
+        if (argc != 2) return 2;
+        return dingosdk::trainer::asset_tools::manhole_candidate_self_test();
+    }
     if (argc >= 2 && std::string_view(argv[1]) == "--self-test-chunk-locator") {
         if (argc != 2) return 2;
         return dingosdk::trainer::asset_tools::chunk_locator_self_test();

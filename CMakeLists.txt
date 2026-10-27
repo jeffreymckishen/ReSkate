@@ -389,6 +389,8 @@ if(DINGOSDK_BUILD_TRAINER_TESTS)
     target_include_directories(dingosdk_trainer_asset_list PRIVATE "${PROJECT_SOURCE_DIR}")
     target_link_libraries(dingosdk_trainer_asset_list PRIVATE dingosdk_game_archives)
     add_test(NAME trainer_asset_chunk_locator COMMAND dingosdk_trainer_asset_list --self-test-chunk-locator)
+    add_test(NAME trainer_manhole_candidate COMMAND dingosdk_trainer_asset_list --self-test-manhole-candidate)
+    set_tests_properties(trainer_manhole_candidate PROPERTIES SKIP_RETURN_CODE 77)
     # The game's own clips read out of its data (needs the game: <Skate folder> [<clip file> <asset>]).
     add_executable(dingosdk_game_clips_tests Extension/AnimationStudio/Test/game_clips_tests.cpp
         Extension/AnimationStudio/game_clips.cpp Extension/AnimationStudio/anim_core.cpp)

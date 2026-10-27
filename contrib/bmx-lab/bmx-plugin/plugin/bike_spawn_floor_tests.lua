@@ -89,6 +89,7 @@ function Tests.run()
             "literal off preserves status text")
         check(out.creation_attempts==1 and not out.cleanup_unknown and f.removes==0 and f.releases==0,
             "literal off retains existing ownership and cleanup state")
+        check(f.owner:floor_height()==nil,"literal off measures no floor height")
     end) end
     for _,spec in {{0,.25},{math.pi/2,.25},{math.pi,.25},{-math.pi/2,.25},{1.2,.25},{0,0},{0,2}} do case(function()
         local f=fixture(Trial,function(row,from) return vector.create(from.x,row.actor.position.y-spec[2],from.z) end,{heading=spec[1]})
@@ -98,6 +99,8 @@ function Tests.run()
         check(out.phase=="spawned" and f.rays==1 and f.creates==1,"trial accepts one measured hit before one allocation")
         check(math.abs(root[1]-10)<1e-5 and math.abs(root[3]-20)<1e-5,"trial starts directly under the reported rider position")
         check(math.abs(root[2]-floor-.02)<1e-5,"body-frame origin starts two centimetres above the returned hit")
+        local measured=f.owner:floor_height()
+        check(type(measured)=="number" and math.abs(measured-floor)<1e-5,"the accepted hit's height is kept as the measured floor")
         local forward=M.turn(f.definition.rotation,{0,0,1})
         check(math.abs(forward[1]-math.sin(spec[1]))<1e-6 and math.abs(forward[3]-math.cos(spec[1]))<1e-6,
             "bike +Z follows the SDK's rider heading convention without a quarter turn")
@@ -116,6 +119,8 @@ function Tests.run()
         check(ray_at and create_at and ray_at<create_at and f.order[ray_at+1]=="visual","query precedes all initial visuals and body creation")
         for _=1,3 do f.owner:update(16) end
         check(f.rays==1 and f.creates==1,"later samples do not repeat the floor query or allocation")
+        f.owner:stop("explicit test stop")
+        check(f.owner:floor_height()==measured and f.rays==1,"the measured floor stays known after a stop, without another ray")
     end) end
     local refusals={
         {"miss",function() return nil end,"floor ray missed or is unavailable"},
@@ -137,6 +142,7 @@ function Tests.run()
         check(not out.cleanup_unknown and not out.body and not out.creation_unknown and out.creation_attempts==0,
             spec[1].." ends cleanly with no invented native cleanup duty")
         f.owner:update(16);check(not f.owner:request() and f.rays==(spec[4] and 0 or 1),spec[1].." never retries or falls back")
+        check(f.owner:floor_height()==nil,spec[1].." keeps no floor height")
     end) end
     for _,reenter in {false,true} do case(function()
         local f=fixture(Trial,function(row,from)
@@ -146,6 +152,7 @@ function Tests.run()
         local out=f.drive()
         check(out.phase=="closed" and f.rays==1,"stop or reentry during query consumes the one attempt")
         check(f.creates==0 and f.sets==0 and not out.cleanup_unknown,"late query return cannot publish or allocate after cancellation")
+        check(f.owner:floor_height()==nil,"a hit returned after cancellation is not kept as the floor")
     end) end
     for _,expire in {false,true} do case(function()
         local f=fixture(Trial,hit,{on_status=function(row)
@@ -157,6 +164,7 @@ function Tests.run()
         local out=f.drive()
         check(out.phase=="closed" and f.rays==1 and f.creates==0,"status callbacks cannot allocate from a stopped or expired floor attempt")
         check(f.removes==8 and not out.cleanup_unknown,"status cancellation retains one clean visual removal request")
+        check(f.owner:floor_height()==99.75,"the hit accepted before the cancellation stays the measured floor")
     end) end
     case(function()
         local f=fixture(Trial,hit,{on_set=function(row) row.owner:stop("cancelled in visual setter") end})

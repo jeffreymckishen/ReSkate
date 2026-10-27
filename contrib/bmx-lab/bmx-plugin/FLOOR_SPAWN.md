@@ -34,6 +34,12 @@ quaternion is retained: SDK heading zero faces +Z, so bike +Z points along
 There is no 90-degree compensation. The original 3 m displacement was lateral,
 not the definition of heading.
 
+`Runtime:floor_height()` returns the height of the hit the trial accepted and
+placed the bike on, and nil otherwise (the airborne path, or a refused, missed or
+cancelled ray). It stays known after a stop. It is the only floor the rider's
+dropped board uses (`board_drop.lua`, MOUNTED_POSE.md); nothing else is inferred
+from it.
+
 A hit older than 100 ms of Lua wall time before creation ends the attempt and
 removes visuals without resampling. Phase/age checks after entity callbacks
 prevent a cancelled or expired attempt from reopening or allocating. This local

@@ -292,15 +292,24 @@ void stage_qualified_ride(const std::filesystem::path& plugin_folder, const std:
     const fs::path force_torque_string_fixture = "force_stage_torque_string_fixture.lua";
     const fs::path force_torque_boolean_fixture = "force_stage_torque_boolean_fixture.lua";
     const fs::path force_torque_excess_fixture = "force_stage_torque_excess_fixture.lua";
+    const fs::path force_ride_fixture = "force_stage_ride_fixture.lua";
+    const fs::path force_ride_uncapped_fixture = "force_stage_ride_uncapped_fixture.lua";
+    const fs::path force_ride_low_force_fixture = "force_stage_ride_low_force_fixture.lua";
+    const fs::path force_ride_low_torque_fixture = "force_stage_ride_low_torque_fixture.lua";
     const fs::path force_hop_fixture = "force_stage_hop_fixture.lua";
     const fs::path force_hop_uncapped_fixture = "force_stage_hop_uncapped_fixture.lua";
     const fs::path force_hop_invalid_vertical_fixture = "force_stage_hop_invalid_vertical_fixture.lua";
     const fs::path force_hop_low_vertical_fixture = "force_stage_hop_low_vertical_fixture.lua";
+    const fs::path force_hop_ride_fixture = "force_stage_hop_ride_fixture.lua";
+    const fs::path force_hop_ride_uncapped_fixture = "force_stage_hop_ride_uncapped_fixture.lua";
+    const fs::path force_hop_ride_low_force_fixture = "force_stage_hop_ride_low_force_fixture.lua";
+    const fs::path force_hop_ride_low_torque_fixture = "force_stage_hop_ride_low_torque_fixture.lua";
     const fs::path floor_fixture = "bike_spawn_floor_qualified_fixture.lua";
     const fs::path follow_fixture = "bike_runtime_core_provisional_follow_fixture.lua";
     const fs::path renewal_fixture = "bike_runtime_core_follow_renewal_fixture.lua";
     const fs::path lead_fixture = "bike_runtime_core_follow_lead_fixture.lua";
     const fs::path guard_fixture = "bike_runtime_core_ride_guard_fixture.lua";
+    const fs::path core_pose_fixture = "bike_runtime_core_mounted_pose_fixture.lua";
     const fs::path manifest = ".bmx-qualified-ride-files-v1";
     constexpr std::string_view manifest_header = "bmx-qualified-ride-files-v1";
     for (const auto& planted : {fixture, category_fixture, pose_fixture, force_support_fixture, force_pedal_fixture,
@@ -308,8 +317,10 @@ void stage_qualified_ride(const std::filesystem::path& plugin_folder, const std:
              force_support_torque_fixture, force_pedal_torque_fixture, force_low_torque_fixture,
              force_torque_zero_fixture, force_torque_negative_fixture, force_torque_infinite_fixture,
              force_torque_nan_fixture, force_torque_string_fixture, force_torque_boolean_fixture, force_torque_excess_fixture,
+             force_ride_fixture, force_ride_uncapped_fixture, force_ride_low_force_fixture, force_ride_low_torque_fixture,
              force_hop_fixture, force_hop_uncapped_fixture, force_hop_invalid_vertical_fixture, force_hop_low_vertical_fixture,
-             floor_fixture, follow_fixture, renewal_fixture, lead_fixture, guard_fixture})
+             force_hop_ride_fixture, force_hop_ride_uncapped_fixture, force_hop_ride_low_force_fixture, force_hop_ride_low_torque_fixture,
+             floor_fixture, follow_fixture, renewal_fixture, lead_fixture, guard_fixture, core_pose_fixture})
         if (fs::exists(source / planted))
             throw std::runtime_error(planted.string() + " belongs only in test copies, not in " + source.generic_string());
     const auto wanted = fs::weakly_canonical(copy_folder);
@@ -404,10 +415,18 @@ void stage_qualified_ride(const std::filesystem::path& plugin_folder, const std:
         add_force_fixture(force_torque_string_fixture, "support", "{force=20000,speed=10,torque=\"4000\"}");
         add_force_fixture(force_torque_boolean_fixture, "support", "{force=20000,speed=10,torque=false}");
         add_force_fixture(force_torque_excess_fixture, "support", "{force=20000,speed=10,torque=4000.001}");
+        add_force_fixture(force_ride_fixture, "ride", "{force=6000,speed=3,torque=2000}");
+        add_force_fixture(force_ride_uncapped_fixture, "ride", "nil");
+        add_force_fixture(force_ride_low_force_fixture, "ride", "{force=100,speed=3,torque=2000}");
+        add_force_fixture(force_ride_low_torque_fixture, "ride", "{force=6000,speed=3,torque=35}");
         add_force_fixture(force_hop_fixture, "hop", "{force=6000,speed=3,torque=2000,vertical_speed=6}");
         add_force_fixture(force_hop_uncapped_fixture, "hop", "nil");
         add_force_fixture(force_hop_invalid_vertical_fixture, "hop", "{force=6000,speed=3,torque=2000,vertical_speed=0}");
         add_force_fixture(force_hop_low_vertical_fixture, "hop", "{force=6000,speed=3,torque=2000,vertical_speed=.1}");
+        add_force_fixture(force_hop_ride_fixture, "hop_ride", "{force=6000,speed=3,torque=2000,vertical_speed=6}");
+        add_force_fixture(force_hop_ride_uncapped_fixture, "hop_ride", "nil");
+        add_force_fixture(force_hop_ride_low_force_fixture, "hop_ride", "{force=100,speed=3,torque=2000,vertical_speed=6}");
+        add_force_fixture(force_hop_ride_low_torque_fixture, "hop_ride", "{force=6000,speed=3,torque=35,vertical_speed=6}");
     }
 
     // Floor placement stays inactive in the shipped module. Its suite alone
@@ -445,6 +464,18 @@ void stage_qualified_ride(const std::filesystem::path& plugin_folder, const std:
         if (ride_at == std::string::npos || guard.find(ride_binding, ride_at + ride_binding.size()) != std::string::npos)
             throw std::runtime_error("bike_runtime_core.lua must keep exactly one canonical Ride binding");
         guard.replace(ride_at, ride_binding.size(), "local Ride=require(\"./ride_runtime_qualified_fixture\")");
+        // This copy changes only the lazy pose binding. Core, Ride and native gates stay closed.
+        if (pose_file == files.end())
+            throw std::runtime_error("mounted_pose.lua is required for the Core mounted pose fixture");
+        auto core_pose = core_file->second;
+        constexpr std::string_view pose_binding = "MountedPose=require(\"./mounted_pose\")";
+        constexpr std::string_view qualified_pose_binding = "MountedPose=require(\"./mounted_pose_qualified_fixture\")";
+        const auto pose_at = core_pose.find(pose_binding);
+        if (pose_at == std::string::npos || core_pose.find(pose_binding, pose_at + pose_binding.size()) != std::string::npos ||
+            core_pose.find(qualified_pose_binding) != std::string::npos)
+            throw std::runtime_error("bike_runtime_core.lua must keep exactly one canonical MountedPose binding and no qualified binding");
+        core_pose.replace(pose_at, pose_binding.size(), qualified_pose_binding);
+        files.emplace(core_pose_fixture, std::move(core_pose));
         files.emplace(follow_fixture, std::move(follow));
         files.emplace(renewal_fixture, std::move(renewal));
         files.emplace(lead_fixture, std::move(lead));
@@ -736,10 +767,18 @@ void force_stage_manifest(const std::filesystem::path& scratch) {
         {"force_stage_torque_string_fixture.lua", "support", "{force=20000,speed=10,torque=\"4000\"}"},
         {"force_stage_torque_boolean_fixture.lua", "support", "{force=20000,speed=10,torque=false}"},
         {"force_stage_torque_excess_fixture.lua", "support", "{force=20000,speed=10,torque=4000.001}"},
+        {"force_stage_ride_fixture.lua", "ride", "{force=6000,speed=3,torque=2000}"},
+        {"force_stage_ride_uncapped_fixture.lua", "ride", "nil"},
+        {"force_stage_ride_low_force_fixture.lua", "ride", "{force=100,speed=3,torque=2000}"},
+        {"force_stage_ride_low_torque_fixture.lua", "ride", "{force=6000,speed=3,torque=35}"},
         {"force_stage_hop_fixture.lua", "hop", "{force=6000,speed=3,torque=2000,vertical_speed=6}"},
         {"force_stage_hop_uncapped_fixture.lua", "hop", "nil"},
         {"force_stage_hop_invalid_vertical_fixture.lua", "hop", "{force=6000,speed=3,torque=2000,vertical_speed=0}"},
-        {"force_stage_hop_low_vertical_fixture.lua", "hop", "{force=6000,speed=3,torque=2000,vertical_speed=.1}"}};
+        {"force_stage_hop_low_vertical_fixture.lua", "hop", "{force=6000,speed=3,torque=2000,vertical_speed=.1}"},
+        {"force_stage_hop_ride_fixture.lua", "hop_ride", "{force=6000,speed=3,torque=2000,vertical_speed=6}"},
+        {"force_stage_hop_ride_uncapped_fixture.lua", "hop_ride", "nil"},
+        {"force_stage_hop_ride_low_force_fixture.lua", "hop_ride", "{force=100,speed=3,torque=2000,vertical_speed=6}"},
+        {"force_stage_hop_ride_low_torque_fixture.lua", "hop_ride", "{force=6000,speed=3,torque=35,vertical_speed=6}"}};
     const auto source = scratch / "source";
     make_stand_in(source);
     write_file(source / "force_stage.lua", force);
@@ -756,15 +795,19 @@ void force_stage_manifest(const std::filesystem::path& scratch) {
     expect(staged.at(".bmx-qualified-ride-files-v1") == std::string(
         "bmx-qualified-ride-files-v1\nforce_math.lua\nforce_stage.lua\nforce_stage_hop_fixture.lua\n"
         "force_stage_hop_invalid_vertical_fixture.lua\nforce_stage_hop_low_vertical_fixture.lua\n"
+        "force_stage_hop_ride_fixture.lua\nforce_stage_hop_ride_low_force_fixture.lua\n"
+        "force_stage_hop_ride_low_torque_fixture.lua\nforce_stage_hop_ride_uncapped_fixture.lua\n"
         "force_stage_hop_uncapped_fixture.lua\nforce_stage_invalid_fixture.lua\n"
         "force_stage_low_cap_fixture.lua\nforce_stage_low_torque_fixture.lua\nforce_stage_pedal_fixture.lua\n"
-        "force_stage_pedal_torque_fixture.lua\nforce_stage_pedal_uncapped_fixture.lua\nforce_stage_support_fixture.lua\n"
+        "force_stage_pedal_torque_fixture.lua\nforce_stage_pedal_uncapped_fixture.lua\n"
+        "force_stage_ride_fixture.lua\nforce_stage_ride_low_force_fixture.lua\n"
+        "force_stage_ride_low_torque_fixture.lua\nforce_stage_ride_uncapped_fixture.lua\nforce_stage_support_fixture.lua\n"
         "force_stage_support_torque_fixture.lua\nforce_stage_support_uncapped_fixture.lua\n"
         "force_stage_torque_boolean_fixture.lua\nforce_stage_torque_excess_fixture.lua\nforce_stage_torque_infinite_fixture.lua\n"
         "force_stage_torque_nan_fixture.lua\nforce_stage_torque_negative_fixture.lua\nforce_stage_torque_string_fixture.lua\n"
         "force_stage_torque_zero_fixture.lua\nride_runtime.lua\nride_runtime_qualified_fixture.lua\n"),
         "force fixtures missing from exact ownership manifest");
-    expect(staged.size() == 25, "force stage has unexpected entries");
+    expect(staged.size() == 33, "force stage has unexpected entries");
     stage_qualified_ride(source, destination);
     expect(inventory(destination) == staged && inventory(source) == before, "force rerun changed source or destination bytes");
 
@@ -810,15 +853,19 @@ void floor_manifest(const std::filesystem::path& scratch) {
     constexpr std::string_view qualified = "local FLOOR_SPAWN_QUALIFIED=true\r\nreturn FLOOR_SPAWN_QUALIFIED\r\n";
     write_file(source / "bike_spawn.lua", spawn);
     constexpr std::string_view core = "local M1_PROVISIONAL_FOLLOW_OFFSET=false\r\nlocal FOLLOW_RENEWAL_QUALIFIED=false\r\n"
-        "local FOLLOW_LEAD_QUALIFIED=false\r\nlocal RIDE_COMPOSITION_QUALIFIED=false\r\nlocal Ride=require(\"./ride_runtime\")\r\nreturn M1_PROVISIONAL_FOLLOW_OFFSET\r\n";
+        "local FOLLOW_LEAD_QUALIFIED=false\r\nlocal RIDE_COMPOSITION_QUALIFIED=false\r\nlocal Ride=require(\"./ride_runtime\")\r\nlocal MountedPose\r\nMountedPose=require(\"./mounted_pose\")\r\nreturn M1_PROVISIONAL_FOLLOW_OFFSET\r\n";
     constexpr std::string_view core_qualified = "local M1_PROVISIONAL_FOLLOW_OFFSET=true\r\nlocal FOLLOW_RENEWAL_QUALIFIED=false\r\n"
-        "local FOLLOW_LEAD_QUALIFIED=false\r\nlocal RIDE_COMPOSITION_QUALIFIED=false\r\nlocal Ride=require(\"./ride_runtime\")\r\nreturn M1_PROVISIONAL_FOLLOW_OFFSET\r\n";
+        "local FOLLOW_LEAD_QUALIFIED=false\r\nlocal RIDE_COMPOSITION_QUALIFIED=false\r\nlocal Ride=require(\"./ride_runtime\")\r\nlocal MountedPose\r\nMountedPose=require(\"./mounted_pose\")\r\nreturn M1_PROVISIONAL_FOLLOW_OFFSET\r\n";
     constexpr std::string_view core_renewal = "local M1_PROVISIONAL_FOLLOW_OFFSET=false\r\nlocal FOLLOW_RENEWAL_QUALIFIED=true\r\n"
-        "local FOLLOW_LEAD_QUALIFIED=false\r\nlocal RIDE_COMPOSITION_QUALIFIED=false\r\nlocal Ride=require(\"./ride_runtime\")\r\nreturn M1_PROVISIONAL_FOLLOW_OFFSET\r\n";
+        "local FOLLOW_LEAD_QUALIFIED=false\r\nlocal RIDE_COMPOSITION_QUALIFIED=false\r\nlocal Ride=require(\"./ride_runtime\")\r\nlocal MountedPose\r\nMountedPose=require(\"./mounted_pose\")\r\nreturn M1_PROVISIONAL_FOLLOW_OFFSET\r\n";
     constexpr std::string_view core_lead = "local M1_PROVISIONAL_FOLLOW_OFFSET=false\r\nlocal FOLLOW_RENEWAL_QUALIFIED=false\r\n"
-        "local FOLLOW_LEAD_QUALIFIED=true\r\nlocal RIDE_COMPOSITION_QUALIFIED=false\r\nlocal Ride=require(\"./ride_runtime\")\r\nreturn M1_PROVISIONAL_FOLLOW_OFFSET\r\n";
+        "local FOLLOW_LEAD_QUALIFIED=true\r\nlocal RIDE_COMPOSITION_QUALIFIED=false\r\nlocal Ride=require(\"./ride_runtime\")\r\nlocal MountedPose\r\nMountedPose=require(\"./mounted_pose\")\r\nreturn M1_PROVISIONAL_FOLLOW_OFFSET\r\n";
     constexpr std::string_view core_guard = "local M1_PROVISIONAL_FOLLOW_OFFSET=false\r\nlocal FOLLOW_RENEWAL_QUALIFIED=false\r\n"
-        "local FOLLOW_LEAD_QUALIFIED=false\r\nlocal RIDE_COMPOSITION_QUALIFIED=true\r\nlocal Ride=require(\"./ride_runtime_qualified_fixture\")\r\nreturn M1_PROVISIONAL_FOLLOW_OFFSET\r\n";
+        "local FOLLOW_LEAD_QUALIFIED=false\r\nlocal RIDE_COMPOSITION_QUALIFIED=true\r\nlocal Ride=require(\"./ride_runtime_qualified_fixture\")\r\nlocal MountedPose\r\nMountedPose=require(\"./mounted_pose\")\r\nreturn M1_PROVISIONAL_FOLLOW_OFFSET\r\n";
+    constexpr std::string_view core_pose = "local M1_PROVISIONAL_FOLLOW_OFFSET=false\r\nlocal FOLLOW_RENEWAL_QUALIFIED=false\r\n"
+        "local FOLLOW_LEAD_QUALIFIED=false\r\nlocal RIDE_COMPOSITION_QUALIFIED=false\r\nlocal Ride=require(\"./ride_runtime\")\r\n"
+        "local MountedPose\r\nMountedPose=require(\"./mounted_pose_qualified_fixture\")\r\nreturn M1_PROVISIONAL_FOLLOW_OFFSET\r\n";
+    write_file(source / "mounted_pose.lua", regression_pose);
     write_file(source / "bike_runtime_core.lua", core);
     const auto before = inventory(source);
     const auto destination = scratch / "copy";
@@ -830,11 +877,14 @@ void floor_manifest(const std::filesystem::path& scratch) {
     expect(staged.at("bike_runtime_core_follow_renewal_fixture.lua") == std::string(core_renewal), "Follow renewal fixture changed more than one literal");
     expect(staged.at("bike_runtime_core_follow_lead_fixture.lua") == std::string(core_lead), "Follow lead fixture changed more than one literal");
     expect(staged.at("bike_runtime_core_ride_guard_fixture.lua") == std::string(core_guard), "active Core guard fixture changed more than its gate and Ride binding");
+    expect(staged.at("bike_runtime_core_mounted_pose_fixture.lua") == std::string(core_pose), "mounted pose Core fixture changed more than its binding");
+    expect(staged.at("mounted_pose.lua") == std::string(regression_pose), "canonical mounted pose changed in the copy");
+    expect(staged.at("mounted_pose_qualified_fixture.lua") == std::string(regression_pose_fixture), "mounted pose dependency fixture changed more than its gate");
     expect(staged.at("bike_spawn_floor_qualified_fixture.lua") == std::string(qualified), "floor fixture changed more than one literal");
     expect(staged.at(".bmx-qualified-ride-files-v1") == std::string(
-        "bmx-qualified-ride-files-v1\nbike_runtime_core.lua\nbike_runtime_core_follow_lead_fixture.lua\nbike_runtime_core_follow_renewal_fixture.lua\nbike_runtime_core_provisional_follow_fixture.lua\nbike_runtime_core_ride_guard_fixture.lua\nbike_spawn.lua\nbike_spawn_floor_qualified_fixture.lua\nforce_math.lua\nride_runtime.lua\nride_runtime_qualified_fixture.lua\n"),
+        "bmx-qualified-ride-files-v1\nbike_runtime_core.lua\nbike_runtime_core_follow_lead_fixture.lua\nbike_runtime_core_follow_renewal_fixture.lua\nbike_runtime_core_mounted_pose_fixture.lua\nbike_runtime_core_provisional_follow_fixture.lua\nbike_runtime_core_ride_guard_fixture.lua\nbike_spawn.lua\nbike_spawn_floor_qualified_fixture.lua\nforce_math.lua\nmounted_pose.lua\nmounted_pose_qualified_fixture.lua\nride_runtime.lua\nride_runtime_qualified_fixture.lua\n"),
         "floor fixture missing from exact ownership manifest");
-    expect(staged.size() == 11, "floor stage has unexpected entries");
+    expect(staged.size() == 14, "floor stage has unexpected entries");
     stage_qualified_ride(source, destination);
     expect(inventory(destination) == staged && inventory(source) == before, "floor rerun changed source or destination bytes");
     write_file(source / "bike_spawn.lua", qualified);
@@ -880,6 +930,31 @@ void floor_manifest(const std::filesystem::path& scratch) {
     write_file(source / "bike_runtime_core.lua", missing_ride);
     expect_refused(source, destination, "must keep exactly one canonical Ride binding");
     write_file(source / "bike_runtime_core.lua", core);
+    constexpr std::string_view canonical_pose = "MountedPose=require(\"./mounted_pose\")";
+    constexpr std::string_view qualified_pose = "MountedPose=require(\"./mounted_pose_qualified_fixture\")";
+    write_file(source / "bike_runtime_core.lua", core_pose);
+    expect_refused(source, destination, "must keep exactly one canonical MountedPose binding");
+    expect_refused(source, scratch / "core-pose-invalid-binding-copy", "must keep exactly one canonical MountedPose binding");
+    write_file(source / "bike_runtime_core.lua", std::string(core) + std::string(canonical_pose));
+    expect_refused(source, destination, "must keep exactly one canonical MountedPose binding");
+    expect_refused(source, scratch / "core-pose-invalid-binding-copy", "must keep exactly one canonical MountedPose binding");
+    write_file(source / "bike_runtime_core.lua", std::string(core) + std::string(qualified_pose));
+    expect_refused(source, destination, "must keep exactly one canonical MountedPose binding");
+    expect_refused(source, scratch / "core-pose-invalid-binding-copy", "must keep exactly one canonical MountedPose binding");
+    auto missing_pose_binding = std::string(core);
+    missing_pose_binding.erase(missing_pose_binding.find(canonical_pose), canonical_pose.size());
+    write_file(source / "bike_runtime_core.lua", missing_pose_binding);
+    expect_refused(source, destination, "must keep exactly one canonical MountedPose binding");
+    expect_refused(source, scratch / "core-pose-invalid-binding-copy", "must keep exactly one canonical MountedPose binding");
+    write_file(source / "bike_runtime_core.lua", core);
+    expect(std::filesystem::remove(source / "mounted_pose.lua"), "could not remove the owned pose dependency");
+    expect_refused(source, destination, "mounted_pose.lua is required");
+    expect_refused(source, scratch / "core-pose-missing-dependency-copy", "mounted_pose.lua is required");
+    write_file(source / "mounted_pose.lua", regression_pose);
+    write_file(source / "bike_runtime_core_mounted_pose_fixture.lua", core_pose);
+    expect_refused(source, destination, "belongs only in test copies");
+    expect_refused(source, scratch / "core-pose-planted-copy", "belongs only in test copies");
+    expect(std::filesystem::remove(source / "bike_runtime_core_mounted_pose_fixture.lua"), "could not remove the owned pose Core plant");
     write_file(source / "bike_runtime_core_provisional_follow_fixture.lua", core_qualified);
     expect_refused(source, scratch / "core-planted-copy", "belongs only in test copies");
     expect(std::filesystem::remove(source / "bike_runtime_core_provisional_follow_fixture.lua"), "could not remove the owned Core plant");

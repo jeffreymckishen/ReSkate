@@ -72,7 +72,7 @@ public Core mount/Source, without changing existing suite counts. Any suite that
 against that copy; the others run against the plugin folder itself. The production gates (`ACTIVATION_QUALIFIED`,
 `RIDE_COMPOSITION_QUALIFIED`) are never changed in the source.
 
-When `force_stage.lua` exists, that copy also holds six `force_stage_*_fixture.lua` modules.
+When `force_stage.lua` exists, that copy also holds private `force_stage_*_fixture.lua` modules.
 The source must keep exactly one `local STAGE = "zero_force"` and one
 `local AUTHORED_CAPS = nil`. It is copied unchanged; the fixtures replace only those literals:
 
@@ -85,9 +85,41 @@ The source must keep exactly one `local STAGE = "zero_force"` and one
 | `low_cap_fixture` | `support` | `{force=100,speed=10}` |
 | `invalid_fixture` | `invalid_stage` | `nil` |
 
-Each full name begins with `force_stage_`. All six names are refused in the plugin source.
+Each full name begins with `force_stage_`. Every fixture name is refused in the plugin source.
 Missing, repeated or nonbaseline stage/cap literals refuse before destination mutation.
 These are constructed policy values, not calibrated native force or speed limits.
+The ride-control suite additionally stages `ride_fixture` with
+`{force=6000,speed=3,torque=2000}`, `ride_uncapped_fixture` with `nil`,
+`ride_low_force_fixture` with `{force=100,speed=3,torque=2000}`, and
+`ride_low_torque_fixture` with `{force=6000,speed=3,torque=35}`. All select
+`ride` only inside the owned test copy. Exact-manifest regression checks cover
+these four names and refuse each if planted in the source package.
+
+The combined hop/ride suites additionally use these four private fixtures, all with stage `hop_ride`:
+
+| Fixture suffix | Synthetic caps |
+| --- | --- |
+| `hop_ride_fixture` | `{force=6000,speed=3,torque=2000,vertical_speed=6}` |
+| `hop_ride_uncapped_fixture` | `nil` |
+| `hop_ride_low_force_fixture` | `{force=100,speed=3,torque=2000,vertical_speed=6}` |
+| `hop_ride_low_torque_fixture` | `{force=6000,speed=3,torque=35,vertical_speed=6}` |
+
+The full names still begin with `force_stage_`. Their exact-byte, lexical manifest, rerun,
+planted-source refusal and dropped-module checks use the existing `force-stage-manifest`
+regression. They leave the shipped stage and caps unchanged. The existing fixture-routing
+pattern covers direct references to these names; the suite glob registers the new `*_tests.lua`
+files on configure. These constructed limits do not establish native force admission or handling.
+
+When Core is present, the copy also includes `bike_runtime_core_mounted_pose_fixture.lua`.
+It replaces exactly one `MountedPose=require("./mounted_pose")` with
+`MountedPose=require("./mounted_pose_qualified_fixture")`; every Core literal, the Ride binding,
+and native gate remain unchanged. Staging requires the real `mounted_pose.lua` dependency,
+whose separately generated qualified fixture is already checked above. Missing or duplicate
+canonical bindings, an already qualified binding, and a planted Core pose fixture refuse before
+any destination change. `floor-manifest` checks the exact Core and dependency bytes, lexical
+owned-file manifest, identical rerun, binding refusals and missing-dependency refusals against
+both an absent destination and an existing owned copy. The suite's constructed presentation
+callbacks do not establish Host permission, rider alignment or native presentation qualification.
 
 ## What it is not
 
@@ -145,7 +177,7 @@ clears each registered case's scratch folder first.
 
 - `stage_writes_category_manifest`: the Contact test copy changes only its one category literal,
   enters the exact manifest, survives an identical rerun and refuses malformed or planted fixtures.
-- `stage_writes_force_stage_manifest`: all six ForceStage copies preserve every other byte,
+- `stage_writes_force_stage_manifest`: all ForceStage copies preserve every other byte,
   including CRLF endings, and enter the exact owned-file manifest. It checks an identical rerun,
   removal when the source module is dropped, every reserved fixture name, and missing, repeated or
   nonbaseline literals against both absent destinations and earlier owned copies.

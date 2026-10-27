@@ -278,6 +278,14 @@ end
 function BikeRuntime.follow_pose(ride_status)
     return type(ride_status)=="table" and ride_status.presentation_pose or nil
 end
+-- Wheel phases belong to the bike mesh. The rider uses only the accepted
+-- steering and crank phases; trick releases remain neutral in this ride lane.
+function BikeRuntime.mounted_articulation(pose)
+    local p=type(pose)=="table" and pose or {}
+    return {steer=p.steer or 0,crank_phase=p.crank_phase or 0,barspin=0,tailwhip=0,
+        movement_bike_pitch=0,movement_bike_roll=0,barspin_release=0,tailwhip_release=0,
+        release_left_hand=0,release_right_hand=0,release_left_foot=0,release_right_foot=0}
+end
 -- The stop text for a follow visual that did not draw. A refusal carries
 -- Spawn's own reason (a pose, the body, the envelope, its clock or a part
 -- request), which the plain text hid. A call that threw or was cancelled keeps
@@ -714,7 +722,7 @@ snapshot=function()
         storage_fault=T.storage_fault==true,readiness=T.facts,initial_readiness=T.initial_facts,
         capture_attempted=T.capture_attempted==true,source=source_record(s,true),last_source_step=T.source_record,
         spawn=b,equipment=e,
-        ride_composition_qualified=RIDE_COMPOSITION_QUALIFIED,ride=T.ride_status,
+        ride_composition_qualified=RIDE_COMPOSITION_QUALIFIED,ride=T.ride_status,mounted_pose=T.pose_status,
         force_cleanup_clear=force_clear(),force_cleanup_unknown=T.ride_unknown==true,
         handoff_attempted=T.handoff_attempted==true,body_transferred=T.transferred==true,
         handoff_unknown=T.handoff_unknown==true,reserve_attempted=T.reserve_attempted==true,
@@ -738,7 +746,8 @@ snapshot=function()
             core_ready=T.core_ready==true,backend_ready=T.backend_ready==true,
             ride_modules_bound=T.ride_modules_bound==true,ride_trick_adapter=T.ride_trick_adapter==true,
             core_instances=T.core_instances or 0,equipment_instances=T.equipment_instances or 0,
-            source_instances=T.source_instances or 0,spawn_instances=T.spawn_instances or 0},
+            source_instances=T.source_instances or 0,spawn_instances=T.spawn_instances or 0,
+            pose_instances=T.pose_instances or 0},
         geometry_scope="Original actor+3m/+0.5m spawn; COM attachment and anchor remain unqualified",
         evidence_scope="Host storage cache acceptance only; no disk durability, native consumption or mounted success inferred"})
 end
@@ -776,6 +785,76 @@ local function persist(force)
     if stop_all then stop_all("ledger cache failed; no retry or replacement") end
     return false
 end
+-- Mounted presentation shares Core's accepted body read and call ledger. A
+-- presentation refusal never changes native body, input or receipt authority.
+local MountedPose,poser
+local pose_stop
+local pose_api={skater={pose=function(...)
+    local first=...
+    if first~=nil and (T.pose_stop_requested or T.pose_dead or not current(T.pose_generation)) then
+        return false,"Mounted pose owner stopped"
+    end
+    local r=call("skater.pose",lookup("skater.pose"),...)
+    if first==nil then
+        T.pose_nil_calls=(T.pose_nil_calls or 0)+1;T.pose_nil_accepted=yes(r)
+        if not T.pose_nil_accepted then T.pose_issue=T.pose_issue or "Pose release refused or unavailable" end
+    end
+    -- Keep the SDK capability probe's exact error for MountedPose.classify_probe.
+    if not r[1] then error(r[2],0) end
+    return table.unpack(r,2,r.n)
+end}}
+local function pose_xyz(p) return {p[1],p[2],p[3]} end
+local function pose_status(plan)
+    local st=poser:status()
+    local row={state=st.state,blend=st.blend,weight=st.weight,reason=st.reason and short(st.reason) or nil,
+        capability=st.capability,sends=st.sends,ends=st.ends,last_sent=st.last_sent,qualified=st.qualified,
+        issue=T.pose_issue,mount_ms=T.pose_mount_ms,mounted_ms=T.pose_mounted_ms,ticks=T.pose_ticks or 0,
+        sent_ticks=T.pose_sent_ticks or 0,nil_calls=T.pose_nil_calls or 0,nil_accepted=T.pose_nil_accepted,
+        stopped=T.pose_stopped==true,memo_hits=poser.memo_hits or 0,memo_misses=poser.memo_misses or 0}
+    if plan then
+        local t=plan.targets
+        row.plan={at_ms=T.now,hips=pose_xyz(t.hips),wrists={pose_xyz(t.wrists[1]),pose_xyz(t.wrists[2])},
+            ankles={pose_xyz(t.ankles[1]),pose_xyz(t.ankles[2])}}
+    end
+    T.pose_status=freeze_tree(row)
+end
+local function pose_step(sample,pose,now,generation)
+    T.pose_ticks=(T.pose_ticks or 0)+1
+    if not T.pose_mount_ms then
+        T.pose_mount_ms=now
+        local m=poser:mount(now/1000)
+        if m.ok~=true then T.pose_issue=T.pose_issue or short("mount: "..tostring(m.reason)) end
+    end
+    -- A capability probe can reenter Stop or unload. Do not send the first
+    -- actual posture after that callback revoked the owner.
+    if not current(generation) or T.pose_stop_requested then return end
+    local r=poser:tick(now/1000,{bike={center_of_mass=sample.position,rotation=sample.rotation},
+        articulation=BikeRuntime.mounted_articulation(pose)})
+    if r.sent==true then T.pose_sent_ticks=(T.pose_sent_ticks or 0)+1 end
+    if r.ok~=true and r.reason~=nil then T.pose_issue=T.pose_issue or short(r.reason) end
+    if not T.pose_mounted_ms and r.state=="mounted" then T.pose_mounted_ms=now end
+    pose_status(r.sent==true and r.plan or nil)
+end
+pose_stop=function()
+    if not poser or T.pose_stopped then return end
+    T.pose_stop_requested=true
+    -- A send can return accepted after a reentrant Stop. Let the Poser record
+    -- that late acceptance, then release it once when its call has unwound.
+    if T.pose_busy then return end
+    T.pose_stopped=true
+    local ok,why=pcall(poser.stop,poser)
+    if not ok then T.pose_issue=T.pose_issue or short("pose stop raised: "..tostring(why)) end
+    pcall(pose_status,nil)
+end
+local function pose_tick(sample,pose,now)
+    if not poser or T.pose_dead or T.pose_stopped or T.stop_latched or T.unloaded then return end
+    local generation=T.generation
+    T.pose_busy=true;T.pose_generation=generation
+    local ok,why=pcall(pose_step,sample,pose,now,generation)
+    T.pose_busy=false
+    if not ok then T.pose_dead=true;T.pose_issue=T.pose_issue or short("pose step raised: "..tostring(why)) end
+    if not ok or T.pose_stop_requested or not current(generation) then pose_stop() end
+end
 local function follow_stop_once()
     if not T.follow or T.follow_stop_attempted then return end
     T.follow_stop_attempted=true
@@ -805,6 +884,7 @@ stop_all=function(why,draining_board)
     T.cleanup_busy=true
     -- Stop known follow FIRST, before Source can release capture or another body read occurs.
     follow_stop_once()
+    pose_stop()
     if T.source_inflight then T.cleanup_busy=false;return end
     if source then call("source.stop",source.stop,source,T.stop_reason) end
     stop_spawn_when_allowed(T.stop_reason)
@@ -1624,6 +1704,10 @@ function object:prepare_backend()
         or type(Contact.decode)~="function" or type(ForceStage)~="table" or type(ForceStage.new)~="function" then return false end
     RideRuntime=Ride;ride_models=table.freeze({contact=Contact,force=ForceStage.new()})
     T.ride_modules_bound=true;T.ride_trick_adapter=ride_models.tricks~=nil
+    -- Staged before Core construction. The closed qualification literal in
+    -- MountedPose still refuses native presentation; constructing it is inert.
+    MountedPose=require("./mounted_pose");poser=MountedPose.new(pose_api)
+    T.pose_instances=(T.pose_instances or 0)+1
     source=Source.new(input_proxy,{setup_ms=15000,capture_ms=4000,cleanup_ms=4000})
     T.source_instances=(T.source_instances or 0)+1
     if BikeSpawn.floor_spawn_qualified()==true and lookup("world.raycast") then
@@ -1892,7 +1976,8 @@ local function tick(dt)
                         now=clock()
                         if not yes(v) or not now or not current(generation) then
                             stop_all(BikeRuntime.follow_visual_stop("follow visual",v))
-                        elseif not lease_live(now) then stop_all("ride window or Follow lease ended during visual update") end
+                        elseif not lease_live(now) then stop_all("ride window or Follow lease ended during visual update")
+                        else pose_tick(r[2],pose,now) end
                     end
                 end
             end
@@ -1921,6 +2006,7 @@ function object:unload()
     if T.unloaded then return self:status() end
     T.unloaded=true;T.generation+=1
     if board.pending or T.used or T.gear_requested or T.intent_inflight then stop_all("unload; SDK retains unresolved native duty") end
+    pose_stop()
     drain_ride()
     if source then call("source.unload",source.unload,source) end
     call("equipment.unload",equipment.unload,equipment)

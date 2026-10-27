@@ -6032,7 +6032,19 @@ void bmx_lua_menu_switches_explicit_slots_and_retains_cleanup_duty() {
         const auto slot = scenario % 4;
         environment.actions = {plugin_ui::Action{id, "BMX Lua migration", "equipment" + std::to_string(slot), false}};
         step();
-        for (unsigned i = 0; i < 10; ++i) step();
+        // Three cold stock imports, then a separate Core construction tick.
+        // Keep the existing ten-tick wait and the unchanged Host budgets.
+        for (unsigned i = 0; i < 10; ++i) {
+            step();
+            if (i < 4) {
+                bool idle = false;
+                for (const auto& panel : environment.panels)
+                    for (const auto& widget : panel.widgets)
+                        if (widget.text == "Switch phase") idle = widget.help == "idle";
+                check(idle && !game.input_pulse_requests && !game.body_create_calls && !game.follow_reserves,
+                      why + "stock imports and Core construction must finish before equipment handoff");
+            }
+        }
         check(!game.input_pulse_requests, why + "an explicit menu request cannot publish while the menu remains open");
         if (scenario == 4) {
             game.input_pulse_available = false;
@@ -6133,7 +6145,14 @@ void bmx_lua_menu_returns_to_board_without_inverting_the_target() {
                   other_actuators_inert(), why + "load and menu rebuilds cannot start a return transaction");
         const auto slot = scenario % 4;
         click("bike_board" + std::to_string(slot));
-        for (unsigned i = 0; i < 14; ++i) step();
+        // Board startup uses the same three imports and separate construction tick.
+        for (unsigned i = 0; i < 14; ++i) {
+            step();
+            if (i < 4)
+                check(panel_value("Switch phase") == "idle" && panel_value("Board return phase") == "draining" &&
+                          !game.input_pulse_requests && other_actuators_inert(),
+                      why + "cold board startup cannot hand off or acquire native work during Core construction");
+        }
         check(!game.input_pulse_requests, why + "board return cannot publish an input report through an open menu");
         if (scenario == 1) {
             // A second slot click must not replace the first transaction's selected source.

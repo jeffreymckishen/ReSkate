@@ -11,6 +11,7 @@ local stock_modules={"./equipment_transition","./equipment_runtime","./bike_runt
 local mount_modules={"./lease_identity","./lease_source","./force_math","./bike_geometry","./bike_visual","./bike_spawn",
     "./tire","./brake","./pump","./force_solver","./forces","./force_stage","./catalog","./input","./ride_input_mapping",
     "./frame_identity","./contact_runtime","./ride_inflight","./ride_runtime",
+    "./bones","./mounted_pose",
     "./equipment_transition","./equipment_runtime","./bike_runtime_core"}
 local function finite(v) return type(v)=="number" and v==v and math.abs(v)<math.huge end
 local function valid_slot(v) return finite(v) and v>=0 and v<=3 and v%1==0 end
@@ -206,11 +207,13 @@ function BikeRuntime.new(services,options)
                 elseif pending and intent.generation==T.generation then
                     loaded[name]=value;intent.index+=1
                     T.startup_loaded=(T.startup_loaded or 0)+1;T.startup_last=name
-                    if name=="./bike_runtime_core" and not core then
-                        core=value.new(R,{qualification_only=qualification_only},T);T.core_ready=true
-                        T.core_instances=(T.core_instances or 0)+1
-                    end
                 end
+            elseif not core then
+                -- Importing Core and constructing its closures are separate
+                -- bounded jobs. This tick repeats the original intent's clock,
+                -- readiness and cancellation checks before using the same owner.
+                core=loaded["./bike_runtime_core"].new(R,{qualification_only=qualification_only},T)
+                T.core_ready=true;T.core_instances=(T.core_instances or 0)+1
             elseif intent.kind=="mount" and not T.backend_ready then
                 if core:prepare_backend() then T.backend_ready=true else cancel("private backend preparation refused") end
             else

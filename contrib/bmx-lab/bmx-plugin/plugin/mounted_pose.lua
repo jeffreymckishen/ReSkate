@@ -433,6 +433,48 @@ local function rider_of(r, o)
     return {crouch = crouch, lean = lean, hip_offset = hip}
 end
 
+-- Optional authored targets use closed, plain records. Directions are in bike space, from the
+-- final shoulder/hip socket to the wrist/ankle; reach interpolates the limb's valid two-bone annulus.
+-- They are not positions to write to game joints. Nil leaves every existing arithmetic path intact.
+local TARGET_LIMBS = {left_hand = true, right_hand = true, left_foot = true, right_foot = true}
+local function target_vector(v, bound)
+    if type(v) ~= "table" or getmetatable(v) ~= nil then return nil end
+    for k in v do if k ~= 1 and k ~= 2 and k ~= 3 then return nil end end
+    return vec3(v, bound)
+end
+local function limb_targets_of(t)
+    if t == nil then return nil end
+    if type(t) ~= "table" or getmetatable(t) ~= nil then return nil, "limb_targets is a plain table" end
+    local out = {}
+    for name, value in t do
+        if not TARGET_LIMBS[name] then return nil, "unknown limb_targets limb " .. tostring(name) end
+        if type(value) ~= "table" or getmetatable(value) ~= nil then return nil, "limb target is {direction, reach}" end
+        for k in value do if k ~= "direction" and k ~= "reach" then return nil, "unknown limb target field " .. tostring(k) end end
+        local direction = target_vector(value.direction, 10)
+        direction = direction and unit(direction)
+        if not direction then return nil, "limb target direction is a finite nonzero three-number direction" end
+        if not finite(value.reach) or value.reach < 0 or value.reach > 1 then return nil, "limb target reach is 0 to 1" end
+        out[name] = {direction = direction, reach = value.reach}
+    end
+    return out
+end
+local function torso_of(t, o)
+    if t == nil then return nil end
+    if type(t) ~= "table" or getmetatable(t) ~= nil then return nil, "torso is a plain table" end
+    for k in t do
+        if k ~= "weight" and k ~= "pelvis" and k ~= "pitch" and k ~= "head_yaw" then return nil, "unknown torso field " .. tostring(k) end
+    end
+    if not finite(t.weight) or t.weight < 0 or t.weight > 1 then return nil, "torso weight is 0 to 1" end
+    local pelvis = t.pelvis == nil and {0, 0, 0} or target_vector(t.pelvis, .2)
+    if not pelvis then return nil, "torso pelvis is a finite offset within 0.2 m on each axis" end
+    local pitch, yaw = t.pitch == nil and 0 or t.pitch, t.head_yaw == nil and 0 or t.head_yaw
+    if not finite(pitch) or math.abs(pitch) > .5 then return nil, "torso pitch is within 0.5 radians" end
+    if not finite(yaw) or math.abs(yaw) > 1.2 then return nil, "torso head_yaw is within 1.2 radians" end
+    -- The existing calibrated head frame remains mandatory, even for a zero-weight request.
+    if yaw ~= 0 and not o.head then return nil, "torso head_yaw requires calibrated option head" end
+    return {weight = t.weight, pelvis = pelvis, pitch = pitch, head_yaw = yaw}
+end
+
 local function bike_of(bike, g)
     if type(bike) ~= "table" then return nil, "no bike transform" end
     for k in bike do
@@ -552,11 +594,14 @@ local function two_bone(root, target, pole, a, b)
     local reach = clamp(requested, math.abs(a - b) + margin, a + b - margin)
     local along = (a * a - b * b + reach * reach) / (2 * reach)
     local height = math.sqrt(math.max(0, a * a - along * along))
-    local side = unit(sub(pole, mul(direction, dot(pole, direction))))
+    local across = sub(pole, mul(direction, dot(pole, direction)))
+    local side = unit(across)
         or unit(cross(direction, math.abs(direction[2]) < .9 and {0, 1, 0} or {1, 0, 0}))
     return {root = root, middle = add(root, add(mul(direction, along), mul(side, height))),
         tip = add(root, mul(direction, reach)), direction = direction, side = side,
-        requested = requested, reach = reach, limit = a + b - margin, clamped = math.abs(requested - reach) > 1e-7}
+        requested = requested, reach = reach, limit = a + b - margin, clamped = math.abs(requested - reach) > 1e-7,
+        -- The fallback axes above are in world space. Near them a local solve cannot be reused.
+        frame_safe = requested > 1e-6 and length(across) > 1e-6}
 end
 -- The measured joint frames along a limb: +X toward the child, +Z the hinge both segments share
 -- (cross(side, direction): the side the elbow or knee points out to, then the limb's line), so the
@@ -580,12 +625,15 @@ local function angle_between(a, b) return math.acos(clamp(dot(unit(a), unit(b)),
 local function limit_swing(q, direction, cap)
     local x = turn(q, {1, 0, 0})
     local bend = angle_between(x, direction)
-    if bend <= cap then return q, false end
-    local axis = unit(cross(x, direction)) or unit(cross(x, math.abs(x[2]) < .9 and {0, 1, 0} or {1, 0, 0}))
-    return normalized(multiply(axis_angle(axis, bend - cap), q)), true
+    if bend <= cap then return q, false, true end
+    local across = cross(x, direction)
+    local axis = unit(across) or unit(cross(x, math.abs(x[2]) < .9 and {0, 1, 0} or {1, 0, 0}))
+    return normalized(multiply(axis_angle(axis, bend - cap), q)), true, length(across) > 1e-6
 end
 
 ------------------------------------------------------------------- compose
+-- Private eligibility metadata; no cache state or mutable local plan escapes in a returned plan.
+local FRAME_SAFE = setmetatable({}, {__mode = "k"})
 local function to_vector(p) return vector.create(p[1], p[2], p[3]) end
 local function place(pose, id, position, rotation, relative_to)
     local p = {}
@@ -599,7 +647,11 @@ end
 
 -- input = {bike = {root | center_of_mass, rotation}, articulation = {crank_phase, steer, barspin,
 -- tailwhip, movement_bike_pitch, movement_bike_roll, and the releases}, rider = {crouch, lean,
--- hip_offset}, skater_root = point?}. Returns the plan {pose, count, planned, targets, diagnostics}
+-- hip_offset}, skater_root = point?, limb_targets = {left_hand|right_hand|left_foot|right_foot =
+-- {direction = bike_space_direction, reach = 0..1}}?, torso = {weight = 0..1, pelvis?, pitch?,
+-- head_yaw?}?}. Limb targets are blended once by the corresponding articulation release. Torso
+-- uses its explicit weight and retains the saddle/knee constraints. Nonzero head_yaw requires
+-- option head's calibrated rotation. Returns {pose, count, planned, targets, diagnostics}
 -- or nil and why. Pure.
 function MP.compose(input, options)
     if JOINT_ISSUE then return nil, JOINT_ISSUE end
@@ -607,7 +659,8 @@ function MP.compose(input, options)
     if not o then return nil, why end
     if type(input) ~= "table" then return nil, "no input" end
     for k in input do
-        if k ~= "bike" and k ~= "articulation" and k ~= "rider" and k ~= "skater_root" then return nil, "unknown input field " .. tostring(k) end
+        if k ~= "bike" and k ~= "articulation" and k ~= "rider" and k ~= "skater_root" and
+            k ~= "limb_targets" and k ~= "torso" then return nil, "unknown input field " .. tostring(k) end
     end
     local g, rig = o.geometry, o.rig
     local frame
@@ -623,6 +676,21 @@ function MP.compose(input, options)
     if input.skater_root ~= nil then
         skater_root = vec3(input.skater_root, 1e5)
         if not skater_root then return nil, "the skater's root is not a finite point" end
+    end
+    local limb_targets, torso
+    if input.limb_targets ~= nil then
+        limb_targets, why = limb_targets_of(input.limb_targets)
+        if not limb_targets then return nil, why end
+    end
+    if input.torso ~= nil then
+        torso, why = torso_of(input.torso, o)
+        if not torso then return nil, why end
+        if torso.weight > 0 then
+            rider.lean += torso.pitch * torso.weight
+            rider.hip_offset = add(rider.hip_offset, mul(torso.pelvis, torso.weight))
+            if rider.lean < 0 or rider.lean > 1.2 then return nil, "combined torso and rider lean is 0 to 1.2 radians" end
+            if not vec3(rider.hip_offset, .5) then return nil, "combined torso and rider hip offset exceeds 0.5 m" end
+        end
     end
     local q, root = frame.rotation, frame.root
     local function world(p) return add(root, turn(q, p)) end
@@ -728,6 +796,7 @@ function MP.compose(input, options)
         fit_limited = fit_limited, hip_local = hip, hip_wanted = wanted_hip, hip_seat = hip_seat, seat_floor = floor,
         seat_rotation = seat_q, hip_above_seat = hip_seat[2] - saddle.top, knee_limited = knee_raise > 0,
         knee_raise = knee_raise, hands_held = hands_held}
+    local frame_safe = true
     local planned = {hips = {position = hip_world, rotation = hips_rotation}}
     for i, limb in LIMBS do
         local side = limb.side
@@ -735,23 +804,68 @@ function MP.compose(input, options)
         local pole_local = limb.arm and {side * o.elbow_pole[1], o.elbow_pole[2], o.elbow_pole[3]} or o.knee_pole
         local pole = turn(q, pole_local)
         local la, lb = rig.lengths[limb.upper], rig.lengths[limb.middle]
-        local ik = two_bone(root_point, targets[i], pole, la, lb)
+        local authored = limb_targets and limb_targets[limb.tip]
+        local target_active = authored ~= nil and releases[i] > 0
+        local target, palm_target = targets[i], limb.arm and c.palms[i] or nil
         local tip_rotation = limb.arm and c.hands[i] or c.feet[i - 2]
+        local released_rotation = tip_rotation
+        if target_active then
+            -- Start from the held contact, not the default free point (which has already been
+            -- release-blended). This applies the release exactly once to the authored endpoint.
+            if limb.arm then
+                palm_target, tip_rotation = c.grips[i], c.held_hands[i]
+                target = sub(palm_target, turn(tip_rotation, c.palm_offsets[i]))
+            else
+                local offset = add(g.pedal_offset[i - 2], {0, MP.CONTACTS.ankle_from_sole, o.foot_fore_aft})
+                target = add(c.spindles[i - 2], turn(c.platforms[i - 2], offset))
+                tip_rotation = c.held_feet[i - 2]
+            end
+        end
+        local ik = two_bone(root_point, target, pole, la, lb)
+        frame_safe = frame_safe and ik.frame_safe
         local wrist_limited = false
         if limb.arm then
             -- No hand turns further than max_wrist_bend off its forearm. A capped hand turns less than
             -- the grip asks, and the wrist moves so the palm stays on its point: a few rounds, since
             -- the forearm's line moves with the wrist (by under a fifth of the change each round).
-            local wanted = c.hands[i]
+            local wanted = tip_rotation
             for _ = 1, 8 do
-                local capped, limited = limit_swing(wanted, sub(ik.tip, ik.middle), o.max_wrist_bend)
+                local capped, limited, safe = limit_swing(wanted, sub(ik.tip, ik.middle), o.max_wrist_bend)
+                frame_safe = frame_safe and safe
                 if not limited and not wrist_limited then break end
                 wrist_limited = wrist_limited or limited
                 local step = math.abs(capped[1] * tip_rotation[1] + capped[2] * tip_rotation[2] +
                     capped[3] * tip_rotation[3] + capped[4] * tip_rotation[4])
                 tip_rotation = capped
-                ik = two_bone(root_point, sub(c.palms[i], turn(capped, c.palm_offsets[i])), pole, la, lb)
+                ik = two_bone(root_point, sub(palm_target, turn(capped, c.palm_offsets[i])), pole, la, lb)
+                frame_safe = frame_safe and ik.frame_safe
                 if step > 1 - 1e-14 then break end
+            end
+        end
+        local authored_endpoint
+        if target_active then
+            local margin = math.min(.0001, math.min(la, lb) * .01)
+            local near, far = math.abs(la - lb) + margin, la + lb - margin
+            authored_endpoint = add(root_point, turn(q, mul(authored.direction, near + (far - near) * authored.reach)))
+            target = lerp(ik.tip, authored_endpoint, releases[i])
+            -- Held rotations are only the IK seed. Keep the existing release blend for orientation
+            -- so a free hand/foot does not continue turning with a spinning bar or whipping pedal.
+            tip_rotation = released_rotation
+            ik = two_bone(root_point, target, pole, la, lb)
+            frame_safe = frame_safe and ik.frame_safe
+            if limb.arm then
+                -- A released target denotes the wrist, not a pinned palm. Limit the hand's turn
+                -- without shifting that wrist again, including on rigs with a narrow reach annulus.
+                local limited, safe
+                tip_rotation, limited, safe = limit_swing(tip_rotation, sub(ik.tip, ik.middle), o.max_wrist_bend)
+                wrist_limited = wrist_limited or limited
+                frame_safe = frame_safe and safe
+                c.wrists[i], c.hands[i] = target, tip_rotation
+                c.palms[i] = add(target, turn(tip_rotation, c.palm_offsets[i]))
+                c.free_palms[i] = add(authored_endpoint, turn(c.free_hands[i], c.palm_offsets[i]))
+            else
+                c.ankles[i - 2], c.feet[i - 2] = target, tip_rotation
+                c.free_ankles[i - 2] = authored_endpoint
             end
         end
         local upper, lower, flex = limb_frames(ik)
@@ -784,13 +898,21 @@ function MP.compose(input, options)
             d.twist, d.tip_twist, d.wrist_limited = twist, (1 - share) * twist, wrist_limited
             d.swing_degrees = degrees(angle_between(sub(ik.tip, ik.middle), turn(tip_rotation, {1, 0, 0})))
         end
+        if target_active then
+            -- Intermediate blends can cross the two-bone inner hole. requested/clamped/reach keep
+            -- that visible; planned.tip is the solved endpoint, targets is the requested endpoint.
+            d.authored_endpoint = authored_endpoint
+            d.authored_reach, d.target_blend = authored.reach, releases[i]
+        end
         diagnostics.limbs[limb.name] = d
         planned[limb.name] = {root = root_point, middle = ik.middle, tip = ik.tip, upper = upper, lower = lower_world,
             lower_local = lower_local, tip_rotation = tip_rotation}
     end
     if o.head then
         -- The head turns follow of the steer toward the bars, from its calibrated rider-frame rotation.
-        local head = normalized(multiply(multiply(q, axis_angle({0, 1, 0}, o.head.follow * a.steer)), o.head.rotation))
+        local head_angle = o.head.follow * a.steer
+        if torso and torso.weight > 0 and torso.head_yaw ~= 0 then head_angle += torso.head_yaw * torso.weight end
+        local head = normalized(multiply(multiply(q, axis_angle({0, 1, 0}, head_angle)), o.head.rotation))
         place(pose, J.head, nil, head, "world")
         planned.head = {rotation = head}
     end
@@ -804,11 +926,14 @@ function MP.compose(input, options)
     local count = 0
     for _ in pose do count += 1 end
     if count > MP.MAX_JOINTS then return nil, "the pose has more than 128 joints" end
-    return {pose = pose, count = count, planned = planned, diagnostics = diagnostics,
+    local plan = {pose = pose, count = count, planned = planned, diagnostics = diagnostics,
         targets = {hips = hip_world, palms = c.palms, grips = c.grips, wrists = c.wrists, spindles = c.spindles,
             ankles = c.ankles, hands = c.hands, feet = c.feet, platforms = c.platforms, releases = releases,
             held_hands = c.held_hands, held_feet = c.held_feet, free_palms = c.free_palms, free_hands = c.free_hands,
             free_ankles = c.free_ankles, free_feet = c.free_feet, bike_root = root, bike_rotation = q}}
+    if torso then diagnostics.torso_request = torso end
+    FRAME_SAFE[plan] = frame_safe
+    return plan
 end
 
 ------------------------------------------------------------------- what is sent
@@ -869,6 +994,91 @@ function MP.rider_rotation(root_rotation, joint_rotation)
     return normalized(multiply(conjugate(rider), j))
 end
 
+------------------------------------------------------------------- local-pose memo
+-- Reuse the expensive local solve when its exact inputs repeat, as in the private S2b trial.
+-- Unlike that trial, angles are not rounded and every field of the plan is retained. Continuously
+-- changing steer or crank phase may miss every tick; any budget saving needs measurement.
+-- Only neutral trick/release inputs without rider or skater-root overrides use this path. All input
+-- checks still run before a hit, and every send still validates its returned pose. The world-axis
+-- fallbacks of the solver are deliberately unchanged: a solve near one uses full world composition.
+local MEMO_ZERO = {"barspin", "tailwhip", "movement_bike_pitch", "movement_bike_roll", "barspin_release",
+    "tailwhip_release", "release_left_hand", "release_right_hand", "release_left_foot", "release_right_foot"}
+local MEMO_ORIGIN = freeze({root = {0, 0, 0}, rotation = {0, 0, 0, 1}})
+local MEMOS = setmetatable({}, {__mode = "k"})
+local function copy_plan_value(value)
+    if type(value) ~= "table" then return value end -- Luau vectors are immutable values.
+    local out = {}
+    for k, v in value do out[k] = copy_plan_value(v) end
+    return out
+end
+local function memo_world(lp, root, q)
+    local function at(p) return add(root, turn(q, p)) end
+    local function rotated(r) return normalized(multiply(q, r)) end
+    local pose = {}
+    for id, entry in lp.pose do
+        local p = entry.place
+        local out = {relative_to = p.relative_to}
+        if p.relative_to == "world" then
+            -- Use the double-precision planned hips, not the already-rounded Luau position vector.
+            if id == MP.JOINTS.hips then out.position = to_vector(at(lp.planned.hips.position))
+            elseif p.position then out.position = to_vector(at({p.position.x, p.position.y, p.position.z})) end
+            if p.rotation then out.rotation = rotated(p.rotation) end
+        else
+            out.position = p.position
+            if p.rotation then out.rotation = table.clone(p.rotation) end
+        end
+        pose[id] = {place = out, keep_children = entry.keep_children}
+    end
+    local planned = {hips = {position = at(lp.planned.hips.position), rotation = rotated(lp.planned.hips.rotation)}}
+    for _, limb in LIMBS do
+        local p = lp.planned[limb.name]
+        planned[limb.name] = {root = at(p.root), middle = at(p.middle), tip = at(p.tip), upper = rotated(p.upper),
+            lower = rotated(p.lower), lower_local = table.clone(p.lower_local), tip_rotation = rotated(p.tip_rotation)}
+    end
+    if lp.planned.head then planned.head = {rotation = rotated(lp.planned.head.rotation)} end
+    local t = lp.targets
+    local targets = {hips = at(t.hips), releases = table.clone(t.releases),
+        bike_root = table.clone(root), bike_rotation = table.clone(q)}
+    for _, k in {"palms", "grips", "wrists", "spindles", "ankles", "free_palms", "free_ankles"} do
+        targets[k] = {at(t[k][1]), at(t[k][2])}
+    end
+    for _, k in {"hands", "feet", "platforms", "held_hands", "held_feet", "free_hands", "free_feet"} do
+        targets[k] = {rotated(t[k][1]), rotated(t[k][2])}
+    end
+    return {pose = pose, count = lp.count, planned = planned, targets = targets, diagnostics = copy_plan_value(lp.diagnostics)}
+end
+local function compose_memo(poser, input, o)
+    local function full()
+        MEMOS[poser] = nil
+        return MP.compose(input, o)
+    end
+    if JOINT_ISSUE or type(input) ~= "table" then return full() end
+    -- Optional limb/torso requests always use full composition, including validation at zero weight.
+    for k in input do if k ~= "bike" and k ~= "articulation" then return full() end end
+    local frame, why = bike_of(input.bike, o.geometry)
+    if not frame then MEMOS[poser] = nil return nil, why end
+    local a
+    a, why = articulation_of(input.articulation)
+    if not a then MEMOS[poser] = nil return nil, why end
+    for _, k in MEMO_ZERO do if a[k] ~= 0 then return full() end end
+    -- The options (including rig lengths, bone roots and geometry) are recursively frozen by
+    -- MP.options. Replacing them or the API binding invalidates this poser's private entry.
+    local m, api = MEMOS[poser], poser.api
+    if m and m.options == o and m.steer == a.steer and m.crank == a.crank_phase and
+        m.api == api and m.skater == api.skater and m.pose == api.skater.pose then
+        poser.memo_hits += 1
+    else
+        local lp, issue = MP.compose({bike = MEMO_ORIGIN, articulation = a}, o)
+        if not lp then MEMOS[poser] = nil return nil, issue end
+        if not FRAME_SAFE[lp] then return full() end
+        m = {options = o, steer = a.steer, crank = a.crank_phase, api = api, skater = api.skater,
+            pose = api.skater.pose, plan = lp}
+        MEMOS[poser] = m
+        poser.memo_misses += 1
+    end
+    return memo_world(m.plan, frame.root, frame.rotation)
+end
+
 ------------------------------------------------------------------- the poser
 local Poser = {}
 Poser.__index = Poser
@@ -879,7 +1089,7 @@ function MP.new(api, options)
     local o, why = MP.options(options)
     return setmetatable({api = api, options = o, state = o and "off" or "refused", reason = why, blend = 0,
         last_now = nil, last_sent = nil, last_plan = nil, last_weight = 0, capability = nil,
-        capability_issue = nil, sends = 0, ends = 0}, Poser)
+        capability_issue = nil, sends = 0, ends = 0, memo_hits = 0, memo_misses = 0}, Poser)
 end
 
 MP.weight_of = smooth
@@ -909,6 +1119,7 @@ function Poser:_end_pose()
     return ok and accepted == true
 end
 function Poser:_refuse(reason, end_held)
+    MEMOS[self] = nil
     local ended = end_held and self:_end_pose() or false
     self.state, self.reason, self.blend, self.last_plan = "refused", reason, 0, nil
     return self:_result({ok = false, sent = false, ended = ended, reason = reason, weight = 0})
@@ -945,7 +1156,7 @@ function Poser:mount(now)
         self.capability, self.capability_issue = capability == "place", issue
     end
     if not self.capability then return self:_refuse(self.capability_issue, false) end
-    if self.state == "refused" or self.state == "off" then self.blend = 0 end
+    if self.state == "refused" or self.state == "off" then self.blend = 0 MEMOS[self] = nil end
     self.state = self.blend >= 1 and "mounted" or "mounting"
     self.reason, self.last_now = nil, now
     return self:_result({ok = true, sent = false})
@@ -986,10 +1197,11 @@ function Poser:tick(now, input)
         if self.blend <= 0 then
             local ended = self:_end_pose()
             self.state, self.last_plan = "off", nil
+            MEMOS[self] = nil
             return self:_result({ok = true, sent = false, ended = ended, weight = 0})
         end
     end
-    local composed, plan, issue = pcall(MP.compose, input, o)
+    local composed, plan, issue = pcall(compose_memo, self, input, o)
     if not composed then return self:_refuse("the pose could not be composed: " .. tostring(plan), true) end
     if not plan then return self:_refuse(issue, true) end
     return self:_send(now, plan, smooth(self.blend))
@@ -1036,6 +1248,7 @@ end
 
 -- Ends the pose at once (unload, menu, owner lost).
 function Poser:stop()
+    MEMOS[self] = nil
     if not MOUNTED_POSE_QUALIFIED then return {ok = true, sent = false, ended = false, reason = MP.NOT_QUALIFIED, state = self.state, weight = 0} end
     local ended = self:_end_pose()
     self.state, self.blend, self.last_plan = "off", 0, nil

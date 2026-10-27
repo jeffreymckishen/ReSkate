@@ -41,7 +41,12 @@ local function prepare(body,wheel,contact,free_axis)
         basis=M.basis(contact.normal,contact.forward) if not basis then return nil end
         lateral=basis.lateral
     end
-    local p={hit=contact.status=="hit",inertia=wheel.inertia,radius=wheel.radius,cache={},cache_slot=1}
+    if contact.normal_only==true and free_axis~=nil then lateral=M.unit(free_axis) if not lateral then return nil end end
+    local softness=contact.normal_softness
+    if softness==nil then softness=0 end
+    local p={hit=contact.status=="hit",inertia=wheel.inertia,radius=wheel.radius,cache={},cache_slot=1,
+        normal_only=contact.normal_only==true,softness=softness,floor_delta=contact.normal_floor_delta}
+    if not M.finite(p.softness) or p.softness<0 or p.floor_delta~=nil and not M.finite(p.floor_delta) then return nil end
     p.axle=row(body,wheel,{0,0,0},M.mul(lateral,-1),1,0)
     p.axle_mass=1/wheel.inertia+M.dot(lateral,M.tensor(body,lateral,true))
     if not M.finite(p.axle_mass) or p.axle_mass<=0 then return nil end
@@ -66,14 +71,19 @@ end
 local function normal(state,p,wi)
     if not p.hit then return 0 end
     local r=p.normal
-    local j=math.max(0,-(state[1]*r[1]+state[2]*r[2]+state[3]*r[3]+state[4]*r[4]+state[5]*r[5]+state[6]*r[6]+state[wi]*r[7]-r[15])/p.normal_mass)
+    local relative=state[1]*r[1]+state[2]*r[2]+state[3]*r[3]+state[4]*r[4]+state[5]*r[5]+state[6]*r[6]+state[wi]*r[7]-r[15]
+    local j=math.max(0,-relative/(p.normal_mass+p.softness))
+    if p.floor_delta~=nil then j=math.max(j,(p.floor_delta-relative)/p.normal_mass) end
     if not apply(state,r,wi,j,true) then return nil end return j
 end
-local function tire(state,p,wi,h,friction,solved)
+local function tire(state,p,wi,h,friction,solved,normal_impulse)
     if not valid(state) then return false end
-    local j=normal(state,p,wi) if j==nil then return false end
-    solved.normal_impulse=j solved.normal_load=j/h solved.longitudinal_impulse=0 solved.lateral_impulse=0
-    if not p.hit then return true end
+    local j=normal_impulse
+    if j==nil then j=normal(state,p,wi) end
+    if j==nil then return false end
+    solved.normal_impulse=p.normal_only and 0 or j solved.normal_load=solved.normal_impulse/h
+    solved.approach_impulse=p.normal_only and j or 0 solved.longitudinal_impulse=0 solved.lateral_impulse=0
+    if not p.hit or p.normal_only then return true end
     local lf,ll=friction.longitudinal_friction*j,friction.lateral_friction*j
     if lf>0 or ll>0 then
         local slip,lateral=speed(state,p.forward,wi),speed(state,p.lateral,wi)
@@ -109,8 +119,9 @@ local function project(p,g1,g2,g3,l1,l2,l3)
 end
 local function tangent(state,p,wi,h,j,brake,friction,solved)
     if not valid(state) then return nil end
-    solved.normal_impulse=j solved.normal_load=j/h solved.longitudinal_impulse=0 solved.lateral_impulse=0
-    if not p.hit then
+    solved.normal_impulse=p.normal_only and 0 or j solved.normal_load=solved.normal_impulse/h
+    solved.approach_impulse=p.normal_only and j or 0 solved.longitudinal_impulse=0 solved.lateral_impulse=0
+    if not p.hit or p.normal_only then
         local before=state[wi] local relative=speed(state,p.axle,wi)
         local impulse=-(relative>=0 and 1 or -1)*math.min(math.abs(relative)/p.axle_mass,brake*h)
         if not apply(state,p.axle,wi,impulse,false) then return nil end return (state[wi]-before)*p.inertia
@@ -142,7 +153,8 @@ function S.solve(h,body,wheels,contacts,t,brake,free_axes)
     for iteration=0,(braking and t.brake_iterations or t.contact_iterations)-1 do for order=0,1 do
         local i=(iteration+order)%2+1 local wi=i+6 local effect,p=effects[i],prepared[i]
         local j=0
-        if braking then
+        local separated_normal=braking or p.softness>0 or p.normal_only
+        if separated_normal then
             local nl,na=effect.normal_linear,effect.normal_angular
             state[1]-=nl[1] state[4]-=na[1] state[2]-=nl[2] state[5]-=na[2] state[3]-=nl[3] state[6]-=na[3]
             local b1,b2,b3,b4,b5,b6=state[1],state[2],state[3],state[4],state[5],state[6]
@@ -155,7 +167,7 @@ function S.solve(h,body,wheels,contacts,t,brake,free_axes)
         if braking then
             effect.brake=tangent(state,p,wi,h,j,wheel_brake[i],friction,effect.solved)
             if effect.brake==nil then return nil end
-        elseif not tire(state,p,wi,h,friction,effect.solved) then return nil end
+        elseif not tire(state,p,wi,h,friction,effect.solved,separated_normal and j or nil) then return nil end
         el[1]=state[1]-b1 ea[1]=state[4]-b4 el[2]=state[2]-b2 ea[2]=state[5]-b5 el[3]=state[3]-b3 ea[3]=state[6]-b6 effect.spin=state[wi]-before_spin
     end end
     local prediction=M.copy(body) prediction.linear_velocity={state[1],state[2],state[3]} prediction.angular_velocity={state[4],state[5],state[6]}

@@ -119,7 +119,7 @@ function Mapper:_invalidate(issue, keep_hop)
     self._issue, self._actions, self._raw = issue, Input.actions(), nil
     if not keep_hop then
         if self._pending then self._last_retired = { event = copy(self._pending), disposition = issue } end
-        self._pending = nil
+        self._pending, self._receipt_hop = nil, nil
     end
 end
 function Mapper:reset(issue)
@@ -205,9 +205,11 @@ function Mapper:observe(frame, context)
     self._serial_floor, self._time_floor = current.observation_serial, current.observed_ms
     self._source, self._last_sample = current, copy(current)
     local ground_changed = self._grounded ~= nil and self._grounded ~= context.grounded
-    if ground_changed and self._pending then
+    -- Fresh input may cancel local intent, but an accepted command keeps its
+    -- original hop identity until its owner supplies a receipt disposition.
+    if ground_changed and self._pending and self._receipt_hop ~= self._pending.id then
         self._last_retired = { event = copy(self._pending), disposition = "ground_context_changed" }
-        self._pending = nil
+        self._pending, self._receipt_hop = nil, nil
     end
     self._grounded, self._rotation_reserved = context.grounded, context.rotation_reserved
     local raw = raw_input(current)
@@ -216,6 +218,14 @@ function Mapper:observe(frame, context)
     self._valid, self._active, self._issue = true, actions.active, actions.active and "none" or "neutral_required"
     if actions.hop_pressed then
         if self._pending then
+            if self._receipt_hop == self._pending.id then
+                -- The accepted command still owns its original event. Drop
+                -- only this new press; its held state remains consumed, so an
+                -- ACK cannot turn the same physical press into another hop.
+                actions.hop_pressed, actions.hop_strength = false, 0
+                self._issue = "hop_press_suppressed"
+                return self:_observation(true, self._issue, true)
+            end
             self._blocked = "hop_pending_conflict"
             return self:_refuse(self._blocked, true)
         end
@@ -277,6 +287,16 @@ function Mapper:controls(context)
         hop_event_id = hop and hop.id or 0, hop_strength = hop and hop.strength or 0 }
     return out
 end
+-- This is an ownership handoff, not evidence of application. Ride calls it
+-- only after the SDK has returned the exact accepted command sequence.
+function Mapper:claim_hop(id)
+    if not integer(id, 1, maximum_hop) or not self._pending or self._pending.id ~= id then
+        return false, "hop_identity_mismatch"
+    end
+    if self._receipt_hop ~= nil then return false, "hop_receipt_pending" end
+    self._receipt_hop = id
+    return true, "none"
+end
 function Mapper:retire_hop(id, disposition)
     if not integer(id, 1, maximum_hop) or not self._pending or self._pending.id ~= id then
         return false, "hop_identity_mismatch"
@@ -284,8 +304,9 @@ function Mapper:retire_hop(id, disposition)
     if disposition ~= "accepted" and disposition ~= "cancelled" and disposition ~= "uncertain" and disposition ~= "suppressed" then
         return false, "invalid_disposition"
     end
+    if disposition == "suppressed" and self._receipt_hop == id then return false, "hop_receipt_pending" end
     local event = copy(self._pending)
-    self._pending = nil
+    self._pending, self._receipt_hop = nil, nil
     self._last_retired = { event = event, disposition = disposition }
     -- Suppression consumes local intent under a fixed model policy. It neither
     -- claims native application nor resets continuous input or source clocks.

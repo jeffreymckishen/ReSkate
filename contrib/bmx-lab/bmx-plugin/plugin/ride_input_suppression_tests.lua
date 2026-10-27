@@ -57,8 +57,8 @@ local function fixture(settings)
     return f
 end
 
--- Suppression is local intent retirement only. These fixtures provide no
--- native command, application claim, force receipt or source replacement.
+-- Local suppression either retires unclaimed intent or drops a new edge
+-- beside a constructed receipt owner. No fixture supplies native evidence.
 function Tests.run()
     local cases,assertions=0,0
     local function check(value,why) assertions+=1;assert(value,why) end
@@ -104,6 +104,86 @@ function Tests.run()
             check(not row.valid and state.uncertain==nil,"cancelled retains its prior neutral re-prime requirement")
         else check(not row.valid and state.uncertain and state.uncertain.id==id,"uncertain still retains the original unresolved event") end
     end end
+    cases+=1 do
+        local f=fixture();f.prime()
+        f.observe(pad({right_y=-1}),10);f.observe(pad(),1)
+        f.observe(pad({right_y=1}),1)
+        local original=f.controls().hop
+        check(original.strength>=.25 and original.strength<1 and f.mapping:claim_hop(original.id),
+            "a weak first hop has an exact accepted command owner")
+        f.observe(pad({buttons={a=true}}),1)
+        local dropped=f.observe(pad({buttons={right_stick=true,a=true}}),1)
+        local state,row=f.mapping:status(),f.controls()
+        check(f.context.grounded and dropped.valid and dropped.active and dropped.new_observation
+            and dropped.issue=="hop_press_suppressed" and state.issue=="hop_press_suppressed",
+            "a second grounded R3 press is recorded as dropped without breaking input cadence")
+        check(not dropped.actions.hop_pressed and dropped.actions.hop_strength==0
+            and not row.actions.hop_pressed and row.actions.hop_strength==0,
+            "the new gesture pulse and strength cannot reach another consumer")
+        check(row.valid and row.submission_allowed and row.force_controls.pedal==1 and row.force_controls.pump_inhibited,
+            "continuous input survives while the original pending hop still inhibits pump")
+        check(state.pending_hop.id==original.id and state.pending_hop.strength==original.strength
+            and row.force_controls.hop_event_id==original.id and row.force_controls.hop_strength==original.strength,
+            "a full-strength second press neither replaces nor strengthens the accepted weak hop")
+        check(state.hop_counter==original.id and state.last_retired==nil and state.uncertain==nil,
+            "dropping the new press mints no ID and assigns no disposition to the original")
+        check(state.pending_hop.observation_serial==original.observation_serial
+            and state.pending_hop.observed_ms==original.observed_ms,
+            "accepted event provenance remains the original observation")
+        for name,value in pairs(original.source) do
+            if type(value)~="table" then
+                check(state.pending_hop.source[name]==value,"accepted source field remains exact: "..name)
+            end
+        end
+        check(state.pending_hop.source.pad.right_y==1 and not state.pending_hop.source.pad.buttons.right_stick,
+            "the retained source pad is the original weak flick, not the suppressed R3 press")
+        local claimed,claim_issue=f.mapping:claim_hop(original.id)
+        local retired,retire_issue=f.mapping:retire_hop(original.id,"suppressed")
+        check(not claimed and claim_issue=="hop_receipt_pending" and not retired and retire_issue=="hop_receipt_pending",
+            "dropping a press preserves receipt ownership and forbids policy retirement")
+        local duplicate=f.mapping:observe(f.last_frame,f.context)
+        check(duplicate.valid and not duplicate.new_observation and not duplicate.actions.hop_pressed
+            and f.mapping:status().hop_counter==original.id,
+            "re-reading the suppressed source observation cannot replay its pulse")
+        check(f.mapping:retire_hop(original.id,"accepted"),"only the actual accepted disposition retires the old hop")
+        for _=1,3 do
+            f.observe(pad({buttons={right_stick=true,a=true}}),17)
+            local held=f.controls()
+            check(held.valid and held.hop==nil and not held.actions.hop_pressed and held.force_controls.hop_event_id==0,
+                "holding the dropped press through ACK never replays it")
+        end
+        check(f.mapping:status().hop_counter==original.id,"ACK and held observations do not consume another lifetime ID")
+        f.observe(pad(),1);local next=f.r3()
+        check(next.actions.hop_pressed and next.hop.id==original.id+1,
+            "only a fresh release and press after ACK creates the next lifetime hop")
+    end
+    for _,disposition in ipairs({"cancelled","uncertain"}) do cases+=1 do
+        local f=fixture();f.prime();f.r3();local original=f.controls().hop
+        check(f.mapping:claim_hop(original.id),"terminal receipt fixture claims the first hop")
+        f.observe(pad(),1);local dropped=f.r3()
+        check(dropped.valid and dropped.issue=="hop_press_suppressed","second press stays local while receipt is outstanding")
+        check(f.mapping:retire_hop(original.id,disposition),"original receipt retains its terminal disposition")
+        local state,row=f.mapping:status(),f.controls()
+        check(state.pending_hop==nil and state.hop_counter==original.id and not row.valid
+            and state.last_retired.disposition==disposition and state.last_retired.event.id==original.id,
+            "dropped press cannot hide or replace a terminal receipt")
+        if disposition=="uncertain" then
+            check(state.uncertain.id==original.id and state.uncertain.observation_serial==original.observation_serial,
+                "uncertainty remains attached to the original accepted event")
+        else check(state.uncertain==nil,"a rejected command's cancellation does not invent uncertainty") end
+        f.r3()
+        check(f.mapping:status().hop_counter==original.id and not f.controls().valid,
+            "holding the second press cannot bypass terminal outcome handling")
+    end end
+    cases+=1 do
+        local f=fixture();f.prime();f.r3();local original=f.controls().hop
+        f.observe(pad(),1);local second=f.r3()
+        local state=f.mapping:status()
+        check(not second.valid and second.issue=="hop_pending_conflict" and not f.controls().valid,
+            "a conflicting unclaimed hop still refuses instead of silently dropping intent")
+        check(state.pending_hop.id==original.id and state.hop_counter==original.id and state.last_retired==nil,
+            "unclaimed conflict preserves its original unresolved event")
+    end
     return {cases=cases,assertions=assertions,native_actions=0}
 end
 return Tests

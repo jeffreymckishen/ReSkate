@@ -282,6 +282,20 @@ void stage_qualified_ride(const std::filesystem::path& plugin_folder, const std:
     const fs::path force_pedal_uncapped_fixture = "force_stage_pedal_uncapped_fixture.lua";
     const fs::path force_low_cap_fixture = "force_stage_low_cap_fixture.lua";
     const fs::path force_invalid_fixture = "force_stage_invalid_fixture.lua";
+    const fs::path force_support_torque_fixture = "force_stage_support_torque_fixture.lua";
+    const fs::path force_pedal_torque_fixture = "force_stage_pedal_torque_fixture.lua";
+    const fs::path force_low_torque_fixture = "force_stage_low_torque_fixture.lua";
+    const fs::path force_torque_zero_fixture = "force_stage_torque_zero_fixture.lua";
+    const fs::path force_torque_negative_fixture = "force_stage_torque_negative_fixture.lua";
+    const fs::path force_torque_infinite_fixture = "force_stage_torque_infinite_fixture.lua";
+    const fs::path force_torque_nan_fixture = "force_stage_torque_nan_fixture.lua";
+    const fs::path force_torque_string_fixture = "force_stage_torque_string_fixture.lua";
+    const fs::path force_torque_boolean_fixture = "force_stage_torque_boolean_fixture.lua";
+    const fs::path force_torque_excess_fixture = "force_stage_torque_excess_fixture.lua";
+    const fs::path force_hop_fixture = "force_stage_hop_fixture.lua";
+    const fs::path force_hop_uncapped_fixture = "force_stage_hop_uncapped_fixture.lua";
+    const fs::path force_hop_invalid_vertical_fixture = "force_stage_hop_invalid_vertical_fixture.lua";
+    const fs::path force_hop_low_vertical_fixture = "force_stage_hop_low_vertical_fixture.lua";
     const fs::path floor_fixture = "bike_spawn_floor_qualified_fixture.lua";
     const fs::path follow_fixture = "bike_runtime_core_provisional_follow_fixture.lua";
     const fs::path renewal_fixture = "bike_runtime_core_follow_renewal_fixture.lua";
@@ -290,6 +304,10 @@ void stage_qualified_ride(const std::filesystem::path& plugin_folder, const std:
     constexpr std::string_view manifest_header = "bmx-qualified-ride-files-v1";
     for (const auto& planted : {fixture, category_fixture, pose_fixture, force_support_fixture, force_pedal_fixture,
              force_support_uncapped_fixture, force_pedal_uncapped_fixture, force_low_cap_fixture, force_invalid_fixture,
+             force_support_torque_fixture, force_pedal_torque_fixture, force_low_torque_fixture,
+             force_torque_zero_fixture, force_torque_negative_fixture, force_torque_infinite_fixture,
+             force_torque_nan_fixture, force_torque_string_fixture, force_torque_boolean_fixture, force_torque_excess_fixture,
+             force_hop_fixture, force_hop_uncapped_fixture, force_hop_invalid_vertical_fixture, force_hop_low_vertical_fixture,
              floor_fixture, follow_fixture, renewal_fixture, lead_fixture})
         if (fs::exists(source / planted))
             throw std::runtime_error(planted.string() + " belongs only in test copies, not in " + source.generic_string());
@@ -375,6 +393,20 @@ void stage_qualified_ride(const std::filesystem::path& plugin_folder, const std:
         add_force_fixture(force_pedal_uncapped_fixture, "pedal", "nil");
         add_force_fixture(force_low_cap_fixture, "support", "{force=100,speed=10}");
         add_force_fixture(force_invalid_fixture, "invalid_stage", "nil");
+        add_force_fixture(force_support_torque_fixture, "support", "{force=20000,speed=10,torque=4000}");
+        add_force_fixture(force_pedal_torque_fixture, "pedal", "{force=20000,speed=10,torque=4000}");
+        add_force_fixture(force_low_torque_fixture, "support", "{force=20000,speed=10,torque=35}");
+        add_force_fixture(force_torque_zero_fixture, "support", "{force=20000,speed=10,torque=0}");
+        add_force_fixture(force_torque_negative_fixture, "support", "{force=20000,speed=10,torque=-1}");
+        add_force_fixture(force_torque_infinite_fixture, "support", "{force=20000,speed=10,torque=math.huge}");
+        add_force_fixture(force_torque_nan_fixture, "support", "{force=20000,speed=10,torque=0/0}");
+        add_force_fixture(force_torque_string_fixture, "support", "{force=20000,speed=10,torque=\"4000\"}");
+        add_force_fixture(force_torque_boolean_fixture, "support", "{force=20000,speed=10,torque=false}");
+        add_force_fixture(force_torque_excess_fixture, "support", "{force=20000,speed=10,torque=4000.001}");
+        add_force_fixture(force_hop_fixture, "hop", "{force=6000,speed=3,torque=2000,vertical_speed=6}");
+        add_force_fixture(force_hop_uncapped_fixture, "hop", "nil");
+        add_force_fixture(force_hop_invalid_vertical_fixture, "hop", "{force=6000,speed=3,torque=2000,vertical_speed=0}");
+        add_force_fixture(force_hop_low_vertical_fixture, "hop", "{force=6000,speed=3,torque=2000,vertical_speed=.1}");
     }
 
     // Floor placement stays inactive in the shipped module. Its suite alone
@@ -685,7 +717,21 @@ void force_stage_manifest(const std::filesystem::path& scratch) {
         {"force_stage_support_uncapped_fixture.lua", "support", "nil"},
         {"force_stage_pedal_uncapped_fixture.lua", "pedal", "nil"},
         {"force_stage_low_cap_fixture.lua", "support", "{force=100,speed=10}"},
-        {"force_stage_invalid_fixture.lua", "invalid_stage", "nil"}};
+        {"force_stage_invalid_fixture.lua", "invalid_stage", "nil"},
+        {"force_stage_support_torque_fixture.lua", "support", "{force=20000,speed=10,torque=4000}"},
+        {"force_stage_pedal_torque_fixture.lua", "pedal", "{force=20000,speed=10,torque=4000}"},
+        {"force_stage_low_torque_fixture.lua", "support", "{force=20000,speed=10,torque=35}"},
+        {"force_stage_torque_zero_fixture.lua", "support", "{force=20000,speed=10,torque=0}"},
+        {"force_stage_torque_negative_fixture.lua", "support", "{force=20000,speed=10,torque=-1}"},
+        {"force_stage_torque_infinite_fixture.lua", "support", "{force=20000,speed=10,torque=math.huge}"},
+        {"force_stage_torque_nan_fixture.lua", "support", "{force=20000,speed=10,torque=0/0}"},
+        {"force_stage_torque_string_fixture.lua", "support", "{force=20000,speed=10,torque=\"4000\"}"},
+        {"force_stage_torque_boolean_fixture.lua", "support", "{force=20000,speed=10,torque=false}"},
+        {"force_stage_torque_excess_fixture.lua", "support", "{force=20000,speed=10,torque=4000.001}"},
+        {"force_stage_hop_fixture.lua", "hop", "{force=6000,speed=3,torque=2000,vertical_speed=6}"},
+        {"force_stage_hop_uncapped_fixture.lua", "hop", "nil"},
+        {"force_stage_hop_invalid_vertical_fixture.lua", "hop", "{force=6000,speed=3,torque=2000,vertical_speed=0}"},
+        {"force_stage_hop_low_vertical_fixture.lua", "hop", "{force=6000,speed=3,torque=2000,vertical_speed=.1}"}};
     const auto source = scratch / "source";
     make_stand_in(source);
     write_file(source / "force_stage.lua", force);
@@ -700,11 +746,17 @@ void force_stage_manifest(const std::filesystem::path& scratch) {
         expect(staged.at(fixture.name) == expected, fixture.name.string() + " changed bytes beyond its two authored literals");
     }
     expect(staged.at(".bmx-qualified-ride-files-v1") == std::string(
-        "bmx-qualified-ride-files-v1\nforce_math.lua\nforce_stage.lua\nforce_stage_invalid_fixture.lua\n"
-        "force_stage_low_cap_fixture.lua\nforce_stage_pedal_fixture.lua\nforce_stage_pedal_uncapped_fixture.lua\n"
-        "force_stage_support_fixture.lua\nforce_stage_support_uncapped_fixture.lua\nride_runtime.lua\n"
-        "ride_runtime_qualified_fixture.lua\n"), "force fixtures missing from exact ownership manifest");
-    expect(staged.size() == 11, "force stage has unexpected entries");
+        "bmx-qualified-ride-files-v1\nforce_math.lua\nforce_stage.lua\nforce_stage_hop_fixture.lua\n"
+        "force_stage_hop_invalid_vertical_fixture.lua\nforce_stage_hop_low_vertical_fixture.lua\n"
+        "force_stage_hop_uncapped_fixture.lua\nforce_stage_invalid_fixture.lua\n"
+        "force_stage_low_cap_fixture.lua\nforce_stage_low_torque_fixture.lua\nforce_stage_pedal_fixture.lua\n"
+        "force_stage_pedal_torque_fixture.lua\nforce_stage_pedal_uncapped_fixture.lua\nforce_stage_support_fixture.lua\n"
+        "force_stage_support_torque_fixture.lua\nforce_stage_support_uncapped_fixture.lua\n"
+        "force_stage_torque_boolean_fixture.lua\nforce_stage_torque_excess_fixture.lua\nforce_stage_torque_infinite_fixture.lua\n"
+        "force_stage_torque_nan_fixture.lua\nforce_stage_torque_negative_fixture.lua\nforce_stage_torque_string_fixture.lua\n"
+        "force_stage_torque_zero_fixture.lua\nride_runtime.lua\nride_runtime_qualified_fixture.lua\n"),
+        "force fixtures missing from exact ownership manifest");
+    expect(staged.size() == 25, "force stage has unexpected entries");
     stage_qualified_ride(source, destination);
     expect(inventory(destination) == staged && inventory(source) == before, "force rerun changed source or destination bytes");
 

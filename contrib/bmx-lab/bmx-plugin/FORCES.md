@@ -50,6 +50,32 @@ Waiting for confirmation before every solve would reduce cadence and would not
 preserve this module's fixed-step contract. This module predicts velocities;
 it does not integrate future pose or establish future contact geometry.
 
+`ride_inflight.lua` now carries the trial's pure forecast into the tracked Ride
+path. Before preview, Ride folds its exact accepted commands that are younger
+than two native serials into detached body and wheel-contact copies. Only the
+age-one command acts during this forecast: velocity changes by `F*h/m + J/m`
+plus gravity, angular velocity changes through the world inertia, then pose and
+hit separations advance one step. Each hit's forward tangent is projected from
+the forecast heading onto its retained measured normal, so yaw cannot create
+false steering or turn lean. Missing or degenerate tangents refuse; clear rays
+remain clear. An age-zero command waits; an age-two command
+is already visible and is not added again. Duplicate active ages or impulse IDs,
+invalid command data and incomplete hit geometry refuse the fold. Clear rays
+stay clear. Measured samples, contact provenance, receipt records and acceptance
+history are not replaced by these predicted copies.
+
+The forecast is an authored model of the measured N+2 phase, not an independent
+physics observation. It grants no support or command authority. Ride keeps the
+accepted impulse and ID beside force and torque, so an unconfirmed hop is also
+included once in the appropriate forecast interval. A ForceStage refusal now
+names its issue and the unsent force/torque magnitudes and forecast velocities.
+
+ForceStage's source-only `AUTHORED_CAPS` may include an optional positive
+`torque` no greater than the kernel's 4,000 N*m limit. Legacy `{force, speed}`
+caps remain valid. The cap refuses the full torque magnitude without clipping
+it and retains the untrimmed model only as diagnostics. The tracked `STAGE`
+stays `"zero_force"`, caps stay `nil`, and Ride's activation gate stays false.
+
 Vectors are three-element double-number tables. Quaternions are Hamilton XYZW,
 body axes to world. The body has `mass`, `inertia_body`, `orientation`,
 `center_of_mass`, `linear_velocity` and `angular_velocity`. Wheels are front then
@@ -76,7 +102,8 @@ grounded hop or landing. Unavailable contacts invalidate the calculation.
 `Forces.controls()` supplies the original typed defaults. Pass partial overrides
 to `step`/`preview`: `enabled`, `pedal`, `brake`, `steer`, `manual`, `nose_manual`,
 `air_yaw`, `hop_strength`, `hop_event_id`, `recovery_step_verified`,
-`rotation_reserved`, `pump_operator_available`, `pump_inhibited`, `ground_pump`.
+`rotation_reserved`, `pump_operator_available`, `pump_inhibited`, `ground_pump`,
+`contact_compliance_available`, `landing_contact_compliance_selected`.
 Scalar fields must be finite and boolean fields must be booleans. Hop IDs are
 monotonic exact nonnegative integers through 2^53-1, rather than C++ uint64.
 Unknown control or tuning keys raise an error. Full body/wheel tables and full
@@ -104,6 +131,191 @@ budget. It keeps the original reservation rule:
 deliberate air rotation survives release until strict recontact. The adapter must
 continue to reserve raw gestures and pending tricks; this port does not guess a
 new distinction between a held hop stroke and a deliberate rotation.
+
+## Authored hop stage (offline only)
+
+`plugin/force_stage.lua` also defines a source-selected `hop` stage. The offline
+runner creates its qualified copy with these authored caps:
+
+| Quantity | Fixture cap |
+|---|---:|
+| Full output force magnitude, excluding the separate hop impulse | 6,000 N |
+| Speed perpendicular to gravity | 3 m/s |
+| Absolute speed parallel to gravity | 6 m/s |
+| Full output torque magnitude | 2,000 N*m |
+
+The hop stage requires its own positive `vertical_speed` cap. Other nonzero
+stages retain their existing three-dimensional speed check. Both hop speed
+checks first run on the unchanged measured body, before queries, model work or
+command backpressure. Accepted braking cannot conceal a measured over-cap
+speed. Preview then checks the in-flight forecast against the same caps as an
+additional bound. Measured admission never adopts or invalidates force history,
+and a refusal leaves exact accepted receipts available for cleanup. Force and
+torque caps refuse an excessive full result; they never trim it into an admitted
+packet. Any kernel contact-budget scaling also refuses the nonzero stage.
+The existing SDK command limits still apply to the submitted packet.
+
+Only pedal and hop intent pass through this stage. Brake, steer, manuals, pump
+and deliberate air rotation remain neutral. The pedaling latch described above
+is unchanged. Stage hop IDs are exact integers from 1 through 4,294,967,295 with
+strength in `(0, 1]`; no event is the pair `0, 0`. A full grounded event requests
+`mass * 4.5` N*s along the kernel's hop direction. This impulse remains separate
+from force in both submission and the in-flight forecast.
+
+The frozen stage capability reports `hop_policy = "grounded_once"` and a frozen
+`wheel_probe_extra = 0.75` metres. `plugin/ride_runtime.lua` snapshots this value
+at construction and issues each current wheel ray from its axle centre down by
+wheel radius plus that extra length. Other stages keep the existing 0.15 m
+extra. The longer query supplies current geometry sooner; it does not widen the
+5 mm support threshold or turn a clear ray into a floor. It neither caches a
+landing plane nor grants support or native command authority.
+
+Once the exact SDK packet is accepted, Ride adopts that preview once and
+`plugin/ride_input_mapping.lua` claims its event for the receipt owner. A fresh
+input report that changes grounded state cannot erase the claimed ID, and
+local airborne suppression cannot retire it. Receipt disposition and ordered
+acknowledgement retain their existing ownership rules; an acknowledgement never
+adopts or replays the force candidate. A new unaccepted airborne press is
+locally suppressed before expiry instead of being deferred to landing. If the
+current sample is grounded but the forecast is already airborne, an accepted
+non-hop command also suppresses that unowned event. Repeated held input or
+preview calls cannot replay an adopted hop. A fresh press while that exact event
+is receipt-owned is recorded as `hop_press_suppressed`: only the new pulse and
+strength are cleared. The original ID, strength, source provenance, counter and
+receipt debt stay unchanged. Holding that dropped press through acknowledgement
+cannot replay it; a later event requires a fresh release and press. An unclaimed
+pending-event conflict still refuses. Unknown or partial transport outcomes
+retain the existing stop and receipt handling.
+
+The tracked source still has `STAGE = "zero_force"`, `AUTHORED_CAPS = nil` and
+false Ride/Core activation gates. There is no runtime setting that selects hop,
+changes its probe length or supplies these caps.
+
+### Landing policy and its geometry boundary
+
+The hop wrapper selects both `contact_compliance_available` and
+`landing_contact_compliance_selected`. The flags must agree: selecting only one
+returns `unsupported_policy`; selecting neither retains the ordinary rigid law.
+This is an authored Luau policy, not proof of a native compliance selection.
+Caller-supplied private solver fields are cleared before the policy is derived.
+
+`plugin/forces.lua` selects a landing row only from a valid current hit while
+enabled, with `dot(normal, gravity_up) >= 0.95` and measured surface speed at most
+0.0001 m/s. That is a nearly stationary measured-floor assumption, not independent
+proof that the object is static. It does not invent or require `verified_plane`
+as evidence for this policy. A clear ray gets no landing response; unavailable
+geometry refuses calculation. Ineligible hits follow the ordinary contact law
+and remain subject to the same final authored caps. The detached forecast cannot
+create geometry for a clear ray. Ride attaches its already-known wheel center
+and radius to each hit. The fold rigidly advances that center, moves the retained
+measured plane by its measured surface velocity, then recomputes the gravity-ray
+intersection and normal gap. This keeps rotating pending-command forecasts
+geometrically consistent without another SDK query or native contact claim.
+Generic fold callers without that paired wheel geometry keep their existing
+prediction, marked `forecast_geometry_unavailable`; a selected landing approach
+then refuses with `landing_geometry_unavailable` instead of treating the old
+forecast hit as a measured gravity-ray intersection.
+
+For a selected row with gap `d` in `(0.005, 0.65]` metres, the anticipatory
+approach uses `a = 25 m/s^2` and the actual fixed step `h`:
+
+```text
+allowed_closing_speed = sqrt((a*h)^2 + 2*a*d) - a*h
+solver_surface_velocity = measured_surface_velocity - normal*allowed_closing_speed
+```
+
+This is a normal-only velocity constraint in `plugin/force_solver.lua`. It
+allows the closing speed above and resists faster approach. Its impulse is
+reported separately from actual normal load, supplies no tangent friction, and
+does not establish grounded state, balance support or hop eligibility. The
+body-derived free-wheel axle remains the airborne coupling model. The approach
+impulse still contributes to the submitted force and torque budget. This
+anticipation is authored braking before contact, not a collision observation.
+
+The approach normal acts through the wheel-center projection onto the measured
+plane, `center - normal*(gap + radius)`. Its normal-force moment equals the tyre
+normal-contact moment, avoiding the extra downslope lever of the gravity-ray
+hit. Paired geometry must match the gap and the wheel radius used by the solver.
+Raw measured ray tuples without the pair retain the equivalent gravity-ray
+correction. The final gap recheck uses the corrected solver point and the
+original measured surface velocity, excluding the artificial braking target.
+Signed 12/15-degree pitch and camber, angular motion, a rotating pending impulse,
+flat equivalence, missing geometry and recheck discriminators have authored
+regression cases; their execution remains pending for this source snapshot.
+
+At gap `d <= 0.005` m, an eligible row uses the native-style paired compliance
+selection with stiffness `K = 100,000 N/m`, maximum deflection `D = 0.015 m` and
+the existing recovery fraction `erp = 0.15`. Let `k` be the positive inverse
+effective normal mass and `u` the solver's relative normal speed after its
+surface-velocity and bias terms. The normal replacement uses:
+
+```text
+gamma = erp / (K*h*h)
+target = min(0.4, erp*max(0, -d)/h) - max(0, d)/h
+floor_delta = (-D-d)/h - target
+normal_impulse = max(0, -u/(k+gamma), (floor_delta-u)/k)
+```
+
+The compliant replacement and the 15 mm backstop participate in the existing
+alternating solve. Already excessive deflection refuses with
+`landing_deflection_limit`. The final bounded output is checked again against
+its one-step point-gap prediction, including gravity and the actual returned
+impulses, with a 1e-8 m arithmetic tolerance. This check predicts against current
+geometry; it is not a guarantee about future native collision geometry. A
+landing seen too late may demand more than the authored force or torque budget
+and must refuse. Neither the kernel nor the fixture repairs body position or
+clips a failed landing into success.
+
+### Offline fixture boundary
+
+`plugin/hop_offline_fixture.lua` drives the actual Ride, Mapping, Contact,
+ForceStage, force kernel, presentation and pose modules through a constructed
+SDK transport. Its separate rigid-body integrator consumes the submitted
+force, torque and impulse plus gravity. Commands act at N+1 and appear in the
+measured sample at N+2; model predictions do not stand in for measurements.
+The fixture has no collision floor clamp. Rotor startup is allowed to settle
+before the measured rolling takeoff.
+
+`plugin/hop_offline_tests.lua` requires the full-strength hop to start at
+1.95--2.05 m/s, pass every ForceStage preview without contact scaling, submit
+exactly one impulse per event, remain below 6,000 N and at or below 2,000 N*m,
+and keep horizontal/vertical speeds within 3/6 m/s. It requires a substantial
+airborne arc, settling back to the measured floor, deflection within the
+fixture's 16 mm numerical allowance and final tilt below ten degrees. Separate
+cases cover a held press, a second grounded hop after landing, a successor
+receipt delayed one extra sample, suppression of an airborne press, no-floor
+free fall and a too-late high-energy landing that sends no cropped packet.
+Fresh input reports include takeoff, so event ownership is exercised across
+the actual grounded-state transition.
+
+Every measured body sample is passed through actual air-extension,
+rider-offset and pose composition/validation at both posture endpoints, using
+a two-step delayed skater root. All four limbs must remain reachable without
+reach clamps or release, and the sent-joint root bound still applies. A separate
+out-of-range root case checks the four-metre placement guard. This checks authored pose reach
+under simulated delay, not live Follow rendering, animation or rider attachment.
+
+At the historical hop checkpoint `cefe7aec2bdd8d8143e1dd2e62d1279306826c45`,
+the eight-case offline suite passed 113 assertions. Its full rolling hop reached
+0.991 m, with peak submitted force 3,522.45 N and torque 105.00 N*m. Minimum
+measured wheel clearance was -5.74 mm and final tilt was 0.0672 degrees. It
+checked 364 poses through both posture endpoints; the largest two-step root lag
+across the positive scenarios was 0.157 m. This uses a 106 kg body and an exact
+upward 477 N*s impulse, independently applied once.
+
+Each positive scenario deliberately stops after settling, measures the final
+body, and drains every exact accepted receipt without another submit or history
+adoption. All terminal bodies receive pose checks. The delayed-publication case
+also measures its bounded gravity-only coast after the last accepted packet.
+Zero pending receipts describe this constructed transport, not native cleanup.
+
+These checks do not qualify native contact geometry, receipt timing under game
+load, a complete plugin frame budget or live riding. The ordinary-kernel parity
+and performance results below are historical evidence for their stated slice
+and do not qualify this new hop stage. The integration based on `025470f5`,
+including its tilted landing geometry and receipt-owned second-press corrections,
+has source review only: its required build, Lua suites, Host tests and native
+game checks remain UNRUN until execution ownership is released.
 
 ## Numerical implementation
 
@@ -153,9 +365,10 @@ checks.
 
 ## Scope and validation
 
-Private contact-compliance, landing-compliance and speculative-normal branches
-are outside this ordinary slice. Selecting their flags/rows returns
-`unsupported_policy`; they do not silently become rigid or fabricated support.
+The ordinary default slice keeps the rigid law. The separate paired compliance
+selection and hop-only anticipatory approach above are authored additions;
+selecting only one compliance flag still returns `unsupported_policy`. No
+caller-supplied solver policy field can fabricate these rows or support.
 The zero-camber wheel contact model, fitted steerer, balance assist and proposed
 gains retain the original model's limits. No pose integration, position repair,
 heading servo or native backend call is present.

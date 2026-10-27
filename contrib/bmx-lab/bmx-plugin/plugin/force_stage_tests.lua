@@ -7,6 +7,15 @@ local UncappedSupport=require("./force_stage_support_uncapped_fixture")
 local UncappedPedal=require("./force_stage_pedal_uncapped_fixture")
 local LowCap=require("./force_stage_low_cap_fixture")
 local InvalidStage=require("./force_stage_invalid_fixture")
+local TorqueSupport=require("./force_stage_support_torque_fixture")
+local TorquePedal=require("./force_stage_pedal_torque_fixture")
+local LowTorque=require("./force_stage_low_torque_fixture")
+local InvalidTorque={
+    require("./force_stage_torque_zero_fixture"),require("./force_stage_torque_negative_fixture"),
+    require("./force_stage_torque_infinite_fixture"),require("./force_stage_torque_nan_fixture"),
+    require("./force_stage_torque_string_fixture"),require("./force_stage_torque_boolean_fixture"),
+    require("./force_stage_torque_excess_fixture"),
+}
 local Forces=require("./forces")
 local M=require("./force_math")
 local Tests={}
@@ -124,6 +133,40 @@ function Tests.run()
         check(expected.valid and M.length(expected.force)>100 and out.issue=="authored_force_limit" and not out.valid,"an actual support force above the synthetic D5 fixture cap is invalid")
         check(zero_vector(out.force) and equal(out.diagnostic,diagnostic(expected)) and not pcall(c._adopt,c,candidate),"over-cap refusal retains uncropped diagnostics and no adoptable command")
     end
+    for _,pair in ipairs({{legacy=Support,capped=TorqueSupport},{legacy=Pedal,capped=TorquePedal}}) do case() do
+        local b,w,s=fixture(.3);local legacy,capped=pair.legacy.new(),pair.capped.new()
+        local expected,legacy_candidate=legacy:preview(h,b,w,s,{pedal=.6})
+        local out,candidate=capped:preview(h,b,w,s,{pedal=.6})
+        check(expected.valid and out.valid and equal(out,expected),"a finite torque cap at the kernel limit accepts the same real model as legacy force/speed caps")
+        check(pcall(capped._adopt,capped,candidate) and pcall(legacy._adopt,legacy,legacy_candidate),"the optional cap preserves exact acceptance in each nonzero stage")
+        local next_wheels=M.copy(out.wheels)
+        local next_expected=legacy:preview(h,b,next_wheels,s,{pedal=0})
+        local next_out=capped:preview(h,b,next_wheels,s,{pedal=0})
+        check(next_expected.valid and next_out.valid and equal(next_out,next_expected),"an accepted torque-capped prediction keeps the legacy committed history")
+    end end
+    case() do
+        local b,w,s=fixture();local c=LowTorque.new()
+        local initial,old_candidate=c:preview(h,b,w,s,{})
+        check(initial.valid,"a low positive torque cap still accepts a real zero-torque model")
+        b.angular_velocity={.02,0,.04}
+        local expected=Forces.new():preview(h,b,w,s,Forces.controls())
+        local out,candidate=c:preview(h,b,w,s,{})
+        check(expected.valid and expected.contact_scale==1 and M.length(expected.torque)>35
+            and math.abs(expected.torque[1])<35 and math.abs(expected.torque[2])<35 and math.abs(expected.torque[3])<35,
+            "the actual unclamped grounded torque exceeds the cap by magnitude, not by an individual component")
+        check(not out.valid and out.issue=="authored_torque_limit" and zero_vector(out.force) and zero_vector(out.torque)
+            and zero_vector(out.linear_impulse) and zero_vector(out.angular_impulse) and zero_vector(out.hop_impulse),
+            "the authored torque limit refuses the complete command instead of clamping its torque")
+        check(equal(out.diagnostic,diagnostic(expected)) and not pcall(c._adopt,c,candidate) and not pcall(c._adopt,c,old_candidate),
+            "torque refusal retains the complete unsent model and invalidates both refused and older acceptance tokens")
+        b.angular_velocity={0,0,0}
+        check(equal(c:preview(h,b,w,s,{}),Forces.new():preview(h,b,w,s,Forces.controls())),"a refused torque prediction leaves kernel history untouched")
+    end
+    for _,module in ipairs(InvalidTorque) do case() do
+        local b,w,s=fixture();local c=module.new();local out,candidate=c:preview(h,b,w,s,{})
+        check(not out.valid and out.issue=="authored_caps_unavailable","zero, negative, nonfinite, wrong-type and excessive authored torque caps refuse")
+        check(zero_vector(out.force) and zero_vector(out.torque) and not pcall(c._adopt,c,candidate),"an invalid authored torque cap cannot publish a command or adopt history")
+    end end
     for _,module in ipairs({Support,Pedal}) do case() do
         local b,w,s=fixture();b.linear_velocity={0,-8,0}
         local expected=Forces.new():preview(h,b,w,s,Forces.controls())

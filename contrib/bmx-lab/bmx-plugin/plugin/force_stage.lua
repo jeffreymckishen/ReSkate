@@ -6,7 +6,7 @@ local STAGE = "zero_force"
 local AUTHORED_CAPS = nil
 -- DEC-5 supplies force and measured-speed magnitudes here. The spawn-origin
 -- envelope stays with Core/Spawn; this wrapper invents no anchor or authority.
--- Both nonzero stages refuse while that decision remains unavailable.
+-- Nonzero stages refuse while that decision remains unavailable.
 local Stage={}
 local Controller={} Controller.__index=Controller
 local states=setmetatable({},{__mode="k"})
@@ -50,19 +50,37 @@ local function caps_valid(tuning)
     local count=0
     for name in pairs(AUTHORED_CAPS) do
         count+=1
-        if name~="force" and name~="speed" then return false end
+        if name~="force" and name~="speed" and name~="torque" and not (STAGE=="hop" and name=="vertical_speed") then return false end
     end
-    return count==2 and M.finite(AUTHORED_CAPS.force) and AUTHORED_CAPS.force>0
+    if AUTHORED_CAPS.torque~=nil and not (M.finite(AUTHORED_CAPS.torque) and AUTHORED_CAPS.torque>0
+        and AUTHORED_CAPS.torque<=tuning.torque_limit) then return false end -- R1 declared change
+    if STAGE=="hop" and not (M.finite(AUTHORED_CAPS.vertical_speed) and AUTHORED_CAPS.vertical_speed>0
+        and AUTHORED_CAPS.vertical_speed<=50) then return false end
+    return count==2+(AUTHORED_CAPS.torque~=nil and 1 or 0)+(STAGE=="hop" and 1 or 0) and M.finite(AUTHORED_CAPS.force) and AUTHORED_CAPS.force>0
         and AUTHORED_CAPS.force<=tuning.force_limit and M.finite(AUTHORED_CAPS.speed) and AUTHORED_CAPS.speed>0
+end
+local function speed_issue(body,tuning)
+    if STAGE=="zero_force" then return nil end
+    if not caps_valid(tuning) then return "authored_caps_unavailable" end
+    if STAGE=="hop" then
+        local up=M.unit(M.mul(tuning.gravity,-1))
+        if not up then return "invalid_gravity" end
+        local vertical=M.dot(body.linear_velocity,up)
+        if M.length(M.sub(body.linear_velocity,M.mul(up,vertical)))>AUTHORED_CAPS.speed then return "authored_speed_limit" end
+        if math.abs(vertical)>AUTHORED_CAPS.vertical_speed then return "authored_vertical_speed_limit" end
+    elseif M.length(body.linear_velocity)>AUTHORED_CAPS.speed then return "authored_speed_limit" end
+    return nil
 end
 function Stage.new(...)
     assert(select("#",...)==0,"force stage accepts no runtime configuration")
-    assert(STAGE=="zero_force" or STAGE=="support" or STAGE=="pedal","invalid force stage")
+    assert(STAGE=="zero_force" or STAGE=="support" or STAGE=="pedal" or STAGE=="hop","invalid force stage")
     local kernel=Forces.new()
-    -- Every D6a stage suppresses hop intent before force preview. This fixed
-    -- policy is not a native hop outcome or a runtime stage selector.
-    local self=setmetatable({hop_policy="suppress",
-        tuning=table.freeze({gravity=table.freeze(M.copy(kernel.tuning.gravity))})},Controller)
+    -- Only the authored hop stage retains hop intent. The longer current ray
+    -- gives its landing law braking distance; it grants no contact or support.
+    local tuning={gravity=table.freeze(M.copy(kernel.tuning.gravity))}
+    if STAGE=="hop" then tuning.wheel_probe_extra=.75 end
+    local self=setmetatable({hop_policy=STAGE=="hop" and "grounded_once" or "suppress",
+        tuning=table.freeze(tuning)},Controller)
     states[self]={kernel=kernel}
     return table.freeze(self)
 end
@@ -75,6 +93,15 @@ function Controller:invalidate_continuity()
     state.pending=nil
     state.kernel:invalidate_continuity()
 end
+-- Measured admission is independent of the forecast: accepted braking cannot
+-- erase a speed already observed beyond the authored envelope. This reads no
+-- prediction history and does not create, consume or discard a candidate.
+function Controller:admit_measured(body)
+    local state=state_of(self)
+    if not plain_finite(body) or not M.valid_body(body) then return false,"invalid_sample" end
+    local issue=speed_issue(body,state.kernel.tuning)
+    return issue==nil,issue or "none"
+end
 function Controller:preview(h,body,wheels,samples,controls)
     local state=state_of(self)
     -- Only the latest valid preview can be adopted. Discarding a preview never
@@ -85,16 +112,27 @@ function Controller:preview(h,body,wheels,samples,controls)
         or not M.valid_wheel(wheels[1]) or not M.valid_wheel(wheels[2]) or type(samples)~="table"
         or not plain_finite(samples) then return invalid("invalid_sample") end
     if controls~=nil and (type(controls)~="table" or getmetatable(controls)~=nil) then return invalid("invalid_controls") end
-    if STAGE~="zero_force" and not caps_valid(state.kernel.tuning) then return invalid("authored_caps_unavailable") end
-    if STAGE~="zero_force" and M.length(body.linear_velocity)>AUTHORED_CAPS.speed then return invalid("authored_speed_limit") end
+    local issue=speed_issue(body,state.kernel.tuning)
+    if issue then return invalid(issue) end
     -- The raw pad and Mapping's action record stay unchanged. All force
-    -- channels are neutral except the finite, bounded pedal in that one stage.
+    -- channels are neutral except each stage's finite, bounded authored inputs.
     local selected=Forces.controls()
-    if STAGE=="pedal" then
+    if STAGE=="pedal" or STAGE=="hop" then
         local pedal=controls and controls.pedal
         if pedal==nil then pedal=0 end
         if not M.finite(pedal) or pedal<0 or pedal>1 then return invalid("invalid_pedal") end
         selected.pedal=pedal
+    end
+    if STAGE=="hop" then
+        local id=controls and controls.hop_event_id
+        local strength=controls and controls.hop_strength
+        if id==nil then id=0 end
+        if strength==nil then strength=0 end
+        if not M.finite(id) or id%1~=0 or id<0 or id>4294967295 or not M.finite(strength)
+            or strength<0 or strength>1 or (id==0)~=(strength==0) then return invalid("invalid_hop") end
+        selected.hop_event_id,selected.hop_strength=id,strength
+        selected.contact_compliance_available=true
+        selected.landing_contact_compliance_selected=true
     end
     local preview=table.pack(pcall(state.kernel.preview,state.kernel,h,body,wheels,samples,selected))
     local model,candidate=preview[2],preview[3]
@@ -110,11 +148,19 @@ function Controller:preview(h,body,wheels,samples,controls)
     -- The underlying kernel scales contacts to its own safety budgets. This
     -- nonzero stage rejects it. Zero keeps it hypothetical and still submits zero.
     if STAGE~="zero_force" and model.contact_scale~=1 then return invalid("kernel_clamped",diagnostic_copy(model)) end
-    if model.hop_applied~=false or model.hop_event_id~=0 or M.length(model.hop_impulse)~=0 then return invalid("unexpected_hop") end
+    if STAGE=="hop" then
+        if type(model.hop_applied)~="boolean" or (model.hop_applied and
+            (model.hop_event_id~=selected.hop_event_id or model.hop_event_id==0 or M.length(model.hop_impulse)==0)) or
+            (not model.hop_applied and (model.hop_event_id~=0 or M.length(model.hop_impulse)~=0)) then return invalid("unexpected_hop") end
+    elseif model.hop_applied~=false or model.hop_event_id~=0 or M.length(model.hop_impulse)~=0 then return invalid("unexpected_hop") end
     if M.length(model.force)>state.kernel.tuning.force_limit or M.length(model.torque)>state.kernel.tuning.torque_limit then
         return invalid("kernel_output_limit",diagnostic_copy(model))
     end
     if STAGE~="zero_force" and M.length(model.force)>AUTHORED_CAPS.force then return invalid("authored_force_limit",diagnostic_copy(model)) end
+    -- R1 declared change: torque refuses like force and speed (Ride adds no companion torque here).
+    if STAGE~="zero_force" and AUTHORED_CAPS.torque~=nil and M.length(model.torque)>AUTHORED_CAPS.torque then
+        return invalid("authored_torque_limit",diagnostic_copy(model))
+    end
     local result
     if STAGE=="zero_force" then
         -- Diagnostics describe a hypothetical neutral-kernel step. The actual

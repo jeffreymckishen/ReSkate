@@ -385,6 +385,92 @@ function Tests.run()
         check(fresh.valid and state.pending_hop==nil and state.hop_counter==1,"existing fresh-report ground-change cancellation stays unchanged")
         check(state.last_retired.disposition=="ground_context_changed","held-only fix does not rewrite fresh-report retirement policy")
     end
+    do
+        cases+=1
+        local f=fixture();f.prime();f.r3()
+        local original=f.mapping:status().pending_hop
+        for _,id in ipairs({0,original.id+1,1.5,math.huge})do
+            local claimed,why=f.mapping:claim_hop(id)
+            check(not claimed and why=="hop_identity_mismatch","invalid or wrong claim identity is refused")
+            check(f.mapping:status().pending_hop.id==original.id,"wrong claim does not discard pending intent")
+        end
+        local claimed,why=f.mapping:claim_hop(original.id)
+        check(claimed and why=="none","exact accepted owner can claim pending hop")
+        claimed,why=f.mapping:claim_hop(original.id)
+        check(not claimed and why=="hop_receipt_pending","duplicate owner claim is refused")
+        check(f.mapping:status().pending_hop.id==original.id,"duplicate claim leaves the original event intact")
+    end
+    do
+        cases+=1
+        local f=fixture();f.prime();f.r3()
+        local original=f.mapping:status().pending_hop
+        check(f.mapping:claim_hop(original.id),"claim fixture has an accepted command owner")
+        for _,grounded in ipairs({false,true,false,true})do
+            f.context.grounded=grounded
+            local row=f.observe(pad({buttons={right_stick=true}}),10)
+            local state=f.mapping:status()
+            check(row.valid and row.active and row.new_observation,"fresh report remains valid through claimed takeoff and landing")
+            check(state.pending_hop.id==original.id and state.hop_counter==1,"fresh ground change preserves only the original claimed ID")
+            check(state.pending_hop.observation_serial==original.observation_serial
+                and state.pending_hop.observed_ms==original.observed_ms
+                and state.pending_hop.source.observation_serial==original.source.observation_serial
+                and state.pending_hop.source.observed_ms==original.source.observed_ms,
+                "claimed event retains its original input provenance across fresh reports")
+            check(state.source.observation_serial~=original.source.observation_serial
+                and state.source.observed_ms~=original.source.observed_ms,"current source still advances independently of the claimed event")
+            check(permitted(f.controls(),"claimed request remains available to its receipt owner").hop_event_id==original.id,
+                "ground transitions cannot manufacture another hop identity")
+        end
+    end
+    do
+        cases+=1
+        local f=fixture();f.prime();f.r3()
+        local id=f.mapping:status().pending_hop.id
+        check(f.mapping:claim_hop(id),"suppression fixture has a claimed hop")
+        local retired,why=f.mapping:retire_hop(id,"suppressed")
+        check(not retired and why=="hop_receipt_pending","local suppression cannot describe an accepted command")
+        check(f.mapping:status().pending_hop.id==id and f.mapping:status().last_retired==nil,
+            "refused suppression keeps pending ownership and retirement history")
+    end
+    do
+        cases+=1
+        local f=fixture();f.prime();f.r3()
+        local id=f.mapping:status().pending_hop.id
+        check(f.mapping:claim_hop(id),"receipt fixture has a claimed hop")
+        local retired,why=f.mapping:retire_hop(id,"accepted")
+        check(retired and why=="none" and f.mapping:status().pending_hop==nil,"exact accepted receipt retires claimed event")
+        check(f.mapping:status().last_retired.event.id==id and f.mapping:status().last_retired.disposition=="accepted",
+            "accepted receipt preserves its actual disposition")
+        f.observe(pad(),10);f.r3()
+        local next_id=f.mapping:status().pending_hop.id
+        check(next_id==id+1 and f.mapping:claim_hop(next_id),"new genuine release and press can claim the next lifetime ID")
+        check(f.mapping:retire_hop(next_id,"accepted"),"new claimed event also retires exactly once")
+        check(not f.mapping:retire_hop(next_id,"accepted"),"duplicate receipt cannot retire the same event twice")
+    end
+    do
+        cases+=1
+        local f=fixture();f.prime();f.r3()
+        local id=f.mapping:status().pending_hop.id
+        check(f.mapping:claim_hop(id),"reset fixture has a claimed hop")
+        f.mapping:reset("fixture_reset")
+        check(f.mapping:status().pending_hop==nil,"reset invalidates claimed pending input")
+        local claimed,why=f.mapping:claim_hop(id)
+        check(not claimed and why=="hop_identity_mismatch","reset does not leave a claimable old event")
+        f.prime();f.r3()
+        local next_id=f.mapping:status().pending_hop.id
+        check(next_id==id+1 and f.mapping:claim_hop(next_id),"reset clears private ownership without recycling lifetime ID")
+    end
+    for _,disposition in ipairs({"cancelled","uncertain"})do
+        cases+=1
+        local f=fixture();f.prime();f.r3()
+        local id=f.mapping:status().pending_hop.id
+        check(f.mapping:claim_hop(id),"terminal disposition fixture has a claimed hop")
+        local retired,why=f.mapping:retire_hop(id,disposition)
+        check(retired and why=="none" and f.mapping:status().pending_hop==nil,"owner can retire claimed hop as "..disposition)
+        check(f.mapping:status().last_retired.disposition==disposition,"terminal receipt keeps its disposition")
+        f.mapping:reset("fixture_cleanup");f.prime();f.r3()
+        check(f.mapping:claim_hop(f.mapping:status().pending_hop.id),"terminal retirement and reset clear private ownership")
+    end
     return {cases=cases,assertions=assertions,constructed=true,native_authority=false,gameplay=false}
 end
 return Tests

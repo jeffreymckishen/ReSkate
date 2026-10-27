@@ -2,6 +2,7 @@
 local Ride=require("./ride_runtime")
 local Fixtures=require("./ride_runtime_tests")
 local Identity=require("./lease_identity")
+local Forces=require("./forces")
 local Tests={}
 local function inc(v)
     local chars,carry={},1
@@ -184,8 +185,10 @@ function Tests.run()
         check(first.submitted==1 and not first.stop_requested and adopted[1]==predictions[1].candidate,
             "first scalar record follows exact admission and the original candidate adoption")
         check(a.front_hit and not a.rear_hit,"first contact row keeps front hit and rear clear distinct")
-        check(a.front_separation==predictions[1].front_separation and a.front_separation>0 and a.rear_separation==nil,
-            "front separation is the validated scalar and clear rear separation remains absent")
+        check(math.abs(a.front_separation-f.separation)<1e-6 and a.front_separation>0 and a.rear_separation==nil,
+            "front separation is the measured scalar and clear rear separation remains absent")
+        check(math.abs(a.front_separation-predictions[1].front_separation-9.8*Forces.native_seconds^2)<1e-9,
+            "the gravity-only forecast changes preview separation without overwriting measured diagnostics")
         check(a.front_speed==3.25 and a.rear_speed==-1.5,"unequal nonzero predicted speeds retain their wheel identity")
         check(a.body_height==1,"first record contains the sampled body height")
         f.advance();f.reverse=true;f.height=1.25;f.separation=1/512
@@ -193,9 +196,9 @@ function Tests.run()
         check(second.submitted==2 and not second.stop_requested and adopted[2]==predictions[2].candidate,
             "changed scalar record follows the next accepted candidate")
         check(not b.front_hit and b.rear_hit,"reversed contacts keep front clear and rear hit distinct")
-        check(b.front_separation==nil and b.rear_separation==predictions[2].rear_separation
+        check(b.front_separation==nil and math.abs(b.rear_separation-f.separation)<1e-6
             and b.rear_separation>0 and b.rear_separation~=a.front_separation,
-            "rear separation changes with validated contact instead of reusing the front scalar")
+            "rear separation changes with measured contact instead of reusing the front scalar or its forecast")
         check(b.front_speed==-.75 and b.rear_speed==2.5,"both predicted speed fields change on the second admission")
         check(b.body_height==1.25 and b.body_height~=a.body_height,"body height changes with the actual sampled body")
     end)

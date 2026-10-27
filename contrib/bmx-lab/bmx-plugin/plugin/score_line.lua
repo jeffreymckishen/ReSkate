@@ -124,19 +124,22 @@ local function read_air(air)
         local row=air.sequence[i]
         if not plain(row) or (row.kind~="bar" and row.kind~="tail" and row.kind~="move")
             or not integer(row.id,1000) or not number(row.start,0,air.air_seconds)
-            or not number(row.finish,row.start,air.air_seconds)
-            or not number(row.hold==nil and 0 or row.hold,0,row.finish-row.start)
+            or not number(row.finish,row.start,air.air_seconds+1e-9)
+            or not number(row.hold==nil and 0 or row.hold,0,row.finish-row.start+1e-9)
             or (row.dir~=nil and row.dir~=-1 and row.dir~=0 and row.dir~=1) then return nil end
+        -- Match the event projector's rounding bounds, then score a clipped copy.
+        local finish=math.min(row.finish,air.air_seconds)
         local info=Catalog.get(row.id)
         if not info or (row.kind=="bar" and info.key~="barspin")
             or (row.kind=="tail" and info.key~="tailwhip")
             or (info.key=="barspin" and row.kind~="bar")
             or (info.key=="tailwhip" and row.kind~="tail")
-            or row.finish<=row.start or (i>1 and row.start<out.rows[i-1].start) then return nil end
+            or finish<=row.start or (i>1 and row.start<out.rows[i-1].start) then return nil end
         for _,prior in ipairs(out.rows) do
-            if prior.info.key==info.key and row.start<prior.finish and row.finish>prior.start then return nil end
+            if prior.info.key==info.key and row.start<prior.finish and finish>prior.start then return nil end
         end
-        out.rows[i]={ kind=row.kind, info=info, start=row.start, finish=row.finish, hold=row.hold or 0 }
+        out.rows[i]={ kind=row.kind, info=info, start=row.start, finish=finish,
+            hold=math.min(row.hold or 0,finish-row.start) }
     end
     if air.landing~=nil then
         local l=air.landing

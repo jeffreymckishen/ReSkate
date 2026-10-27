@@ -274,7 +274,9 @@ void stage_qualified_ride(const std::filesystem::path& plugin_folder, const std:
     refuse_reparse_path(copy_folder);
     const auto source = open_folder(plugin_folder);
     const fs::path fixture = "ride_runtime_qualified_fixture.lua";
+    const fs::path ride_tricks_fixture = "ride_runtime_tricks_qualified_fixture.lua";
     const fs::path main_fixture = "main_score_entry_fixture.lua";
+    const fs::path trick_fixture = "trick_runtime_ride_support_qualified_fixture.lua";
     const fs::path category_fixture = "contact_runtime_category_qualified_fixture.lua";
     const fs::path pose_fixture = "mounted_pose_qualified_fixture.lua";
     const fs::path force_support_fixture = "force_stage_support_fixture.lua";
@@ -313,7 +315,7 @@ void stage_qualified_ride(const std::filesystem::path& plugin_folder, const std:
     const fs::path core_pose_fixture = "bike_runtime_core_mounted_pose_fixture.lua";
     const fs::path manifest = ".bmx-qualified-ride-files-v1";
     constexpr std::string_view manifest_header = "bmx-qualified-ride-files-v1";
-    for (const auto& planted : {fixture, main_fixture, category_fixture, pose_fixture, force_support_fixture, force_pedal_fixture,
+    for (const auto& planted : {fixture, ride_tricks_fixture, main_fixture, trick_fixture, category_fixture, pose_fixture, force_support_fixture, force_pedal_fixture,
              force_support_uncapped_fixture, force_pedal_uncapped_fixture, force_low_cap_fixture, force_invalid_fixture,
              force_support_torque_fixture, force_pedal_torque_fixture, force_low_torque_fixture,
              force_torque_zero_fixture, force_torque_negative_fixture, force_torque_infinite_fixture,
@@ -348,16 +350,39 @@ void stage_qualified_ride(const std::filesystem::path& plugin_folder, const std:
     }
     const auto main_file = files.find("main.lua");
     if (main_file == files.end()) throw std::runtime_error("main.lua is missing from the plugin folder");
+    const auto trick_file = files.find("trick_runtime.lua");
+    if (trick_file == files.end()) throw std::runtime_error("trick_runtime.lua is missing from the plugin folder");
+    auto trick = trick_file->second;
+    constexpr std::string_view trick_declaration = "local RIDE_SUPPORT_QUALIFIED = ";
+    constexpr std::string_view inactive_trick_support = "local RIDE_SUPPORT_QUALIFIED = false";
+    const auto trick_gate = trick.find(inactive_trick_support);
+    if (trick_gate == std::string::npos || trick.find(trick_declaration) != trick_gate ||
+        trick.find(trick_declaration, trick_gate + trick_declaration.size()) != std::string::npos)
+        throw std::runtime_error("trick_runtime.lua must keep exactly one '" + std::string(inactive_trick_support) + "' gate");
+    trick.replace(trick_gate, inactive_trick_support.size(), "local RIDE_SUPPORT_QUALIFIED = true");
     const auto ride_file = files.find("ride_runtime.lua");
     if (ride_file == files.end()) throw std::runtime_error("ride_runtime.lua is missing from the plugin folder");
     auto ride = ride_file->second;
-    const std::string_view inactive = "local ACTIVATION_QUALIFIED = false";
+    constexpr std::string_view activation_declaration = "local ACTIVATION_QUALIFIED = ";
+    constexpr std::string_view inactive = "local ACTIVATION_QUALIFIED = false";
     const auto gate = ride.find(inactive);
-    if (gate == std::string::npos || ride.find(inactive, gate + inactive.size()) != std::string::npos)
+    if (gate == std::string::npos || ride.find(activation_declaration) != gate ||
+        ride.find(activation_declaration, gate + activation_declaration.size()) != std::string::npos)
         throw std::runtime_error("ride_runtime.lua must keep exactly one '" + std::string(inactive) + "' gate");
     ride.replace(gate, inactive.size(), "local ACTIVATION_QUALIFIED = true");
+    constexpr std::string_view ride_tricks_declaration = "local RIDE_TRICKS_QUALIFIED = ";
+    constexpr std::string_view inactive_ride_tricks = "local RIDE_TRICKS_QUALIFIED = false";
+    const auto ride_tricks_gate = ride.find(inactive_ride_tricks);
+    if (ride_tricks_gate == std::string::npos || ride.find(ride_tricks_declaration) != ride_tricks_gate ||
+        ride.find(ride_tricks_declaration, ride_tricks_gate + ride_tricks_declaration.size()) != std::string::npos)
+        throw std::runtime_error("ride_runtime.lua must keep exactly one '" + std::string(inactive_ride_tricks) + "' gate");
+    // The existing Ride fixture keeps tricks off; only this separate copy opens both gates.
+    auto ride_tricks = ride;
+    ride_tricks.replace(ride_tricks_gate, inactive_ride_tricks.size(), "local RIDE_TRICKS_QUALIFIED = true");
     const auto modules = files.size();
     files.emplace(fixture, std::move(ride));
+    files.emplace(ride_tricks_fixture, std::move(ride_tricks));
+    files.emplace(trick_fixture, std::move(trick));
     // Parameters supply only the entry suite's constructed services. All source bytes stay intact.
     files.emplace(main_fixture, "return function(reskate, require)\n" + main_file->second + "\nend");
     // The small staging stand-ins need no Contact module. A real plugin that
@@ -553,9 +578,11 @@ using Inventory = std::map<std::filesystem::path, std::optional<std::string>>;
 // The stand-in's one gate and the fixture it must become, a CRLF module that must arrive untranslated,
 // and the bytes someone else owns.
 constexpr std::string_view regression_ride =
-    "-- stand-in for ride_runtime.lua\nlocal ACTIVATION_QUALIFIED = false\nreturn { qualified = ACTIVATION_QUALIFIED }\n";
+    "-- stand-in for ride_runtime.lua\nlocal ACTIVATION_QUALIFIED = false\nlocal RIDE_TRICKS_QUALIFIED = false\nreturn { qualified = ACTIVATION_QUALIFIED }\n";
 constexpr std::string_view regression_fixture =
-    "-- stand-in for ride_runtime.lua\nlocal ACTIVATION_QUALIFIED = true\nreturn { qualified = ACTIVATION_QUALIFIED }\n";
+    "-- stand-in for ride_runtime.lua\nlocal ACTIVATION_QUALIFIED = true\nlocal RIDE_TRICKS_QUALIFIED = false\nreturn { qualified = ACTIVATION_QUALIFIED }\n";
+constexpr std::string_view regression_ride_tricks_fixture =
+    "-- stand-in for ride_runtime.lua\nlocal ACTIVATION_QUALIFIED = true\nlocal RIDE_TRICKS_QUALIFIED = true\nreturn { qualified = ACTIVATION_QUALIFIED }\n";
 constexpr std::string_view regression_math = "local force_math = {}\r\nreturn force_math\r\n";
 constexpr std::string_view regression_main =
     "-- stand-in for main.lua\r\nreskate.on(\"tick\", function() return require(\"./force_math\") end)\r\n";
@@ -563,6 +590,10 @@ constexpr std::string_view regression_main_fixture =
     "return function(reskate, require)\n"
     "-- stand-in for main.lua\r\nreskate.on(\"tick\", function() return require(\"./force_math\") end)\r\n"
     "\nend";
+constexpr std::string_view regression_trick =
+    "-- stand-in for trick_runtime.lua\r\nlocal RIDE_SUPPORT_QUALIFIED = false\r\nreturn { qualified = RIDE_SUPPORT_QUALIFIED }\r\n";
+constexpr std::string_view regression_trick_fixture =
+    "-- stand-in for trick_runtime.lua\r\nlocal RIDE_SUPPORT_QUALIFIED = true\r\nreturn { qualified = RIDE_SUPPORT_QUALIFIED }\r\n";
 constexpr std::string_view regression_unrelated = "return { owner = \"someone else\" }\n";
 constexpr std::string_view regression_pose =
     "-- stand-in for mounted_pose.lua\nlocal MOUNTED_POSE_QUALIFIED = false\nreturn { qualified = MOUNTED_POSE_QUALIFIED }\n";
@@ -599,12 +630,13 @@ Inventory inventory(const std::filesystem::path& folder) {
     return entries;
 }
 
-// Three stand-in modules, including the real entry shape, beside a note that is not a module.
+// Four stand-in modules include the entry shape and required trick gate, beside a non-module note.
 void make_stand_in(const std::filesystem::path& folder) {
     make_folder(folder);
     write_file(folder / "ride_runtime.lua", regression_ride);
     write_file(folder / "force_math.lua", regression_math);
     write_file(folder / "main.lua", regression_main);
+    write_file(folder / "trick_runtime.lua", regression_trick);
     write_file(folder / "notes.txt", "not a module\n");
 }
 
@@ -692,7 +724,7 @@ void planted_fixture(const std::filesystem::path& scratch) {
     expect_refused(pose_twice, scratch / "pose-twice-copy", "must keep exactly one");
 }
 
-// A fresh stage holds the stand-in modules, gate fixture and byte-exact entry wrapper with their
+// A fresh stage holds the stand-in modules, gate fixtures and byte-exact entry wrapper with their
 // explicit manifest; a rerun, as CTest makes on every run, leaves it
 // identical; and a module dropped from the source leaves the copy and its manifest on the next stage.
 void exact_manifest(const std::filesystem::path& scratch) {
@@ -702,12 +734,15 @@ void exact_manifest(const std::filesystem::path& scratch) {
     const auto destination = scratch / "copy";
     const Inventory staged{
         {".bmx-qualified-ride-files-v1",
-            std::string("bmx-qualified-ride-files-v1\nforce_math.lua\nmain.lua\nmain_score_entry_fixture.lua\nride_runtime.lua\nride_runtime_qualified_fixture.lua\n")},
+            std::string("bmx-qualified-ride-files-v1\nforce_math.lua\nmain.lua\nmain_score_entry_fixture.lua\nride_runtime.lua\nride_runtime_qualified_fixture.lua\nride_runtime_tricks_qualified_fixture.lua\ntrick_runtime.lua\ntrick_runtime_ride_support_qualified_fixture.lua\n")},
         {"force_math.lua", std::string(regression_math)},
         {"main.lua", std::string(regression_main)},
         {"main_score_entry_fixture.lua", std::string(regression_main_fixture)},
         {"ride_runtime.lua", std::string(regression_ride)},
-        {"ride_runtime_qualified_fixture.lua", std::string(regression_fixture)}};
+        {"ride_runtime_qualified_fixture.lua", std::string(regression_fixture)},
+        {"ride_runtime_tricks_qualified_fixture.lua", std::string(regression_ride_tricks_fixture)},
+        {"trick_runtime.lua", std::string(regression_trick)},
+        {"trick_runtime_ride_support_qualified_fixture.lua", std::string(regression_trick_fixture)}};
     stage_qualified_ride(source, destination);
     expect(inventory(destination) == staged, "a fresh stage does not hold exactly the modules, the fixture and their manifest");
     stage_qualified_ride(source, destination);
@@ -724,15 +759,66 @@ void exact_manifest(const std::filesystem::path& scratch) {
     write_file(source / "main.lua", regression_main);
     expect(inventory(source) == source_before, "entry wrapper refusal checks changed source bytes");
 
+    write_file(source / "trick_runtime_ride_support_qualified_fixture.lua", regression_trick_fixture);
+    expect_refused(source, destination, "belongs only in test copies");
+    expect_refused(source, scratch / "trick-planted-copy", "belongs only in test copies");
+    expect(std::filesystem::remove(source / "trick_runtime_ride_support_qualified_fixture.lua"), "could not remove the planted trick fixture");
+    expect(std::filesystem::remove(source / "trick_runtime.lua"), "could not remove the owned trick dependency");
+    expect_refused(source, destination, "trick_runtime.lua is missing");
+    expect_refused(source, scratch / "trick-missing-module-copy", "trick_runtime.lua is missing");
+    const std::vector<std::string> invalid_tricks{
+        std::string(regression_unrelated),
+        std::string(regression_trick) + "local RIDE_SUPPORT_QUALIFIED = false\r\n",
+        std::string(regression_trick_fixture),
+        std::string(regression_trick) + "local RIDE_SUPPORT_QUALIFIED = true\r\n"};
+    std::size_t invalid_trick_index = 0;
+    for (const auto& invalid : invalid_tricks) {
+        write_file(source / "trick_runtime.lua", invalid);
+        expect_refused(source, destination, "trick_runtime.lua must keep exactly one");
+        expect_refused(source, scratch / ("trick-invalid-gate-" + std::to_string(invalid_trick_index++) + "-copy"),
+            "trick_runtime.lua must keep exactly one");
+    }
+    write_file(source / "trick_runtime.lua", regression_trick);
+    expect(inventory(source) == source_before, "trick fixture refusal checks changed source bytes");
+
+    write_file(source / "ride_runtime_tricks_qualified_fixture.lua", regression_ride_tricks_fixture);
+    expect_refused(source, destination, "belongs only in test copies");
+    expect_refused(source, scratch / "ride-tricks-planted-copy", "belongs only in test copies");
+    expect(std::filesystem::remove(source / "ride_runtime_tricks_qualified_fixture.lua"), "could not remove the planted Ride tricks fixture");
+    expect(std::filesystem::remove(source / "ride_runtime.lua"), "could not remove the owned Ride dependency");
+    expect_refused(source, destination, "ride_runtime.lua is missing");
+    expect_refused(source, scratch / "ride-missing-module-copy", "ride_runtime.lua is missing");
+    const std::vector<std::string> invalid_rides{
+        "local RIDE_TRICKS_QUALIFIED = false\n",
+        "local ACTIVATION_QUALIFIED = false\n",
+        std::string(regression_ride) + "local ACTIVATION_QUALIFIED = false\n",
+        std::string(regression_ride) + "local RIDE_TRICKS_QUALIFIED = false\n",
+        std::string(regression_fixture),
+        "local ACTIVATION_QUALIFIED = false\nlocal RIDE_TRICKS_QUALIFIED = true\n",
+        std::string(regression_ride) + "local ACTIVATION_QUALIFIED = true\n",
+        std::string(regression_ride) + "local RIDE_TRICKS_QUALIFIED = true\n"};
+    std::size_t invalid_ride_index = 0;
+    for (const auto& invalid : invalid_rides) {
+        write_file(source / "ride_runtime.lua", invalid);
+        expect_refused(source, destination, "ride_runtime.lua must keep exactly one");
+        expect_refused(source, scratch / ("ride-invalid-gate-" + std::to_string(invalid_ride_index++) + "-copy"),
+            "ride_runtime.lua must keep exactly one");
+    }
+    write_file(source / "ride_runtime.lua", regression_ride);
+    expect(inventory(source) == source_before, "Ride tricks fixture refusal checks changed source bytes");
+
     expect(std::filesystem::remove(source / "force_math.lua"), "could not drop force_math.lua from the stand-in");
     stage_qualified_ride(source, destination);
     const Inventory dropped{
         {".bmx-qualified-ride-files-v1",
-            std::string("bmx-qualified-ride-files-v1\nmain.lua\nmain_score_entry_fixture.lua\nride_runtime.lua\nride_runtime_qualified_fixture.lua\n")},
+            std::string("bmx-qualified-ride-files-v1\nmain.lua\nmain_score_entry_fixture.lua\nride_runtime.lua\nride_runtime_qualified_fixture.lua\nride_runtime_tricks_qualified_fixture.lua\ntrick_runtime.lua\ntrick_runtime_ride_support_qualified_fixture.lua\n")},
         {"main.lua", std::string(regression_main)},
         {"main_score_entry_fixture.lua", std::string(regression_main_fixture)},
         {"ride_runtime.lua", std::string(regression_ride)},
-        {"ride_runtime_qualified_fixture.lua", std::string(regression_fixture)}};
+        {"ride_runtime_qualified_fixture.lua", std::string(regression_fixture)},
+        {"ride_runtime_tricks_qualified_fixture.lua", std::string(regression_ride_tricks_fixture)},
+        {"trick_runtime.lua", std::string(regression_trick)},
+        {"trick_runtime_ride_support_qualified_fixture.lua", std::string(regression_trick_fixture)}};
     expect(inventory(destination) == dropped, "a module dropped from the source stayed in the copy or its manifest");
 }
 
@@ -751,9 +837,9 @@ void category_manifest(const std::filesystem::path& scratch) {
     expect(staged.at("contact_runtime.lua") == std::string(contact), "canonical Contact changed in the copy");
     expect(staged.at("contact_runtime_category_qualified_fixture.lua") == std::string(qualified), "Contact fixture changed more than one literal");
     expect(staged.at(".bmx-qualified-ride-files-v1") == std::string(
-        "bmx-qualified-ride-files-v1\ncontact_runtime.lua\ncontact_runtime_category_qualified_fixture.lua\nforce_math.lua\nmain.lua\nmain_score_entry_fixture.lua\nride_runtime.lua\nride_runtime_qualified_fixture.lua\n"),
+        "bmx-qualified-ride-files-v1\ncontact_runtime.lua\ncontact_runtime_category_qualified_fixture.lua\nforce_math.lua\nmain.lua\nmain_score_entry_fixture.lua\nride_runtime.lua\nride_runtime_qualified_fixture.lua\nride_runtime_tricks_qualified_fixture.lua\ntrick_runtime.lua\ntrick_runtime_ride_support_qualified_fixture.lua\n"),
         "Contact fixture missing from exact ownership manifest");
-    expect(staged.size() == 8, "Contact stage has unexpected entries");
+    expect(staged.size() == 11, "Contact stage has unexpected entries");
     stage_qualified_ride(source, destination);
     expect(inventory(destination) == staged && inventory(source) == before, "Contact rerun changed source or destination bytes");
     write_file(source / "contact_runtime.lua", qualified);
@@ -831,9 +917,9 @@ void force_stage_manifest(const std::filesystem::path& scratch) {
         "force_stage_support_torque_fixture.lua\nforce_stage_support_uncapped_fixture.lua\n"
         "force_stage_torque_boolean_fixture.lua\nforce_stage_torque_excess_fixture.lua\nforce_stage_torque_infinite_fixture.lua\n"
         "force_stage_torque_nan_fixture.lua\nforce_stage_torque_negative_fixture.lua\nforce_stage_torque_string_fixture.lua\n"
-        "force_stage_torque_zero_fixture.lua\nmain.lua\nmain_score_entry_fixture.lua\nride_runtime.lua\nride_runtime_qualified_fixture.lua\n"),
+        "force_stage_torque_zero_fixture.lua\nmain.lua\nmain_score_entry_fixture.lua\nride_runtime.lua\nride_runtime_qualified_fixture.lua\nride_runtime_tricks_qualified_fixture.lua\ntrick_runtime.lua\ntrick_runtime_ride_support_qualified_fixture.lua\n"),
         "force fixtures missing from exact ownership manifest");
-    expect(staged.size() == 35, "force stage has unexpected entries");
+    expect(staged.size() == 38, "force stage has unexpected entries");
     stage_qualified_ride(source, destination);
     expect(inventory(destination) == staged && inventory(source) == before, "force rerun changed source or destination bytes");
 
@@ -864,12 +950,15 @@ void force_stage_manifest(const std::filesystem::path& scratch) {
     stage_qualified_ride(source, destination);
     const Inventory dropped{
         {".bmx-qualified-ride-files-v1",
-            std::string("bmx-qualified-ride-files-v1\nforce_math.lua\nmain.lua\nmain_score_entry_fixture.lua\nride_runtime.lua\nride_runtime_qualified_fixture.lua\n")},
+            std::string("bmx-qualified-ride-files-v1\nforce_math.lua\nmain.lua\nmain_score_entry_fixture.lua\nride_runtime.lua\nride_runtime_qualified_fixture.lua\nride_runtime_tricks_qualified_fixture.lua\ntrick_runtime.lua\ntrick_runtime_ride_support_qualified_fixture.lua\n")},
         {"force_math.lua", std::string(regression_math)},
         {"main.lua", std::string(regression_main)},
         {"main_score_entry_fixture.lua", std::string(regression_main_fixture)},
         {"ride_runtime.lua", std::string(regression_ride)},
-        {"ride_runtime_qualified_fixture.lua", std::string(regression_fixture)}};
+        {"ride_runtime_qualified_fixture.lua", std::string(regression_fixture)},
+        {"ride_runtime_tricks_qualified_fixture.lua", std::string(regression_ride_tricks_fixture)},
+        {"trick_runtime.lua", std::string(regression_trick)},
+        {"trick_runtime_ride_support_qualified_fixture.lua", std::string(regression_trick_fixture)}};
     expect(inventory(destination) == dropped, "dropped ForceStage or its fixtures stayed in the copy or manifest");
 }
 
@@ -911,9 +1000,9 @@ void floor_manifest(const std::filesystem::path& scratch) {
     expect(staged.at("mounted_pose_qualified_fixture.lua") == std::string(regression_pose_fixture), "mounted pose dependency fixture changed more than its gate");
     expect(staged.at("bike_spawn_floor_qualified_fixture.lua") == std::string(qualified), "floor fixture changed more than one literal");
     expect(staged.at(".bmx-qualified-ride-files-v1") == std::string(
-        "bmx-qualified-ride-files-v1\nbike_runtime_core.lua\nbike_runtime_core_follow_lead_fixture.lua\nbike_runtime_core_follow_renewal_fixture.lua\nbike_runtime_core_mounted_pose_fixture.lua\nbike_runtime_core_provisional_follow_fixture.lua\nbike_runtime_core_ride_guard_fixture.lua\nbike_spawn.lua\nbike_spawn_floor_qualified_fixture.lua\nforce_math.lua\nmain.lua\nmain_score_entry_fixture.lua\nmounted_pose.lua\nmounted_pose_qualified_fixture.lua\nride_runtime.lua\nride_runtime_qualified_fixture.lua\n"),
+        "bmx-qualified-ride-files-v1\nbike_runtime_core.lua\nbike_runtime_core_follow_lead_fixture.lua\nbike_runtime_core_follow_renewal_fixture.lua\nbike_runtime_core_mounted_pose_fixture.lua\nbike_runtime_core_provisional_follow_fixture.lua\nbike_runtime_core_ride_guard_fixture.lua\nbike_spawn.lua\nbike_spawn_floor_qualified_fixture.lua\nforce_math.lua\nmain.lua\nmain_score_entry_fixture.lua\nmounted_pose.lua\nmounted_pose_qualified_fixture.lua\nride_runtime.lua\nride_runtime_qualified_fixture.lua\nride_runtime_tricks_qualified_fixture.lua\ntrick_runtime.lua\ntrick_runtime_ride_support_qualified_fixture.lua\n"),
         "floor fixture missing from exact ownership manifest");
-    expect(staged.size() == 16, "floor stage has unexpected entries");
+    expect(staged.size() == 19, "floor stage has unexpected entries");
     stage_qualified_ride(source, destination);
     expect(inventory(destination) == staged && inventory(source) == before, "floor rerun changed source or destination bytes");
     write_file(source / "bike_spawn.lua", qualified);

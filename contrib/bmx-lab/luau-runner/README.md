@@ -106,6 +106,16 @@ owned-file manifest, identical rerun, binding refusals and missing-dependency re
 both an absent destination and an existing owned copy. The suite's constructed presentation
 callbacks do not establish Host permission, rider alignment or native presentation qualification.
 
+Every qualified copy also contains `main_score_entry_fixture.lua`, built from the current
+`main.lua` bytes between exactly `return function(reskate, require)\n` and `\nend`.
+The wrapper supplies function parameters for the entry suite's constructed SDK and module
+loader; it does not alter the ordinary runner globals or any production gate. The original
+`main.lua` is copied unchanged. A missing main dependency or source-planted wrapper is refused
+before destination mutation. `stage_writes_exact_manifest` independently checks the complete
+wrapper bytes, including the stand-in's CRLF endings, exact ownership, identical reruns and both
+refusals against absent and existing destinations. CMake routes suites mentioning this fixture
+through the staged copy. This exercises entry wiring under fakes, not the plugin Host or game.
+
 ## What it is not
 
 This is **not the ReSkate plugin Host** and stands in for none of its checks. Modules are compiled
@@ -156,7 +166,7 @@ clears each registered case's scratch folder first.
   `mounted_pose_qualified_fixture.lua` is refused the same way, a stand-in `mounted_pose.lua` stages
   its fixture with only the gate flipped, and one with the gate twice is refused.
 - `stage_writes_exact_manifest`: a fresh stage holds exactly the stand-in's `.lua` modules byte for
-  byte, the fixture with only its gate flipped and a manifest naming exactly those three files. A
+  byte, the gate fixture, the entry wrapper and a manifest naming exactly those five files. A
   rerun leaves the copy identical, and a module dropped from the source leaves the copy and its
   manifest on the next stage.
 

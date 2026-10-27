@@ -3,6 +3,64 @@
 local Input, catalog
 local BikeRuntime = require("./bike_runtime")
 local bike = BikeRuntime.new()
+-- Dependencies precede their users so each idle tick compiles at most one cold
+-- chunk. Construction and its one storage read have a separate tick.
+local score_modules = {"./catalog", "./motions", "./tricks", "./lease_identity", "./force_math",
+    "./frame_identity", "./trick_runtime", "./trick_names", "./score_rules", "./score_catalog",
+    "./score_line", "./score_feed", "./score_hud", "./score_runtime"}
+local score, ScoreRuntime
+local score_index = 1
+local score_failed = false
+local score_detail = "Preparing local scoring."
+local function prepare_score()
+    local name = score_modules[score_index]
+    if name then
+        local ok, value = pcall(require, name)
+        if not ok then
+            score_failed = true
+            score_detail = "Local scoring could not load. Reload the plugin to try again."
+        else
+            if name == "./catalog" then catalog = value end
+            if name == "./score_runtime" then ScoreRuntime = value end
+            score_index += 1
+        end
+        return
+    end
+    local ok, value = pcall(ScoreRuntime.new, {storage = {
+        get = reskate.storage.get, set = reskate.storage.set,
+    }})
+    if ok then
+        score = value
+        score_detail = "Ready. Scores are saved locally."
+    else
+        score_failed = true
+        score_detail = "Local scoring could not start. Reload the plugin to try again."
+    end
+end
+local function score_idle(lifecycle)
+    return (lifecycle.phase == "idle" or lifecycle.phase == "done")
+        and not lifecycle.bike_authority and not lifecycle.cleanup_pending and not lifecycle.cleanup_unknown
+        and not (lifecycle.board_return and lifecycle.board_return.pending)
+end
+local function drain_score()
+    if not score then return end
+    local previous = score:status()
+    local log = bike:score_feed(previous.cursor)
+    if type(log.generation) == "number" and log.generation > 0
+        and (previous.generation == nil or log.generation > previous.generation)
+        and previous.cursor ~= 0 then
+        local generation = log.generation
+        log = bike:score_feed(0)
+        if log.generation ~= generation then
+            -- Refuse a changing producer without inventing a physical sample.
+            score:update({issue = "score_feed_generation_changed", steps = {{terminal = {
+                outcome = "interrupted", reason = "score_feed_generation_changed",
+            }}}})
+            return
+        end
+    end
+    score:ride(log)
+end
 local mount_request = "Unavailable: native lifecycle qualification has not completed."
 local stop_request = "No stop requested."
 local switch_request = "No switch requested."
@@ -27,7 +85,16 @@ end
 reskate.on("tick", function(dt_ms)
     -- Receipt cleanup must keep running when input observation is stopped.
     local lifecycle = bike:step(dt_ms)
-    if not observing or lifecycle.startup and lifecycle.startup.work_this_tick then return end
+    if lifecycle.startup and lifecycle.startup.work_this_tick then return end
+    if not score and not score_failed and score_idle(lifecycle) then
+        prepare_score()
+        return
+    end
+    if score then
+        score:advance(dt_ms / 1000) -- Banner expiry only; log rows carry measured physics time.
+        drain_score()
+    end
+    if not observing then return end
     -- Inspector chunks are independent of lifecycle cleanup and load on demand.
     if not catalog then catalog = require("./catalog"); return end
     if not Input then Input = require("./input"); mapper = Input.new(); last_actions = Input.actions(); return end
@@ -69,7 +136,12 @@ reskate.menu.page("BMX Lua migration", function(ui)
     ui:note("Mount requests stay disabled in public mode. Return to skateboard waits for cleanup; stock toggles require clear bike ownership.")
     for slot = 0, 3 do
         if ui:button("bike_mount" .. slot, "Mount bike (unavailable): slot " .. slot) then
-            local accepted, why = bike:request_mount(slot)
+            local accepted, why
+            if bike:status().qualification_only and not score then
+                accepted, why = false, "Local scoring must be ready before mounting."
+            else
+                accepted, why = bike:request_mount(slot)
+            end
             mount_request = accepted and "Mount intent accepted; inspect the lifecycle status."
                 or string.sub(tostring(why or "Mount unavailable"), 1, 160)
         end
@@ -144,8 +216,28 @@ reskate.menu.page("BMX Lua migration", function(ui)
     ui:note("Menu/focus loss resets gestures. After replacing a pad, choose New manual source epoch; replacement is not auto-detected.")
 end)
 
+reskate.on("draw", function(d)
+    if score then score:draw(d) end
+end)
+
+reskate.menu.panel("BMX local scores", function(ui)
+    ui:info("Local scoring", score_detail)
+    if not score then return end
+    local current = score:status()
+    local stats = current.stats
+    ui:info("Best line", tostring(stats.best_line))
+    ui:info("Best single air", tostring(stats.best_single_air))
+    ui:info("Total banked score", tostring(stats.session_total))
+    ui:info("Session best line", tostring(stats.session_best_line))
+    ui:info("Session best air", tostring(stats.session_best_air))
+    if current.storage_issue ~= "none" then
+        ui:note("Scores remain in memory while local saving is unavailable.")
+    end
+end)
+
 reskate.on("unload", function()
     bike:unload()
+    drain_score() -- Cleanup publishes the final retained control row before this read.
     observing = false
     if mapper then mapper:reset() end
 end)

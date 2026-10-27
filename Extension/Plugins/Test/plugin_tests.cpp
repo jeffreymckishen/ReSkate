@@ -5517,7 +5517,7 @@ void bmx_lua_policy_runs_as_modules_and_the_inspector_starts_inert() {
     };
     const auto declaration = contents(directory / manifest_file);
     check(parse_manifest(declaration).permissions == std::set<std::string, std::less<>>{"input", "input.control", "input.lease", "input.capture", "skater.read",
-                  "menu", "storage", "world.physics", "world.physics.follow", "world.entities"} &&
+                  "menu", "storage", "overlay", "world.physics", "world.physics.follow", "world.entities"} &&
               check_package_files(directory).empty(),
           "The public package declares exactly its reviewed general input/body/entity permissions and no native skater control");
     TestEnvironment environment;
@@ -5528,9 +5528,10 @@ void bmx_lua_policy_runs_as_modules_and_the_inspector_starts_inert() {
     environment.panels_open = true;
     ticks(host, environment, 10);
     running(host, "bmx-lua-inspector", environment);
-    check(environment.panels.size() == 1 && environment.panels[0].title == "BMX Lua migration" && environment.fake.calls.empty() &&
+    check(environment.panels.size() == 2 && environment.panels[0].page && environment.panels[0].title == "BMX Lua migration" &&
+              !environment.panels[1].page && environment.panels[1].title == "BMX local scores" && environment.fake.calls.empty() &&
               environment.fake.binds.empty() && environment.teleports.empty() && environment.rays == 0,
-          "The actual package loads, ticks and builds its page without acquiring input/camera/pose or invoking gameplay");
+          "The actual package loads, ticks and builds its page and local scores panel without acquiring input/camera/pose or invoking gameplay");
     check(!environment.fake.input_pulse_requests && !environment.fake.input_pulse_reads &&
               !environment.fake.input_pulse_cancels && !environment.fake.input_pulse_acks,
           "Startup and menu rebuilds do not arm equipment switching");

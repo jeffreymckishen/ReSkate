@@ -30,6 +30,10 @@ public:
     [[nodiscard]] std::optional<GameBundle> read_bundle(const frostbite::TocDocument& toc, std::string_view name) const;
     // A payload, decoded.
     [[nodiscard]] std::vector<std::byte> read(const frostbite::BundleFileInfo& payload) const;
+    // Encoded base-layer bytes only, with a fresh-handle range/provenance check.
+    // Decoding is deliberately separate so the caller supplies its own output quota.
+    [[nodiscard]] BoundedArchiveRead read_encoded_bounded(const frostbite::BundleFileInfo& payload,
+                                                         std::size_t maximum_encoded_size) const;
 
 private:
     std::filesystem::path gameRoot_;

@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -15,6 +16,8 @@ namespace dingosdk::frostbite {
 struct CasDecodeOptions {
     std::filesystem::path gameRoot;
     std::size_t maximumOutputSize{256ULL * 1024ULL * 1024ULL};
+    // Optional bound on Oodle's padded destination, not codec workspace or total heap use.
+    std::optional<std::size_t> maximumOodleBufferSize{};
 };
 
 enum class CasCompression : std::uint8_t {

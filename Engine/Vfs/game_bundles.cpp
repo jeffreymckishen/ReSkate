@@ -82,4 +82,9 @@ std::vector<std::byte> GameData::read(const fb::BundleFileInfo& payload) const {
     const auto raw = archives_.read(archives_.root(), payload.location, payload.offset, payload.size);
     return fb::decode_cas(raw, {gameRoot_});
 }
+
+BoundedArchiveRead GameData::read_encoded_bounded(const fb::BundleFileInfo& payload,
+                                                 std::size_t maximum_encoded_size) const {
+    return archives_.read_bounded(payload.location, payload.offset, payload.size, maximum_encoded_size, false);
+}
 }

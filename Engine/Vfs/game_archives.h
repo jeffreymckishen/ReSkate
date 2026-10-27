@@ -37,6 +37,14 @@ struct Layout {
 // Parses a layout.toc file, envelope included.
 Layout read_layout(const std::filesystem::path& path);
 
+// Encoded bytes and identity observed through one protected file handle. This is
+// range/provenance evidence, not authentication against a trusted content digest.
+struct BoundedArchiveRead {
+    std::vector<std::byte> encoded;
+    std::filesystem::path path;
+    std::uint64_t archive_size{}, volume_serial{}, file_index{}, last_write_time{};
+};
+
 class GameArchives {
 public:
     // `root` is a data layer's directory (the game's Data folder); its layout
@@ -45,6 +53,10 @@ public:
 
     [[nodiscard]] std::vector<std::byte> read(const std::filesystem::path& root, const frostbite::CasIdentifier& location,
                                               std::uint32_t offset, std::uint32_t size) const;
+    // A fresh Windows handle, an explicit unique directory binding and a physical
+    // range check before payload allocation. Never uses inferred directories or caches.
+    [[nodiscard]] BoundedArchiveRead read_bounded(const frostbite::CasIdentifier& location,
+        std::uint32_t offset, std::uint32_t size, std::size_t maximum_encoded_size, bool expected_patch = false) const;
     // The bundle manifest is stored uncompressed, unlike the asset payloads
     // around it, so raw comes first and the block decoder is the fallback.
     [[nodiscard]] frostbite::BinaryBundle read_manifest(const std::filesystem::path& root,
@@ -81,6 +93,12 @@ private:
     std::filesystem::path root_;
     std::map<std::string, std::set<std::uint16_t>> directories_;
     std::map<std::uint32_t, std::string> chunkDirectory_;
+    struct ExplicitDirectory {
+        std::string name;
+        std::size_t declarations{};
+        bool valid{};
+    };
+    std::map<std::uint32_t, ExplicitDirectory> explicit_directories_;
     std::map<std::wstring, std::optional<std::uint64_t>> sizes_;
 };
 }

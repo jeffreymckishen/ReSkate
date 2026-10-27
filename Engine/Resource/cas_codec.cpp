@@ -9,6 +9,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 #include "lz4.h"
 #include "miniz.h"
@@ -141,12 +142,11 @@ std::vector<std::byte> zstd_decode(std::span<const std::byte> input, std::size_t
 }
 
 std::vector<std::byte> oodle_decode(std::span<const std::byte> input, std::size_t size,
-                                    const std::filesystem::path& gameRoot) {
+                                     const CasDecodeOptions& options) {
 #ifdef _WIN32
     using Function = std::int64_t(__cdecl*)(const void*, std::int64_t, void*, std::int64_t, int, int,
                                             int, void*, std::int64_t, void*, void*, void*, std::int64_t, int);
     using BufferSize = std::int64_t(__cdecl*)(int, std::int64_t, int);
-    const auto decode = oodle_function<Function>(gameRoot, "OodleLZ_Decompress");
     // A block can be corrupt, or not a block at all (read_manifest tries a payload as one when
     // it does not read as a manifest), and its size is only what its header says. Oodle may
     // then write past that size: the buffer it says such data needs (for any compressor) is
@@ -154,9 +154,20 @@ std::vector<std::byte> oodle_decode(std::span<const std::byte> input, std::size_
     // (the launcher's mod scan crashing in malloc after an Oodle block, 2026-10-15).
     constexpr int any_compressor = -1; // OodleLZ_Compressor_Invalid
     constexpr std::int64_t block = 0x40000; // OODLELZ_BLOCK_LEN
-    const auto needed = oodle_function<BufferSize>(gameRoot, "OodleLZ_GetDecodeBufferSize")(
-        any_compressor, static_cast<std::int64_t>(size), 1);
-    const auto padded = std::max<std::int64_t>(needed, static_cast<std::int64_t>(size) + block);
+    if (!std::in_range<std::int64_t>(size) || !std::in_range<std::int64_t>(input.size()) ||
+        static_cast<std::int64_t>(size) > std::numeric_limits<std::int64_t>::max() - block)
+        throw std::runtime_error("Oodle destination size is not representable");
+    const auto logical_size = static_cast<std::int64_t>(size);
+    const auto needed = oodle_function<BufferSize>(options.gameRoot, "OodleLZ_GetDecodeBufferSize")(
+        any_compressor, logical_size, 1);
+    if (needed <= 0) throw std::runtime_error("Oodle returned an invalid destination size");
+    const auto padded = std::max(needed, logical_size + block);
+    if (!std::in_range<std::size_t>(padded))
+        throw std::runtime_error("Oodle destination size is not representable");
+    if (options.maximumOodleBufferSize && static_cast<std::size_t>(padded) > *options.maximumOodleBufferSize)
+        throw std::runtime_error("Oodle destination exceeds the safety limit");
+    // Refuse an excessive requirement; shrinking the destination would remove the corruption guard above.
+    const auto decode = oodle_function<Function>(options.gameRoot, "OodleLZ_Decompress");
     std::vector<std::byte> output(static_cast<std::size_t>(padded));
     if (decode(input.data(), static_cast<std::int64_t>(input.size()), output.data(),
                static_cast<std::int64_t>(size), 1, 0, 0, nullptr, 0, nullptr, nullptr,
@@ -167,7 +178,7 @@ std::vector<std::byte> oodle_decode(std::span<const std::byte> input, std::size_
 #else
     (void)input;
     (void)size;
-    (void)gameRoot;
+    (void)options;
     throw std::runtime_error("Oodle CAS data is only supported on Windows (export world-layers.json there)");
 #endif
 }
@@ -204,7 +215,7 @@ std::vector<std::byte> oodle_encode(std::span<const std::byte> input, CasCompres
 #endif
 }
 
-std::vector<std::byte> read_block(Cursor& cursor, const CasDecodeOptions& options) {
+std::vector<std::byte> read_block(Cursor& cursor, const CasDecodeOptions& options, std::size_t remaining) {
     if (cursor.remaining() < 8) throw std::runtime_error("Truncated CAS block header");
     auto decodedSize = cursor.u32_be();
     auto compression = cursor.u16_le();
@@ -214,7 +225,8 @@ std::vector<std::byte> read_block(Cursor& cursor, const CasDecodeOptions& option
     const auto usesDictionary = (decodedSize & 0xFF000000U) != 0;
     decodedSize &= 0x00FFFFFFU;
     compression &= 0x7F;
-    if (decodedSize > options.maximumOutputSize) throw std::runtime_error("CAS block is too large");
+    // The remaining call budget must be checked before a codec allocates or decodes this block.
+    if (decodedSize > remaining) throw std::runtime_error("CAS block exceeds the remaining output limit");
     const auto input = cursor.take(encodedSize);
     switch (compression) {
     case 0x00:
@@ -225,7 +237,7 @@ std::vector<std::byte> read_block(Cursor& cursor, const CasDecodeOptions& option
     case 0x0F:
         if (usesDictionary) throw std::runtime_error("Dictionary Zstandard CAS blocks are not supported");
         return zstd_decode(input, decodedSize);
-    case 0x11: case 0x15: case 0x19: return oodle_decode(input, decodedSize, options.gameRoot);
+    case 0x11: case 0x15: case 0x19: return oodle_decode(input, decodedSize, options);
     default:
         throw std::runtime_error("Unsupported CAS compression type " +
                                  std::to_string(static_cast<unsigned>(compression)));
@@ -239,8 +251,9 @@ std::vector<std::byte> decode_cas(const std::span<const std::byte> encoded,
     Cursor cursor(encoded);
     std::vector<std::byte> output;
     while (cursor.remaining() != 0) {
-        const auto block = read_block(cursor, options);
-        if (block.size() > options.maximumOutputSize - output.size())
+        const auto remaining = options.maximumOutputSize - output.size();
+        const auto block = read_block(cursor, options, remaining);
+        if (block.size() > remaining)
             throw std::runtime_error("CAS output exceeds the safety limit");
         output.insert(output.end(), block.begin(), block.end());
     }

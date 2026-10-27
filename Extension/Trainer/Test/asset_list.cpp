@@ -1,6 +1,8 @@
 // Lists the data assets of the game's level root bundle, or the values of one of them.
 //   dingosdk_trainer_asset_list <Skate folder> <word> [<word> ...]   names containing any word
 //   dingosdk_trainer_asset_list <Skate folder> --dump <asset name>   every plain value, by name
+#include "asset_chunk_locator.h"
+#include "asset_chunk_locator_tests.h"
 #include "Engine/Resource/ebx_document.h"
 #include "Engine/Resource/mesh_set.h"
 #include "Engine/Vfs/game_bundles.h"
@@ -441,6 +443,36 @@ void mesh_metadata_rows(MeshMetadataOutput& out, const dingosdk::frostbite::Mesh
     }
 }
 
+void mesh_chunk_location_rows(MeshMetadataOutput& out, const dingosdk::frostbite::Guid& candidate,
+                              const dingosdk::trainer::asset_tools::ChunkLocationLookup& lookup) {
+    using dingosdk::trainer::asset_tools::ChunkLocationScope;
+    if (lookup.omitted) out.mark_truncated();
+    out.record("STATIC_GEOMETRY_LOCATION_CANDIDATE\traw_bytes_hex=", metadata_hex(candidate.bytes),
+               "\tcandidate_guid_text=", candidate.string(), "\tcomparison=normalized_guid_full16bytes",
+               "\tbundle_matches=", lookup.bundle_matches, "\ttoc_matches=", lookup.toc_matches,
+               "\tremoved_matches=", lookup.removed_matches, "\tzero_identity=", lookup.zero_identity ? 1 : 0,
+               "\tduplicate_identity=", lookup.duplicate ? 1 : 0, "\tconflicting_locations=", lookup.conflict ? 1 : 0,
+               "\tlocation_resolved=", lookup.resolved ? 1 : 0, "\trefusal=", lookup.refusal,
+               "\tmatch_records_retained=", lookup.retained, "\tmatch_records_omitted=", lookup.omitted,
+               "\tmatch_record_limit=16\tlimits_provenance=authored\tidentity_interpretation=unverified",
+               "\tfile_bounds_verified=0\tgeometry_payload_read=0");
+    for (std::size_t i = 0; i < lookup.retained && out.open(); ++i) {
+        const auto& observation = lookup.observations[i];
+        out.record("STATIC_GEOMETRY_LOCATION_MATCH\tscope=",
+                   observation.scope == ChunkLocationScope::bundle ? "selected_bundle" : "selected_toc",
+                   "\tindex=", observation.index, "\tremoved=", observation.removed ? 1 : 0,
+                   "\tpayload_location_present=", observation.payload_present ? 1 : 0,
+                   "\tnonempty_range=", observation.range_valid ? 1 : 0,
+                   observation.payload_present ? "\tpatch=" + std::to_string(observation.payload.location.patch ? 1 : 0) : std::string{},
+                   observation.payload_present ? "\tinstall_chunk=" + std::to_string(observation.payload.location.installChunk) : std::string{},
+                   observation.payload_present ? "\tarchive=" + std::to_string(observation.payload.location.archive) : std::string{},
+                   observation.payload_present ? "\toffset=" + std::to_string(observation.payload.offset) : std::string{},
+                   observation.payload_present ? "\tcompressed_bytes=" + std::to_string(observation.payload.size) : std::string{},
+                   observation.range_valid ? "\trange_end=" + std::to_string(observation.range_end) : std::string{},
+                   "\tfile_bounds_verified=0\tgeometry_payload_read=0");
+    }
+}
+
 int mesh_metadata_command(int argc, char** argv) {
     using namespace dingosdk::frostbite;
     MeshMetadataOutput out;
@@ -513,7 +545,16 @@ int mesh_metadata_command(int argc, char** argv) {
         stage = "mesh_metadata";
         const auto mesh = read_mesh_lod_metadata(bytes, lod);
         mesh_metadata_rows(out, mesh);
-        if (!mesh.lod_kind_supported) return out.finish(false);
+        if (!mesh.lod_kind_supported) {
+            if (mesh.static_common_offsets && out.open()) {
+                // A location match tests this raw identity candidate; it does not qualify the LOD or read geometry.
+                Guid candidate;
+                candidate.bytes = mesh.static_common_offsets->geometry_identity_raw;
+                const auto lookup = dingosdk::trainer::asset_tools::locate_chunk_candidate(candidate, bundle, toc);
+                mesh_chunk_location_rows(out, candidate, lookup);
+            }
+            return out.finish(false);
+        }
         std::size_t chunk_matches{}, chunk_index{};
         for (std::size_t i = 0; i < bundle.manifest.chunks.size(); ++i)
             if (bundle.manifest.chunks[i].guid == mesh.geometry.chunk) { ++chunk_matches; chunk_index = i; }
@@ -539,6 +580,10 @@ int mesh_metadata_command(int argc, char** argv) {
 } // namespace
 
 int main(int argc, char **argv) {
+    if (argc >= 2 && std::string_view(argv[1]) == "--self-test-chunk-locator") {
+        if (argc != 2) return 2;
+        return dingosdk::trainer::asset_tools::chunk_locator_self_test();
+    }
     if (argc >= 3 && std::string_view(argv[2]) == "--mesh-metadata") return mesh_metadata_command(argc, argv);
     if (argc < 3) {
         std::cerr << "usage: dingosdk_trainer_asset_list <Skate folder> <word>... | --dump <asset name> | --types <word>... | --metadata [word]... | --inspect <exact EBX name> | --mesh-metadata <exact RES name> <LOD index>\n";

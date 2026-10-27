@@ -1,5 +1,6 @@
 #pragma once
 #include "Engine/Game/World/owned_body.h"
+#include "body_follow_api.h"
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -59,6 +60,49 @@ inline bool transform(const owned_body::Sample& sample, const owned_body::Vec& o
         target[12 + axis] = position[axis];
     }
     // The stock target's homogeneous/padding words 3,7,11,15 remain exact.
+    return true;
+}
+
+// Fixed SDK bounds, not a plugin gain or a game-mode speed limit. Native source
+// admission is separate; these protect the prediction of an admitted sample.
+inline constexpr double maximum_lead_speed = 100.0, maximum_lead_angular_speed = 100.0;
+inline bool transform_led(const owned_body::Sample& sample, const owned_body::Vec& offset_from_com,
+    const owned_body::Quaternion& root_in_body, const body_follow_api::Lead& lead,
+    std::array<float, 16>& target, bool& lead_skipped) noexcept {
+    lead_skipped = false;
+    if (!transform(sample, offset_from_com, root_in_body, target)) return false;
+    // Preserve the old arithmetic and every resulting bit. In particular, a
+    // disabled lead does not inspect velocity, spin or the measurement's step.
+    if (lead.steps == 0) return true;
+    lead_skipped = true;
+    const auto bounded = [](const owned_body::Vec& value, double maximum) noexcept {
+        return owned_body::finite(value, static_cast<float>(maximum)) && owned_body::length(value) <= maximum;
+    };
+    if (!body_follow_api::valid_lead(lead) || !owned_body::calibrated(sample.epoch.seconds) ||
+        !bounded(sample.velocity, maximum_lead_speed) ||
+        (lead.angular && !bounded(sample.angular_velocity, maximum_lead_angular_speed))) return true;
+    std::array<double, 3> point_velocity{sample.velocity[0], sample.velocity[1], sample.velocity[2]};
+    if (lead.angular) {
+        const auto offset = rotate(sample.rotation, offset_from_com);
+        const auto& spin = sample.angular_velocity;
+        point_velocity[0] += static_cast<double>(spin[1])*offset[2] - static_cast<double>(spin[2])*offset[1];
+        point_velocity[1] += static_cast<double>(spin[2])*offset[0] - static_cast<double>(spin[0])*offset[2];
+        point_velocity[2] += static_cast<double>(spin[0])*offset[1] - static_cast<double>(spin[1])*offset[0];
+    }
+    double speed_squared{};
+    for (const auto value : point_velocity) speed_squared += value*value;
+    if (!std::isfinite(speed_squared) || speed_squared > maximum_lead_speed*maximum_lead_speed) return true;
+    const double lead_seconds = static_cast<double>(lead.steps)*sample.epoch.seconds;
+    owned_body::Vec position{};
+    for (unsigned axis = 0; axis < 3; ++axis) {
+        const double value = target[12 + axis] + point_velocity[axis]*lead_seconds;
+        if (!std::isfinite(value) || std::abs(value) > 100000.0) return true;
+        position[axis] = static_cast<float>(value);
+    }
+    // Commit translation together, after every lane passes. Fallback retains
+    // the complete unled transform, including all four supplied padding words.
+    for (unsigned axis = 0; axis < 3; ++axis) target[12 + axis] = position[axis];
+    lead_skipped = false;
     return true;
 }
 }

@@ -112,6 +112,8 @@ struct Service {
     // Callbacks that found this lock busy while the slot was live, and so were
     // not followed. Counted outside the lock; reset at reserve and at ACK.
     std::atomic<std::uint64_t> dispatch_busy{};
+    // Under the service lock; counted only when the fallback is committed.
+    std::uint64_t lead_skipped{};
     actor_control_native::Reason reason{actor_control_native::Reason::unavailable};
     actor_control_native::Reason park_reason{actor_control_native::Reason::unavailable};
     bool occupied{}, orphaned{}, body_release_requested{}, body_release_started{}, stop_cause_recorded{}, command_cleanup_sealed{};
@@ -135,7 +137,7 @@ DiagnosticState diagnostic_state(const Service& s) noexcept {
     return {s.binding.sequence, s.final.revision, s.returned_revision.load(std::memory_order_acquire),
         s.binding.published, s.binding.stopped, s.release_hold.available(), s.body_release_requested,
         s.body_release_started, s.park_fence.available(), s.park_receipt.available(),
-        s.lease.renewals, s.dispatch_busy.load(std::memory_order_relaxed), s.lease.revocation};
+        s.lease.renewals, s.dispatch_busy.load(std::memory_order_relaxed), s.lease.revocation, s.lead_skipped};
 }
 void cleanup_observation(Service& s, CleanupOrigin origin, const body_follow_native::Diagnostic& provider) noexcept {
     const CleanupDiagnostic next{diagnostic_state(s), origin, s.park_reason, provider, true};
@@ -215,6 +217,7 @@ void acknowledge_locked(Service& s) noexcept {
     s.returned_revision.store(0, std::memory_order_release);
     s.lease = {};
     s.dispatch_busy.store(0, std::memory_order_relaxed);
+    s.lead_skipped = 0;
     s.reason = s.park_reason = actor_control_native::Reason::unavailable;
     s.orphaned = s.body_release_requested = s.body_release_started = s.stop_cause_recorded = s.command_cleanup_sealed = false;
     s.first_stop = {}; s.first_cleanup = {}; s.latest_cleanup = {};
@@ -248,7 +251,7 @@ bool valid_attachment(const body_follow_native::Attachment& value) noexcept {
     if (!body_follow_api::valid_lifetime(value.lifetime) ||
         (value.lifetime == body_follow_native::Lifetime::renewable &&
             value.cleanup != body_follow_native::CleanupPolicy::owned_body)) return false;
-    if (!owned_body::finite(value.offset_from_com, 10)) return false;
+    if (!body_follow_api::valid_lead(value.lead) || !owned_body::finite(value.offset_from_com, 10)) return false;
     double norm{};
     for (const auto lane : value.root_in_body) {
         if (!std::isfinite(lane)) return false;
@@ -305,6 +308,7 @@ bool reserve(std::uint64_t owner, const owned_body::Handle& body,
         !body_query::same_sample(actual.sample(), expected.sample())) return false;
     s.occupied = true; s.body = body; s.attachment = attachment;
     s.dispatch_busy.store(0, std::memory_order_relaxed);
+    s.lead_skipped = 0;
     s.binding.cleanup = attachment.cleanup;
     s.binding.motion_policy = attachment.motion_policy;
     const auto sequence = ++s.next_sequence;
@@ -703,6 +707,7 @@ bool dispatch_impl(Original original, std::uintptr_t rig, std::uintptr_t context
         if (scoped) commit_entry();
         revision = s.final.revision + 1;
         s.final = {revision, target.source, target.value, flags};
+        if (target.lead_skipped && s.lead_skipped != std::numeric_limits<std::uint64_t>::max()) ++s.lead_skipped;
     }
     struct LeaveEdge {
         std::atomic<unsigned>& edge;

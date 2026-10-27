@@ -37,6 +37,8 @@ struct DiagnosticState {
     // busy lock, and the revocation latched by this receipt's first stop.
     std::uint64_t renewals{}, dispatch_busy{};
     body_follow_lease::Revocation revocation{body_follow_lease::Revocation::none};
+    // Committed callbacks that used the unled target after prediction refusal.
+    std::uint64_t lead_skipped{};
     bool operator==(const DiagnosticState&) const = default;
 };
 struct StopDiagnostic {

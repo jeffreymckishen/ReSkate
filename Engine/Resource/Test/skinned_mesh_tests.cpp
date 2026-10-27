@@ -3,6 +3,7 @@
 #include "Engine/Resource/skeleton_asset.h"
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 
@@ -96,6 +97,185 @@ void a_bad_mesh_is_refused() {
     check(refused, "a level of detail it does not have");
 }
 
+// Only declaration bytes, never a game resource or geometry payload. The 32-byte stream
+// stride also distinguishes the two-section 416-byte fixture from a 384-byte interpretation.
+std::vector<std::byte> made_static_metadata(std::size_t stride, std::uint32_t sections = 1) {
+    std::vector<std::byte> resource(512 + stride * sections);
+    const std::array<std::uint32_t, 4> header{192, 176, 384, 0};
+    for (std::size_t i = 0; i < header.size(); ++i) put(resource, i * 4, header[i]);
+    put<std::uint16_t>(resource, 180, 1);
+    pointer(resource, 48, 256);
+    put<std::uint32_t>(resource, 256, 1);
+    put(resource, 264, sections);
+    pointer(resource, 268, 512);
+    put<std::uint32_t>(resource, 340, 33);
+    put<std::uint32_t>(resource, 344, sections * 6);
+    put<std::uint32_t>(resource, 348, sections * 96);
+    put<std::uint8_t>(resource, 372, 0x42);
+    for (std::uint32_t i = 0; i < sections; ++i) {
+        const auto at = 512 + stride * i;
+        put<std::uint8_t>(resource, at + 31, 3);
+        put<std::uint32_t>(resource, at + 32, 1);
+        put<std::uint32_t>(resource, at + 36, i * 3);
+        put<std::uint32_t>(resource, at + 40, i * 96);
+        put<std::uint32_t>(resource, at + 44, 3);
+        put<std::uint8_t>(resource, at + 112, 1);
+        put<std::uint8_t>(resource, at + 113, 3);
+        put<std::uint8_t>(resource, at + 176, 32);
+        put<std::uint8_t>(resource, at + 208, 1);
+        put<std::uint8_t>(resource, at + 209, 1);
+    }
+    return resource;
+}
+
+void metadata_throws(const std::vector<std::byte>& resource, std::size_t lod, const char* message) {
+    bool refused{};
+    try { (void)read_mesh_lod_metadata(resource, lod); }
+    catch (const std::runtime_error&) { refused = true; }
+    check(refused, message);
+}
+
+void metadata_reports_resource_fields_without_geometry() {
+    const auto metadata = read_mesh_lod_metadata(made_mesh().resource, 0);
+    check(metadata.complete && metadata.skinned && !metadata.ambiguous, "known synthetic skinned metadata is complete");
+    check(metadata.header == std::array<std::uint32_t, 4>{208, 188, 384, 0}, "all four header words preserved");
+    check(metadata.lod_count == 1 && metadata.lod_index == 0 && metadata.lod_offset == 256 && metadata.lod_kind == 1,
+        "LOD identity and raw kind preserved");
+    check(metadata.index_format == 33 && metadata.section_count == 1 && metadata.section_table == 512,
+        "index format and section table preserved");
+    check(metadata.geometry.vertex_bytes == 108 && metadata.geometry.index_bytes == 6 &&
+        metadata.geometry.chunk.bytes[0] == std::byte{0x42}, "buffer sizes and chunk are metadata only");
+    check(metadata.candidates.size() == 1, "skinned layout has one section stride");
+    const auto& candidate = metadata.candidates[0];
+    check(candidate.stride == 384 && candidate.structurally_valid && candidate.declarations_supported &&
+        candidate.sections.size() == 1, "known candidate contains its section");
+    const auto& section = candidate.sections[0];
+    check(section.resource_offset == 512 && section.primitive == 3 && section.vertex_count == 3 &&
+        section.triangle_count == 1 && section.first_index == 0, "draw fields preserved");
+    check(section.elements.size() == 5 && section.streams.size() == 1 && section.elements[0].usage == 1 &&
+        section.elements[0].format == 3 && section.elements[0].width == 12 && section.streams[0].stride == 36 &&
+        section.streams[0].classification == 0, "raw declarations and established width preserved");
+    check(section.vertex_range_checked && section.index_range_checked, "known ranges checked without reading indices");
+}
+
+void metadata_preserves_static_stride_ambiguity() {
+    const auto metadata = read_mesh_lod_metadata(made_static_metadata(416), 0);
+    check(!metadata.complete && metadata.ambiguous && !metadata.skinned && metadata.candidates.size() == 2,
+        "one static section does not establish table stride");
+    check(metadata.candidates[0].stride == 384 && metadata.candidates[1].stride == 416 &&
+        metadata.candidates[0].structurally_valid && metadata.candidates[1].structurally_valid,
+        "both plausible candidates retained");
+}
+
+void metadata_distinguishes_synthetic_static_tables() {
+    for (const std::size_t stride : {std::size_t{384}, std::size_t{416}}) {
+        const auto metadata = read_mesh_lod_metadata(made_static_metadata(stride, 2), 0);
+        check(metadata.complete && !metadata.ambiguous && metadata.candidates.size() == 2,
+            "one supported synthetic table is reported completely");
+        std::size_t valid{};
+        for (const auto& candidate : metadata.candidates) {
+            if (!candidate.structurally_valid) continue;
+            ++valid;
+            check(candidate.stride == stride && candidate.sections.size() == 2, "only intended synthetic stride fits");
+            check(candidate.sections[1].resource_offset == 512 + stride && candidate.sections[1].vertex_start == 96 &&
+                candidate.sections[1].first_index == 3, "second section retains independent buffer offsets");
+        }
+        check(valid == 1, "candidate validity is not first-fit preference");
+    }
+}
+
+void metadata_refuses_core_bounds_and_unknown_headers() {
+    const auto source = made_mesh().resource;
+    for (const auto size : std::array<std::size_t, 5>{0, 15, 16, 181, 387}) {
+        auto shortened = source;
+        shortened.resize(size);
+        metadata_throws(shortened, 0, "truncated core fields refused before span access");
+    }
+    auto broken = source;
+    put<std::uint32_t>(broken, 12, 1);
+    metadata_throws(broken, 0, "fourth header word is required");
+    broken = source;
+    put<std::uint32_t>(broken, 256, 2);
+    metadata_throws(broken, 0, "unknown LOD kind is not interpreted as the known layout");
+    broken = source;
+    put<std::uint64_t>(broken, 48, std::numeric_limits<std::uint64_t>::max());
+    metadata_throws(broken, 0, "LOD pointer cannot wrap");
+    broken = source;
+    put<std::uint64_t>(broken, 48, 0);
+    metadata_throws(broken, 0, "null LOD pointer refused");
+    metadata_throws(source, 1, "out-of-range LOD refused");
+    metadata_throws(source, std::numeric_limits<std::size_t>::max(), "large LOD index refused before multiplication");
+    broken = source;
+    put<std::uint32_t>(broken, 264, 4097);
+    metadata_throws(broken, 0, "section count bounded before allocation");
+    broken = source;
+    put<std::uint64_t>(broken, 268, std::numeric_limits<std::uint64_t>::max());
+    metadata_throws(broken, 0, "section pointer cannot wrap");
+}
+
+void metadata_returns_candidate_bounds_failures() {
+    auto short_table = made_static_metadata(384);
+    short_table.resize(short_table.size() - 1);
+    const auto metadata = read_mesh_lod_metadata(short_table, 0);
+    check(!metadata.complete && metadata.candidates.size() == 2 &&
+        !metadata.candidates[0].structurally_valid && !metadata.candidates[1].structurally_valid,
+        "truncated candidates remain errors, not empty success");
+    struct Mutation { std::size_t offset; std::uint8_t value; };
+    for (const auto change : std::array<Mutation, 6>{{{720, 17}, {721, 17}, {627, 1}, {626, 25}, {688, 0}, {721, 0}}}) {
+        auto bad = made_static_metadata(384);
+        put(bad, change.offset, change.value);
+        const auto result = read_mesh_lod_metadata(bad, 0);
+        check(!result.complete && !result.candidates[0].structurally_valid,
+            "counts, stream references, attribute ends and zero stride checked");
+    }
+    for (const auto offset : std::array<std::size_t, 5>{344, 348, 544, 548, 552}) {
+        auto bad = made_static_metadata(384);
+        put<std::uint32_t>(bad, offset, offset == 344 ? 5u : offset == 348 ? 95u : std::numeric_limits<std::uint32_t>::max());
+        const auto result = read_mesh_lod_metadata(bad, 0);
+        check(!result.complete && !result.candidates[0].structurally_valid, "declared buffer range arithmetic checked");
+    }
+}
+
+void metadata_reports_unknown_declarations_without_guessing() {
+    auto unknown = made_static_metadata(416);
+    put<std::uint8_t>(unknown, 720, 2);
+    put<std::uint8_t>(unknown, 628, 200);
+    put<std::uint8_t>(unknown, 629, 201);
+    put<std::uint8_t>(unknown, 630, 16);
+    const auto metadata = read_mesh_lod_metadata(unknown, 0);
+    check(!metadata.complete && metadata.ambiguous, "unsupported semantics cannot choose a static stride");
+    for (const auto& candidate : metadata.candidates) {
+        check(candidate.structurally_valid && !candidate.declarations_supported, "unknown declaration stays plausible");
+        const auto& element = candidate.sections[0].elements[1];
+        check(element.usage == 200 && element.format == 201 && element.offset == 16 && element.width == 0 &&
+            !element.semantic_supported, "unknown codes retain no invented width or semantics");
+    }
+    unknown = made_static_metadata(384);
+    put<std::uint32_t>(unknown, 340, 34);
+    const auto indices = read_mesh_lod_metadata(unknown, 0);
+    check(!indices.complete && indices.index_format == 34 && !indices.candidates[0].sections[0].index_range_checked,
+        "unknown index code is not guessed as uint32");
+    unknown = made_static_metadata(384);
+    put<std::uint8_t>(unknown, 688, 0);
+    put<std::uint8_t>(unknown, 689, 1);
+    put<std::uint8_t>(unknown, 626, 255);
+    const auto classified = read_mesh_lod_metadata(unknown, 0);
+    check(!classified.complete && classified.candidates[0].structurally_valid &&
+        !classified.candidates[0].declarations_supported && classified.candidates[0].sections[0].streams[0].classification == 1 &&
+        !classified.candidates[0].sections[0].vertex_range_checked,
+        "unknown classification cannot reject a candidate through assumed per-vertex stride bounds");
+}
+
+void metadata_bounds_diagnostic_storage() {
+    auto resource = made_static_metadata(384, 80);
+    for (std::size_t i = 0; i < 80; ++i) put<std::uint8_t>(resource, 512 + i * 384 + 176, 0);
+    const auto metadata = read_mesh_lod_metadata(resource, 0);
+    check(!metadata.complete && !metadata.candidates[0].structurally_valid, "many errors cannot become success");
+    const auto& candidate = metadata.candidates[0];
+    check(candidate.diagnostics.size() <= 64 && candidate.diagnostic_count > candidate.diagnostics.size(),
+        "bounded diagnostics retain total error count");
+}
+
 ebx::Value object(std::vector<std::pair<std::string, ebx::Value>> fields) {
     auto made = std::make_shared<ebx::Object>();
     for (auto& [name, value] : fields) made->fields.push_back({0, std::move(name), std::move(value)});
@@ -124,6 +304,13 @@ int main() {
         a_skinned_lod_reads();
         four_influences_are_enough();
         a_bad_mesh_is_refused();
+        metadata_reports_resource_fields_without_geometry();
+        metadata_preserves_static_stride_ambiguity();
+        metadata_distinguishes_synthetic_static_tables();
+        metadata_refuses_core_bounds_and_unknown_headers();
+        metadata_returns_candidate_bounds_failures();
+        metadata_reports_unknown_declarations_without_guessing();
+        metadata_bounds_diagnostic_storage();
         a_skeleton_reads();
     } catch (const std::exception& error) {
         std::cerr << "FAILED: " << error.what() << '\n';

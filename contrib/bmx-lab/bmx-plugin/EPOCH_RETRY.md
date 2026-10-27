@@ -71,6 +71,11 @@ path has a scoped allowance of seven, leaving one cleanup read within the SDK's
 eight-read quota. This is not a general increase for healthy ticks. The retry
 must preserve cleanup and stop capacity.
 
+A recovery tick costs about 11 more SDK calls than a healthy one, all inside
+the per-tick time budget: fresh readiness facts (6), one Follow read, a fresh
+Source authorization (3 lease reads) and the reread itself, plus about five
+`time.now` reads. Healthy ticks make no extra calls.
+
 Core reports `body_read_retries` for actual retry calls and
 `body_read_recoveries` for returned sample tables after its ownership/lease
 checks. The latter does not establish coherent cadence or continued riding:

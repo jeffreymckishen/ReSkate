@@ -74,6 +74,15 @@ local function fixture(options)
         f.capture.generation, f.capture.revision = increment(f.capture.generation), increment(f.capture.revision)
         sync()
     end
+    function f.complete_lost_capture()
+        -- Model the SDK's ended lost-stream receipt, not a Lua release timer
+        -- or a neutral report from a replacement source.
+        assert(f.capture, "fixture needs the retained lost-stream key")
+        f.capture.phase, f.capture.terminal, f.capture.capturing, f.capture.report_debt = "complete", true, false, false
+        f.capture.reason, f.capture.quarantined = "authority_lost", true
+        f.capture.generation, f.capture.revision = increment(f.capture.generation), increment(f.capture.revision)
+        sync()
+    end
     f.api.lease = function(user)
         call("lease", user)
         if f.handle then return nil, "busy" end
@@ -162,8 +171,8 @@ local function fixture(options)
     end
     f.api.lease_acknowledge_capture = function(handle)
         call("lease_acknowledge_capture", handle)
-        if not owns(handle) or not f.capture or not f.capture.terminal or f.capture.report_debt or
-            f.capture.quarantined or f.in_flight then return false, "busy" end
+        if not owns(handle) or not f.capture or f.capture.phase ~= "complete" or not f.capture.terminal or
+            f.capture.report_debt or f.in_flight then return false, "busy" end
         f.capture = nil
         sync()
         return true
@@ -371,9 +380,84 @@ function Tests.run()
     end
     do
         cases += 1
+        local f=fixture();check(f.start().input_ok,"constructed active source before lost-stream cleanup")
+        local handle=f.handle
+        f.source:stop("fixture lost-stream authority")
+        f.capture.reason,f.capture.quarantined="authority_lost",true
+        for _=1,3 do denied(f.step(),"before the native release bound, quarantined debt grants no input") end
+        check(f.capture.phase=="releasing" and f.capture.report_debt and f.capture.neutral_releases=="0",
+            "Lua does not infer a lost-stream release from its own elapsed steps")
+        check(f.count("lease_acknowledge_capture")==0 and f.count("lease_acknowledge")==0,
+            "pre-bound debt cannot attempt either acknowledgement")
+        local publications=f.capture.publications
+        f.complete_lost_capture()
+        local before=#f.calls
+        local ended=f.step()
+        denied(ended,"ended lost-stream cleanup never grants input")
+        check(ended.phase=="complete" and ended.lease_handle==nil and not ended.cleanup_pending,
+            "true exact capture ACK and later released lease ACK finish cleanup")
+        check(ended.capture_state.quarantined and ended.capture_state.reason=="authority_lost" and
+            ended.capture_state.neutral_releases=="0" and ended.capture_state.publications==publications,
+            "frozen cleanup history preserves quarantine and unwitnessed neutral")
+        check(ended.lease_state.terminal and ended.lease_state.source_released and not ended.lease_state.capture_reserved,
+            "completion retains the later validated source-release receipt")
+        local sequence={}
+        for index=before+1,#f.calls do
+            sequence[#sequence+1]=f.calls[index].name
+            check(f.calls[index].args[1]==handle,"cleanup uses the original opaque handle")
+        end
+        check(table.concat(sequence," ")=="lease_capture_state lease_acknowledge_capture lease_state lease_acknowledge",
+            "fresh capture receipt, true capture ACK, fresh passive receipt and true passive ACK stay ordered")
+        local calls=#f.calls
+        f.step()
+        check(#f.calls==calls and f.count("lease")==1,"completed cleanup neither re-reads acknowledged keys nor reacquires")
+    end
+    do
+        cases += 1
+        local f=fixture();check(f.start().input_ok,"constructed active source before lost-stream poll drain")
+        local handle=f.handle
+        f.source:stop("fixture lost-stream poll still in flight")
+        f.complete_lost_capture();f.in_flight=true
+        local reads=f.count("lease_state")
+        local held=f.step()
+        denied(held,"a debt-free receipt is not an SDK acknowledgement")
+        check(f.count("lease_acknowledge_capture")==1 and f.count("lease_acknowledge")==0 and
+            f.count("lease_state")==reads,"in-flight capture ACK refusal cannot advance to passive cleanup")
+        check(held.cleanup_pending and held.lease_handle==handle and f.handle==handle and
+            held.capture_state.quarantined and held.capture_state.neutral_releases=="0",
+            "refusal retains exact ownership and lost-stream history")
+        f.in_flight=false
+        local ended=f.step()
+        check(ended.phase=="complete" and f.count("lease_acknowledge_capture")==2 and
+            f.count("lease_acknowledge")==1,"a later true SDK ACK after poll drain permits passive cleanup")
+        check(ended.capture_state.quarantined and ended.capture_state.neutral_releases=="0",
+            "successful poll drain does not manufacture a neutral witness")
+    end
+    do
+        cases += 1
+        local f=fixture({cleanup_ms=5});check(f.start().input_ok,"constructed active source before unwitnessed ordinary completion")
+        local handle=f.handle
+        f.source:stop("fixture ordinary completion without neutral witness")
+        f.complete_lost_capture();f.capture.quarantined,f.capture.reason=false,"cancelled"
+        local held=f.step()
+        denied(held,"ordinary completion without a neutral witness grants no input")
+        check(held.capture_state.phase=="complete" and not held.capture_state.report_debt and
+            not held.capture_state.quarantined and held.capture_state.neutral_releases=="0",
+            "the ordinary debt-free receipt is retained without manufacturing its missing witness")
+        check(f.count("lease_acknowledge_capture")==0 and f.count("lease_acknowledge")==0,
+            "the quarantine exception does not admit ordinary unwitnessed completion after capturing")
+        f.now+=6
+        local unknown=f.step()
+        check(unknown.cleanup_unknown and unknown.cleanup_pending and unknown.lease_handle==handle and
+            f.handle==handle and f.count("lease_acknowledge_capture")==0 and f.count("lease_acknowledge")==0,
+            "ordinary unwitnessed cleanup remains owned and unknown at the watchdog bound")
+    end
+    for _,lost_stream in ipairs({false,true})do
+        cases += 1
         local f=fixture();check(f.start().input_ok,"constructed active capture before in-flight reopening")
         f.source:stop("fixture stop before delayed outer report")
-        f.complete_capture();f.in_flight=true
+        if lost_stream then f.complete_lost_capture()else f.complete_capture()end
+        f.in_flight=true
         denied(f.step(),"complete capture still cannot acknowledge an in-flight source call")
         local refused=f.count("lease_acknowledge_capture")
         check(refused>0 and f.count("lease_acknowledge")==0,"native-shaped capture acknowledgement refused before source drain")
@@ -383,9 +467,113 @@ function Tests.run()
         denied(f.step(),"advancing same-key complete-to-releasing reopening retains cleanup duty")
         check(f.count("lease_acknowledge_capture")==refused and f.count("lease_acknowledge")==0,
             "reopened debt is never acknowledged as an old complete receipt")
-        f.in_flight=false;f.complete_capture()
+        f.in_flight=false
+        if lost_stream then f.complete_lost_capture()else f.complete_capture()end
         for _=1,3 do f.step()end
-        check(f.source:status().phase=="complete" and f.handle==nil,"later advancing neutral cleanup can finish after legitimate reopening")
+        local ended=f.source:status()
+        check(ended.phase=="complete" and f.handle==nil,"later advancing debt-free cleanup can finish after legitimate reopening")
+        check(ended.capture_state.quarantined==lost_stream and
+            ended.capture_state.neutral_releases==(lost_stream and "0" or "2"),
+            "reopened cleanup preserves ordinary witnesses or the lost stream's unwitnessed history")
+    end
+    local invalid_cleanup={
+        {"foreign user",function(row)row.user=1 end},
+        {"foreign sequence",function(row)row.sequence=increment(row.sequence)end},
+        {"foreign source epoch",function(row)row.source_epoch=increment(row.source_epoch)end},
+        {"foreign context",function(row)row.context_generation=increment(row.context_generation)end},
+        {"complete with debt",function(row)row.report_debt=true end},
+        {"complete without terminal",function(row)row.terminal=false end},
+    }
+    for _,spec in ipairs(invalid_cleanup)do
+        cases += 1
+        local f=fixture();check(f.start().input_ok,"constructed active source before invalid cleanup: "..spec[1])
+        local handle=f.handle
+        f.source:stop("fixture invalid terminal capture")
+        f.complete_lost_capture();spec[2](f.capture)
+        local reads=f.count("lease_state")
+        local held=f.step()
+        denied(held,"invalid terminal capture cannot grant input: "..spec[1])
+        check(f.count("lease_acknowledge_capture")==0 and f.count("lease_acknowledge")==0 and
+            f.count("lease_state")==reads,"invalid/foreign capture receipt never attempts ACK: "..spec[1])
+        check(held.cleanup_pending and held.lease_handle==handle and not f.source:arm(2,f.now),
+            "invalid cleanup retains original ownership without reacquisition: "..spec[1])
+    end
+    local non_true_ack={{label="false",value=false},{label="nil"},{label="truthy string",value="true"},{label="number",value=1}}
+    for _,spec in ipairs(non_true_ack)do
+        cases += 1
+        local f=fixture();check(f.start().input_ok,"constructed active source before capture ACK "..spec.label)
+        local handle=f.handle
+        f.source:stop("fixture capture ACK did not return true")
+        f.complete_lost_capture()
+        f.api.lease_acknowledge_capture=function(key)
+            table.insert(f.calls,{name="lease_acknowledge_capture",args={key}})
+            return spec.value,"fixture capture ACK outcome"
+        end
+        local reads=f.count("lease_state")
+        local held=f.step()
+        denied(held,"non-true capture ACK grants no input")
+        check(f.count("lease_acknowledge_capture")==1 and f.count("lease_acknowledge")==0 and
+            f.count("lease_state")==reads,"only literal true capture ACK can advance to passive receipt: "..spec.label)
+        check(held.cleanup_pending and held.lease_handle==handle and f.handle==handle and
+            held.capture_state.quarantined and held.capture_state.neutral_releases=="0",
+            "non-true capture ACK retains handle and unwitnessed history: "..spec.label)
+    end
+    local delayed_source={
+        {"not terminal",function(row)
+            row.status,row.reason,row.terminal="active","none",false
+            row.source_released,row.capture_reserved=false,false
+        end},
+        {"terminal still reserved",function(row)row.source_released,row.capture_reserved=false,true end},
+    }
+    for _,spec in ipairs(delayed_source)do
+        cases += 1
+        local f=fixture();check(f.start().input_ok,"constructed active source before delayed passive evidence")
+        local handle=f.handle
+        f.source:stop("fixture later passive receipt not yet released")
+        f.complete_lost_capture()
+        local native_state=f.api.lease_state
+        f.api.lease_state=function(key)
+            local row=native_state(key)
+            spec[2](row)
+            return row
+        end
+        local held=f.step()
+        denied(held,"true capture ACK alone cannot complete source cleanup")
+        check(f.capture==nil and f.count("lease_acknowledge_capture")==1 and f.count("lease_acknowledge")==0,
+            "capture ACK succeeds but delayed passive evidence prevents passive ACK: "..spec[1])
+        check(held.cleanup_pending and held.lease_handle==handle and f.handle==handle,
+            "later source-release evidence remains required: "..spec[1])
+        check(held.lease_state.source_released==false and
+            held.lease_state.terminal==(spec[1]~="not terminal") and
+            held.lease_state.capture_reserved==(spec[1]~="not terminal"),
+            "the deliberately delayed passive receipt was validated and retained: "..spec[1])
+        f.api.lease_state=native_state
+        local ended=f.step()
+        check(ended.phase=="complete" and f.count("lease_acknowledge_capture")==1 and f.count("lease_acknowledge")==1,
+            "fresh terminal released evidence finishes without repeating capture ACK: "..spec[1])
+        check(ended.capture_state.quarantined and ended.capture_state.neutral_releases=="0",
+            "passive release preserves quarantined capture history: "..spec[1])
+    end
+    for _,spec in ipairs(non_true_ack)do
+        cases += 1
+        local f=fixture();check(f.start().input_ok,"constructed active source before passive ACK "..spec.label)
+        local handle=f.handle
+        f.source:stop("fixture passive ACK did not return true")
+        f.complete_lost_capture()
+        local native_ack=f.api.lease_acknowledge
+        f.api.lease_acknowledge=function(key)
+            table.insert(f.calls,{name="lease_acknowledge",args={key}})
+            return spec.value,"fixture passive ACK outcome"
+        end
+        local held=f.step()
+        check(held.phase=="draining" and held.cleanup_pending and held.lease_handle==handle and f.handle==handle,
+            "literal true passive ACK is still required to discard ownership: "..spec.label)
+        check(f.count("lease_acknowledge_capture")==1 and f.count("lease_acknowledge")==1,
+            "capture ACK completed independently of the refused passive ACK: "..spec.label)
+        f.api.lease_acknowledge=native_ack
+        local ended=f.step()
+        check(ended.phase=="complete" and ended.lease_handle==nil and f.count("lease_acknowledge_capture")==1 and
+            f.count("lease_acknowledge")==2,"later true passive ACK alone completes the retained source: "..spec.label)
     end
     for _, name in ipairs(names) do
         cases += 1

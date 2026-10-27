@@ -248,8 +248,12 @@ local function drain(s, now)
         if checked then
             s.capture_state = checked
             if checked.phase == "capturing" then s.capture_seen = true end
-            if checked.phase == "complete" and not checked.report_debt and not checked.quarantined and
-                (not s.capture_seen or checked.neutral_releases ~= "0") then
+            -- A lost stream can finish its bounded release quarantined, without
+            -- a witnessed neutral. Keep that history; only the SDK can ACK the
+            -- exact completed key after its in-flight polls and debt are clear.
+            -- Once capturing was seen, ordinary completion still needs a neutral witness.
+            if checked.phase == "complete" and not checked.report_debt and
+                (checked.quarantined or not s.capture_seen or checked.neutral_releases ~= "0") then
                 local ack_called, accepted = invoke(s, "lease_acknowledge_capture", s.handle)
                 if ack_called and accepted == true then s.capture_acknowledged = true end
             end

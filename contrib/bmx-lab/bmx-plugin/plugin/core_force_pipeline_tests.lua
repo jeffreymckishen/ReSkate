@@ -15,7 +15,7 @@ local function increment(value)
 end
 local function fixture()
     local f={body=newproxy(),epoch=newproxy(),serial="9007199254741001",next_sequence="9007199254744001",
-        calls={},guards=0,afters=0,unknowns=0,guard_ok=true}
+        calls={},guards=0,afters=0,serial_reads=0,unknowns=0,guard_ok=true}
     f.current_body=f.body
     f.binding={owner=table.freeze({body=f.body})}
     local function stop(why) f.stopped=true;f.reason=f.reason or why end
@@ -28,7 +28,7 @@ local function fixture()
             if f.stopped or f.current_body~=f.body or epoch~=f.epoch then stop("owner unavailable");return false end
             return true
         end,
-        function() return f.serial end,
+        function() f.serial_reads+=1;return f.serial end,
         function(operation,body,...)
             local args=table.pack(...)
             table.insert(f.calls,{operation=operation,body=body,args=args})
@@ -39,7 +39,12 @@ local function fixture()
             elseif operation=="receipt" then return table.pack(true,{sequence=args[1]})
             else return table.pack(true,true) end
         end,
-        function(epoch) f.afters+=1;return not f.stopped and f.current_body==f.body and epoch==f.epoch end,
+        function(epoch)
+            f.afters+=1
+            local current=not f.stopped and f.current_body==f.body and epoch==f.epoch
+            if f.after_reason_set then return current,f.after_reason end
+            return current
+        end,
         stop,function() f.unknowns+=1 end)
     function f:advance() self.serial=increment(self.serial);self.epoch=newproxy() end
     function f:publish() return self.api.submit(self.epoch,{force=vector.create(0,0,0),torque=vector.create(0,0,0)}) end
@@ -151,6 +156,74 @@ function Tests.run()
         check(f.api.receipt(sequence).sequence==sequence and f.api.acknowledge(sequence)==true,"the original body can still drain that late admission")
         check(Core.force_transactions_clear(f.binding),"stop alone does not turn a known fully drained publication into unknown debt")
     end
+    -- The optional reason changes text only. Exact late admissions stay owned
+    -- by their original body and serial, including for malformed diagnostics.
+    for _,row in ipairs({
+        {name="plain",value="source authorization",suffix="source authorization"},
+        {name="controls",value="source\n\t\0\127authorization",suffix="source    authorization"},
+        {name="maximum",value=string.rep("x",180),suffix=string.rep("x",180)},
+        {name="missing"},{name="empty",value=""},{name="boolean",value=false},
+        {name="number",value=7},{name="table",value={}},{name="oversized",value=string.rep("x",181)},
+    }) do case() do
+        local f=fixture();local serial=f.serial
+        f.after_reason_set,f.after_reason=true,row.value
+        f.submit=function(self)
+            self.current_body=nil
+            return table.pack(true,true,nil,self.next_sequence)
+        end
+        local ok,why,sequence=f:publish()
+        local expected="Core guard changed during force publication"..(row.suffix and ": "..row.suffix or "")
+        check(ok==true and why==nil and sequence==f.next_sequence,"a diagnostic never changes exact admission: "..row.name)
+        check(f.stopped and f.reason==expected and f.guards==1 and f.afters==1 and f.serial_reads==1
+            and count(f,"submit")==1 and #f.calls==1,"one owner check returns bounded stop text without another call: "..row.name)
+        check(#f.binding.pending==1 and f.binding.pending[1].sequence==sequence and f.binding.pending[1].serial==serial
+            and f.binding.sequence==sequence and not f.binding.unknown and not Core.force_transactions_clear(f.binding),
+            "optional reason preserves the exact known accepted sequence and debt: "..row.name)
+        check(f.api.receipt(sequence).sequence==sequence and f.api.acknowledge(sequence)==true
+            and f.calls[2].body==f.body and f.calls[3].body==f.body,"original body drains the accepted receipt after diagnostic stop: "..row.name)
+        check(Core.force_transactions_clear(f.binding) and f.guards==1 and f.afters==1 and f.serial_reads==1
+            and count(f,"submit")==1 and count(f,"receipt")==1 and count(f,"acknowledge")==1,
+            "receipt cleanup neither repeats the owner check nor replays publication: "..row.name)
+    end end
+    for _,row in ipairs({
+        {name="inflight",inflight=true,reason="publication in flight"},
+        {name="unknown",unknown=true,reason="publication outcome unknown"},
+        {name="both",inflight=true,unknown=true,reason="publication in flight"},
+    }) do case() do
+        local f=fixture();local ids=f:fill(1);f:advance()
+        local serial,highest=f.binding.last_submit,f.binding.highest_sequence
+        local reads,guards,afters,calls=f.serial_reads,f.guards,f.afters,#f.calls
+        f.binding.inflight,f.binding.unknown=row.inflight,row.unknown
+        local ok,why=f:publish()
+        check(ok==false and why=="Core force publication guard refused before SDK call",
+            "publication state still refuses before admission: "..row.name)
+        check(f.reason=="current Core Source/Follow/body/epoch force guard refused: "..row.reason and f.stopped,
+            "publication state names its first failed precheck: "..row.name)
+        check(f.serial_reads==reads and f.guards==guards and f.afters==afters and #f.calls==calls,
+            "publication state diagnostics do not read a serial, check ownership or call SDK: "..row.name)
+        check(f.binding.last_submit==serial and f.binding.highest_sequence==highest and #f.binding.pending==1
+            and f.binding.sequence==ids[1] and not Core.force_transactions_clear(f.binding),
+            "precheck diagnostics retain every existing accepted receipt: "..row.name)
+    end end
+    case() do
+        local f=fixture();f.after_reason_set,f.after_reason=true,"ignored successful diagnostic"
+        local ok,why,sequence=f:publish()
+        check(ok==true and why==nil and not f.stopped and f.reason==nil,"successful ownership never stops because a reason was supplied")
+        check(f.binding.sequence==sequence and f.guards==1 and f.afters==1 and f.serial_reads==1 and #f.calls==1,
+            "successful optional-reason callback retains the same one-call cadence")
+    end
+    case() do
+        local f=fixture();f.after_reason_set,f.after_reason=true,"epoch"
+        f.submit=function(self)
+            self.stopped,self.reason=true,"earlier callback stop"
+            return table.pack(true,true,nil,self.next_sequence)
+        end
+        local ok,_,sequence=f:publish()
+        check(ok==true and f.reason=="earlier callback stop" and f.afters==1 and f.guards==1 and #f.calls==1,
+            "post-publication diagnostics preserve a stop already latched by the callback")
+        check(f.binding.sequence==sequence and #f.binding.pending==1 and not f.binding.unknown,
+            "an earlier stop still retains the exact late accepted sequence")
+    end
     for _,bad_result in ipairs({
         function() error("submit may have happened",0) end,
         function() return table.pack(false,"SDK exception") end,
@@ -209,6 +282,8 @@ function Tests.run()
         local ok,_,sequence=f:publish()
         check(ok==true and f.nested[1]==false and count(f,"submit")==1,"reentrant submit makes no second SDK call while preserving outer admission")
         check(f.binding.pending[1].serial==serial and f.binding.sequence==sequence and not Core.force_transactions_clear(f.binding),"late admission keeps its original measured serial after reentry")
+        check(f.reason=="current Core Source/Follow/body/epoch force guard refused: publication in flight",
+            "the first nested-publication refusal survives the later outer post-check")
     end
     case() do
         local f=fixture();local ids=f:fill(2)

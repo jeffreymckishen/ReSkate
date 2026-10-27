@@ -289,6 +289,13 @@ function BikeRuntime.follow_visual_stop(label,r)
     return label.." refused or cancelled"
 end
 
+-- Owner callbacks may add a bounded diagnostic without changing their boolean
+-- admission result. Existing boolean-only adapters keep their original text.
+local function guard_stop_reason(label,why)
+    if type(why)~="string" or #why==0 or #why>180 then return label end
+    return label..": "..why:gsub("[%c]"," ")
+end
+
 -- Bind only callbacks, never an SDK object or activation option. Keeping this
 -- adapter inert lets constructed tests exercise the private query path while
 -- both riding gates stay closed. Only create_ride supplies the real closures.
@@ -321,7 +328,8 @@ function BikeRuntime.probe_batch_adapter(identity,guard,read_serial,invoke,curre
         -- Reserve before invoking a callback: failure or reentry refunds nothing.
         count+=1
         local r=invoke(epoch,rays,query_options)
-        if not current_owner(epoch) then stop("Core guard changed during contact query") end
+        local owned,why=current_owner(epoch)
+        if not owned then stop(guard_stop_reason("Core guard changed during contact query",why)) end
         if not r[1] then error("contact query result unknown",0) end
         return table.unpack(r,2,r.n)
     end
@@ -361,8 +369,10 @@ function BikeRuntime.force_transaction_adapter(identity,binding,guard,read_seria
         return nil
     end
     api.submit=function(epoch,command)
-        if binding.inflight or binding.unknown then
-            stop("current Core Source/Follow/body/epoch force guard refused")
+        local inflight=binding.inflight
+        if inflight or binding.unknown then
+            local why=inflight and "publication in flight" or "publication outcome unknown"
+            stop(guard_stop_reason("current Core Source/Follow/body/epoch force guard refused",why))
             return false,"Core force publication guard refused before SDK call"
         end
         local serial=read_serial()
@@ -393,7 +403,8 @@ function BikeRuntime.force_transaction_adapter(identity,binding,guard,read_seria
             retain_unknown("force publication outcome unknown")
         end
         binding.inflight=false
-        if not current_owner(epoch) then stop("Core guard changed during force publication") end
+        local owned,why=current_owner(epoch)
+        if not owned then stop(guard_stop_reason("Core guard changed during force publication",why)) end
         if (not accepted and binding.unknown) or not r[1] then error("force publication outcome unknown",0) end
         return table.unpack(r,2,r.n)
     end
@@ -1213,22 +1224,35 @@ end
 local tick_facts,tick_authorization
 local function current_ride_owner(binding,epoch,read,fresh)
     local owner=binding.owner
-    if not current(owner.generation) or ride_binding~=binding or not binding.observing
-        or not T.active or T.body~=owner.body or T.follow~=owner.follow or T.input_current~=true
-        or T.phase~="following" or not same_selected(selected_source_frame,owner.source)
-        or not binding.sample or epoch~=binding.sample.epoch then return false end
+    -- Keep the original short-circuit order: diagnostics must never obtain
+    -- another fact, receipt or authorization after the first failed check.
+    if not current(owner.generation) or ride_binding~=binding then return false,"owner" end
+    if not binding.observing then return false,"observation" end
+    if not T.active then return false,"owner" end
+    if T.body~=owner.body then return false,"body" end
+    if T.follow~=owner.follow then return false,"follow" end
+    if T.input_current~=true then return false,"source identity" end
+    if T.phase~="following" then return false,"phase" end
+    if not same_selected(selected_source_frame,owner.source) then return false,"source identity" end
+    if not binding.sample or epoch~=binding.sample.epoch then return false,"epoch" end
     local now=clock()
-    if not now or not current(owner.generation) or not lease_live(now) then return false end
+    if not now then return false,"clock" end
+    if not current(owner.generation) then return false,"owner" end
+    if not lease_live(now) then return false,"lease" end
     local f=not fresh and tick_facts or facts();T.facts=f
     -- The latest facts this tick read; later checks that publish nothing use them.
     tick_facts=f
-    if not current(owner.generation) or not closed_ready(f,false) then return false end
+    if not current(owner.generation) then return false,"owner" end
+    if not closed_ready(f,false) then return false,"readiness" end
     -- A post-call owner check (read=false) keeps every Lua-side check but reuses
     -- this tick's receipt, so each guarded SDK call costs one Follow read (B9).
-    if read~=false and (not read_follow(true) or not current(owner.generation)) then return false end
+    if read~=false then
+        if not read_follow(true) then return false,"receipt" end
+        if not current(owner.generation) then return false,"owner" end
+    end
     local receipt=T.receipt
     if not receipt or receipt.phase~="following" or receipt.claim_known~=true or receipt.orphaned
-        or receipt.terminal or receipt.park_observed then return false end
+        or receipt.terminal or receipt.park_observed then return false,"receipt" end
     -- Source owns this read-only lease/capture check. It does not publish
     -- another model input or native body sample. All earlier guard callbacks
     -- run first; a post-effect failure still retains the accepted sequence.
@@ -1245,10 +1269,24 @@ local function current_ride_owner(binding,epoch,read,fresh)
         tick_authorization={binding=binding,frame=selected_source_frame,result=authorization}
     end
     now=clock() -- Include authorization time in the ride window and lease bound.
-    return now~=nil and current(owner.generation) and T.body==owner.body and T.follow==owner.follow
-        and T.input_current==true and same_selected(selected_source_frame,owner.source)
-        and lease_live(now) and binding.observing and binding.sample and epoch==binding.sample.epoch
-        and authorization[1] and authorization.n==2 and authorization[2]==true
+    if now==nil then return false,"clock" end
+    if not current(owner.generation) then return false,"owner" end
+    if T.body~=owner.body then return false,"body" end
+    if T.follow~=owner.follow then return false,"follow" end
+    if T.input_current~=true or not same_selected(selected_source_frame,owner.source) then return false,"source identity" end
+    if not lease_live(now) then return false,"lease" end
+    if not binding.observing then return false,"observation" end
+    if not binding.sample or epoch~=binding.sample.epoch then return false,"epoch" end
+    if not authorization[1] or authorization.n~=2 or authorization[2]~=true then
+        -- Only the exact protected refusal shape carries Source's own reason.
+        -- The clock and ownership recheck above still run after that refusal.
+        if authorization[1]==true and authorization.n==3 and authorization[2]==false
+            and type(authorization[3])=="string" and #authorization[3]>0 then
+            return false,short("source authorization: "..authorization[3])
+        end
+        return false,"source authorization"
+    end
+    return true
 end
 local transport_labels={submit="ride.submit",receipt="ride.receipt",acknowledge="ride.acknowledge"}
 local transport_paths={submit="world.physics.submit",receipt="world.physics.receipt",acknowledge="world.physics.acknowledge"}
@@ -1264,8 +1302,12 @@ local function create_ride(frame)
     ride_binding=binding -- Reserve before constructors/callbacks can reenter.
     local api={}
     local function guard(epoch,fresh)
-        if binding.inflight or binding.unknown or not current_ride_owner(binding,epoch,nil,fresh) then
-            stop_all("current Core Source/Follow/body/epoch force guard refused")
+        local owned,why
+        if binding.inflight then why="publication in flight"
+        elseif binding.unknown then why="publication outcome unknown"
+        else owned,why=current_ride_owner(binding,epoch,nil,fresh) end
+        if not owned then
+            stop_all(guard_stop_reason("current Core Source/Follow/body/epoch force guard refused",why))
             return false
         end
         return true

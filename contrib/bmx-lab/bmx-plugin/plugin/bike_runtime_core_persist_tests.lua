@@ -259,12 +259,15 @@ function tests.new_runner()
                 local query=f.queries
                 f.last={epoch=epoch,rays=rays,options=options}
                 if f.reenter then f.probe(epoch,rays,options) end
+                if f.backend_stop then stop(f.backend_stop) end
                 if f.backend_failure then return table.pack(false,"constructed backend exception") end
                 return table.pack(true,query)
             end,
             function(epoch)
                 f.afters+=1;table.insert(f.trace,"after")
-                return f.current and not f.stopped and epoch==f.epoch
+                local current=f.current and not f.stopped and epoch==f.epoch
+                if f.after_reason_set then return current,f.after_reason end
+                return current
             end,stop)
         function f:query(options) return self.probe(self.epoch,self.rays,options or good_options) end
         return f
@@ -338,6 +341,32 @@ function tests.new_runner()
         check(f.queries==3 and f.guards==3 and f.afters==3 and f.reason=="Core guard changed during contact query",
             "batch three still stops on its after-call owner check")
         check(f:query()==nil and f.queries==3,"post-call owner loss stops later batches")
+        for _,row in ipairs({
+            {name="plain",value="source authorization",suffix="source authorization"},
+            {name="controls",value="source\n\t\0\127authorization",suffix="source    authorization"},
+            {name="maximum",value=string.rep("x",180),suffix=string.rep("x",180)},
+            {name="missing"},{name="empty",value=""},{name="boolean",value=false},
+            {name="number",value=7},{name="table",value={}},{name="oversized",value=string.rep("x",181)},
+        }) do
+            local detailed=probe_fixture()
+            detailed.current=false;detailed.after_reason_set,detailed.after_reason=true,row.value
+            local expected="Core guard changed during contact query"..(row.suffix and ": "..row.suffix or "")
+            check(detailed:query()==1,"query results survive an optional diagnostic: "..row.name)
+            check(detailed.reason==expected and detailed.queries==1 and detailed.guards==1 and detailed.afters==1
+                and table.concat(detailed.trace," ")=="guard serial invoke after",
+                "optional reason preserves exact query order without a duplicate owner check: "..row.name)
+            check(detailed:query()==nil and detailed.reason==expected and detailed.queries==1
+                and detailed.guards==2 and detailed.afters==1,"diagnostic stop prevents later SDK queries: "..row.name)
+        end
+        local valid=probe_fixture();valid.after_reason_set,valid.after_reason=true,"ignored successful diagnostic"
+        check(valid:query()==1 and not valid.stopped and valid.reason==nil,"a successful query owner ignores optional reason text")
+        check(valid.queries==1 and valid.guards==1 and valid.afters==1 and table.concat(valid.trace," ")=="guard serial invoke after",
+            "successful optional-reason callbacks keep the same query cadence")
+        local stopped=probe_fixture();stopped.backend_stop="earlier query callback stop"
+        stopped.after_reason_set,stopped.after_reason=true,"epoch"
+        check(stopped:query()==1 and stopped.reason=="earlier query callback stop","query post-check preserves the first callback stop")
+        check(stopped.queries==1 and stopped.guards==1 and stopped.afters==1,
+            "a previous callback stop does not cause an extra guard or SDK query")
     end)
     table.insert(work_functions,function()
         for _,bad in {{value="0"},{value="01"},{value="18446744073709551616"},{value=7},{}} do

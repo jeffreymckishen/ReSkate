@@ -38,17 +38,17 @@ ALLOWED_BUTTONS = A | B | Y | LB | RB | R3
 # report, not keyboard input, so the guard's Escape and foreground checks are unchanged and still
 # abort on a real Escape or focus loss.
 START = 0x0010
-# TOOL-2: the exact registered long timelines may run to 30s. Every other timeline keeps the 6s
+# Only exact registered long timelines may run to 30s. Every other timeline keeps the 6s
 # limit, and neutral-window-20s keeps its own exception.
 MAX_EXTENDED_DURATION_MS = 30000
 # Rows a long timeline's ledger allows beyond its scheduled reports: the 20s window's 1200 over its
 # 1001 reports, room for session start, backend ready, the bounded bootstrap, ready/wait/go,
 # release and session end.
 LEDGER_MARGIN_ROWS = 199
-# DEC-6 (TOOL-1(b)): the neutral lead before the first pedal report. It is M1's measured
+# DEC-6 (TOOL-1(b)): the lead before the first pedal report. It is M1's measured
 # report-to-publish time, plus a margin, plus at least 500ms after publication (TR-M45's standing
-# segment). TR-M1 has not run, so it is unset and every scenario that needs it refuses. Setting it
-# is a reviewed source change, and the driver's source hash and its pins move with it.
+# segment). The default stays unset; a trial can supply a bounded --pedal-lead-ms without
+# editing this file. The ledger records the override and the complete resolved timeline.
 PEDAL_LEAD_MS = None
 PEDAL_LEAD_MIN_MS, PEDAL_HOLD_MS, PEDAL_END_MS = 500, 1000, 6000
 DEPENDENCY_ROOT = WORKSPACE / "build" / "bmx-gamepad-runtime" / "Lib" / "site-packages" / "vgamepad"
@@ -131,17 +131,18 @@ NEUTRAL_WINDOW_30S = (Event(0, NEUTRAL), Event(30000, NEUTRAL))
 # native-y's and native-b's pulses, then neutral to 20s as neutral-window-20s. The driver does not
 # close the menu; the scheduler's clock starts at go acceptance, not at publication.
 PAUSE_MENU_WINDOW = (Event(0, NEUTRAL), Event(3000, State(START)), Event(3200, NEUTRAL), Event(20000, NEUTRAL))
-LEAD_SCENARIO_NAMES = ("pedal-straight", "ride-10s", "ride-s01-30s")
-LONG_SCENARIO_NAMES = ("neutral-window-30s", "pause-menu-20s", "ride-10s", "ride-s01-30s")
-# Every scenario added for TOOL-1(b) and TOOL-2 runs live only behind the start gate, so its clock
+LEAD_SCENARIO_NAMES = ("pedal-straight", "ride-10s", "ride-s01-30s", "ride-steer-brake", "coast-long")
+LONG_SCENARIO_NAMES = ("neutral-window-30s", "pause-menu-20s", "ride-10s", "ride-s01-30s",
+                       "ride-steer-brake", "coast-long")
+# Every lead-dependent or registered long scenario runs live only behind the start gate, so its clock
 # starts at an operator's go. The nine older scenarios keep the optional gate they always had.
 GATED_SCENARIO_NAMES = ("pedal-straight", *LONG_SCENARIO_NAMES)
 
 
-def pedal_lead_ms() -> int:
-    lead = PEDAL_LEAD_MS
+def pedal_lead_ms(override: int | None = None) -> int:
+    lead = PEDAL_LEAD_MS if override is None else override
     if lead is None:
-        raise Refused("PEDAL_LEAD_MS is unset: pedal-straight and the ride timelines need M1's measured "
+        raise Refused("PEDAL_LEAD_MS is unset: supply --pedal-lead-ms for the pedal and ride timelines; they need M1's measured "
                       "report-to-publish lead plus a margin plus at least 500ms after publication (DEC-6)")
     if type(lead) is not int or lead % PERIOD_MS or not PEDAL_LEAD_MIN_MS <= lead <= PEDAL_END_MS - PEDAL_HOLD_MS - PERIOD_MS:
         raise Refused("PEDAL_LEAD_MS must be whole 20ms periods from 500ms to 4980ms")
@@ -149,8 +150,8 @@ def pedal_lead_ms() -> int:
 
 
 def lead_scenarios(lead: int) -> dict[str, tuple[Event, ...]]:
-    # A pedals and B brakes, as in scenarios(). Every press starts after the neutral lead, and
-    # starting equipment, mounting and consumption remain separate evidence.
+    # ride_input_mapping.lua maps A to pedal, B to brake and left_x to steering via input.lua.
+    # Starting equipment, mounting and consumption remain separate evidence.
     return {
         # TOOL-1(b), DEC-6: stand neutral for the lead, pedal once for 1s, coast to 6s.
         "pedal-straight": (Event(0, NEUTRAL), Event(lead, State(A)), Event(lead + PEDAL_HOLD_MS, NEUTRAL),
@@ -164,23 +165,34 @@ def lead_scenarios(lead: int) -> dict[str, tuple[Event, ...]]:
         "ride-s01-30s": (Event(0, NEUTRAL), Event(lead, State(A)), Event(lead + 6000, NEUTRAL),
                          Event(lead + 9000, State(B)), Event(lead + 15000, NEUTRAL),
                          Event(lead + 15500, State(A)), Event(lead + 17500, NEUTRAL), Event(30000, NEUTRAL)),
+        # Brake against slope drift, then give a mapper first observed during braking three
+        # neutral reports before A. The calibrated lead still needs to cover publication.
+        # Later 240ms gaps release each control before the next phase.
+        "ride-steer-brake": (Event(0, NEUTRAL), Event(240, State(B)), Event(lead - 60, NEUTRAL),
+                             Event(lead, State(A)),
+                             Event(lead + 1500, NEUTRAL), Event(lead + 1740, State(left_x=-0.8)),
+                             Event(lead + 3740, NEUTRAL), Event(lead + 3980, State(left_x=0.8)),
+                             Event(lead + 5980, NEUTRAL), Event(lead + 6220, State(B)),
+                             Event(lead + 7220, NEUTRAL), Event(14000, NEUTRAL)),
+        "coast-long": (Event(0, NEUTRAL), Event(lead, State(A)), Event(lead + 4000, NEUTRAL),
+                       Event(12000, NEUTRAL)),
     }
 
 
-def tool_scenarios() -> dict[str, tuple[Event, ...]]:
+def tool_scenarios(lead_ms: int | None = None) -> dict[str, tuple[Event, ...]]:
     # TOOL-1(b) and TOOL-2, apart from scenarios() so its timelines stay exactly as they were.
-    # The lead-dependent timelines exist only while PEDAL_LEAD_MS holds a valid lead.
+    # The lead-dependent timelines exist only with a valid default or explicit trial lead.
     timelines = {"neutral-window-30s": NEUTRAL_WINDOW_30S, "pause-menu-20s": PAUSE_MENU_WINDOW}
-    if PEDAL_LEAD_MS is not None:
+    if lead_ms is not None or PEDAL_LEAD_MS is not None:
         try:
-            timelines.update(lead_scenarios(pedal_lead_ms()))
+            timelines.update(lead_scenarios(pedal_lead_ms(lead_ms)))
         except Refused:
             pass
     return timelines
 
 
-def long_timelines() -> tuple[tuple[Event, ...], ...]:
-    built = tool_scenarios()
+def long_timelines(lead_ms: int | None = None) -> tuple[tuple[Event, ...], ...]:
+    built = tool_scenarios(lead_ms)
     return tuple(built[name] for name in LONG_SCENARIO_NAMES if name in built)
 
 
@@ -188,23 +200,23 @@ def scenario_names() -> tuple[str, ...]:
     return (*scenarios(), "pedal-straight", *LONG_SCENARIO_NAMES)
 
 
-def scenario_timeline(name: str) -> tuple[Event, ...]:
+def scenario_timeline(name: str, lead_ms: int | None = None) -> tuple[Event, ...]:
     if name in scenarios():
         return scenarios()[name]
     if name in LEAD_SCENARIO_NAMES:
-        return lead_scenarios(pedal_lead_ms())[name]
+        return lead_scenarios(pedal_lead_ms(lead_ms))[name]
     if name in LONG_SCENARIO_NAMES:
         return tool_scenarios()[name]
     raise Refused("Unknown scenario")
 
 
-def validate_timeline(events: tuple[Event, ...]) -> None:
+def validate_timeline(events: tuple[Event, ...], *, lead_ms: int | None = None) -> None:
     if not 2 <= len(events) <= 32 or events[0] != Event(0, NEUTRAL) or events[-1].state != NEUTRAL:
         raise Refused("Timeline requires 2..32 events with initial/final neutral")
     previous = -1
     # Only an exact registered tuple earns a longer limit or the Start button.
     maximum_ms = (20000 if events == NEUTRAL_WINDOW else
-                  MAX_EXTENDED_DURATION_MS if events in long_timelines() else MAX_DURATION_MS)
+                  MAX_EXTENDED_DURATION_MS if events in long_timelines(lead_ms) else MAX_DURATION_MS)
     allowed_buttons = ALLOWED_BUTTONS | START if events == PAUSE_MENU_WINDOW else ALLOWED_BUTTONS
     for event in events:
         if type(event.at_ms) is not int or event.at_ms <= previous or event.at_ms % PERIOD_MS or not 0 <= event.at_ms <= maximum_ms:
@@ -725,14 +737,14 @@ class NeutralWindowLedger(Ledger):
 
 
 class LongTimelineLedger(Ledger):
-    """Fixed budget for TOOL-2's exact long timelines: scheduled reports plus LEDGER_MARGIN_ROWS.
+    """Fixed budget for exact long timelines: scheduled reports plus LEDGER_MARGIN_ROWS.
 
-    1200 rows for a 20s timeline and 1700 for 30s. Rows keep the default format.
+    800/900/1200/1700 rows for 12s/14s/20s/30s. Rows keep the default format.
     """
-    def __init__(self, path: Path, events: tuple[Event, ...]):
-        if events not in long_timelines():
-            raise Refused("Long-timeline ledger requires an exact registered TOOL-2 timeline")
-        validate_timeline(events)
+    def __init__(self, path: Path, events: tuple[Event, ...], *, lead_ms: int | None = None):
+        if events not in long_timelines(lead_ms):
+            raise Refused("Long-timeline ledger requires an exact registered long timeline")
+        validate_timeline(events, lead_ms=lead_ms)
         self.row_limit = events[-1].at_ms // PERIOD_MS + 1 + LEDGER_MARGIN_ROWS
         super().__init__(path)
 
@@ -790,8 +802,8 @@ def bootstrap(backend, guard, ledger, clock):
     raise Refused("Bootstrap did not establish exact neutral")
 
 
-def run(events, guard, backend_factory, ledger, *, execute=False, clock=None, start_gate=None):
-    validate_timeline(events)
+def run(events, guard, backend_factory, ledger, *, execute=False, clock=None, start_gate=None, lead_ms=None):
+    validate_timeline(events, lead_ms=lead_ms)
     if start_gate is not None and not execute:
         raise Refused("Start gate is available only with explicit execution")
     clock = clock or Clock()
@@ -883,19 +895,25 @@ def run(events, guard, backend_factory, ledger, *, execute=False, clock=None, st
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scenario", choices=scenario_names(), default="native-y")
+    parser.add_argument("--pedal-lead-ms", type=int,
+                        help="Trial lead for pedal/ride scenarios: 500..4980ms in whole 20ms periods; default stays unset")
     parser.add_argument("--execute", action="store_true", help="Explicitly submit virtual controller reports; default is dry-run")
     parser.add_argument("--owner", type=Path, help="Dedicated reviewed owned-process JSON receipt; mandatory for execution")
     parser.add_argument("--dependency-receipt", type=Path, default=DEPENDENCY_RECEIPT, help="Reviewed six-file manual dependency receipt; checked before live import")
     parser.add_argument("--ledger", type=Path, help="New JSONL path inside build/bmx; never overwrites")
     parser.add_argument("--start-gate", type=Path, help="Fresh nonexistent directory inside build/bmx for ready/go coordination; "
-                        "required with --execute for pedal-straight and the TOOL-2 timelines, optional for the others")
+                        "required with --execute for pedal-straight and registered long timelines, optional for the others")
     parser.add_argument("--start-nonce", help="Exactly32 hexadecimal characters binding the start gate")
     args = parser.parse_args(argv)
     if bool(args.start_gate) != bool(args.start_nonce) or (args.start_gate is not None and not args.execute):
         parser.error("--start-gate and --start-nonce require each other and --execute")
+    if args.pedal_lead_ms is not None:
+        pedal_lead_ms(args.pedal_lead_ms)
+        if args.scenario not in LEAD_SCENARIO_NAMES:
+            parser.error("--pedal-lead-ms requires a lead-dependent scenario")
     # Before any owner, ledger, game or device step: a lead-dependent scenario refuses here
-    # while PEDAL_LEAD_MS is unset.
-    events = scenario_timeline(args.scenario)
+    # while PEDAL_LEAD_MS is unset and no trial override was supplied.
+    events = scenario_timeline(args.scenario, args.pedal_lead_ms)
     # Then, still before any owner, ledger, game or device step: a live run of a new scenario
     # needs the gate.
     if args.execute and args.scenario in GATED_SCENARIO_NAMES and args.start_gate is None:
@@ -907,12 +925,14 @@ def main(argv=None):
                                (datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex + ".jsonl"))
     ledger_path.parent.mkdir(parents=True, exist_ok=True)
     ledger = (NeutralWindowLedger(ledger_path, events) if args.scenario == "neutral-window-20s" else
-              LongTimelineLedger(ledger_path, events) if args.scenario in LONG_SCENARIO_NAMES else Ledger(ledger_path))
+              LongTimelineLedger(ledger_path, events, lead_ms=args.pedal_lead_ms)
+              if args.scenario in LONG_SCENARIO_NAMES else Ledger(ledger_path))
     guard = None
     try:
         ledger.write("controller_session_start", schema=1, scenario=args.scenario, execute=args.execute,
                      timing_simulated=not args.execute, owner=asdict(owner) if owner else None,
                      timeline=[asdict(e) for e in events], source_sha256=sha256(Path(__file__)),
+                     **({"pedal_lead_ms": args.pedal_lead_ms} if args.pedal_lead_ms is not None else {}),
                      boundary="Virtual controller reports only; no proof of device selection, consumption, animation or native quality; no capture or posting")
         try:
             guard = WindowsGuard(owner) if args.execute else DryGuard()
@@ -926,7 +946,8 @@ def main(argv=None):
                 pass
             raise
         result = run(events, guard, (lambda: make_vgamepad(args.dependency_receipt)) if args.execute else DryBackend, ledger,
-                     execute=args.execute, clock=Clock() if args.execute else PreviewClock(), start_gate=start_gate)
+                     execute=args.execute, clock=Clock() if args.execute else PreviewClock(), start_gate=start_gate,
+                     lead_ms=args.pedal_lead_ms)
         print(json.dumps(dict(ledger=str(ledger_path), **result)))
         return 0 if result["completed"] else 2
     finally:

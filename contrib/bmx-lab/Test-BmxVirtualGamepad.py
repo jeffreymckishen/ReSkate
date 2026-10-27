@@ -1386,7 +1386,7 @@ class ExistingScenarioPinTests(unittest.TestCase):
 
 
 class PedalLeadTests(unittest.TestCase):
-    """TOOL-1(b): the DEC-6 lead is one literal, unset until TR-M1 measures it."""
+    """The DEC-6 default stays unset unless a trial supplies an explicit lead."""
     def test_lead_is_one_unset_literal_in_tracked_source(self):
         self.assertIsNone(h.PEDAL_LEAD_MS)
         source = SCRIPT.read_text(encoding="utf-8")
@@ -1394,7 +1394,8 @@ class PedalLeadTests(unittest.TestCase):
         self.assertEqual((h.PEDAL_LEAD_MIN_MS, h.PEDAL_HOLD_MS, h.PEDAL_END_MS), (500, 1000, 6000))
 
     def test_every_lead_scenario_refuses_while_unset_and_others_still_resolve(self):
-        self.assertEqual(h.LEAD_SCENARIO_NAMES, ("pedal-straight", "ride-10s", "ride-s01-30s"))
+        self.assertEqual(h.LEAD_SCENARIO_NAMES,
+                         ("pedal-straight", "ride-10s", "ride-s01-30s", "ride-steer-brake", "coast-long"))
         with patch.object(h, "PEDAL_LEAD_MS", None):
             for name in h.LEAD_SCENARIO_NAMES:
                 with self.subTest(name=name), self.assertRaisesRegex(h.Refused, "PEDAL_LEAD_MS is unset.*DEC-6"):
@@ -1546,7 +1547,8 @@ class LongTimelineTests(unittest.TestCase):
 
     def test_long_ledger_budget_is_reports_plus_fixed_margin_and_refuses_others(self):
         with tempfile.TemporaryDirectory(prefix="long-ledger-test-") as temporary, patch.object(h, "PEDAL_LEAD_MS", 1240):
-            for name, limit in (("neutral-window-30s", 1700), ("pause-menu-20s", 1200), ("ride-10s", 1200), ("ride-s01-30s", 1700)):
+            for name, limit in (("neutral-window-30s", 1700), ("pause-menu-20s", 1200), ("ride-10s", 1200),
+                                ("ride-s01-30s", 1700), ("ride-steer-brake", 900), ("coast-long", 800)):
                 with self.subTest(name=name):
                     path = Path(temporary) / (name + ".jsonl")
                     ledger = h.LongTimelineLedger(path, h.scenario_timeline(name))
@@ -1605,7 +1607,8 @@ class LongTimelineTests(unittest.TestCase):
         folder = h.WORKSPACE / "build" / "bmx"
         real = h.LongTimelineLedger
         for name, count in (("neutral-window-30s", 1501), ("pause-menu-20s", 1001), ("ride-10s", 1001),
-                            ("ride-s01-30s", 1501), ("pedal-straight", 301), ("neutral-window-20s", 1001)):
+                            ("ride-s01-30s", 1501), ("pedal-straight", 301), ("neutral-window-20s", 1001),
+                            ("ride-steer-brake", 701), ("coast-long", 601)):
             with self.subTest(name=name), tempfile.TemporaryDirectory(prefix="long-ledger-cli-test-", dir=folder) as temporary, \
                     patch.object(h, "PEDAL_LEAD_MS", 1240), patch.object(h, "LongTimelineLedger", wraps=real) as long_ledger, \
                     patch.object(h, "WindowsGuard", side_effect=AssertionError("No game inspection")), \
@@ -1830,6 +1833,213 @@ class RideTimelineTests(unittest.TestCase):
                         self.assertEqual(backend.states[-2], held)
                         self.assertEqual((backend.states[-1], backend.closed, guard.closed), (h.NEUTRAL, 1, 1))
                         self.assertTrue(result["neutral_release_succeeded"] and result["disconnect_succeeded"])
+
+
+class TrialLeadTests(unittest.TestCase):
+    def test_override_is_validated_and_does_not_change_the_default(self):
+        for bad in (True, False, 500.0, "500", 0, -20, 480, 510, 4990, 5000, 10 ** 6):
+            with self.subTest(bad=bad), self.assertRaises(h.Refused):
+                h.pedal_lead_ms(bad)
+        with patch.object(h, "PEDAL_LEAD_MS", 1240):
+            for lead in (500, 1500, 4980):
+                self.assertEqual(h.pedal_lead_ms(lead), lead)
+                self.assertEqual(h.pedal_lead_ms(), 1240)
+        self.assertIsNone(h.PEDAL_LEAD_MS)
+
+    def test_bad_cli_leads_refuse_before_owner_ledger_game_or_device(self):
+        for value in ("", "no", "true", "500.0", "nan", "inf", "-20", "0", "480", "510", "4990", "5000", "1000000"):
+            for execute in ([], ["--execute", "--owner", "unused-owner"]):
+                with self.subTest(value=value, execute=execute), \
+                        patch.object(h, "load_owner", side_effect=AssertionError("No owner read")), \
+                        patch.object(h, "inside_build", side_effect=AssertionError("No ledger or gate")), \
+                        patch.object(h, "WindowsGuard", side_effect=AssertionError("No game inspection")), \
+                        patch.object(h, "make_vgamepad", side_effect=AssertionError("No driver import")), \
+                        patch("sys.stderr", new_callable=io.StringIO), self.assertRaises((SystemExit, h.Refused)):
+                    h.main(["--scenario", "ride-steer-brake", "--pedal-lead-ms", value, *execute])
+
+    def test_cli_rejects_a_lead_for_scenarios_that_do_not_use_it(self):
+        for name in set(h.scenario_names()) - set(h.LEAD_SCENARIO_NAMES):
+            with self.subTest(name=name), patch.object(h, "inside_build", side_effect=AssertionError("No ledger")), \
+                    patch("sys.stderr", new_callable=io.StringIO) as stderr, self.assertRaises(SystemExit):
+                h.main(["--scenario", name, "--pedal-lead-ms", "1500"])
+            self.assertIn("requires a lead-dependent scenario", stderr.getvalue())
+
+    def test_cli_lead_dry_runs_all_lead_scenarios_and_does_not_leak_to_next_call(self):
+        folder = h.WORKSPACE / "build" / "bmx"
+        with tempfile.TemporaryDirectory(prefix="trial-lead-test-", dir=folder) as temporary, \
+                patch.object(h, "WindowsGuard", side_effect=AssertionError("No game inspection")), \
+                patch.object(h, "make_vgamepad", side_effect=AssertionError("No driver import")), patch("builtins.print"):
+            for lead in (500, 1500, 4980):
+                for name in h.LEAD_SCENARIO_NAMES:
+                    with self.subTest(name=name, lead=lead):
+                        path = Path(temporary) / f"{name}-{lead}.jsonl"
+                        self.assertEqual(h.main(["--scenario", name, "--pedal-lead-ms", str(lead), "--ledger", str(path)]), 0)
+                        rows = [json.loads(line) for line in path.read_text().splitlines()]
+                        events = h.scenario_timeline(name, lead)
+                        self.assertEqual(rows[0]["pedal_lead_ms"], lead)
+                        self.assertEqual(rows[0]["timeline"], [h.asdict(event) for event in events])
+                        self.assertTrue(rows[0]["timing_simulated"])
+                        self.assertEqual(rows[-1]["report_count"], events[-1].at_ms // 20 + 1)
+                        self.assertTrue(rows[-1]["completed"])
+                        self.assertTrue(all(row.get("driver_submitted") is not True for row in rows))
+                        self.assertIsNone(h.PEDAL_LEAD_MS)
+                        refused = Path(temporary) / "refused.jsonl"
+                        with self.assertRaisesRegex(h.Refused, "PEDAL_LEAD_MS is unset"):
+                            h.main(["--scenario", name, "--ledger", str(refused)])
+                        self.assertFalse(refused.exists())
+
+
+class SteerCoastTimelineTests(unittest.TestCase):
+    def test_new_names_are_registered_once_as_lead_long_and_gated(self):
+        for names in (h.LEAD_SCENARIO_NAMES, h.LONG_SCENARIO_NAMES, h.GATED_SCENARIO_NAMES, h.scenario_names()):
+            self.assertEqual(len(names), len(set(names)))
+            for name in ("ride-steer-brake", "coast-long"):
+                self.assertIn(name, names)
+
+    def run_trial(self, name, lead):
+        clock, backend, sink = h.PreviewClock(), Backend(), Sink()
+        guard = Guard(clock)
+        events = h.scenario_timeline(name, lead)
+        result = h.run(events, guard, lambda: backend, sink, execute=True, clock=clock, lead_ms=lead)
+        self.assertTrue(result["completed"], result["issue"])
+        self.assertEqual((backend.states[-1], backend.closed, guard.closed), (h.NEUTRAL, 1, 1))
+        self.assertTrue(result["neutral_release_succeeded"] and result["disconnect_succeeded"])
+        self.assertIsNone(result["input_consumed"])
+        return events, result, reports_of(sink)
+
+    def test_steer_brake_reports_hold_only_the_requested_controls_for_each_phase(self):
+        for lead in (500, 1500, 4980):
+            with self.subTest(lead=lead):
+                events, result, reports = self.run_trial("ride-steer-brake", lead)
+                self.assertEqual([(e.at_ms, e.state) for e in events], [
+                    (0, h.NEUTRAL), (240, h.State(h.B)), (lead - 60, h.NEUTRAL), (lead, h.State(h.A)), (lead + 1500, h.NEUTRAL),
+                    (lead + 1740, h.State(left_x=-0.8)), (lead + 3740, h.NEUTRAL),
+                    (lead + 3980, h.State(left_x=0.8)), (lead + 5980, h.NEUTRAL),
+                    (lead + 6220, h.State(h.B)), (lead + 7220, h.NEUTRAL), (14000, h.NEUTRAL)])
+
+                def expected(at):
+                    if 240 <= at < lead - 60 or lead + 6220 <= at < lead + 7220:
+                        return h.State(h.B)
+                    if lead <= at < lead + 1500:
+                        return h.State(h.A)
+                    if lead + 1740 <= at < lead + 3740:
+                        return h.State(left_x=-0.8)
+                    if lead + 3980 <= at < lead + 5980:
+                        return h.State(left_x=0.8)
+                    return h.NEUTRAL
+                states = [expected(at) for at in range(0, 14001, 20)]
+                # A mapper first observed while B is held must see a later neutral sample
+                # before A; do not rely on the pre-publication neutral interval at go.
+                self.assertEqual(states[lead // 20 - 3:lead // 20], [h.NEUTRAL] * 3)
+                self.assertEqual((result["report_count"], result["driver_report_count"]), (701, 701))
+                self.assertEqual([r["planned_ms"] for r in reports], list(range(0, 14001, 20)))
+                self.assertEqual([r["state"] for r in reports], [h.asdict(state) for state in states])
+                self.assertEqual([r["raw_report_hex"] for r in reports], [raw_hex(state) for state in states])
+                self.assertEqual([states.count(state) for state in (h.State(h.A), h.State(left_x=-0.8), h.State(left_x=0.8))],
+                                 [75, 100, 100])
+
+    def test_coast_long_pedals_four_seconds_then_stays_neutral_to_twelve_seconds(self):
+        for lead in (500, 1500, 4980):
+            with self.subTest(lead=lead):
+                events, result, reports = self.run_trial("coast-long", lead)
+                self.assertEqual(events, (h.Event(0, h.NEUTRAL), h.Event(lead, h.State(h.A)),
+                                          h.Event(lead + 4000, h.NEUTRAL), h.Event(12000, h.NEUTRAL)))
+                states = [h.State(h.A) if lead <= at < lead + 4000 else h.NEUTRAL for at in range(0, 12001, 20)]
+                self.assertEqual((result["report_count"], result["driver_report_count"]), (601, 601))
+                self.assertEqual([r["planned_ms"] for r in reports], list(range(0, 12001, 20)))
+                self.assertEqual([r["state"] for r in reports], [h.asdict(state) for state in states])
+                self.assertEqual([r["raw_report_hex"] for r in reports], [raw_hex(state) for state in states])
+                self.assertEqual(states.count(h.State(h.A)), 200)
+
+    def test_altered_long_timelines_or_wrong_lead_refuse_before_backend_and_ledger(self):
+        with tempfile.TemporaryDirectory(prefix="trial-exactness-test-") as temporary:
+            path = Path(temporary) / "refused.jsonl"
+            for name in ("ride-steer-brake", "coast-long"):
+                events = h.scenario_timeline(name, 1500)
+                altered = (events[:1] + (h.Event(20, h.NEUTRAL),) + events[1:],
+                           events[:-1] + (h.Event(events[-1].at_ms + 20, h.NEUTRAL),),
+                           events[:1] + (h.Event(events[1].at_ms, h.State(h.START)),) + events[2:])
+                for candidate, lead in ((events, None), (events, 1520), *((e, 1500) for e in altered)):
+                    with self.subTest(name=name, lead=lead, candidate=candidate):
+                        with self.assertRaises(h.Refused):
+                            h.run(candidate, h.DryGuard(), lambda: self.fail("No backend"), Sink(), lead_ms=lead)
+                        with self.assertRaises(h.Refused):
+                            h.LongTimelineLedger(path, candidate, lead_ms=lead)
+                        self.assertFalse(path.exists())
+
+    def test_abort_during_initial_brake_pedal_steering_final_brake_and_coast_releases(self):
+        phases = (("ride-steer-brake", 0.8, h.State(h.B)), ("ride-steer-brake", 2.0, h.State(h.A)),
+                  ("ride-steer-brake", 4.0, h.State(left_x=-0.8)), ("ride-steer-brake", 6.0, h.State(left_x=0.8)),
+                  ("ride-steer-brake", 8.0, h.State(h.B)), ("coast-long", 3.0, h.State(h.A)),
+                  ("coast-long", 9.0, h.NEUTRAL))
+        for name, at_s, held in phases:
+            for fault in ("escape", "focus", "late"):
+                with self.subTest(name=name, at_s=at_s, fault=fault):
+                    class Late(h.PreviewClock):
+                        def sleep(self, seconds):
+                            super().sleep(seconds)
+                            if fault == "late" and self.value >= at_s:
+                                self.value += .2
+                    clock, backend, sink = Late(), Backend(), Sink()
+                    guard, _ = real_check_guard(clock, fault, at_s)
+                    result = h.run(h.scenario_timeline(name, 1500), guard, lambda: backend, sink,
+                                   execute=True, clock=clock, lead_ms=1500)
+                    self.assertFalse(result["completed"])
+                    self.assertIn({"escape": "Escape", "focus": "foreground", "late": "120ms"}[fault], result["issue"])
+                    self.assertEqual(backend.states[-2:], [held, h.NEUTRAL])
+                    self.assertEqual(backend.closed, 1)
+                    self.assertTrue(result["neutral_release_succeeded"] and result["disconnect_succeeded"])
+
+    def test_cli_lead_cannot_bypass_required_gate(self):
+        for name in h.LEAD_SCENARIO_NAMES:
+            with self.subTest(name=name), patch("sys.stderr", new_callable=io.StringIO) as stderr, \
+                    patch.object(h, "load_owner", side_effect=AssertionError("No owner read")), \
+                    patch.object(h, "inside_build", side_effect=AssertionError("No ledger or gate")), \
+                    self.assertRaises(SystemExit):
+                h.main(["--execute", "--owner", "unused-owner", "--scenario", name, "--pedal-lead-ms", "1500"])
+            self.assertIn("requires --start-gate and --start-nonce", stderr.getvalue())
+
+    def test_cli_new_scenarios_start_only_after_go_and_use_bounded_ledgers_with_fakes(self):
+        folder = h.WORKSPACE / "build" / "bmx"
+        for name, count, limit in (("ride-steer-brake", 701, 900), ("coast-long", 601, 800)):
+            with self.subTest(name=name), tempfile.TemporaryDirectory(prefix="trial-gate-test-", dir=folder) as temporary:
+                gate_path, ledger = Path(temporary) / "gate", Path(temporary) / "trial.jsonl"
+                backend = Backend()
+                owner = h.Owner(123, 456, "game", "A" * 64)
+                test = self
+
+                class GoClock(h.PreviewClock):
+                    def sleep(self, seconds):
+                        super().sleep(seconds)
+                        ready, go = gate_path / "ready.json", gate_path / "go.json"
+                        if ready.exists() and not go.exists():
+                            test.assertEqual(backend.states, [h.State(left_x=1 / 32767), h.NEUTRAL, h.NEUTRAL])
+                            test.assertEqual(json.loads(ready.read_text())["scenario"], name)
+                            if self.value >= 2:
+                                pending = gate_path / "go.pending"
+                                pending.write_text(json.dumps(dict(schema=1, event="bmx_virtual_gamepad_go",
+                                    process_id=123, process_creation_filetime="456", nonce="a" * 32)))
+                                pending.rename(go)
+                clock = GoClock()
+                with patch.object(h, "load_owner", return_value=owner), \
+                        patch.object(h, "WindowsGuard", return_value=Guard(clock)), patch.object(h, "Clock", return_value=clock), \
+                        patch.object(h, "make_vgamepad", return_value=backend), patch("builtins.print"):
+                    code = h.main(["--execute", "--owner", "unused-owner", "--scenario", name, "--pedal-lead-ms", "1500",
+                                   "--ledger", str(ledger), "--start-gate", str(gate_path), "--start-nonce", "a" * 32])
+                self.assertEqual(code, 0)
+                rows = [json.loads(line) for line in ledger.read_text().splitlines()]
+                event_names = [row["event"] for row in rows]
+                self.assertLess(event_names.index("controller_start_gate_go"), event_names.index("controller_report"))
+                self.assertEqual(rows[0]["pedal_lead_ms"], 1500)
+                self.assertEqual(rows[-1]["report_count"], count)
+                self.assertEqual(rows[-1]["driver_report_count"], count)
+                self.assertTrue(rows[-1]["completed"])
+                self.assertLessEqual(len(rows), limit)
+                reports = [r for r in rows if r["event"] == "controller_report"]
+                self.assertEqual((reports[0]["planned_ms"], reports[0]["elapsed_ms"]), (0, 0))
+                self.assertEqual(reports[0]["state"], h.asdict(h.NEUTRAL))
+                self.assertEqual((backend.states[-1], backend.closed), (h.NEUTRAL, 1))
+                self.assertIsNone(h.PEDAL_LEAD_MS)
 
 
 class StartGateRequirementTests(unittest.TestCase):

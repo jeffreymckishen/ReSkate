@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "source": "contrib/bmx-lab/bmx-plugin/plugin/bike_geometry.lua",
+  "source_commit": "cd749a68ee0ef86c3f3b7bb06022e8aad03c1e10",
+  "coordinate_frame": {"x": "left", "y": "up", "z": "forward", "handedness": "right", "units": "metres after scale"},
+  "scale": 0.7737670588235294,
+  "com_metres": [0, 0.9, -0.05],
+  "wheel_radius_unscaled": 0.34,
+  "wheelbase_unscaled": 1.203956057050485,
+  "anchors_unscaled": {
+    "front_axle": [0, 0.33993130346462175, 0.6019780285252407],
+    "rear_axle": [0, 0.3399312125684516, -0.6019780285252407],
+    "bottom_bracket": [0, 0.4009181147792979, -0.13677059002727915],
+    "steering_pivot": [0, 0.9602538008020781, 0.3685461188163388],
+    "left_grip": [0.33457504536745686, 1.2319480593290573, 0.3406239453545827],
+    "right_grip": [-0.33457504173973396, 1.2319480453628473, 0.34062398104089797],
+    "left_pedal": [0.084980725506, 0.211285091841, 0.011246842761],
+    "right_pedal": [-0.084980725506, 0.590551321670, -0.284787818885]
+  },
+  "steering_axis": [0, 0.9601195908265842, -0.279589648075517],
+  "parts": [
+    {"name": "frame", "blueprint": "reskate/bmx/frame", "group": "tailwhip"},
+    {"name": "fork", "blueprint": "reskate/bmx/fork", "group": "front"},
+    {"name": "rear_wheel", "blueprint": "reskate/bmx/rear_wheel", "group": "tailwhip", "spin": "rear_wheel_phase", "pivot": "rear_axle"},
+    {"name": "front_wheel", "blueprint": "reskate/bmx/front_wheel", "group": "front", "spin": "front_wheel_phase", "pivot": "front_axle"},
+    {"name": "cranks", "blueprint": "reskate/bmx/cranks", "group": "tailwhip", "spin": "crank_phase", "pivot": "bottom_bracket"},
+    {"name": "handlebars", "blueprint": "reskate/bmx/handlebars", "group": "front"},
+    {"name": "left_pedal", "blueprint": "reskate/bmx/left_pedal", "group": "tailwhip", "orbit": "left_pedal", "pivot": "bottom_bracket"},
+    {"name": "right_pedal", "blueprint": "reskate/bmx/right_pedal", "group": "tailwhip", "orbit": "right_pedal", "pivot": "bottom_bracket"}
+  ],
+  "pose_order": ["wheel_or_crank_spin_about_positive_x_or_pedal_translation", "front_steer_plus_barspin_or_tailwhip_about_steering_axis", "pitch_about_positive_x_at_steering_pivot", "roll_about_positive_z_at_steering_pivot", "measured_body_orientation_then_bike_root_translation"],
+  "authoring": {
+    "wheel_segments": 64,
+    "tire_sides": 16,
+    "tube_sides": 12,
+    "spoke_count": 36,
+    "tire_section_radius_unscaled": 0.031,
+    "pedal_half_extents_unscaled": [0.055, 0.012, 0.07],
+    "seat_joint_unscaled": [0, 0.78, -0.30],
+    "saddle_center_unscaled": [0, 0.91, -0.33],
+    "saddle_radii_unscaled": [0.08, 0.026, 0.14]
+  }
+}

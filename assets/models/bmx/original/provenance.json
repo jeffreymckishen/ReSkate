@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "asset_family": "ReSkate original procedural BMX",
+  "origin": "New mathematical surface construction authored for this repository; no mesh or texture is imported.",
+  "compatibility_source": "Scalar anchors and articulation roles from the repository's bike_geometry.lua and bike_visual.lua at cd749a68. These retain the existing Lua frame and do not change handling.",
+  "geometry_sources": ["closed cylinders", "tori", "boxes", "ellipsoid"],
+  "material_sources": ["original constant metal, paint and rubber parameters"],
+  "external_asset_inputs": [],
+  "game_or_reference_payloads": [],
+  "dependencies": ["Python standard library"],
+  "license_file": "../../../../LICENSE",
+  "license_note": "Source recipe, authored contract and generated original geometry are supplied under this repository's LICENSE. This does not license or include any game or third-party asset.",
+  "native_resource_status": "Not compiled. OBJ/MTL and the JSON manifest are authoring intermediates, not a ReSkate resource pack.",
+  "likeness_status": "Original generic BMX construction; no claim of an exact commercial model, tested appearance or gameplay parity."
+}

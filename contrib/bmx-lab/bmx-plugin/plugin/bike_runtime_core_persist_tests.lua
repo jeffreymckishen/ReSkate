@@ -66,7 +66,7 @@ function tests.new_runner()
             return function() f.forbidden+=1;error(name.." must not be reached",0) end
         end
         for _,name in {"bounds","set","status","remove"} do s.entities[name]=forbidden("entities."..name) end
-        for _,name in {"create","read","release","reserve_follow","publish_follow","read_follow","stop_follow","acknowledge_follow",
+        for _,name in {"prepare","create","read","release","reserve_follow","publish_follow","read_follow","stop_follow","acknowledge_follow",
             "probe_batch","submit","receipt","acknowledge"} do
             s.world.physics[name]=forbidden("world.physics."..name)
         end

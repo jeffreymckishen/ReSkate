@@ -122,7 +122,7 @@ end
 
 Admission.required={"time.now","input.focus","input.allowed","skater.get","skater.telemetry","level.current",
     "menu.game","json.encode","storage.get","storage.set","entities.bounds","entities.set","entities.status","entities.remove",
-    "world.physics.create","world.physics.read","world.physics.release","world.physics.reserve_follow","world.physics.publish_follow",
+    "world.physics.prepare","world.physics.create","world.physics.read","world.physics.release","world.physics.reserve_follow","world.physics.publish_follow",
     "world.physics.read_follow","world.physics.stop_follow","world.physics.acknowledge_follow",
     -- Core's four force closures call these. A missing one refuses here, before
     -- any body or Ride exists, instead of raising inside a ride. Presence only:

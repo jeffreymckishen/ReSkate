@@ -136,6 +136,7 @@ local function source_fixture(options)
         return true
     end
     local P=s.world.physics
+    function P.prepare() return true end
     function P.reserve_follow() f.reserves+=1;return f.follow,nil end
     function P.read_follow()
         f.follow_reads+=1

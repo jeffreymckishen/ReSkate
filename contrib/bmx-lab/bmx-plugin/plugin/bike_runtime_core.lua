@@ -43,6 +43,9 @@ local RENEWAL_WINDOW_MS=500
 local LIFETIME_CEILING_MS=120000
 -- The longest step Core accepts: a larger dt stops the ride as a stalled tick.
 local MAX_TICK_MS=250
+local MOUNT_INTENT_MS=60000
+local PREPARE_PENDING="native body producer setup pending; call prepare again explicitly"
+local PREPARE_CLOCK_WAIT="waiting for a fresh qualified 60 Hz physics step"
 -- A renewable Follow is renewed on its first following tick (see
 -- renew_follow_once), then only when Core's lease has less than this left, not
 -- on every following tick (S1b in game: 137 us a renewal). It is the 150 ms
@@ -886,6 +889,10 @@ snapshot=function()
             or "Selected-input lease renewal only. The Follow lease is the reserve seed, which a copied lease report can only shorten.",
         phase=T.phase,detail=T.detail,selected_slot=T.slot,wall_ms=T.now,arm_ms=T.arm_at,
         effect_start_ms=T.effect_at,stop_ms=T.stop_at,stop_reason=T.stop_reason,
+        mount_deadline_ms=T.mount_deadline_at,
+        native_preparation={phase=T.native_prepare_phase or "not_requested",attempts=T.native_prepare_attempts or 0,
+            reason=T.native_prepare_reason,ready_ms=T.native_prepare_ready_at,
+            scope="Sampled readiness only; no body allocation or later create guarantee"},
         stop_latched=T.stop_latched==true,unloaded=T.unloaded==true,clock_unknown=T.clock_unknown==true,
         storage_fault=T.storage_fault==true,readiness=T.facts,initial_readiness=T.initial_facts,
         capture_attempted=T.capture_attempted==true,source=source_record(s,true),last_source_step=T.source_record,
@@ -1124,6 +1131,9 @@ end
 latch_stop=function(why)
     if not T.stop_latched then
         T.stop_latched=true;T.generation+=1;T.stop_at=T.now;T.stop_reason=short(why)
+        if T.native_prepare_phase=="pending" then
+            T.native_prepare_phase="cancelled";T.native_prepare_reason=T.stop_reason
+        end
         if trick_presenter then trick_presenter:reset() end
         T.pose_trick_scope=nil
         T.phase="stopping";T.detail=T.stop_reason;T.stop_needs_cleanup=true
@@ -1296,7 +1306,7 @@ T.equipment_instances=(T.equipment_instances or 0)+1
 
 local required={"time.now","input.focus","input.allowed","skater.get","skater.telemetry","level.current",
     "menu.game","json.encode","storage.get","storage.set","entities.bounds","entities.set","entities.status","entities.remove",
-    "world.physics.create","world.physics.read","world.physics.release","world.physics.reserve_follow","world.physics.publish_follow",
+    "world.physics.prepare","world.physics.create","world.physics.read","world.physics.release","world.physics.reserve_follow","world.physics.publish_follow",
     "world.physics.read_follow","world.physics.stop_follow","world.physics.acknowledge_follow",
     -- The four force closures in create_ride call these; refuse at mount, not mid-ride.
     "world.physics.probe_batch","world.physics.submit","world.physics.receipt","world.physics.acknowledge",
@@ -1321,6 +1331,36 @@ end
 closed_ready=function(f,grounded,stock)
     return base_ready(f,stock) and f.interface_closed and f.game_menu_closed and f.input_allowed
         and (not grounded or f.grounded)
+end
+-- Preparation requests process-lifetime setup, never a body or an input lease.
+-- Each call returns to the Host before another attempt. The SDK's actual tick
+-- quota stays authoritative; Core steps are not independent tick credentials.
+local function prepare_native(generation,before)
+    T.native_prepare_attempts=(T.native_prepare_attempts or 0)+1
+    T.native_prepare_phase="pending"
+    local r=call("world.physics.prepare",lookup("world.physics.prepare"))
+    if not current(generation) then return end
+    local observed=facts()
+    local after=clock()
+    if not current(generation) then return end
+    T.facts=observed
+    if not after or after<T.mount_admitted_at or after>=T.mount_deadline_at then
+        stop_all("mount intent expired during native preparation");return
+    end
+    if not closed_ready(observed,true,true) or not Admission.matches(before,observed)
+        or not Admission.matches(T.initial_facts,observed) then
+        stop_all("native preparation lost current admission or closed-menu readiness");return
+    end
+    if yes(r) then
+        T.native_prepare_phase="ready";T.native_prepare_ready_at=after;T.native_prepare_reason=nil
+        T.detail="Native readiness sampled; acquisition waits for a later tick and fresh readiness."
+    elseif r[1] and r.n==3 and r[2]==false and (r[3]==PREPARE_PENDING or r[3]==PREPARE_CLOCK_WAIT) then
+        T.native_prepare_reason=r[3]
+        T.detail="Preparing native physics; no input or body acquired. Stop cancels this mount intent."
+    else
+        T.native_prepare_phase="refused";T.native_prepare_reason=short(r[1] and r[3] or r[2])
+        stop_all("native preparation refused, unavailable or malformed; no retry")
+    end
 end
 check_board=function()
     if not board.pending then return nil end
@@ -2058,10 +2098,16 @@ function object:request_mount(slot,admitted)
         stop_all("Grounded upright board100 or on-foot504 and focused gameplay required")
     else
         T.arm_at=T.arm_at or now;T.level=observed.level;T.wipeouts=observed.wipeouts
+        T.mount_admitted_at=T.startup_admitted_at or T.arm_at
+        T.mount_deadline_at=wall(T.mount_admitted_at) and T.mount_admitted_at<=MAX-MOUNT_INTENT_MS
+            and T.mount_admitted_at+MOUNT_INTENT_MS or nil
         T.initial_facts=observed;T.facts=observed;T.active=true
-        if persist(true) and current(generation) then
-            if observed.state==100 then accepted=begin_equipment(slot,"mount",100)
-            else T.phase="armed";T.detail="Armed once; close both menus and rest the selected controller: sticks centred, triggers and buttons released.";accepted=true end
+        T.native_prepare_phase="pending";T.mount_equipment_pending=observed.state==100
+        if not T.mount_deadline_at or now<T.mount_admitted_at or now>=T.mount_deadline_at then
+            stop_all("original mount intent expired before native preparation")
+        elseif persist(true) and current(generation) then
+            T.phase="armed";T.detail="Armed once; close both menus for native preparation before input acquisition."
+            accepted=true
         end
     end
     T.intent_inflight=false;T.busy=false
@@ -2166,7 +2212,15 @@ local function tick(dt)
     local board_open=board.pending
     local published_now=false
     local now=clock()
-    if not finite(dt) or dt<=0 or dt>MAX_TICK_MS or now and T.last_step_at and now<=T.last_step_at then
+    -- Deferred SDK producer setup may suspend threads before this Host tick.
+    -- Only an inert pending mount can wait through that gap. It performs no
+    -- preparation or acquisition on the long tick and keeps its original deadline.
+    local preparing=T.active and T.native_prepare_phase=="pending" and not T.stop_latched
+        and not T.gear_requested and not T.source_armed and not T.effect_at
+        and not T.spawn_requested and not T.body and not T.follow
+    local preparation_gap=preparing and finite(dt) and dt>MAX_TICK_MS and dt<MOUNT_INTENT_MS
+    if not finite(dt) or dt<=0 or dt>MAX_TICK_MS and not preparation_gap
+        or now and T.last_step_at and now<=T.last_step_at then
         stop_all("invalid, stalled or reversed wall tick")
     end
     if now then T.last_step_at=now end
@@ -2175,26 +2229,46 @@ local function tick(dt)
     if board.pending then check_board() end
     if T.gear_requested and not T.gear_cancelled then equipment_tick() end
     if T.active and now and not T.stop_latched then
+        local generation=T.generation
         local f=facts();T.facts=f;tick_facts=f
-        if not base_ready(f,T.gear_requested and T.gear_purpose=="mount") then
+        if not current(generation) then
+            -- A readiness callback already cancelled this owner.
+        elseif not base_ready(f,preparing or T.mount_equipment_pending or T.gear_requested and T.gear_purpose=="mount") then
             stop_all("fresh sampled upright/focus/context/fall readiness lost")
         elseif T.gear_requested then
             -- Equipment owns its report transaction. No selected source yet.
         elseif not T.source_armed then
-            if now-T.arm_at>=60000 then stop_all("mount intent expired before acquisition")
-            elseif closed_ready(f,true) then
+            now=clock()
+            if not current(generation) then
+                -- Do not let a late clock callback revive acquisition.
+            elseif not now or now<(T.mount_admitted_at or T.arm_at)
+                or now>=(T.mount_deadline_at or T.arm_at+MOUNT_INTENT_MS) then
+                stop_all("mount intent expired before acquisition")
+            elseif (preparing or T.mount_equipment_pending) and not Admission.matches(T.initial_facts,f) then
+                stop_all("native preparation lost the originally admitted state or context")
+            elseif not closed_ready(f,true,preparing or T.mount_equipment_pending) then
+                T.ready_since=nil;T.ready_ticks=0;T.ready_last=nil
+            elseif preparing then
+                if not preparation_gap then prepare_native(generation,f) end
+                -- Even a ready result returns to the Host before acquisition.
+            elseif T.mount_equipment_pending then
+                T.mount_equipment_pending=false
+                local previous=T.gear_admission_at
+                T.gear_admission_at=math.floor(T.mount_admitted_at)
+                begin_equipment(T.slot,"mount",100)
+                T.gear_admission_at=previous
+            else
                 if not T.ready_since then T.ready_since=now;T.ready_last=now;T.ready_ticks=0
                 elseif now>T.ready_last then T.ready_ticks+=1;T.ready_last=now end
                 if now-T.ready_since>=600 and T.ready_ticks>=10 then
                     T.source_armed=true;T.effect_at=now
-                    local generation=T.generation
                     local r=call("source.arm",source.arm,source,T.slot,now)
                     if not yes(r) or not current(generation) then stop_all("source Arm refused, cancelled or unknown")
                     else T.phase="capturing" end
                 end
-            else T.ready_since=nil;T.ready_ticks=0;T.ready_last=nil end
+            end
         elseif not closed_ready(f,T.phase~="following") then stop_all("fresh menu/input/grounded acquisition gate lost") end
-        if T.effect_at and now-T.effect_at>=20000 then stop_all("total effect watchdog expired") end
+        if T.effect_at and now and now-T.effect_at>=20000 then stop_all("total effect watchdog expired") end
     end
     if T.source_armed and not source_clean() then
         local generation=T.generation

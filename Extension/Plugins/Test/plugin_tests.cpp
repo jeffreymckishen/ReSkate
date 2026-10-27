@@ -6075,10 +6075,13 @@ void bmx_lua_menu_switches_explicit_slots_and_retains_cleanup_duty() {
                 files[entry.path().lexically_relative(directory).generic_string()] = std::string(std::istreambuf_iterator<char>(file), {});
             }
             auto denied_manifest = Json::parse(files.at(manifest_file));
+            const auto original_permissions = denied_manifest.at("permissions");
             denied_manifest["permissions"] = Json::array();
-            for (const auto* permission : {"input", "input.lease", "input.capture", "skater.read", "menu", "storage",
-                                          "world.physics", "world.physics.follow", "world.entities"})
-                denied_manifest["permissions"].push_back(permission);
+            for (const auto& permission : original_permissions)
+                if (permission.string() != "input.control")
+                    denied_manifest["permissions"].push_back(permission);
+            check(denied_manifest["permissions"].size() + 1 == original_permissions.size(),
+                  why + "the denial fixture removes only the existing input.control permission");
             files[manifest_file] = denied_manifest.dump();
             candidate = package(id, files);
         }

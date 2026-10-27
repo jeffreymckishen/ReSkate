@@ -2,7 +2,7 @@
 
 This is an original, deterministic source recipe for the Lua BMX mod's eight visual parts. It uses only Python's standard library, authored mathematical surfaces and the adjacent scalar compatibility contract. It imports no FBX, Streets triangles, game content, donor materials or external texture files.
 
-This contribution is currently **source-only and UNRUN**. The generator, regression tests and offline visual review have not been executed. No native assets were built or installed, and no in-game appearance or 9.5 likeness score is claimed. MainRoot's execution hold must be released before running the commands below.
+On 2026-10-27, MainRoot verified **13 tests passed** and generated the eight-part package at source `5315396e5c27a3870c16d1fbd61a22f7b05ecfe7`, with the current recipe inputs unchanged. The software assembly and steering/pedal articulation preview passed independent visual review. Native packing/loading, rider clearance and likeness remain unverified; no in-game appearance or 9.5 likeness score is claimed. Further execution still requires the coordinator's slot.
 
 The output is an OBJ/MTL authoring intermediate. It cannot be installed directly into ReSkate. A separate native resource recipe must bind the original geometry to permitted resources through the normal content/VFS path, then qualify loading, bounds and rendering in the supported isolated game build. That later work may reference resources already present in the user's supported installation; this generator neither extracts nor packages them.
 
@@ -11,7 +11,7 @@ The output is an OBJ/MTL authoring intermediate. It cannot be installed directly
 - `generate_geometry.py` constructs closed cylinders, tori, boxes and an ellipsoid, assembles the bike and writes the intermediate package. It has no network access, subprocesses or third-party imports.
 - `geometry_contract.json` copies only the existing repository's functional scalar anchors, coordinate conventions, part names and articulation roles. Its authoring dimensions are original choices for a generic BMX frame, fork, saddle, tires, spokes, bars and pedals.
 - `provenance.json` records the original construction, empty external asset inputs and repository license. Generated packages carry their own `LICENSE` and a local license reference.
-- `Test/test_original_geometry.py` contains unexecuted contract, primitive volume/winding, serialized bounds/index, articulation anchor, deterministic hash and writer regressions.
+- `Test/test_original_geometry.py` contains contract, primitive volume/winding, serialized bounds/index, articulation anchor, deterministic hash and writer regressions.
 
 The source recipe and generated original geometry use the repository's `LICENSE`. They do not grant rights to any game, supplied FBX or previously extracted reference model. This recipe does not read the private conversion tools, their outputs or a development game profile.
 
@@ -64,6 +64,6 @@ Material values are original constant paint, rubber, alloy and steel parameters.
 
 ## Still required
 
-Run the regressions and generation, inspect an offline preview from several views and with representative steering/crank poses, and judge silhouette, clearances, wheel/pedal placement and surface quality. Correct any issues before sealing generated output hashes. This initial generic construction is not a finished visual likeness target.
+The reviewed assembly and articulation are coherent, but the chain is still two thin straight spans; wrapped links and drivetrain detail remain incomplete. Improve those details and re-run generation, regressions and the software preview after any geometry change. Rider clearance and likeness need their own evidence. This initial generic construction is not a finished visual likeness target.
 
 Then separately validate the native resource dependency recipe, exact eight blueprint bounds, clean installation, materials/shadows, articulation and complete removal in the pinned isolated Skate build. Original source meshes alone establish none of those runtime outcomes.

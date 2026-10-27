@@ -8,6 +8,7 @@
 #include "Engine/Resource/mesh_set.h"
 #include "Engine/Resource/toc.h"
 #include "Engine/Resource/texture.h"
+#include "original_canary_cli.h"
 #include <Windows.h>
 #include <bcrypt.h>
 #include <algorithm>
@@ -136,6 +137,13 @@ void texture_dimensions(ebx::Document& document, const TextureInput& input) {
 }
 
 int main(int argc, char** argv) { try {
+    if (argc >= 2 && std::string_view(argv[1]) == "--original-canary") {
+#ifdef DINGOSDK_BMX_ORIGINAL_CANARY_CACHE_ROOT
+        return dingosdk::bmx::original_canary::run(argc, argv, fs::path(DINGOSDK_BMX_ORIGINAL_CANARY_CACHE_ROOT));
+#else
+        throw std::runtime_error("Original canary cache root is not configured; no native emission is permitted");
+#endif
+    }
     if (argc == 5 && std::string_view(argv[1]) == "--extract-template") {
         const fs::path root = fs::absolute(argv[2]), output = fs::absolute(argv[3]), game = fs::absolute(argv[4]);
         require(root != output && !fs::exists(output), "Template inspection needs a new separate output directory");

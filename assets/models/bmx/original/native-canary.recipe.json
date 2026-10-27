@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "kind": "original-native-canary-v1",
+  "status": "unqualified",
+  "supported_build": 20260929,
+  "part": "left_pedal",
+  "input_format": "original-bmx-obj-v1",
+  "output_namespace": "reskate/original_canary/left_pedal",
+  "output_policy": "new_local_cache_only",
+  "auto_install": false,
+  "preserve_common_origin": true,
+  "preserve_normals": true,
+  "preserve_uvs": true,
+  "expected_manifest_sha256": "882fb6ba4e3f01d3ea08cfba3c231d37c53eca1a0a0275e193d93dd8835183d9",
+  "native_identities": {
+    "template": null,
+    "mesh_declaration": null,
+    "lod": null,
+    "material_alloy": null,
+    "material_steel": null
+  }
+}

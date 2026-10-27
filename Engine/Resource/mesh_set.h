@@ -15,6 +15,43 @@ struct MeshLod {
     Guid chunk; // the geometry chunk: the vertex buffer, then the index buffer
     std::uint32_t vertex_bytes{}, index_bytes{};
 };
+// Resource-only observations. Unknown codes remain numeric; no geometry chunk is read.
+struct MeshElementMetadata {
+    std::uint8_t usage{}, format{}, offset{}, stream{}, width{}; // width 0 means unknown
+    bool semantic_supported{};
+};
+struct MeshStreamMetadata { std::uint8_t stride{}, classification{}; };
+struct MeshSectionMetadata {
+    std::size_t resource_offset{};
+    std::uint8_t primitive{}, element_count{}, stream_count{};
+    std::uint32_t triangle_count{}, first_index{}, vertex_start{}, vertex_count{};
+    std::vector<MeshElementMetadata> elements;
+    std::vector<MeshStreamMetadata> streams;
+    bool vertex_range_checked{}, index_range_checked{};
+};
+struct MeshSectionLayoutMetadata {
+    std::size_t stride{};
+    bool structurally_valid{true}, declarations_supported{true};
+    std::vector<MeshSectionMetadata> sections;
+    std::size_t diagnostic_count{}; // diagnostics holds at most 64 messages
+    std::vector<std::string> diagnostics;
+};
+struct MeshLodMetadata {
+    std::array<std::uint32_t, 4> header{};
+    bool skinned{};
+    std::size_t lod_count{}, lod_index{}, lod_offset{}, section_table{};
+    std::uint32_t lod_kind{}, index_format{}, section_count{};
+    MeshLod geometry;
+    std::vector<MeshSectionLayoutMetadata> candidates;
+    std::vector<std::string> diagnostics;
+    bool ambiguous{}, complete{};
+};
+// Throws when core resource/LOD fields are unreadable or the layout/LOD kind is unknown.
+// Parseable candidate errors and unknown declarations are returned explicitly. Static section
+// strides are never chosen by first fit: both plausible candidates make complete false.
+// complete means this reader reported one structurally sound, understood declaration layout;
+// it never qualifies index contents, native encoding, materials, dependencies or rendering.
+[[nodiscard]] MeshLodMetadata read_mesh_lod_metadata(std::span<const std::byte> resource, std::size_t lod);
 // The `lod`-th level of detail (0 the finest) of a MeshSet resource. Throws for a layout this
 // reader does not know.
 [[nodiscard]] MeshLod read_mesh_lod(std::span<const std::byte> resource, std::size_t lod);

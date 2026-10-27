@@ -2,8 +2,12 @@
 //   dingosdk_trainer_asset_list <Skate folder> <word> [<word> ...]   names containing any word
 //   dingosdk_trainer_asset_list <Skate folder> --dump <asset name>   every plain value, by name
 #include "Engine/Resource/ebx_document.h"
+#include "Engine/Resource/mesh_set.h"
 #include "Engine/Vfs/game_bundles.h"
 #include <algorithm>
+#include <cctype>
+#include <limits>
+#include <sstream>
 #include <fstream>
 #include <cstdlib>
 #include <cstring>
@@ -108,11 +112,351 @@ void tree(const ebx::Value &value, int depth, const std::string &indent) {
         }
     } else std::cout << "(other)\n";
 }
+// These modes report identities only; presence in a manifest is not a store or residency check.
+std::string metadata_text(std::string_view value) {
+    std::string text;
+    for (const auto c : value) {
+        switch (c) {
+        case '\\': text += "\\\\"; break;
+        case '\t': text += "\\t"; break;
+        case '\r': text += "\\r"; break;
+        case '\n': text += "\\n"; break;
+        default: text += c; break;
+        }
+    }
+    return text;
+}
+std::string metadata_hex(std::span<const std::byte> bytes) {
+    constexpr char digits[] = "0123456789abcdef";
+    std::string text;
+    for (const auto byte : bytes) {
+        const auto value = std::to_integer<unsigned>(byte);
+        text += digits[value >> 4];
+        text += digits[value & 15];
+    }
+    return text;
+}
+void asset_metadata(const dingosdk::frostbite::BundleAsset &asset, bool has_location) {
+    using dingosdk::frostbite::AssetKind;
+    const auto kind = asset.kind == AssetKind::ebx ? "EBX" : asset.kind == AssetKind::resource ? "RES" : "CHUNK";
+    std::cout << "ASSET\tkind=" << kind << "\tname=" << metadata_text(asset.name)
+              << "\tsha1=" << metadata_hex(asset.sha1.bytes) << "\tsize=" << asset.originalSize
+              << "\tpayload_location=" << (has_location ? "present" : "missing");
+    if (asset.kind == AssetKind::resource)
+        std::cout << "\tresource_type=0x" << std::hex << asset.resourceType << "\tresource_id=0x" << asset.resourceId << std::dec;
+    else if (asset.kind == AssetKind::chunk)
+        std::cout << "\tguid=" << asset.guid.string() << "\tlogical_offset=" << asset.logicalOffset << "\tlogical_size=" << asset.logicalSize;
+    else std::cout << "\troot_type=not_decoded";
+    std::cout << '\n';
+}
+int metadata_inventory(const dingosdk::vfs::GameBundle &bundle, const std::vector<std::string> &words) {
+    std::size_t ebx_count{}, resource_count{}, chunk_count{}, missing{};
+    const auto list = [&](const auto &assets, std::size_t &count) {
+        for (std::size_t i = 0; i < assets.size(); ++i) {
+            const auto &asset = assets[i];
+            const auto name = lower(asset.name);
+            if (!words.empty() && std::ranges::none_of(words, [&](const auto &word) { return name.find(word) != std::string::npos; })) continue;
+            const bool present = bundle.payload(asset.kind, i) != nullptr;
+            asset_metadata(asset, present);
+            ++count;
+            if (!present) ++missing;
+        }
+    };
+    list(bundle.manifest.ebx, ebx_count);
+    list(bundle.manifest.resources, resource_count);
+    list(bundle.manifest.chunks, chunk_count);
+    std::cout << "SUMMARY\tmode=metadata\tebx=" << ebx_count << "\tresources=" << resource_count << "\tchunks=" << chunk_count
+              << "\tpayload_locations_missing=" << missing << "\tebx_decoded=0\tebx_decode_failed=0\tebx_not_decoded=" << ebx_count << '\n';
+    return missing == 0 ? 0 : 1;
+}
+int inspect_asset(const dingosdk::vfs::GameData &data, const dingosdk::vfs::GameBundle &bundle, std::string_view wanted_name) {
+    using dingosdk::frostbite::AssetKind;
+    const auto wanted = lower(wanted_name);
+    std::size_t selected{}, decoded{}, missing{}, read_failed{}, decode_failed{}, untyped{}, resource_locations_missing{};
+    for (std::size_t i = 0; i < bundle.manifest.ebx.size(); ++i) {
+        const auto &asset = bundle.manifest.ebx[i];
+        if (lower(asset.name) != wanted) continue;
+        ++selected;
+        const auto *payload = bundle.payload(AssetKind::ebx, i);
+        asset_metadata(asset, payload != nullptr);
+        if (!payload) { ++missing; continue; }
+        std::vector<std::byte> bytes;
+        try {
+            bytes = data.read(*payload);
+        } catch (const std::exception &error) {
+            ++read_failed;
+            std::cout << "ERROR\tstage=payload_read\tname=" << metadata_text(asset.name) << "\tmessage=" << metadata_text(error.what()) << '\n';
+            continue;
+        }
+        std::optional<ebx::Document> document;
+        try {
+            document = ebx::read_document(bytes);
+        } catch (const std::exception &error) {
+            ++decode_failed;
+            std::cout << "ERROR\tstage=ebx_decode\tname=" << metadata_text(asset.name) << "\tmessage=" << metadata_text(error.what()) << '\n';
+            continue;
+        }
+        ++decoded;
+        if (document->rootType.empty()) ++untyped;
+        std::cout << "EBX\tname=" << metadata_text(asset.name) << "\tfile_guid=" << document->fileGuid.string()
+                  << "\troot_type=" << metadata_text(document->rootType) << "\tinstances=" << document->instances.size()
+                  << "\timports=" << document->imports.size() << "\tresource_refs=" << document->resourceRefOffsets.size() << '\n';
+        for (std::size_t n = 0; n < document->imports.size(); ++n) {
+            const auto &import = document->imports[n];
+            std::cout << "IMPORT\tindex=" << n << "\tfile_guid=" << import.fileGuid.string() << "\tclass_guid=" << import.classGuid.string() << '\n';
+        }
+        for (const auto &type : document->types) {
+            // The reader leaves these zero when a reflection identity was not supplied.
+            const bool has_identity = type.signature != 0 || std::ranges::any_of(type.guid.bytes, [](std::byte byte) { return byte != std::byte{}; });
+            std::cout << "TYPE\tname=" << metadata_text(type.name) << "\tguid=" << type.guid.string()
+                      << "\tsignature=0x" << std::hex << type.signature << std::dec
+                      << "\tidentity=" << (has_identity ? "recorded" : "zero_or_unavailable") << '\n';
+        }
+        // EFIX records these slots relative to EBXD; no object walk or payload dump is needed.
+        dingosdk::frostbite::BinaryReader reader(document->payload);
+        for (const auto offset : document->resourceRefOffsets) {
+            reader.seek(offset);
+            const auto id = reader.u64();
+            std::size_t local_matches{};
+            for (std::size_t n = 0; n < bundle.manifest.resources.size(); ++n) {
+                const auto &resource = bundle.manifest.resources[n];
+                if (id == 0 || resource.resourceId != id) continue;
+                ++local_matches;
+                std::cout << "RESOURCE_MATCH\tref_offset=" << offset << "\tname=" << metadata_text(resource.name) << '\n';
+                const bool has_location = bundle.payload(AssetKind::resource, n) != nullptr;
+                asset_metadata(resource, has_location);
+                if (!has_location) ++resource_locations_missing;
+            }
+            std::cout << "RESOURCE_REF\toffset=" << offset << "\tid=0x" << std::hex << id << std::dec
+                      << "\tlocal_matches=" << local_matches << "\tresolution="
+                      << (id == 0 ? "null" : local_matches ? "selected_bundle_manifest" : "external_or_missing") << '\n';
+        }
+    }
+    std::cout << "SUMMARY\tmode=inspect\tselected=" << selected << "\tmissing_asset=" << (selected == 0 ? 1 : 0)
+              << "\tebx_payload_location_missing=" << missing << "\tebx_read_failed=" << read_failed << "\tebx_decode_failed=" << decode_failed
+              << "\tebx_decoded=" << decoded << "\tebx_untyped=" << untyped << "\tmatched_resource_locations_missing=" << resource_locations_missing
+              << "\tsuccess_scope=ebx_decode\n";
+    return selected != 0 && decoded == selected && untyped == 0 ? 0 : 1;
+}
+// Keep this diagnostic's output bounded independently of the legacy dump/list modes.
+class MeshMetadataOutput {
+public:
+    static constexpr std::size_t maximum_bytes = 1024 * 1024, maximum_records = 8192;
+    static constexpr std::size_t maximum_text = 512, summary_reserve = 1024;
+
+    std::string text(std::string_view source) {
+        constexpr char digits[] = "0123456789abcdef";
+        std::string result;
+        result.reserve(maximum_text);
+        for (const unsigned char byte : source) {
+            const bool plain = byte >= 0x20 && byte <= 0x7e && byte != '\\';
+            const std::size_t width = plain ? 1 : byte == '\\' ? 2 : 4;
+            if (width > maximum_text - result.size()) { truncated_ = true; break; }
+            if (plain) result += static_cast<char>(byte);
+            else if (byte == '\\') result += "\\\\";
+            else { result += "\\x"; result += digits[byte >> 4]; result += digits[byte & 15]; }
+        }
+        return result;
+    }
+    template <class... Values> bool record(const Values&... values) {
+        if (stopped_) return false;
+        std::ostringstream line;
+        (line << ... << values);
+        const auto value = line.str();
+        if (records_ >= maximum_records - 1 || value.size() >= maximum_bytes - summary_reserve - bytes_) {
+            truncated_ = stopped_ = true;
+            return false;
+        }
+        std::cout << value << '\n';
+        bytes_ += value.size() + 1;
+        ++records_;
+        return true;
+    }
+    void mark_truncated() noexcept { truncated_ = true; }
+    bool open() const noexcept { return !stopped_; }
+    int finish(bool complete, int failure_code = 1) {
+        const bool success = complete && !truncated_ && static_cast<bool>(std::cout);
+        // This fixed-size summary fits the reserved record and bytes, even after truncation.
+        std::cout << "SUMMARY\tmode=mesh-metadata\tcomplete=" << (success ? 1 : 0)
+                  << "\toutput_truncated=" << (truncated_ ? 1 : 0) << "\trecords_before_summary=" << records_
+                  << "\tbytes_before_summary=" << bytes_ << "\tsuccess_scope=resource_metadata_only"
+                  << "\tgeometry_payload_read=0\tdependency_closure=unverified\n";
+        return success && static_cast<bool>(std::cout) ? 0 : failure_code;
+    }
+private:
+    std::size_t bytes_{}, records_{};
+    bool truncated_{}, stopped_{};
+};
+
+bool mesh_metadata_lod(std::string_view text, std::size_t& value) {
+    if (text.empty()) return false;
+    value = 0;
+    for (const unsigned char byte : text) {
+        if (byte < '0' || byte > '9') return false;
+        const auto digit = static_cast<std::size_t>(byte - '0');
+        if (value > (std::numeric_limits<std::size_t>::max() - digit) / 10) return false;
+        value = value * 10 + digit;
+    }
+    return true;
+}
+bool mesh_metadata_name(std::string_view left, std::string_view right) {
+    if (left.size() != right.size()) return false;
+    for (std::size_t i = 0; i < left.size(); ++i)
+        if (std::tolower(static_cast<unsigned char>(left[i])) != std::tolower(static_cast<unsigned char>(right[i]))) return false;
+    return true;
+}
+
+void mesh_metadata_rows(MeshMetadataOutput& out, const dingosdk::frostbite::MeshLodMetadata& mesh) {
+    out.record("LOD\tlayout=", mesh.skinned ? "skinned" : "static", "\tcount=", mesh.lod_count,
+               "\tindex=", mesh.lod_index, "\tresource_offset=", mesh.lod_offset, "\tkind_raw=", mesh.lod_kind,
+               "\tindex_format_raw=", mesh.index_format, "\tindex_width=", mesh.index_format == 33 ? "2" : "unknown",
+               "\tvertex_bytes=", mesh.geometry.vertex_bytes, "\tindex_bytes=", mesh.geometry.index_bytes,
+               "\tchunk_guid=", mesh.geometry.chunk.string(), "\tsection_count=", mesh.section_count,
+               "\tsection_table_offset=", mesh.section_table, "\tstride_ambiguous=", mesh.ambiguous ? 1 : 0,
+               "\tparser_complete=", mesh.complete ? 1 : 0);
+    for (const auto& diagnostic : mesh.diagnostics) {
+        if (!out.open()) break;
+        out.record("DIAGNOSTIC\tscope=lod\tmessage=", out.text(diagnostic));
+    }
+    for (std::size_t candidate_index = 0; candidate_index < mesh.candidates.size() && out.open(); ++candidate_index) {
+        const auto& candidate = mesh.candidates[candidate_index];
+        if (candidate.diagnostic_count > candidate.diagnostics.size()) out.mark_truncated();
+        out.record("CANDIDATE\tindex=", candidate_index, "\tsection_stride=", candidate.stride,
+                   "\tstructurally_valid=", candidate.structurally_valid ? 1 : 0,
+                   "\tdeclarations_supported=", candidate.declarations_supported ? 1 : 0,
+                   "\tsections_reported=", candidate.sections.size(), "\tdiagnostic_count=", candidate.diagnostic_count,
+                   "\tdiagnostics_truncated=", candidate.diagnostic_count > candidate.diagnostics.size() ? 1 : 0);
+        for (const auto& diagnostic : candidate.diagnostics) {
+            if (!out.open()) break;
+            out.record("DIAGNOSTIC\tcandidate=", candidate_index, "\tmessage=", out.text(diagnostic));
+        }
+        for (std::size_t section_index = 0; section_index < candidate.sections.size() && out.open(); ++section_index) {
+            const auto& section = candidate.sections[section_index];
+            out.record("SECTION\tcandidate=", candidate_index, "\tindex=", section_index,
+                       "\tresource_offset=", section.resource_offset, "\tprimitive_raw=", static_cast<unsigned>(section.primitive),
+                       "\ttriangles=", section.triangle_count, "\tfirst_index=", section.first_index,
+                       "\tvertex_start=", section.vertex_start, "\tvertex_count=", section.vertex_count,
+                       "\telement_count=", static_cast<unsigned>(section.element_count),
+                       "\tstream_count=", static_cast<unsigned>(section.stream_count),
+                       "\tvertex_range_checked=", section.vertex_range_checked ? 1 : 0,
+                       "\tindex_range_checked=", section.index_range_checked ? 1 : 0);
+            for (std::size_t element_index = 0; element_index < section.elements.size() && out.open(); ++element_index) {
+                const auto& element = section.elements[element_index];
+                out.record("ELEMENT\tcandidate=", candidate_index, "\tsection=", section_index, "\tindex=", element_index,
+                           "\tusage_raw=", static_cast<unsigned>(element.usage), "\tformat_raw=", static_cast<unsigned>(element.format),
+                           "\toffset=", static_cast<unsigned>(element.offset), "\tstream=", static_cast<unsigned>(element.stream),
+                           "\tknown_width=", static_cast<unsigned>(element.width), "\tsemantic_supported=", element.semantic_supported ? 1 : 0);
+            }
+            for (std::size_t stream_index = 0; stream_index < section.streams.size() && out.open(); ++stream_index) {
+                const auto& stream = section.streams[stream_index];
+                out.record("STREAM\tcandidate=", candidate_index, "\tsection=", section_index, "\tindex=", stream_index,
+                           "\tstride=", static_cast<unsigned>(stream.stride),
+                           "\tclassification_raw=", static_cast<unsigned>(stream.classification));
+            }
+        }
+    }
+}
+
+int mesh_metadata_command(int argc, char** argv) {
+    using namespace dingosdk::frostbite;
+    MeshMetadataOutput out;
+    std::size_t lod{};
+    // A malformed request never opens GameData or a TOC. The exact resource still comes from the selected manifest.
+    if (argc != 5 || std::string_view(argv[3]).empty() || std::string_view(argv[3]).size() > 4096 ||
+        !mesh_metadata_lod(argv[4], lod)) {
+        out.record("ERROR\tstage=arguments\tmessage=expected one exact RES name and an unsigned decimal LOD index");
+        return out.finish(false, 2);
+    }
+    constexpr std::size_t resource_limit = 16 * 1024 * 1024;
+    constexpr std::uint32_t mesh_set_type = 0x49b156d4; // Existing MeshSet RES type used by the VFS mesh readers.
+    std::string_view stage = "context";
+    try {
+        const auto* toc_environment = std::getenv("ASSET_TOC");
+        const auto* bundle_environment = std::getenv("ASSET_BUNDLE");
+        const std::string_view toc_name = toc_environment ? toc_environment : "Win32/levels/game/bam_levelroot/bam_levelroot.toc";
+        const std::string_view bundle_name = bundle_environment ? bundle_environment : "win32/levels/game/bam_levelroot/bam_levelroot";
+        if (toc_name.empty() || bundle_name.empty() || toc_name.size() > 4096 || bundle_name.size() > 4096 || bundle_name == "?") {
+            out.record("ERROR\tstage=arguments\tmessage=mesh metadata needs one bounded TOC and bundle selection, not a bundle listing");
+            return out.finish(false, 2);
+        }
+        out.record("CONTEXT\ttoc=", out.text(toc_name), "\tbundle=", out.text(bundle_name),
+                   "\tstore_classification=unknown\tresidency=manifest_only\tgeometry_payload_read=0\toutput_bytes_limit=1048576"
+                   "\toutput_records_limit=8192\tescaped_text_bytes_limit=512\tresource_tool_limit_bytes=16777216"
+                   "\tdecoder_output_limit_bytes=268435456\tlimits_provenance=authored");
+        stage = "bundle_read";
+        const dingosdk::vfs::GameData data{std::filesystem::path(argv[1])};
+        const auto toc = data.read_toc(toc_name);
+        const auto found = data.read_bundle(toc, bundle_name);
+        if (!found) throw std::runtime_error("selected bundle was not found");
+        const auto& bundle = *found;
+        std::size_t matches{}, resource_index{};
+        for (std::size_t i = 0; i < bundle.manifest.resources.size(); ++i)
+            if (mesh_metadata_name(bundle.manifest.resources[i].name, argv[3])) { ++matches; resource_index = i; }
+        out.record("SELECTION\texact_res_name=", out.text(argv[3]), "\tlod=", lod, "\tmatched_resources=", matches);
+        if (matches != 1) {
+            out.record("ERROR\tstage=resource_selection\tmessage=", matches ? "exact RES name is ambiguous" : "exact RES name was not found in this bundle");
+            return out.finish(false);
+        }
+        const auto& asset = bundle.manifest.resources[resource_index];
+        const auto* payload = bundle.payload(AssetKind::resource, resource_index);
+        out.record("RESOURCE\tname=", out.text(asset.name), "\tresource_type_raw=", asset.resourceType,
+                   "\tresource_id=", asset.resourceId, "\tsha1=", metadata_hex(asset.sha1.bytes),
+                   "\tsha1_source=manifest\tpayload_sha1_verified=0\tadvertised_bytes=", asset.originalSize,
+                   "\tpayload_location=", payload ? "present" : "missing");
+        if (asset.resourceType != mesh_set_type || !payload) {
+            out.record("ERROR\tstage=resource_selection\tmessage=", payload ? "selected RES is not a MeshSet" : "selected RES has no payload location record");
+            return out.finish(false);
+        }
+        out.record("PAYLOAD\tcompressed_bytes=", payload->size,
+                   "\tdecoder_policy=existing_GameData_256MiB_cap\ttool_size_checks=advertised_compressed_then_actual");
+        if (!asset.originalSize || asset.originalSize > resource_limit || !payload->size || payload->size > resource_limit) {
+            out.record("ERROR\tstage=resource_size\tmessage=advertised or compressed resource size is outside the tool limit");
+            return out.finish(false);
+        }
+        stage = "resource_read";
+        // GameData retains its existing 256 MiB decode cap; the manifest precheck is not a smaller decoder quota.
+        const auto bytes = data.read(*payload);
+        out.record("RESOURCE_READ\tactual_bytes=", bytes.size(), "\tgeometry_payload_read=0");
+        if (bytes.size() > resource_limit || bytes.size() != asset.originalSize) {
+            out.record("ERROR\tstage=resource_size\tmessage=decoded size exceeds the tool limit or differs from the manifest");
+            return out.finish(false);
+        }
+        if (bytes.size() >= 16) {
+            BinaryReader header(bytes);
+            const auto first = header.u32(), second = header.u32(), third = header.u32(), fourth = header.u32();
+            out.record("HEADER\tword0=", first, "\tword1=", second, "\tword2=", third, "\tword3=", fourth);
+        }
+        stage = "mesh_metadata";
+        const auto mesh = read_mesh_lod_metadata(bytes, lod);
+        mesh_metadata_rows(out, mesh);
+        std::size_t chunk_matches{}, chunk_index{};
+        for (std::size_t i = 0; i < bundle.manifest.chunks.size(); ++i)
+            if (bundle.manifest.chunks[i].guid == mesh.geometry.chunk) { ++chunk_matches; chunk_index = i; }
+        out.record("CHUNK_REF\tguid=", mesh.geometry.chunk.string(), "\tlocal_matches=", chunk_matches,
+                   "\tresolution=", chunk_matches == 1 ? "selected_bundle_manifest" : chunk_matches ? "ambiguous" : "external_or_missing",
+                   "\tpayload_read=0");
+        bool chunk_location{};
+        if (chunk_matches == 1) {
+            const auto& chunk = bundle.manifest.chunks[chunk_index];
+            chunk_location = bundle.payload(AssetKind::chunk, chunk_index) != nullptr;
+            out.record("CHUNK_METADATA\tguid=", chunk.guid.string(), "\tsha1=", metadata_hex(chunk.sha1.bytes),
+                       "\tsha1_source=manifest\tadvertised_bytes=", chunk.originalSize, "\tlogical_offset=", chunk.logicalOffset,
+                       "\tlogical_size=", chunk.logicalSize, "\tpayload_location=", chunk_location ? "present" : "missing", "\tpayload_read=0");
+        }
+        if (chunk_matches != 1 || !chunk_location)
+            out.record("DIAGNOSTIC\tscope=chunk_manifest\tmessage=unique local geometry location is unresolved; global absence is not established");
+        return out.finish(mesh.complete && chunk_matches == 1 && chunk_location);
+    } catch (const std::exception& error) {
+        out.record("ERROR\tstage=", stage, "\tmessage=", out.text(error.what()));
+        return out.finish(false);
+    }
+}
 } // namespace
 
 int main(int argc, char **argv) {
+    if (argc >= 3 && std::string_view(argv[2]) == "--mesh-metadata") return mesh_metadata_command(argc, argv);
     if (argc < 3) {
-        std::cerr << "usage: dingosdk_trainer_asset_list <Skate folder> <word>... | --dump <asset name> | --types <word>...\n";
+        std::cerr << "usage: dingosdk_trainer_asset_list <Skate folder> <word>... | --dump <asset name> | --types <word>... | --metadata [word]... | --inspect <exact EBX name> | --mesh-metadata <exact RES name> <LOD index>\n";
         return 2;
     }
     try {
@@ -130,6 +474,19 @@ int main(int argc, char **argv) {
         if (!found) throw std::runtime_error("the level root bundle was not found");
         const auto &bundle = *found;
         const std::string mode = argv[2];
+        if (mode == "--metadata" || mode == "--inspect") {
+            if (mode == "--inspect" && argc != 4) {
+                std::cerr << "--inspect requires one exact EBX name\n";
+                return 2;
+            }
+            std::cout << "CONTEXT\ttoc=" << metadata_text(toc_name ? toc_name : "Win32/levels/game/bam_levelroot/bam_levelroot.toc")
+                      << "\tbundle=" << metadata_text(bundle_name ? bundle_name : "win32/levels/game/bam_levelroot/bam_levelroot")
+                      << "\tstore_classification=unknown\tresidency=manifest_only\n";
+            if (mode == "--inspect") return inspect_asset(data, bundle, argv[3]);
+            std::vector<std::string> words;
+            for (int i = 3; i < argc; ++i) words.push_back(lower(argv[i]));
+            return metadata_inventory(bundle, words);
+        }
         if (mode == "--floats" && argc >= 4) {
             // Every aligned four bytes of the asset's data that read as a plausible number.
             const auto wanted = lower(argv[3]);

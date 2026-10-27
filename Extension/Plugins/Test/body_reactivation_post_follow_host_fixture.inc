@@ -19,6 +19,11 @@ void historical_park_flag_is_explicit_copied_and_stage_scoped() {
                     assert(#value.records==(terminal and 10 or 2))
                     assert(value.records[1].stage=='initial_park' and value.records[1].passed)
                     assert(value.records[1].epoch.serial=='100' and not value.records[1].observation.available)
+                    -- Historical park provenance and the fresh observed row stay distinct even while pending.
+                    local fresh=value.records[2]
+                    assert(fresh.stage=='initial_park_observed' and fresh.passed and fresh.observation.available)
+                    assert(not fresh.observation.dynamic and fresh.epoch.serial=='101' and fresh.epoch.time>value.records[1].epoch.time)
+                    assert(fresh.observation.sample.epoch.serial==fresh.epoch.serial and fresh.observation.sample.epoch.time==fresh.epoch.time)
                     for i,row in value.records do
                         assert(type(row.historical_park_basis)=='boolean')
                         assert(row.historical_park_basis==(historical and i==1))

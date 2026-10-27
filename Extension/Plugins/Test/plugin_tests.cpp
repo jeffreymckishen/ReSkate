@@ -972,13 +972,16 @@ struct FakeGame final : Game {
         return out;
     }
     WorldProbe probe_result;
+    // Opt-in responses for actual-package placement tests; other fixtures retain
+    // their fixed result and the existing bounded-query accounting.
+    std::function<WorldProbe(const Vec3&, const Vec3&)> probe_reply;
     unsigned probes{}, world_picks{};
     Vec3 probe_from{}, probe_to{};
     WorldProbe world_probe(const Vec3& from, const Vec3& to) override {
         ++probes;
         probe_from = from;
         probe_to = to;
-        return probe_result;
+        return probe_reply ? probe_reply(from, to) : probe_result;
     }
     CountedProbe world_probe_bounded(const Vec3& from, const Vec3& to, unsigned allowed) override {
         if (!allowed) return {};
@@ -7505,6 +7508,171 @@ Candidate contributed(const std::string& id) {
     const auto directory = contrib_plugin(id);
     return {id, directory, "1", check_package_files(directory)};
 }
+void the_tracked_body_reactivation_harness_stays_inert_until_visual_approval() {
+    const auto directory = std::filesystem::path(RESKATE_SOURCE_DIR) / "contrib" / "bmx-lab" / "body-reactivation-probe";
+    for (const auto* file : {"reskate-plugin.json", "plugin/main.lua", "plugin/probe.lua"})
+        check(std::filesystem::is_regular_file(directory / file), "tracked reactivation harness requires " + std::string(file));
+    check(check_package_files(directory).empty(), "tracked reactivation harness is a sandbox source package");
+    std::ifstream manifest_source(directory / manifest_file, std::ios::binary);
+    check(manifest_source.good(), "tracked reactivation manifest is readable");
+    const std::string declaration(std::istreambuf_iterator<char>(manifest_source), {});
+    constexpr const char* id = "LuaBodyReactivation_20261027_q1";
+    constexpr const char* title = "Body reactivation: one cycle";
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    const auto storage = environment.storage_root() / id / "storage.json";
+    check(!std::filesystem::exists(storage), "tracked reactivation smoke starts with fresh storage");
+    // Constructed availability must not hide accidental startup authority behind
+    // an absent actor/focus/level. This test never supplies a native launch arm.
+    environment.local_skater = SkaterState{};
+    environment.local_skater->position = {0, 1, 0};
+    game.telemetry = SkaterTelemetry{};
+    game.telemetry->skater = true;
+    game.telemetry->watch.valid = true;
+    game.telemetry->watch.state = 504;
+    game.focus_now = {true, true, true};
+    game.menu_now.known = true;
+    game.menu_now.open = false;
+    Host host(environment, Side::client);
+    host.set_level("constructed-reactivation-smoke");
+    const auto no_actuation = [&] {
+        check(!game.body_create_calls && !game.body_creates && !game.body_read_calls &&
+            !game.body_submit_entries && !game.body_submissions && !game.body_release_calls && game.owned.empty() &&
+            !game.follow_reserves && !game.follow_publishes && !game.follow_reads && !game.follow_stops && !game.follow_acks &&
+            !game.follow_renewals && !game.follow_lease_reads && !game.batch_calls &&
+            !game.input_pulse_requests && !game.input_pulse_reads && !game.input_pulse_cancels && !game.input_pulse_acks &&
+            !game.input_trace_requests && !game.input_trace_reads && !game.input_trace_stops && !game.input_trace_acks &&
+            !game.native_action_requests && !game.native_action_reads && !game.native_action_cancels && !game.native_action_acks &&
+            !game.native_recovery_requests && !game.native_recovery_reads && !game.native_recovery_cancels && !game.native_recovery_acks &&
+            game.binds.empty() && game.entities.empty() && game.kept_keys.empty() && !game.kept_buttons && environment.teleports.empty(),
+            "actual reactivation main reached body, Follow, pose/entity or input authority without approval");
+#ifdef DINGOSDK_BODY_REACTIVATION_QUALIFICATION
+        check(!game.reactivation_admit && !game.reactivation_begins && !game.reactivation_polls &&
+            !game.reactivation_provider_calls && !game.reactivation_access && !game.reactivation_cleanup_duty &&
+            !game.reactivation_retirements && !game.reactivation_closes,
+            "actual reactivation smoke must not arm, begin, poll or retain native diagnostic work");
+#endif
+    };
+#ifdef DINGOSDK_BODY_REACTIVATION_QUALIFICATION
+    check(parse_manifest(declaration).permissions == std::set<std::string, std::less<>>{
+        "world.physics", "world.physics.qualify_body_reactivation", "world.raycast", "skater.read", "input", "menu", "storage"},
+        "actual harness declares only its reviewed body diagnostic, read-only context, menu and storage permissions");
+    game.body_prepare_error = "owned-body clock preparation pending";
+    game.probe_reply = [](const Vec3& from, const Vec3& to) -> Game::WorldProbe {
+        if (from[1] > to[1]) {
+            const float fraction = from[1] / (from[1] - to[1]);
+            return {true, true, {from[0] + (to[0] - from[0]) * fraction, 0,
+                from[2] + (to[2] - from[2]) * fraction}, fraction};
+        }
+        return {true, false, {}, 0};
+    };
+    host.apply({{id, directory, "tracked-body-reactivation-main-v1", {}}});
+    running(host, id, environment);
+    environment.panels_open = true; environment.shown = id;
+    const auto repaint = [&] {
+        environment.now += 100; host.tick(100); running(host, id, environment); no_actuation();
+        check(game.calls.empty(), "actual reactivation main must not drive ordinary game controls");
+    };
+    const auto panel_value = [&](std::string_view label) {
+        for (const auto& panel : environment.panels) {
+            if (panel.plugin != id || panel.title != title) continue;
+            for (const auto& widget : panel.widgets)
+                if (widget.kind == plugin_ui::Widget::Kind::info && widget.text == label) return widget.help;
+        }
+        throw std::runtime_error("Missing tracked reactivation status: " + std::string(label));
+    };
+    const auto has_button = [&](std::string_view button) {
+        for (const auto& panel : environment.panels) {
+            if (panel.plugin != id || panel.title != title) continue;
+            for (const auto& widget : panel.widgets)
+                if (widget.kind == plugin_ui::Widget::Kind::button && widget.id == button) return true;
+        }
+        return false;
+    };
+    const auto action = [&](const char* button) {
+        environment.actions = {plugin_ui::Action{id, title, button, false}}; repaint();
+    };
+    ticks(host, environment, 60); running(host, id, environment); no_actuation();
+    check(panel_value("Phase") == "idle" && has_button("brq_prepare") && !has_button("brq_approve") &&
+        !game.body_prepares && !game.probes && !game.telemetry_reads && !game.focus_reads && game.calls.empty() &&
+        !std::filesystem::exists(storage), "actual main remains inert through startup and sixty menu ticks");
+    action("brq_survey"); action("brq_approve");
+    check(panel_value("Phase") == "idle" && !game.body_prepares && !game.probes,
+        "actions for absent Survey/Approve buttons cannot admit a cold harness");
+    for (unsigned attempt = 1; attempt <= 2; ++attempt) {
+        action("brq_prepare"); repaint();
+        check(game.body_prepares == attempt - 1 && panel_value("Phase") == "prepare_requested",
+            "Prepare menu intent must wait for the interface to close");
+        environment.panels_open = false; game.focus_now.interface_open = false;
+        ticks(host, environment, 1); running(host, id, environment); no_actuation();
+        check(game.body_prepares == attempt, "one explicit Prepare action makes one bounded warm-up call");
+        ticks(host, environment, 10);
+        check(game.body_prepares == attempt && !game.probes, "pending Prepare never automatically retries or surveys");
+        environment.panels_open = true; game.focus_now.interface_open = true; repaint();
+        check(panel_value("Phase") == "prepare_pending" && has_button("brq_prepare") && !has_button("brq_approve"),
+            "pending warm-up is visible and cannot expose approval");
+    }
+    game.body_prepare_error.clear();
+    ticks(host, environment, 10); running(host, id, environment);
+    check(game.body_prepares == 2 && !game.probes, "backend becoming ready cannot substitute for another explicit Prepare");
+    action("brq_prepare");
+    environment.panels_open = false; game.focus_now.interface_open = false;
+    ticks(host, environment, 1); running(host, id, environment); no_actuation();
+    environment.panels_open = true; game.focus_now.interface_open = true; repaint();
+    check(game.body_prepares == 3 && panel_value("Phase") == "prepared" && has_button("brq_survey") && !has_button("brq_approve"),
+        "ready warm-up exposes only the separate survey action");
+    action("brq_survey");
+    for (unsigned frame = 0; frame < 5; ++frame) {
+        const auto probes_before = game.probes;
+        ticks(host, environment, 1); running(host, id, environment); no_actuation();
+        check(game.probes - probes_before <= 8, "actual survey respects eight ray samples per tick");
+    }
+    repaint();
+    check(panel_value("Phase") == "await_visual_approval" && has_button("brq_approve") &&
+        game.probes == 38 && game.native_casts == 38 && !environment.rays,
+        "actual API adapters complete the constructed 38-ray survey without allocating a body");
+    ticks(host, environment, 10); running(host, id, environment); no_actuation();
+    check(game.probes == 38 && game.body_prepares == 3, "waiting for visual approval neither re-surveys nor prepares automatically");
+    action("brq_stop"); ticks(host, environment, 1); repaint();
+    check(panel_value("Phase") == "refused" && panel_value("Reason") == "operator_stop" &&
+        !has_button("brq_approve"), "Stop ends admission before any body creation or native begin");
+    host.apply({}); no_actuation();
+    check(game.calls == std::vector<std::string>{std::string("entities clear ") + id} &&
+        game.released == std::vector<std::string>{id}, "harness unload performs only normal empty-owner cleanup");
+    std::ifstream stored(storage, std::ios::binary);
+    check(stored.good(), "actual main storage adapter flushes its stopped preparation receipt");
+    const auto document = dingosdk::Json::parse(std::istreambuf_iterator<char>(stored), std::istreambuf_iterator<char>());
+    const auto& receipt = document.at("body_reactivation_q1");
+    check(receipt.at("phase").string() == "refused" && receipt.at("reason").string() == "operator_stop" &&
+        receipt.at("terminal").get<bool>() && receipt.at("cleanup").string() == "not_started" &&
+        !receipt.at("operator_end_required").get<bool>() && !receipt.contains("approval") &&
+        receipt.at("counts").at("prepare").get<unsigned>() == 3 && receipt.at("counts").at("rays").get<unsigned>() == 38 &&
+        receipt.at("counts").at("create").get<unsigned>() == 0 && receipt.at("counts").at("begin").get<unsigned>() == 0 &&
+        receipt.at("initial_survey").at("ray_count").get<unsigned>() == 38 &&
+        receipt.at("candidate").at("position").is_array() &&
+        !receipt.at("external_environment_and_process_pins_verified").get<bool>() &&
+        !receipt.at("actor_generation_available").get<bool>(),
+        "stored actual-main receipt preserves inert counts, array position and unknown external identity");
+    std::cout << "tracked reactivation main: actual manifest/modules/UI/storage, explicit cold warm-up, 38 constructed rays, no approval/body/arm\n";
+#else
+    bool rejected{};
+    try { (void)parse_manifest(declaration); }
+    catch (const std::exception& error) { rejected = std::string(error.what()).find("unknown permission") != std::string::npos; }
+    check(rejected, "default-OFF build must reject the actual harness diagnostic permission");
+    host.apply({{id, directory, "tracked-body-reactivation-off-v1", {}}});
+    stopped(host, id, "unknown permission");
+    environment.panels_open = true; environment.shown = id;
+    environment.actions = {plugin_ui::Action{id, title, "brq_prepare", false}};
+    ticks(host, environment, 60); stopped(host, id, "unknown permission"); no_actuation();
+    check(!game.body_prepares && !game.probes && !game.telemetry_reads && !game.focus_reads &&
+        environment.panels.empty() && game.calls.empty() && !std::filesystem::exists(storage),
+        "default-OFF manifest refusal happens before actual entry, menu or provider dispatch");
+    host.apply({}); no_actuation();
+    check(game.calls.empty() && game.released.empty() && !std::filesystem::exists(storage),
+        "default-OFF rejection owns no plugin effects or unload ledger");
+    std::cout << "tracked reactivation main: default-OFF permission refusal before entry/provider dispatch\n";
+#endif
+}
 void the_tracked_input_pulse_fixture_loads_and_ticks_inert() {
     const auto directory = std::filesystem::path(RESKATE_SOURCE_DIR) / "contrib" / "bmx-lab" / "input-pulse-trial";
     check(std::filesystem::is_regular_file(directory / manifest_file) &&
@@ -9450,6 +9618,7 @@ int main() {
         run(sync_probe_terminal_partial_facts_and_body_release_remain_distinct);
         run(motion_refresh_host_fixture_v1);
         run(body_reactivation_probe_host_fixture_v1);
+        run(the_tracked_body_reactivation_harness_stays_inert_until_visual_approval);
         run(body_prepare_host_fixture_v1);
         run(body_follow_host_fixture_v1);
         run(body_follow_motion_policy_host_fixture_v1);

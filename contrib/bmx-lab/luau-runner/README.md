@@ -131,6 +131,25 @@ wrapper bytes, including the stand-in's CRLF endings, exact ownership, identical
 refusals against absent and existing destinations. CMake routes suites mentioning this fixture
 through the staged copy. This exercises entry wiring under fakes, not the plugin Host or game.
 
+The separate `ride_runtime_tricks_qualified_fixture.lua` enables both `ACTIVATION_QUALIFIED`
+and `RIDE_TRICKS_QUALIFIED`, and changes no other current Ride bytes. The existing
+`ride_runtime_qualified_fixture.lua` still enables activation only and keeps tricks false.
+Both gates must have exactly one canonical false declaration in the source; missing, repeated,
+or already-true declarations and a source-planted fixture refuse before destination mutation.
+The stand-in includes both baseline gates, and `stage_writes_exact_manifest` independently checks
+the original, activation-only and combined fixture bytes, lexical ownership, reruns, and refusals
+against absent and existing destinations. The new projection suite is staged through its direct
+fixture import. This does not qualify runtime trick publication or native gameplay.
+
+The same copy always contains `trick_runtime_ride_support_qualified_fixture.lua`, taken from the
+current `trick_runtime.lua` with only its single `local RIDE_SUPPORT_QUALIFIED = false` gate set
+to true. The original stays byte-identical and false, so the new adapter suite checks both
+states. Staging requires the trick module even for sparse stand-ins; a missing module or gate,
+a repeated declaration, an already-true gate, or a source-planted fixture refuses before any
+destination mutation. `stage_writes_exact_manifest` independently checks the CRLF original and
+fixture bytes, lexical ownership, identical reruns, and each refusal against absent and existing
+destinations. The fixture grants no Host or native support qualification.
+
 ## What it is not
 
 This is **not the ReSkate plugin Host** and stands in for none of its checks. Modules are compiled
@@ -166,7 +185,7 @@ source/destination aliases and reparse paths are refused before mutation. A lega
 alone proves no ownership, so old copies without a manifest are refused: choose a fresh destination.
 
 The staging `bmx_lua_runner.*` tests use `--stage-regression <case>
-<scratch-folder>`. Each case builds a small stand-in plugin (one module with CRLF line endings,
+<scratch-folder>`. Each case builds a small stand-in plugin (four modules, including CRLF line endings,
 plus a non-Lua note) and its destinations in `build/luau-runner/stage-regression-<case>/`, so it
 neither reads nor writes the real plugin. A case refuses to run if its folder already exists, so it
 never removes anything an earlier run left; the `bmx_lua_runner.stage_regression_reset` setup test
@@ -181,7 +200,7 @@ clears each registered case's scratch folder first.
   `mounted_pose_qualified_fixture.lua` is refused the same way, a stand-in `mounted_pose.lua` stages
   its fixture with only the gate flipped, and one with the gate twice is refused.
 - `stage_writes_exact_manifest`: a fresh stage holds exactly the stand-in's `.lua` modules byte for
-  byte, the gate fixture, the entry wrapper and a manifest naming exactly those five files. A
+  byte, the three gate fixtures, the entry wrapper and a manifest naming exactly those eight files. A
   rerun leaves the copy identical, and a module dropped from the source leaves the copy and its
   manifest on the next stage.
 

@@ -391,7 +391,22 @@ MeshLodMetadata read_mesh_lod_metadata(std::span<const std::byte> resource, std:
     const auto at = result.lod_offset;
     result.lod_kind = r.at<std::uint32_t>(at + lod_kind);
     if (result.lod_kind != known_lod_kind) {
-        result.diagnostics.push_back("LOD kind is unsupported; later fields are undecoded");
+        result.diagnostics.push_back("LOD kind is unsupported; no LOD layout interpretation was performed");
+        if (result.header == static_header) {
+            if (metadata_span(r, at, geometry_chunk + 16)) {
+                // Copy only these common offsets. Their values do not authorize later decoding.
+                MeshLodCommonOffsetObservation observed;
+                observed.section_count_raw = r.at<std::uint32_t>(at + section_count);
+                observed.section_pointer_raw = r.at<std::uint64_t>(at + section_table);
+                observed.index_format_raw = r.at<std::uint32_t>(at + index_format);
+                observed.index_bytes_raw = r.at<std::uint32_t>(at + index_bytes);
+                observed.vertex_bytes_raw = r.at<std::uint32_t>(at + vertex_bytes);
+                observed.geometry_identity_raw = r.at<std::array<std::byte, 16>>(at + geometry_chunk);
+                result.static_common_offsets = observed;
+            } else {
+                result.diagnostics.push_back("static common-offset observation unavailable: full 132-byte span is missing");
+            }
+        }
         return result;
     }
     require(metadata_span(r, at, geometry_chunk + sizeof(Guid)), "metadata LOD fields are truncated");

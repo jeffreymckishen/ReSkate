@@ -325,7 +325,30 @@ void mesh_metadata_rows(MeshMetadataOutput& out, const dingosdk::frostbite::Mesh
         if (!out.open()) break;
         out.record("DIAGNOSTIC\tscope=lod\tmessage=", out.text(diagnostic));
     }
-    if (!mesh.lod_kind_supported) return;
+    if (!mesh.lod_kind_supported) {
+        if (mesh.static_common_offsets) {
+            const auto& observed = *mesh.static_common_offsets;
+            out.record("STATIC_COMMON_OFFSET\tlod_relative_offset=8\tresource_offset=", mesh.lod_offset + 8,
+                       "\twidth=4\traw_value=", observed.section_count_raw, "\tcandidate_role=section_count",
+                       "\tbasis=existing_static_reader\tinterpretation=unverified_common_layout");
+            out.record("STATIC_COMMON_OFFSET\tlod_relative_offset=12\tresource_offset=", mesh.lod_offset + 12,
+                       "\twidth=8\traw_value=", observed.section_pointer_raw, "\tcandidate_role=section_pointer",
+                       "\tbasis=existing_static_reader\tinterpretation=unverified_common_layout");
+            out.record("STATIC_COMMON_OFFSET\tlod_relative_offset=84\tresource_offset=", mesh.lod_offset + 84,
+                       "\twidth=4\traw_value=", observed.index_format_raw, "\tcandidate_role=index_format",
+                       "\tbasis=existing_static_reader\tinterpretation=unverified_common_layout");
+            out.record("STATIC_COMMON_OFFSET\tlod_relative_offset=88\tresource_offset=", mesh.lod_offset + 88,
+                       "\twidth=4\traw_value=", observed.index_bytes_raw, "\tcandidate_role=index_bytes",
+                       "\tbasis=existing_static_reader\tinterpretation=unverified_common_layout");
+            out.record("STATIC_COMMON_OFFSET\tlod_relative_offset=92\tresource_offset=", mesh.lod_offset + 92,
+                       "\twidth=4\traw_value=", observed.vertex_bytes_raw, "\tcandidate_role=vertex_bytes",
+                       "\tbasis=existing_static_reader\tinterpretation=unverified_common_layout");
+            out.record("STATIC_COMMON_OFFSET\tlod_relative_offset=116\tresource_offset=", mesh.lod_offset + 116,
+                       "\twidth=16\traw_bytes_hex=", metadata_hex(observed.geometry_identity_raw), "\tcandidate_role=geometry_identity",
+                       "\tbasis=existing_static_reader\tinterpretation=unverified_common_layout");
+        }
+        return;
+    }
     for (std::size_t candidate_index = 0; candidate_index < mesh.candidates.size() && out.open(); ++candidate_index) {
         const auto& candidate = mesh.candidates[candidate_index];
         if (candidate.diagnostic_count > candidate.diagnostics.size()) out.mark_truncated();

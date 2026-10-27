@@ -24,12 +24,16 @@ local function near(a, b, e) return finite(a) and finite(b) and math.abs(a - b) 
 -- What the SDK does with each call, in its order, with its messages. config: owner (this plugin's id),
 -- holder (another plugin that holds the board), permission (false: no "board"), refuse (a reason
 -- toss answers with false), raise_toss, raise_clear, raise_bones (messages), answer (what toss returns
--- instead of true), bones (what bones() returns; default a drawn board).
+-- instead of true), bones (what bones() returns; default a drawn board), place_y and place_rotation (bone 1
+-- of the default drawn board).
 local BONE_TEXT = "invalid argument #1 to 'toss' (a board's bone is 2 to 15 (0 and 1 place the board))"
-local function drawn_board()
+-- Made up: a board in the hand, its place (bone 1) a place in the world as board_pose.cpp takes it, 0.74 m
+-- above a floor at 100 m unless place_y says otherwise, turned a quarter about the vertical (its up axis up).
+local function drawn_board(place_y, place_rotation)
     local out = {}
     for i = 0, 15 do out[i] = {position = vector.create(0, 0, 0), rotation = {0, 0, 0, 1}, scale = vector.create(1, 1, 1)} end
-    out[1] = {position = vector.create(.21, .74, -.05), rotation = {0, .7071067811865476, 0, .7071067811865476}, scale = vector.create(1, 1, 1)}
+    out[1] = {position = vector.create(10.21, place_y or 100.74, 19.95),
+        rotation = place_rotation or {0, .7071067811865476, 0, .7071067811865476}, scale = vector.create(1, 1, 1)}
     out[2] = {position = vector.create(0, .081, .002), rotation = {.01, 0, 0, .99995}, scale = vector.create(1, 1, 1)}
     return out
 end
@@ -56,7 +60,7 @@ local function new_fake(config)
             if config.bones == false then return nil end
             return config.bones
         end
-        return drawn_board()
+        return drawn_board(config.place_y, config.place_rotation)
     end
     function board.toss(...)
         local entry = {kind = "toss", n = select("#", ...)}
@@ -134,6 +138,8 @@ local function run()
         check(not pcall(function() BD.LIFT_MPS = 9 end), "a constant cannot be changed")
         check(BD.DECK_MOUNT == 2, "bone 2, the deck's mount, carries the whole visible board")
         check(BD.GROUND_OFFSET_M == 0, "the ground offset starts at 0 until a trial calibrates it")
+        check(near(BD.REST_LIFT_M, .004, 1e-12) and near(BD.UPSIDE_LIFT_M, .141, 1e-12),
+            "the native Board Break's lifts: 4 mm on its wheels, 0.141 m on its grip")
         check(near(BD.LIFT_MPS, .6) and near(BD.SPIN_RADPS, 1.5), "about 0.6 m/s up and 1.5 rad/s about the vertical")
         check(BD.LIFT_MPS > 0 and BD.LIFT_MPS < 50 and BD.SPIN_RADPS > 0 and BD.SPIN_RADPS < 50, "inside 50 m/s and 50 rad/s")
         local f = new_fake()
@@ -142,13 +148,15 @@ local function run()
         check(#touched == 0 and #f.log == 0, "constructing read nothing and called nothing")
         local st = d:status()
         check(st.state == "idle" and st.toss_calls == 0 and st.clear_calls == 0 and st.bones_calls == 0 and st.ground == nil
+            and st.floor == nil and st.up_y == nil and st.upside == nil and st.place_above_floor == nil
             and st.calibration == nil, "a new Dropper is idle")
         check(#touched == 0, "status reads nothing of the API")
     end)
 
-    test("exact toss arguments: bone 2 alone, the lift and spin vectors, ground = floor + offset", function()
+    test("exact toss arguments: bone 2 alone, the lift and spin vectors, ground = floor + offset + rest lift", function()
         for _, floor in {100, 274.3612060546875, -12.5, 0} do
-            local f = new_fake()
+            -- Bone 1 in the hand 0.74 m above this floor, up axis up: it lands on its wheels.
+            local f = new_fake({place_y = floor + .74})
             local d = BD.new(f.api)
             local r = d:drop(floor)
             check(r.ok == true and r.called == true and r.state == "dropped" and r.reason == nil, "accepted at " .. floor)
@@ -158,12 +166,48 @@ local function run()
             check(#t.bones == 1 and t.bones[1] == BD.DECK_MOUNT and t.bones[1] == 2, "the bone list is {2}")
             check(t.velocity[1] == 0 and near(t.velocity[2], BD.LIFT_MPS) and t.velocity[3] == 0, "velocity (0, lift, 0)")
             check(t.spin[1] == 0 and near(t.spin[2], BD.SPIN_RADPS) and t.spin[3] == 0, "spin (0, spin, 0)")
-            check(t.ground == floor + BD.GROUND_OFFSET_M, "ground is the floor plus the offset: " .. tostring(t.ground))
+            local want = floor + BD.GROUND_OFFSET_M + BD.REST_LIFT_M
+            check(near(t.ground, want, 1e-9), "ground is the floor plus the offset and the rest lift: " .. tostring(t.ground))
             check(t.refused == nil and f.pieces == 1 and f.holder == "bmx", "the SDK took the piece")
             local st = d:status()
-            check(st.state == "dropped" and st.ground == floor + BD.GROUND_OFFSET_M and st.toss_calls == 1 and st.toss_result == "accepted",
-                "the status keeps the ground and the toss")
+            check(st.state == "dropped" and st.ground == t.ground and st.floor == floor and st.toss_calls == 1
+                and st.toss_result == "accepted", "the status keeps the floor, the ground and the toss")
+            check(st.upside == false and near(st.up_y, 1, 1e-9), "upright in the hand: no upside lift: " .. tostring(st.up_y))
+            -- Positions are 32-bit vectors: 0.74 m within a float's step at these heights.
+            check(near(st.place_above_floor, .74, 1e-4), "bone 1 was 0.74 m above the floor: " .. tostring(st.place_above_floor))
         end
+    end)
+
+    test("a board held upside down lands on its grip: the ground is raised by the upside lift", function()
+        local half = math.rad(50) -- 100 degrees about X: the board nearly on its edge, its up axis a little down
+        for _, case in {
+            {rotation = {1, 0, 0, 0}, up = -1, upside = true},
+            {rotation = {math.sin(half), 0, 0, math.cos(half)}, up = math.cos(math.rad(100)), upside = true},
+            {rotation = {0, 0, math.sin(math.rad(40)), math.cos(math.rad(40))}, up = math.cos(math.rad(80)), upside = false},
+            {rotation = {0, 0, 0, 2}, up = 1, upside = false}, -- not unit: normalised, as the SDK does
+        } do
+            local f = new_fake({place_rotation = case.rotation})
+            local d = BD.new(f.api)
+            check(d:drop(100).ok == true, "dropped")
+            local st = d:status()
+            check(st.upside == case.upside and near(st.up_y, case.up, 1e-9), "up y " .. tostring(st.up_y) .. " for " .. case.up)
+            local want = 100 + BD.GROUND_OFFSET_M + BD.REST_LIFT_M + (case.upside and BD.UPSIDE_LIFT_M or 0)
+            check(near(f.log[2].ground, want, 1e-9) and st.ground == f.log[2].ground, "ground " .. tostring(f.log[2].ground))
+            check(near(BD.math.up_of(st.calibration), case.up, 1e-9), "BD.math.up_of reads the kept rotation")
+        end
+        -- Without bone 1's rotation the side is unknown: no upside lift, and the status says unknown.
+        local g = new_fake({bones = {[1] = {position = vector.create(10, 100.8, 20)}}})
+        local e = BD.new(g.api)
+        check(e:drop(100).ok == true)
+        local st = e:status()
+        check(st.upside == nil and st.up_y == nil and near(g.log[2].ground, 100 + BD.GROUND_OFFSET_M + BD.REST_LIFT_M, 1e-9),
+            "unknown side: floor + offset + rest lift")
+        check(near(st.place_above_floor, .8, 1e-4), "bone 1's height is kept without its rotation")
+        -- No bones at all: neither the side nor the height.
+        local h = new_fake({bones = false})
+        local k = BD.new(h.api)
+        check(k:drop(100).ok == true and k:status().upside == nil and k:status().place_above_floor == nil, "nothing read")
+        check(BD.math.up_of(nil) == nil and BD.math.up_of({place = {rotation = {0, 0, 0, 0}}}) == nil, "no usable rotation")
     end)
 
     test("the drop happens once", function()

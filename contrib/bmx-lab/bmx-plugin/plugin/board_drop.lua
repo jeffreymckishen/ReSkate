@@ -17,12 +17,23 @@
 -- The SDK clears what a plugin holds when it unloads or is stopped (plugin_game_runtime.cpp release),
 -- so a board left lying by a crash comes back then.
 --
+-- One board user per plugin. restore's board.clear() with no bone ends everything this plugin holds of
+-- the local board: the piece, any bone it set or hid, and its parks (board_pose.cpp clear). The SDK has
+-- no clear for the piece alone (clear(bone) leaves the piece). So while a board is down the Dropper must
+-- be its plugin's only user of reskate.board: a bone another module of the same plugin set, hid or parked
+-- would be wiped at every restore, and a module that called board.clear() itself would put the board
+-- back in his hand mid-ride. A second board use in the same plugin goes through the Dropper.
+--
 -- The ground is not found here. A board in the hand does not tell where the floor is: a piece tossed
 -- from there hung at hand height (contrib/board-break.md). The caller passes a measured floor height
 -- (bike_spawn.lua's one floor ray, Runtime:floor_height()). The piece lands when its frame, the
--- board's place (bone 1), reaches ground + GROUND_OFFSET_M, so 0 assumes that place lies on the
--- wheels' contact plane when the board lies on the floor. That has not been seen in the game: drop
--- reads board.bones() once first and keeps bones 1 and 2, so a trial can calibrate it.
+-- board's place (bone 1), reaches floor + GROUND_OFFSET_M + REST_LIFT_M, plus UPSIDE_LIFT_M when it
+-- will land upside down. An offset of 0 assumes that place lies on the wheels' contact plane when the
+-- board lies on its wheels, as the removed native Board Break's frame did. That has not been seen in
+-- the game: drop reads board.bones() once first and keeps bones 1 and 2, which way up bone 1 was and how
+-- far above the floor it was, so a trial can calibrate it. board_pose.cpp takes bone 1 as a place in the
+-- world (it lands the piece when bone 1's height reaches ground): place_above_floor is then about hand
+-- height, and anything far from that means bone 1 is not in the world's frame, which no offset fixes.
 --
 -- A pure module: nothing runs on require, constructing a Dropper calls nothing, and no method raises.
 -- The only functions it reaches are board.bones, board.toss and board.clear, each through pcall, each
@@ -38,10 +49,23 @@ BD.LIFT_MPS = .6
 -- A slow turn about the vertical while it falls: under 1 rad over a fall from hand height (about half a
 -- second). It lands flat whatever way it then faces. Well inside the SDK's 50 rad/s.
 BD.SPIN_RADPS = 1.5
--- Where the board's place (bone 1) ends up above the measured floor. 0 assumes bone 1 lies on the
--- wheels' contact plane when the board lies flat. Unproved: a trial that sees the board float d m
--- above the floor sets -d, one that sees it sunk d m sets +d (the recorded bones 1 and 2 help).
+-- Where the board's place (bone 1) ends up above the measured floor, besides the two lifts below. 0
+-- assumes bone 1 lies on the wheels' contact plane when the board lies on its wheels. Unproved: a trial
+-- that sees a board on its wheels float d m above the floor sets -d, one that sees it sunk d m sets +d
+-- (the recorded bones 1 and 2 help). Judge it on a board that landed on its wheels (status upside false).
 BD.GROUND_OFFSET_M = 0
+-- A few millimetres more, as the removed native Board Break laid a piece that kept its trucks
+-- (board_break.cpp before 2d3b7770: 0.004 m): real ground is rough, and a small gap under a board goes
+-- unseen where a board cut by the floor does not.
+BD.REST_LIFT_M = .004
+-- An upside-down board lies on the raised ends of its grip side, so its frame (bone 1, on the contact
+-- plane when it is on its wheels) lies this much higher: 0.141 m, the native Board Break's height of
+-- those ends above its frame, where it rested an upside-down piece. board_pose.cpp fly lands the piece
+-- flat on the side it came down, upside down when bone 1's up axis points down, and sets its height to
+-- ground either way. The spin here is about the vertical only, which never changes how far that axis
+-- points up or down, so the side it lands on is the side it had in the hand: drop reads it from bone 1's
+-- rotation in board.bones(). Without that rotation the side is unknown and nothing is added.
+BD.UPSIDE_LIFT_M = .141
 -- Heights within 100 km, as every position the plugin API takes (plugin_api.cpp position_of).
 BD.HEIGHT_LIMIT = 1e5
 BD.ONCE = "the board is dropped at most once per Dropper; this one has already tried"
@@ -84,6 +108,18 @@ local function calibration_of(bones)
     if not place and not mount then return nil end
     return {place = place, mount = mount}
 end
+-- How far bone 1's up axis (+Y) points up, -1 to 1, from its kept rotation {x, y, z, w}, normalised as
+-- board_pose.cpp normalises it; nil without a usable rotation. Below 0 the SDK lands the board upside down.
+local function up_of(calibration)
+    local place = type(calibration) == "table" and calibration.place or nil
+    local r = type(place) == "table" and place.rotation or nil
+    if type(r) ~= "table" then return nil end
+    local x, y, z, w = r[1], r[2], r[3], r[4]
+    if not (finite(x) and finite(y) and finite(z) and finite(w)) then return nil end
+    local n = x * x + y * y + z * z + w * w
+    if not finite(n) or n < 1e-12 then return nil end
+    return 1 - 2 * (x * x + z * z) / n
+end
 
 -- The board function `name` of api, or nil and why. Reading api is guarded too: a table whose lookup
 -- raises is a missing function, not a raise.
@@ -105,7 +141,8 @@ Dropper.__index = Dropper
 -- api is the reskate table, or any table with board.toss and board.clear (board.bones optional).
 -- Constructing one calls nothing and reads nothing of it.
 function BD.new(api)
-    return setmetatable({api = api, state = "idle", reason = nil, ground = nil, tried = false, restore_tried = false,
+    return setmetatable({api = api, state = "idle", reason = nil, ground = nil, floor = nil, up_y = nil, upside = nil,
+        place_above_floor = nil, tried = false, restore_tried = false,
         toss_calls = 0, clear_calls = 0, bones_calls = 0, toss_result = nil, clear_result = nil, bones_result = nil,
         calibration = nil}, Dropper)
 end
@@ -141,7 +178,8 @@ function Dropper:_calibrate()
 end
 
 -- Drops the board onto the floor at height ground_y (world metres, measured): one board.toss of the deck's
--- mount, at most once per Dropper. Returns {ok, called, state, reason}: ok only when toss accepted it;
+-- mount, at most once per Dropper, onto ground_y + GROUND_OFFSET_M + REST_LIFT_M, plus UPSIDE_LIFT_M when
+-- bone 1's up axis pointed down in the hand. Returns {ok, called, state, reason}: ok only when toss accepted it;
 -- called when board.toss was called. A height that is not finite, or a missing board.toss, refuses with
 -- no call. A refusal from toss (false and why: another plugin holds the board, or its rate) leaves the
 -- board in the hand with nothing to clear; a raise leaves the state unknown, since a raise after the
@@ -160,7 +198,14 @@ function Dropper:drop(ground_y)
     end)
     if not made then return self:_refuse("the Luau vector library is unavailable: " .. short(velocity)) end
     self:_calibrate()
-    local ground = ground_y + BD.GROUND_OFFSET_M
+    -- Which side it will land on, from bone 1 as it was drawn in the hand (unknown without its rotation).
+    local up_y = up_of(self.calibration)
+    local upside = nil
+    if up_y ~= nil then upside = up_y < 0 end
+    local ground = ground_y + BD.GROUND_OFFSET_M + BD.REST_LIFT_M + (upside == true and BD.UPSIDE_LIFT_M or 0)
+    local place = self.calibration and self.calibration.place
+    self.floor, self.up_y, self.upside = ground_y, up_y, upside
+    self.place_above_floor = place and place.position and place.position[2] - ground_y or nil
     self.ground = ground
     self.toss_calls += 1
     local r = table.pack(pcall(toss, {BD.DECK_MOUNT}, {velocity = velocity, spin = spin, ground = ground}))
@@ -210,14 +255,18 @@ function Dropper:restore()
 end
 
 -- A fresh table: state (idle, dropped, refused, unknown, restored or restore_unknown), reason, ground
--- (the height passed to toss, or nil), the calls made, what toss, clear and bones answered, and the
--- calibration {place = bone 1, mount = bone 2} or nil.
+-- (the height passed to toss, or nil), floor (the measured floor it was laid on), up_y and upside (how far
+-- bone 1's up axis pointed up in the hand, and whether it pointed down; nil when unknown),
+-- place_above_floor (bone 1's height above that floor at the drop: about hand height when bone 1 is a
+-- place in the world), the calls made, what toss, clear and bones answered, and the calibration
+-- {place = bone 1, mount = bone 2} or nil.
 function Dropper:status()
     if not mine(self) then return {state = "refused", reason = "status is a method: dropper:status()"} end
-    return {state = self.state, reason = self.reason, ground = self.ground, toss_calls = self.toss_calls,
+    return {state = self.state, reason = self.reason, ground = self.ground, floor = self.floor, up_y = self.up_y,
+        upside = self.upside, place_above_floor = self.place_above_floor, toss_calls = self.toss_calls,
         clear_calls = self.clear_calls, bones_calls = self.bones_calls, toss_result = self.toss_result,
         clear_result = self.clear_result, bones_result = self.bones_result, calibration = copy(self.calibration)}
 end
 
-BD.math = freeze({calibration_of = calibration_of})
+BD.math = freeze({calibration_of = calibration_of, up_of = up_of})
 return table.freeze(BD)

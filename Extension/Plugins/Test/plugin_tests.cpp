@@ -5517,9 +5517,9 @@ void bmx_lua_policy_runs_as_modules_and_the_inspector_starts_inert() {
     };
     const auto declaration = contents(directory / manifest_file);
     check(parse_manifest(declaration).permissions == std::set<std::string, std::less<>>{"input", "input.control", "input.lease", "input.capture", "skater.read",
-                  "menu", "storage", "world.physics", "world.physics.follow", "world.entities", "board"} &&
+                  "menu", "storage", "world.physics", "world.physics.follow", "world.entities"} &&
               check_package_files(directory).empty(),
-          "The public package declares exactly its reviewed general input/body/entity/board permissions and no native skater control");
+          "The public package declares exactly its reviewed general input/body/entity permissions and no native skater control");
     TestEnvironment environment;
     Host host(environment, Side::client);
     host.apply({{"bmx-lua-inspector", directory, "1", {}}});
@@ -6018,7 +6018,7 @@ void bmx_lua_menu_switches_explicit_slots_and_retains_cleanup_duty() {
             auto denied_manifest = Json::parse(files.at(manifest_file));
             denied_manifest["permissions"] = Json::array();
             for (const auto* permission : {"input", "input.lease", "input.capture", "skater.read", "menu", "storage",
-                                          "world.physics", "world.physics.follow", "world.entities", "board"})
+                                          "world.physics", "world.physics.follow", "world.entities"})
                 denied_manifest["permissions"].push_back(permission);
             files[manifest_file] = denied_manifest.dump();
             candidate = package(id, files);

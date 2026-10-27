@@ -16,7 +16,8 @@ local force_methods={"probe_batch","submit","receipt","acknowledge"}
 -- The facade's mount list after this change, in its reviewed order.
 local expected_order={"./lease_identity","./lease_source","./force_math","./bike_geometry","./bike_visual","./bike_spawn",
     "./tire","./brake","./pump","./force_solver","./forces","./force_stage","./catalog","./input","./ride_input_mapping",
-    "./frame_identity","./contact_runtime","./ride_inflight","./ride_runtime","./bones","./mounted_pose",
+    "./frame_identity","./motions","./tricks","./trick_runtime","./pose_targets",
+    "./contact_runtime","./ride_inflight","./ride_runtime","./bones","./mounted_pose","./board_drop",
     "./equipment_transition","./equipment_runtime","./bike_runtime_core"}
 -- Each staged module's top-level requires, read from its source. bike_admission
 -- is loaded by admission itself, before the list starts.
@@ -34,18 +35,22 @@ local requires={
     ["./input"]={"./catalog"},
     ["./ride_input_mapping"]={"./input","./lease_identity"},
     ["./frame_identity"]={"./lease_identity"},
+    ["./motions"]={},
+    ["./tricks"]={"./catalog","./motions"},
+    ["./trick_runtime"]={"./tricks","./motions","./catalog","./frame_identity","./force_math","./lease_identity"},
+    ["./pose_targets"]={"./catalog","./motions"},
     ["./contact_runtime"]={"./frame_identity"},
     ["./ride_inflight"]={"./force_math"},
-    ["./ride_runtime"]={"./ride_input_mapping","./forces","./force_math","./lease_identity","./bike_geometry","./ride_inflight"},
-    ["./bones"]={},
+    ["./ride_runtime"]={"./ride_input_mapping","./forces","./force_math","./lease_identity","./bike_geometry","./ride_inflight","./catalog"},
+    ["./bones"]={},["./board_drop"]={},
     ["./mounted_pose"]={"./bike_geometry","./bones"},
     ["./equipment_runtime"]={"./equipment_transition"},
     ["./bike_runtime_core"]={"./equipment_runtime","./bike_admission"},
 }
 -- What prepare_backend binds, and through it what create_ride needs.
-local backend={"./lease_source","./bike_spawn","./lease_identity","./bike_geometry","./ride_runtime","./contact_runtime","./force_stage","./mounted_pose"}
--- The trick adapter and its own dependencies stay out until measured support exists.
-local never_staged={"./trick_runtime","./tricks","./motions"}
+local backend={"./lease_source","./bike_spawn","./lease_identity","./bike_geometry","./ride_runtime","./contact_runtime","./force_stage","./trick_runtime","./pose_targets","./mounted_pose","./board_drop"}
+-- The standalone mesh presenter stays out: Ride and Spawn already own presentation.
+local never_staged={"./trick_presentation"}
 
 local function services()
     local f={now=1000,calls={},forbidden={},reserves={},releases={},records={},renewals=0,capture_acked=false}
@@ -260,17 +265,17 @@ function Tests.run()
         f.now+=16;out=owner:step(16)
         check(out.startup.core_ready==true and out.startup.core_instances==1 and out.startup.equipment_instances==1
             and out.startup.backend_ready==false and out.startup.ride_modules_bound==false
-            and out.startup.source_instances==0 and out.startup.spawn_instances==0 and out.startup.pose_instances==0,
+            and out.startup.source_instances==0 and out.startup.spawn_instances==0 and out.startup.pose_instances==0 and out.startup.trick_instances==0,
             "the next guarded step constructs one Core and equipment owner without preparing a backend")
         check(out.startup.loaded==#expected_order+1 and out.startup.last_module=="./bike_runtime_core"
             and next(f.calls)==nil and next(f.forbidden)==nil,"Core construction adds no import or native acquisition")
         f.now+=16;out=owner:step(16)
         check(out.startup.backend_ready==true and out.startup.ride_modules_bound==true
             and out.startup.core_instances==1 and out.startup.source_instances==1
-            and out.startup.spawn_instances==1 and out.startup.pose_instances==1,
-            "backend preparation binds Ride, Contact and one inert Poser after all imports and Core construction")
+            and out.startup.spawn_instances==1 and out.startup.pose_instances==1 and out.startup.trick_instances==1,
+            "backend preparation binds Ride, Contact, one inert trick adapter and Poser after all imports and Core construction")
         check(next(f.calls)==nil and next(f.forbidden)==nil,"backend preparation still acquires no native services")
-        check(out.startup.ride_trick_adapter==false,"the bound Ride models carry no trick adapter")
+        check(out.startup.ride_trick_adapter==true,"the bound Ride models carry one inert trick adapter")
         check(out.startup.loaded==#expected_order+1 and out.startup.last_module=="./bike_runtime_core",
             "backend preparation adds nothing to the staged list")
         for _,name in backend do check(position[name]~=nil,"backend module "..name.." was staged first") end

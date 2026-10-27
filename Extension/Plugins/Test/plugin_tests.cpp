@@ -5578,7 +5578,7 @@ void bmx_lua_policy_runs_as_modules_and_the_inspector_starts_inert() {
     };
     const auto declaration = contents(directory / manifest_file);
     check(parse_manifest(declaration).permissions == std::set<std::string, std::less<>>{"input", "input.control", "input.lease", "input.capture", "skater.read",
-                  "menu", "storage", "overlay", "world.physics", "world.physics.follow", "world.entities"} &&
+                  "menu", "storage", "overlay", "board", "world.physics", "world.physics.follow", "world.entities"} &&
               check_package_files(directory).empty(),
           "The public package declares exactly its reviewed general input/body/entity permissions and no native skater control");
     TestEnvironment environment;

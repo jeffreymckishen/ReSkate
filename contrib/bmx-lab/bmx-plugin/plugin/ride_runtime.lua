@@ -1,6 +1,10 @@
 -- Inactive subordinate: Core alone owns Source, body, Follow and lifecycle.
 -- Construction and observation make no native calls while this literal is false.
 local ACTIVATION_QUALIFIED = false
+-- A separate reviewed trial must qualify support and authored trick projection.
+-- Neither this literal nor the adapter's support gate is a runtime option.
+local RIDE_TRICKS_QUALIFIED = false
+local Catalog = RIDE_TRICKS_QUALIFIED and require("./catalog") or nil
 local Mapping = require("./ride_input_mapping")
 local Forces = require("./forces")
 local M = require("./force_math")
@@ -103,8 +107,8 @@ local function wrap(angle)
     if angle > math.pi then angle -= TAU end
     return angle
 end
--- The bike's own articulation, as bike_visual draws it. Ride has no trick
--- presentation, so the trick terms stay zero.
+-- The bike's own articulation, as bike_visual draws it. The drive prediction
+-- always stays separate from transient authored trick offsets.
 local NEUTRAL_POSE = table.freeze({steer=0,front_wheel_phase=0,rear_wheel_phase=0,crank_phase=0,
     barspin=0,tailwhip=0,movement_bike_pitch=0,movement_bike_roll=0})
 -- The presentation pose after an accepted step: the front steer angle the
@@ -128,6 +132,51 @@ local function presentation(previous,model,wheels,h)
         rear_wheel_phase=wrap(previous.rear_wheel_phase+rear),
         crank_phase=pedaling and pedal_torque>0 and wrap(previous.crank_phase+rear/CRANK_RATIO) or previous.crank_phase,
         barspin=0,tailwhip=0,movement_bike_pitch=0,movement_bike_roll=0}
+end
+-- Copy only bounded authored targets, never the adapter's opaque binding or a
+-- claim that a native rider pose was realized. Bounds also fit MountedPose.
+local function trick_targets(raw)
+    if type(raw)~="table" or getmetatable(raw)~=nil or raw.valid~=true
+        or raw.scope~="model_target_only" or raw.realized~=false
+        or raw.pose_provenance~="authored_motions_policy" or not Catalog.valid(raw.movement_id)
+        or type(raw.bar_neutral)~="boolean" or type(raw.rear_neutral)~="boolean" then return nil end
+    local out={valid=true,scope="model_target_only",realized=false,pose_provenance=raw.pose_provenance,
+        movement_id=raw.movement_id,bar_neutral=raw.bar_neutral,rear_neutral=raw.rear_neutral}
+    for key,cap in pairs({barspin=8*math.pi,tailwhip=8*math.pi,movement_bike_pitch=4*math.pi,
+        movement_bike_roll=4*math.pi,movement_crank_angle=8*math.pi}) do
+        local value=raw[key]
+        if not M.finite(value) or math.abs(value)>cap then return nil end
+        out[key]=value
+    end
+    for _,key in ipairs({"phase","progress","barspin_release","tailwhip_release","release_left_hand",
+        "release_right_hand","release_left_foot","release_right_foot"}) do
+        local value=raw[key]
+        if not M.finite(value) or value<0 or value>1 then return nil end
+        out[key]=value
+    end
+    return out
+end
+local function clear_trick_presentation(s)
+    if RIDE_TRICKS_QUALIFIED and s.tricks then
+        s.presentation_trick=nil
+        s.pose=s.drive_pose
+    end
+end
+local function trick_presentation(base,targets,frame)
+    if not targets then return base,nil end
+    local pose=table.clone(base)
+    for _,name in ipairs({"barspin","tailwhip","movement_bike_pitch","movement_bike_roll"}) do pose[name]=targets[name] end
+    pose.crank_phase=wrap(base.crank_phase+targets.movement_crank_angle)
+    local source={}
+    for _,name in ipairs({"generation","user","sequence","source_epoch","context_generation","observation_serial","observed_ms","packet"}) do
+        source[name]=frame.source[name]
+    end
+    -- Core consumes pose angles directly: crank_phase already has the offset
+    -- once. targets supplies release weights and the exact authored movement
+    -- phase; pedal_phase is the unoffset accepted drive prediction. This
+    -- descriptor carries no native effect or physical catch proof.
+    return pose,{scope="accepted_model_target_only",realized=false,serial=frame.serial,time=frame.time,
+        seconds=frame.seconds,source=source,pedal_phase=base.crank_phase,targets=targets}
 end
 -- The measured tilt of the body's up axis from world up, in degrees, and its
 -- roll rate about its own forward axis, in rad/s; nil when either is unknown.
@@ -496,6 +545,7 @@ local function stop(s, reason)
         -- physical timestamp, elapsed time, motion or unfinished air credit.
         append_trick_log(s,{control="ended",reason=detail(text)})
     end
+    clear_trick_presentation(s)
     s.phase="stopped"
     s.input_queue={}
 end
@@ -543,7 +593,7 @@ local function status(s)
         input_staged=s.input_staged,input_consumed=s.input_consumed,input_queued=#s.input_queue,
         observed_steps=s.observed_steps,model_steps=s.model_steps,receipt=s.last_receipt,
         model_history=s.model_history,hop_disposition=s.hop_disposition,metrics=s.metrics,
-        presentation_pose=s.pose,trick_log_n=s.trick_log_n,
+        presentation_pose=s.pose,presentation_trick=s.presentation_trick,trick_log_n=s.trick_log_n,
         model={trick_status=s.trick_status,trick_fallbacks=s.trick_fallbacks,
             alignment_status=s.alignment_status,recovery_status=s.recovery_status}})
 end
@@ -702,6 +752,10 @@ local function companion_result(s,frame,contact,actions)
             -- stamp an unbound bare authored target as a measured native pose.
             out.visual_targets=value.visual_targets and copy(value) or nil
             out.trick=copy(value)
+            if RIDE_TRICKS_QUALIFIED then
+                out.presentation_targets=trick_targets(value.visual_targets)
+                if not out.presentation_targets then out.trick_fallback="trick presentation unavailable" end
+            end
         else out.trick_fallback = "trick adapter refused: " .. detail(value.issue) end
     end
     if s.recovery then
@@ -762,7 +816,7 @@ end
 local function wheel_contacts(s,frame,decoded,centers,geometry)
     local bound,why=contact_binding(s,frame,decoded,2)
     if not bound then return nil,why end
-    local samples,grounded={},false
+    local samples,grounded,selected={},false,nil
     local forward=M.turn(frame.body.orientation,{0,0,1})
     for i,ray in ipairs(decoded.rays) do
         if ray.status=="clear" then
@@ -780,17 +834,32 @@ local function wheel_contacts(s,frame,decoded,centers,geometry)
                 forward=basis.forward,surface_velocity=copy(ray.surface_velocity)},separation=separation,
                 wheel_center=copy(centers[i]),wheel_radius=geometry.wheel_radius,
                 verified_plane=false,balance_normal_available=false}
-            grounded=grounded or Forces.eligible_support(frame.body,samples[i],.005,.10)
+            local eligible=Forces.eligible_support(frame.body,samples[i],.005,.10)
+            grounded=grounded or eligible
+            if eligible and selected==nil then selected=i end
         else return nil,"measured wheel surface unavailable" end
     end
     -- Contact.decode returns a new table frozen all through: kept as it is,
     -- where detaching copied it. Anything else is detached as before.
-    return {samples=samples,grounded=grounded,decoded=frozen_whole(decoded) or detached(decoded),
+    local result={samples=samples,grounded=grounded,decoded=frozen_whole(decoded) or detached(decoded),
         support={known=true,grounded_known=true,grounded=grounded,epoch=frame.physics_epoch,
             provenance="measured_rays_authored_wheel_geometry",native_collision_contact=false,
             actor_lane=decoded.query.actor_lane,
             actor_tripwire=decoded.query.actor_lane=="identity" and "not_required_identity_lane" or nil,
             landing_quality_available=false,reason="landing_quality_not_qualified"}}
+    if RIDE_TRICKS_QUALIFIED and s.tricks then
+        -- A ray hit can be beyond the tyre or separating from it. Pick the
+        -- first actual support admitted by Forces, not merely the first hit.
+        result.support.landing_vectors_available=selected~=nil
+        if selected then
+            local hit=samples[selected].contact
+            result.support.wheel_index=selected
+            result.support.point=copy(hit.point)
+            result.support.normal=copy(hit.normal)
+            result.support.surface_velocity=copy(hit.surface_velocity)
+        end
+    end
+    return result
 end
 local function rider_tripwire_plan(frame,geometry)
     -- These authored capsule crossings require P2 before a private trial may
@@ -886,6 +955,9 @@ local function observe(s,source_frame,raw,context)
         end
     end
     s.last_sample=sample -- Consume before callbacks. This native serial cannot submit twice.
+    -- A prior accepted target cannot impersonate this newly measured epoch,
+    -- including when this step later meets command backpressure or refusal.
+    clear_trick_presentation(s)
     -- A tipping or rolling body stops here, on its consumed sample, before any
     -- query or command (TILT_STOP_DEG, ROLL_STOP_RATE).
     local tilt,roll=attitude(body,s.force.tuning.gravity)
@@ -949,6 +1021,7 @@ local function observe(s,source_frame,raw,context)
             s.tripwire_serial=sample.serial
             contact.support.actor_tripwire="authored_rider_crossings_clear_v1"
         end
+        if RIDE_TRICKS_QUALIFIED and s.tricks then contact.support.actor_tripwire_serial=s.tripwire_serial end
     end
     -- Contact diagnostics exist only after the complete wheel binding and,
     -- where required, the independent rider tripwire have passed.
@@ -1014,7 +1087,15 @@ local function observe(s,source_frame,raw,context)
         stop(s,"hop request expired before body progress");return
     end
     if s.tricks and type(controls.actions)~="table" then stop(s,"bound trick action snapshot unavailable");return end
-    local companions,companion_issue=companion_result(s,frame,contacted[2],controls.actions)
+    local trick_contact=contacted[2]
+    if RIDE_TRICKS_QUALIFIED and s.tricks then
+        -- Preserve the decoded binding, frame, query and original measured
+        -- rays. Only support is derived from the admitted wheel geometry.
+        trick_contact=table.clone(contact.decoded)
+        trick_contact.support=contact.support
+        trick_contact=freeze(trick_contact)
+    end
+    local companions,companion_issue=companion_result(s,frame,trick_contact,controls.actions)
     if not companions then stop(s,companion_issue);return end
     if s.stopped then return end
     s.model_steps+=1
@@ -1074,7 +1155,11 @@ local function observe(s,source_frame,raw,context)
     end
     local wheels=wheel_copy(model.wheels,s.wheels)
     if not wheels then stop(s,"bounded wheel model unavailable");return end
-    local pose=presentation(s.pose,model,wheels,sample.seconds)
+    local drive=presentation(s.drive_pose,model,wheels,sample.seconds)
+    local pose,projection=drive,nil
+    if drive and RIDE_TRICKS_QUALIFIED and s.tricks then
+        pose,projection=trick_presentation(drive,companions.presentation_targets,frame)
+    end
     if not pose then stop(s,"bounded presentation model unavailable");return end
     local p={serial=sample.serial,time=sample.time,seconds=sample.seconds,submitted_at=s.now,
         hop_id=model.hop_applied and model.hop_event_id or nil,wheels=wheels,
@@ -1102,7 +1187,14 @@ local function observe(s,source_frame,raw,context)
         s.wheels=wheels
         -- The pose follows the accepted prediction, with the wheels it adopts;
         -- model_history names that step.
-        s.pose=freeze(pose)
+        s.drive_pose=freeze(drive)
+        if RIDE_TRICKS_QUALIFIED and s.tricks and (not submitted.current or not adopted.current or s.stopped) then
+            clear_trick_presentation(s)
+        else
+            s.pose=freeze(pose)
+            if projection then projection.sequence=sequence end
+            s.presentation_trick=freeze(projection)
+        end
         s.model_history=freeze({kind="predictive_accepted",serial=p.serial,sequence=sequence,
             reason="exact_force_admission",native_wheel_state_known=false})
         if s.hop_policy=="grounded_once" then
@@ -1141,7 +1233,7 @@ function Ride.new(force_api,models,options)
         contact=models.contact,tricks=models.tricks,recovery=models.recovery,alignment=models.alignment,
         alignment_options=detached(options.alignment),geometry=detached(options.geometry or Geometry),
         wheels=Forces.proposed_wheels(),phase="inert",issue="native qualification required",generation=0,
-        pose=freeze(NEUTRAL_POSE),trick_fallbacks=0,
+        pose=freeze(NEUTRAL_POSE),drive_pose=freeze(NEUTRAL_POSE),trick_fallbacks=0,
         trick_log_generation=next_log_generation,trick_log_n=0,trick_log_rows={},trick_log_airborne=false,
         trick_log_exhausted=next_log_generation==MAX_SAFE,
         submitted=0,acknowledged=0,pending={},metrics=new_metrics(),backpressure_steps=0,

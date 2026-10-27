@@ -121,6 +121,22 @@ owned-file manifest, identical rerun, binding refusals and missing-dependency re
 both an absent destination and an existing owned copy. The suite's constructed presentation
 callbacks do not establish Host permission, rider alignment or native presentation qualification.
 
+The distinct `bike_runtime_core_trick_wiring_fixture.lua` exercises actual `Core.new` wiring.
+It changes exactly four canonical declarations: `RIDE_COMPOSITION_QUALIFIED=false` to `true`,
+`local Ride=require("./ride_runtime")` to the existing `ride_runtime_tricks_qualified_fixture`,
+`local TrickRuntime=require("./trick_runtime")` to `trick_runtime_ride_support_qualified_fixture`,
+and `MountedPose=require("./mounted_pose")` to `mounted_pose_qualified_fixture`. Everything else
+in Core stays byte-identical; the older guard and pose fixtures retain their separate semantics.
+The three generated dependencies must exist. Missing, duplicate, or already-qualified declarations,
+including a canonical declaration beside an alternate one, refuse before destination mutation.
+The new fixture is also refused if planted in the plugin source. `floor-manifest` checks its exact
+bytes, unchanged dependency copies, lexical manifest and exact entry count, identical reruns, all
+four substitution refusals and missing dependencies against absent and owned destinations. Removing
+Core removes every owned Core fixture; restoring it reproduces the exact earlier copy.
+CMake routes `core_trick_wiring_tests` through its new fixture import. The existing
+`core_trick_presentation_tests` already routes through its qualified Ride, TrickRuntime and Poser
+imports. These suites use constructed SDK services; they do not qualify native support or gameplay.
+
 Every qualified copy also contains `main_score_entry_fixture.lua`, built from the current
 `main.lua` bytes between exactly `return function(reskate, require)\n` and `\nend`.
 The wrapper supplies function parameters for the entry suite's constructed SDK and module

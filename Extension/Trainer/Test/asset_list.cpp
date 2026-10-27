@@ -108,11 +108,137 @@ void tree(const ebx::Value &value, int depth, const std::string &indent) {
         }
     } else std::cout << "(other)\n";
 }
+// These modes report identities only; presence in a manifest is not a store or residency check.
+std::string metadata_text(std::string_view value) {
+    std::string text;
+    for (const auto c : value) {
+        switch (c) {
+        case '\\': text += "\\\\"; break;
+        case '\t': text += "\\t"; break;
+        case '\r': text += "\\r"; break;
+        case '\n': text += "\\n"; break;
+        default: text += c; break;
+        }
+    }
+    return text;
+}
+std::string metadata_hex(std::span<const std::byte> bytes) {
+    constexpr char digits[] = "0123456789abcdef";
+    std::string text;
+    for (const auto byte : bytes) {
+        const auto value = std::to_integer<unsigned>(byte);
+        text += digits[value >> 4];
+        text += digits[value & 15];
+    }
+    return text;
+}
+void asset_metadata(const dingosdk::frostbite::BundleAsset &asset, bool has_location) {
+    using dingosdk::frostbite::AssetKind;
+    const auto kind = asset.kind == AssetKind::ebx ? "EBX" : asset.kind == AssetKind::resource ? "RES" : "CHUNK";
+    std::cout << "ASSET\tkind=" << kind << "\tname=" << metadata_text(asset.name)
+              << "\tsha1=" << metadata_hex(asset.sha1.bytes) << "\tsize=" << asset.originalSize
+              << "\tpayload_location=" << (has_location ? "present" : "missing");
+    if (asset.kind == AssetKind::resource)
+        std::cout << "\tresource_type=0x" << std::hex << asset.resourceType << "\tresource_id=0x" << asset.resourceId << std::dec;
+    else if (asset.kind == AssetKind::chunk)
+        std::cout << "\tguid=" << asset.guid.string() << "\tlogical_offset=" << asset.logicalOffset << "\tlogical_size=" << asset.logicalSize;
+    else std::cout << "\troot_type=not_decoded";
+    std::cout << '\n';
+}
+int metadata_inventory(const dingosdk::vfs::GameBundle &bundle, const std::vector<std::string> &words) {
+    std::size_t ebx_count{}, resource_count{}, chunk_count{}, missing{};
+    const auto list = [&](const auto &assets, std::size_t &count) {
+        for (std::size_t i = 0; i < assets.size(); ++i) {
+            const auto &asset = assets[i];
+            const auto name = lower(asset.name);
+            if (!words.empty() && std::ranges::none_of(words, [&](const auto &word) { return name.find(word) != std::string::npos; })) continue;
+            const bool present = bundle.payload(asset.kind, i) != nullptr;
+            asset_metadata(asset, present);
+            ++count;
+            if (!present) ++missing;
+        }
+    };
+    list(bundle.manifest.ebx, ebx_count);
+    list(bundle.manifest.resources, resource_count);
+    list(bundle.manifest.chunks, chunk_count);
+    std::cout << "SUMMARY\tmode=metadata\tebx=" << ebx_count << "\tresources=" << resource_count << "\tchunks=" << chunk_count
+              << "\tpayload_locations_missing=" << missing << "\tebx_decoded=0\tebx_decode_failed=0\tebx_not_decoded=" << ebx_count << '\n';
+    return missing == 0 ? 0 : 1;
+}
+int inspect_asset(const dingosdk::vfs::GameData &data, const dingosdk::vfs::GameBundle &bundle, std::string_view wanted_name) {
+    using dingosdk::frostbite::AssetKind;
+    const auto wanted = lower(wanted_name);
+    std::size_t selected{}, decoded{}, missing{}, read_failed{}, decode_failed{}, untyped{}, resource_locations_missing{};
+    for (std::size_t i = 0; i < bundle.manifest.ebx.size(); ++i) {
+        const auto &asset = bundle.manifest.ebx[i];
+        if (lower(asset.name) != wanted) continue;
+        ++selected;
+        const auto *payload = bundle.payload(AssetKind::ebx, i);
+        asset_metadata(asset, payload != nullptr);
+        if (!payload) { ++missing; continue; }
+        std::vector<std::byte> bytes;
+        try {
+            bytes = data.read(*payload);
+        } catch (const std::exception &error) {
+            ++read_failed;
+            std::cout << "ERROR\tstage=payload_read\tname=" << metadata_text(asset.name) << "\tmessage=" << metadata_text(error.what()) << '\n';
+            continue;
+        }
+        std::optional<ebx::Document> document;
+        try {
+            document = ebx::read_document(bytes);
+        } catch (const std::exception &error) {
+            ++decode_failed;
+            std::cout << "ERROR\tstage=ebx_decode\tname=" << metadata_text(asset.name) << "\tmessage=" << metadata_text(error.what()) << '\n';
+            continue;
+        }
+        ++decoded;
+        if (document->rootType.empty()) ++untyped;
+        std::cout << "EBX\tname=" << metadata_text(asset.name) << "\tfile_guid=" << document->fileGuid.string()
+                  << "\troot_type=" << metadata_text(document->rootType) << "\tinstances=" << document->instances.size()
+                  << "\timports=" << document->imports.size() << "\tresource_refs=" << document->resourceRefOffsets.size() << '\n';
+        for (std::size_t n = 0; n < document->imports.size(); ++n) {
+            const auto &import = document->imports[n];
+            std::cout << "IMPORT\tindex=" << n << "\tfile_guid=" << import.fileGuid.string() << "\tclass_guid=" << import.classGuid.string() << '\n';
+        }
+        for (const auto &type : document->types) {
+            // The reader leaves these zero when a reflection identity was not supplied.
+            const bool has_identity = type.signature != 0 || std::ranges::any_of(type.guid.bytes, [](std::byte byte) { return byte != std::byte{}; });
+            std::cout << "TYPE\tname=" << metadata_text(type.name) << "\tguid=" << type.guid.string()
+                      << "\tsignature=0x" << std::hex << type.signature << std::dec
+                      << "\tidentity=" << (has_identity ? "recorded" : "zero_or_unavailable") << '\n';
+        }
+        // EFIX records these slots relative to EBXD; no object walk or payload dump is needed.
+        dingosdk::frostbite::BinaryReader reader(document->payload);
+        for (const auto offset : document->resourceRefOffsets) {
+            reader.seek(offset);
+            const auto id = reader.u64();
+            std::size_t local_matches{};
+            for (std::size_t n = 0; n < bundle.manifest.resources.size(); ++n) {
+                const auto &resource = bundle.manifest.resources[n];
+                if (id == 0 || resource.resourceId != id) continue;
+                ++local_matches;
+                std::cout << "RESOURCE_MATCH\tref_offset=" << offset << "\tname=" << metadata_text(resource.name) << '\n';
+                const bool has_location = bundle.payload(AssetKind::resource, n) != nullptr;
+                asset_metadata(resource, has_location);
+                if (!has_location) ++resource_locations_missing;
+            }
+            std::cout << "RESOURCE_REF\toffset=" << offset << "\tid=0x" << std::hex << id << std::dec
+                      << "\tlocal_matches=" << local_matches << "\tresolution="
+                      << (id == 0 ? "null" : local_matches ? "selected_bundle_manifest" : "external_or_missing") << '\n';
+        }
+    }
+    std::cout << "SUMMARY\tmode=inspect\tselected=" << selected << "\tmissing_asset=" << (selected == 0 ? 1 : 0)
+              << "\tebx_payload_location_missing=" << missing << "\tebx_read_failed=" << read_failed << "\tebx_decode_failed=" << decode_failed
+              << "\tebx_decoded=" << decoded << "\tebx_untyped=" << untyped << "\tmatched_resource_locations_missing=" << resource_locations_missing
+              << "\tsuccess_scope=ebx_decode\n";
+    return selected != 0 && decoded == selected && untyped == 0 ? 0 : 1;
+}
 } // namespace
 
 int main(int argc, char **argv) {
     if (argc < 3) {
-        std::cerr << "usage: dingosdk_trainer_asset_list <Skate folder> <word>... | --dump <asset name> | --types <word>...\n";
+        std::cerr << "usage: dingosdk_trainer_asset_list <Skate folder> <word>... | --dump <asset name> | --types <word>... | --metadata [word]... | --inspect <exact EBX name>\n";
         return 2;
     }
     try {
@@ -130,6 +256,19 @@ int main(int argc, char **argv) {
         if (!found) throw std::runtime_error("the level root bundle was not found");
         const auto &bundle = *found;
         const std::string mode = argv[2];
+        if (mode == "--metadata" || mode == "--inspect") {
+            if (mode == "--inspect" && argc != 4) {
+                std::cerr << "--inspect requires one exact EBX name\n";
+                return 2;
+            }
+            std::cout << "CONTEXT\ttoc=" << metadata_text(toc_name ? toc_name : "Win32/levels/game/bam_levelroot/bam_levelroot.toc")
+                      << "\tbundle=" << metadata_text(bundle_name ? bundle_name : "win32/levels/game/bam_levelroot/bam_levelroot")
+                      << "\tstore_classification=unknown\tresidency=manifest_only\n";
+            if (mode == "--inspect") return inspect_asset(data, bundle, argv[3]);
+            std::vector<std::string> words;
+            for (int i = 3; i < argc; ++i) words.push_back(lower(argv[i]));
+            return metadata_inventory(bundle, words);
+        }
         if (mode == "--floats" && argc >= 4) {
             // Every aligned four bytes of the asset's data that read as a plausible number.
             const auto wanted = lower(argv[3]);

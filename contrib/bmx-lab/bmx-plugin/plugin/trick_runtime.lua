@@ -6,6 +6,9 @@ local catalog = require("./catalog")
 local Frame = require("./frame_identity")
 local M = require("./force_math")
 local Identity = require("./lease_identity")
+-- A reviewed private trial may qualify the declared Ride wheel-ray lane. This
+-- is not a runtime option and never promotes rays to native collision contacts.
+local RIDE_SUPPORT_QUALIFIED = false
 local Runtime = {}
 local MAX = 9007199254740991
 local scalar_source = {"generation", "user", "sequence", "source_epoch", "context_generation",
@@ -14,7 +17,7 @@ local settings_names = {"bar_seconds", "tail_seconds", "catch_window", "catch_bl
     "max_sample_seconds", "max_yaw_rate", "max_air_seconds", "landing_settle_seconds", "landing_gap_seconds",
     "minimum_body_up_alignment", "minimum_support_up_alignment", "maximum_closing_speed"}
 local target_numbers = {"barspin", "tailwhip", "movement_bike_pitch", "movement_bike_roll", "movement_crank_angle",
-    "phase", "progress", "release_left_hand", "release_right_hand", "release_left_foot", "release_right_foot"}
+    "phase", "progress", "release_left_hand", "release_right_hand", "release_left_foot", "release_right_foot", "barspin_release", "tailwhip_release"}
 local state_bools = {"airborne", "landing_pending", "bar_rotating", "tail_rotating", "bar_waiting_catch",
     "tail_waiting_catch", "bar_caught", "tail_caught", "movement_holding", "movement_recovering", "movement_caught"}
 local event_bools = {"took_off", "landed", "combo_landed", "failed", "canceled", "bar_caught", "tail_caught", "movement_caught"}
@@ -85,6 +88,91 @@ local function measured_continuity(previous, current)
     if math.abs(elapsed - current.seconds) > 1e-6 then return {kind = "invalid", reason = "physical_elapsed_mismatch"} end
     return {kind = "successor", physical_elapsed = elapsed}
 end
+-- Ride already derives support from its authored wheel geometry. This adapter
+-- accepts only the same bound measurements and declared exclusion lane; the
+-- selected wheel remains Ride's first eligible supporting wheel, not a claim
+-- that a native collision callback fired. No geometry query is performed here.
+local function ride_array(v, bound)
+    if not plain(v) then return nil end
+    local count = 0
+    for k in pairs(v) do
+        count += 1
+        if count > 3 or not integer(k, 1, 3) then return nil end
+    end
+    if count ~= 3 then return nil end
+    return array(v, bound)
+end
+local function same_vector(a, b)
+    return a and b and same_number(a[1], b[1]) and same_number(a[2], b[2]) and same_number(a[3], b[3])
+end
+local function ride_support_copy(raw, frame, query, s)
+    if not RIDE_SUPPORT_QUALIFIED then return nil, "physical_support_unqualified" end
+    if rawget(raw, "status") ~= "available" or not rawequal(rawget(s, "epoch"), frame.physics_epoch)
+        or rawget(s, "native_collision_contact") ~= false or rawget(s, "actor_lane") ~= rawget(query, "actor_lane")
+        or rawget(query, "status") ~= "available" or rawget(query, "measurements_complete") ~= true
+        or rawget(query, "epoch_matches") ~= true or rawget(query, "accounting_known") ~= true
+        or rawget(query, "budget_exhausted") ~= false or rawget(query, "owned_bodies_excluded") ~= true
+        or not integer(rawget(query, "native_casts"), 2, 4) then return nil, "ride_support_query_unqualified" end
+    local lane, preset = rawget(query, "actor_lane"), rawget(query, "requested_query_preset")
+    if lane == "identity" then
+        if rawget(query, "local_actor_excluded") ~= true
+            or rawget(query, "named_actor_categories_absent") ~= nil and rawget(query, "named_actor_categories_absent") ~= false
+            or preset ~= nil and preset ~= "camera" and preset ~= "terrain"
+            or rawget(s, "actor_tripwire") ~= "not_required_identity_lane" or rawget(s, "actor_tripwire_serial") ~= nil then
+            return nil, "ride_support_actor_unqualified"
+        end
+    elseif lane == "named_categories_absent" then
+        if rawget(query, "local_actor_excluded") ~= false or rawget(query, "named_actor_categories_absent") ~= true
+            or preset ~= "camera" then return nil, "ride_support_actor_unqualified" end
+        local tripwire = rawget(s, "actor_tripwire_serial")
+        if not Identity.is_nonzero_u64(tripwire) then return nil, "ride_support_tripwire_unqualified" end
+        local age = Identity.bounded_delta(frame.serial, tripwire, 1)
+        local expected = age == 0 and "authored_rider_crossings_clear_v1"
+            or age == 1 and "authored_rider_crossings_clear_previous_epoch_v1" or nil
+        if not expected or rawget(s, "actor_tripwire") ~= expected then return nil, "ride_support_tripwire_unqualified" end
+    else return nil, "ride_support_actor_unqualified" end
+    local rays = rawget(raw, "rays")
+    if not plain(rays) then return nil, "ride_support_rays_unqualified" end
+    local count = 0
+    for k in pairs(rays) do
+        count += 1
+        if count > 2 or not integer(k, 1, 2) then return nil, "ride_support_rays_unqualified" end
+    end
+    if count ~= 2 then return nil, "ride_support_rays_unqualified" end
+    local measured = {}
+    for i = 1, 2 do
+        local ray = rawget(rays, i)
+        if not plain(ray) then return nil, "ride_support_rays_unqualified" end
+        if rawget(ray, "status") == "hit" then
+            if rawget(ray, "normal_available") ~= true or rawget(ray, "surface_velocity_available") ~= true
+                or rawget(ray, "motion") ~= "measured" then return nil, "ride_support_rays_unqualified" end
+            local point, normal, surface = ride_array(rawget(ray, "position"), 100000),
+                ride_array(rawget(ray, "normal"), 1.01), ride_array(rawget(ray, "surface_velocity"), 50)
+            if not point or not normal or not surface or math.abs(M.length(normal) - 1) > .001 then
+                return nil, "ride_support_rays_unqualified"
+            end
+            measured[i] = {point = point, normal = M.unit(normal), surface_velocity = surface}
+        elseif rawget(ray, "status") ~= "clear" then return nil, "ride_support_rays_unqualified" end
+    end
+    local out = {grounded = s.grounded}
+    if not out.grounded then
+        if rawget(s, "landing_vectors_available") ~= false or rawget(s, "wheel_index") ~= nil
+            or rawget(s, "point") ~= nil or rawget(s, "normal") ~= nil or rawget(s, "surface_velocity") ~= nil then
+            return nil, "ride_support_airborne_vectors"
+        end
+        return out
+    end
+    local selected = rawget(s, "wheel_index")
+    if rawget(s, "landing_vectors_available") ~= true or not integer(selected, 1, 2) or not measured[selected] then
+        return nil, "landing_quality_unavailable"
+    end
+    out.point, out.normal, out.surface_velocity = ride_array(rawget(s, "point"), 100000),
+        ride_array(rawget(s, "normal"), 1.01), ride_array(rawget(s, "surface_velocity"), 50)
+    local hit = measured[selected]
+    if not same_vector(out.point, hit.point) or not same_vector(out.normal, hit.normal)
+        or not same_vector(out.surface_velocity, hit.surface_velocity) then return nil, "ride_support_hit_mismatch" end
+    return out
+end
 local function support_copy(raw, frame)
     if not plain(raw) or rawget(raw, "valid") ~= true or not plain(rawget(raw, "binding"))
         or not plain(rawget(raw, "frame")) or not plain(rawget(raw, "query")) then return nil, "invalid_contact_packet" end
@@ -98,9 +186,11 @@ local function support_copy(raw, frame)
     end
     local s = rawget(raw, "support")
     if not plain(s) or rawget(s, "known") ~= true or rawget(s, "grounded_known") ~= true
-        or type(rawget(s, "grounded")) ~= "boolean" or rawget(s, "provenance") ~= "measured_support" then
-        return nil, "physical_support_unqualified"
+        or type(rawget(s, "grounded")) ~= "boolean" then return nil, "physical_support_unqualified" end
+    if rawget(s, "provenance") == "measured_rays_authored_wheel_geometry" then
+        return ride_support_copy(raw, frame, query, s)
     end
+    if rawget(s, "provenance") ~= "measured_support" then return nil, "physical_support_unqualified" end
     -- Geometry hit/clear is deliberately insufficient. Actual Contact.decode
     -- currently returns support unknown, so it remains gated here.
     if rawget(query, "epoch_matches") ~= true or rawget(query, "accounting_known") ~= true
@@ -131,7 +221,7 @@ local function target_copy(t)
     for _, name in ipairs(target_numbers) do
         local n = rawget(t, name); if not finite(n) or math.abs(n) > 10000 then return nil end; out[name] = n
     end
-    for _, name in ipairs({"phase", "progress", "release_left_hand", "release_right_hand", "release_left_foot", "release_right_foot"}) do
+    for _, name in ipairs({"phase", "progress", "release_left_hand", "release_right_hand", "release_left_foot", "release_right_foot", "barspin_release", "tailwhip_release"}) do
         if out[name] < 0 or out[name] > 1 then return nil end
     end
     for _, name in ipairs({"bar_neutral", "rear_neutral"}) do
@@ -327,16 +417,19 @@ function Runtime.new(settings)
                 local heading = yaw(M.sub(approach.body.linear_velocity, support.surface_velocity))
                 local pre, post = closing(approach.body, support), closing(frame.body, support)
                 if not heading or not pre or not post then cancel("preimpact_quality_unavailable"); return rejected("preimpact_quality_unavailable", frame, true) end
-                T.impact = {time = frame.time, travel_yaw = heading, closing = math.max(pre, post)}
+                T.impact = {time = frame.time, travel_yaw = heading, closing = math.max(pre, post), support = support}
             end
-            local post = closing(frame.body, support)
+            -- A later wheel or surface must not replace the first impact with
+            -- a gentler normal, point or velocity during the settling window.
+            local impact_support = T.impact.support
+            local post = closing(frame.body, impact_support)
             if not body_yaw or not post or frame.time - T.impact.time > .2 + limits.landing_settle_seconds + limits.landing_gap_seconds then
                 cancel("landing_quality_unavailable"); return rejected("landing_quality_unavailable", frame, true)
             end
             T.impact.closing = math.max(T.impact.closing, post)
             travel_yaw = T.impact.travel_yaw
-            quality = {body_up_alignment = M.dot(M.turn(frame.body.orientation, {0, 1, 0}), support.normal),
-                support_up_alignment = support.normal[2], closing_normal_speed = T.impact.closing}
+            quality = {body_up_alignment = M.dot(M.turn(frame.body.orientation, {0, 1, 0}), impact_support.normal),
+                support_up_alignment = impact_support.normal[2], closing_normal_speed = T.impact.closing}
         end
         if not support.grounded then
             -- A new unsupported interval is a new measured approach. Recontact
@@ -368,6 +461,7 @@ function Runtime.new(settings)
             movement_crank_angle = state.movement_crank_angle, movement_id = state.movement_id,
             phase = state.movement_phase, progress = state.movement_progress, release_left_hand = state.release_left_hand,
             release_right_hand = state.release_right_hand, release_left_foot = state.release_left_foot, release_right_foot = state.release_right_foot,
+            barspin_release = state.bar_release, tailwhip_release = state.tail_release,
             bar_neutral = actions.bar_neutral, rear_neutral = actions.rear_neutral})
         if not targets then cancel("invalid_model_targets"); return rejected("invalid_model_targets", frame, true) end
         local entry = motions.find(state.movement_id)

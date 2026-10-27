@@ -1268,7 +1268,8 @@ function Ride:step(tick)
 
     -- Forces. The kernel previews from its committed history, which only an
     -- accepted command advances. A read that does not follow the last
-    -- accepted read previews from a reset kernel, as after a serial gap.
+    -- accepted read previews from a reset kernel, as after a serial gap,
+    -- except for the pedal latch.
     local fc
     if not active or self.mode == "grinding" or not t.qualified then
         -- Passive support only: gated input submits no rider control, and a
@@ -1280,7 +1281,14 @@ function Ride:step(tick)
         fc.rotation_reserved = fc.rotation_reserved or self._trick_reserved == true
     end
     if not (self._kernel_serial and Identity.bounded_delta(t.serial, self._kernel_serial, 1) == 1) then
+        -- The pedal latch follows speed alone (forces.lua pedal_cadence), so a
+        -- withheld read or a late receipt keeps it: a gap in the commands is
+        -- not a gap in the bike's speed, and clearing it here would let a
+        -- held pedal start again inside the band. A recovery or a bail still
+        -- clears it, through _reset_models and the bail reset.
+        local latch = self._kernel.pedal_latch
         self._kernel:reset()
+        self._kernel.pedal_latch = latch
         self._kernel_serial = nil
     end
     local kernel, candidate
@@ -1292,8 +1300,9 @@ function Ride:step(tick)
     diagnostics.kernel = { valid = kernel.valid, issue = kernel.issue, grounded = kernel.grounded,
         hop_applied = kernel.hop_applied, steering_limited = kernel.steering_limited,
         front_steer_angle = kernel.front_steer_angle, normal_load = kernel.normal_load, enabled = fc.enabled ~= false,
-        pedal = fc.pedal or 0, brake = fc.brake or 0, manual = fc.manual or 0, nose_manual = fc.nose_manual or 0,
-        committed_serial = self._kernel_serial, consumed_hop = self._kernel:consumed_hop_event_id() }
+        pedal = fc.pedal or 0, pedaling = kernel.valid == true and kernel.pedaling == true, brake = fc.brake or 0,
+        manual = fc.manual or 0, nose_manual = fc.nose_manual or 0, committed_serial = self._kernel_serial,
+        consumed_hop = self._kernel:consumed_hop_event_id() }
 
     -- The submit decision comes before anything is committed or retired. An
     -- unguarded read fails closed first: no force, torque or hop impulse
@@ -1366,7 +1375,11 @@ function Ride:step(tick)
     -- read's steer and wheel phases and last read's presented crank, because
     -- the rider cue that presents the crank reads this read's trick targets.
     for i = 1, 2 do self._wheel_phase[i] = wrap(self._wheel_phase[i] + t.wheels[i].angular_speed * h) end
-    local pedaling = fc.enabled ~= false and (fc.pedal or 0) > 0
+    -- The kernel's own pedaling decision (forces.lua pedal_cadence), so the
+    -- drawn crank turns only on a read whose preview pedals. At the top
+    -- pedaling speed with the pedal held it stops, and rider_presentation
+    -- levels it as for a released pedal.
+    local pedaling = kernel.valid == true and kernel.pedaling == true
     if pedaling then self._raw_crank = wrap(self._raw_crank + t.wheels[2].angular_speed * h / self._crank_ratio) end
     local support, support_issue = support_packet(tick.support)
     diagnostics.support.owner = support_issue

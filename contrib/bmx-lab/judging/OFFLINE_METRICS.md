@@ -223,10 +223,12 @@ an owner table as `targets`. The extraction does not change.
 ## Current offline readings
 
 These were recorded on 2026-10-25 with today's forces.lua and input.lua defaults, the same model as
-SIMULATION.md's baseline. They describe that model in an authored world, not the game. They were
-read by running the extractors over `Scenarios.run()` in a scratch copy. The tests check every
-field quoted here on constructed traces with known answers, but they do not assert these model
-values, because forces.lua is tuned elsewhere.
+SIMULATION.md's baseline. The S01 coast and brake readings were taken again on 2026-10-26, when the
+rider began to stop pedaling at 7.9 m/s; no score and no other scenario changed. They describe that
+model in an authored world, not the game. They were read by running the extractors over
+`Scenarios.run()` in a scratch copy. The tests check every field quoted here on constructed traces
+with known answers, but they do not assert these model values, because forces.lua is tuned
+elsewhere.
 
 | Metric | Model | Band | Score |
 | --- | --- | --- | --- |
@@ -242,8 +244,8 @@ Seven metrics are scored, 459 are unscored, none is missing, and the lowest scor
 unscored readings, for context:
 
 - Pedal: 3 m/s in 1.20 s, 2.53 m/s after 1 s, and 7.75 m/s after 4 s.
-- Coast: deceleration about 1e-6 m/s^2, because the model has no rolling resistance or drag.
-- Brake: 3.543 m/s^2 in every band, stopping in 8.92 m and 2.25 s from 7.98 m/s.
+- Coast: deceleration about 1e-10 m/s^2, because the model has no rolling resistance or drag.
+- Brake: 3.543 m/s^2 in every band, stopping in 8.74 m and 2.22 s from 7.90 m/s.
 - Turns: radius 3.22 m at 3 m/s and 7.13 m at 6 m/s, so the radius grows 1.28 m per m/s.
   Lateral acceleration is 2.87 and 5.20 m/s^2, and left and right mirror exactly.
 - Ramp: 93.1% and 96.3% of the entry speed is kept. At 6 m/s the bike spends 0.27 s with neither

@@ -44,7 +44,9 @@ cannot manufacture an incline.
 `time`, `seconds`, `serial` and the `enabled`, `pedaling` and `reserved` flags. While coasting, the
 displayed crank turns at most 4.5 rad/s to the nearest level stance, chosen once per coast so the
 front foot does not swap. Pedaling and reserved (trick) cadence apply only the fresh raw increment,
-so the display never snaps back to the raw angle. A new identity reseeds from its own raw phase;
+so the display never snaps back to the raw angle. `ride_composer.lua` takes `pedaling` from the
+force kernel's decision (FORCES.md), so with the pedal held at the top pedaling speed the crank
+levels as it does for a released pedal. A new identity reseeds from its own raw phase;
 `suspend_crank` lets the same bike resume at its displayed phase. The level angle is measured from
 `bike_geometry.lua`'s left pedal spindle and bottom bracket, the geometry `bike_visual.lua` rotates.
 

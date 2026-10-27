@@ -16,6 +16,7 @@ local Probe = require("./rail_probe")
 local Contact = require("./contact_runtime")
 local Guard = require("./bail_guard")
 local Geometry = require("./bike_geometry")
+local Rider = require("./rider_presentation")
 local Tests = {}
 local H = Forces.native_seconds
 local GRAVITY = Forces.tuning().gravity
@@ -369,18 +370,28 @@ local function settle_read(d, record)
 end
 
 -- One scenario: a scripted pad, the composer, the integrator, and a receipt
--- for every submitted command right after the constructed world ran it.
+-- for every submitted command right after the constructed world ran it. With
+-- spec.late each receipt arrives only after the next read instead, the native
+-- cadence RIDE_COMPOSER.md known gap 11 describes: that read is withheld as
+-- receipt_pending and the read after it previews across a serial gap.
 local function run(spec)
     local d = driver(spec)
     local trace, script_state = {}, {}
-    local last
+    local last, pending
     for step = 1, spec.max_steps do
         local input = spec.script(step, last, script_state)
         if input == nil then break end
         local record = read(d, input, spec.hooks and spec.hooks(step) or nil)
         local c = record.result.commands
         settle_read(d, record)
-        if c.submit then
+        if pending then
+            local ok, why = d.ride:accept(pending)
+            assert(ok, "the composer takes the late receipt for its own command: " .. tostring(why))
+            pending = nil
+        end
+        if c.submit and spec.late then
+            pending = c.serial
+        elseif c.submit then
             local ok, why = d.ride:accept(c.serial)
             assert(ok, "the composer takes the receipt for its own command: " .. tostring(why))
         end
@@ -460,6 +471,49 @@ scenarios.pedal_brake = { speed = 0, max_steps = 900, script = function(step, la
     end
     if step > st.stopped + 15 then return nil end
     return {}
+end }
+
+-- A held from rest past the top pedaling speed and on for 1 s, then B with A
+-- still held until the rider pedals again, A alone for 0.5 s, 0.5 s released,
+-- then A until the rider stops pedaling once more.
+scenarios.pedal_top_speed = { speed = 0, max_steps = 900, script = function(step, last, st)
+    if step <= 10 then return {} end
+    local pedaling = last.result.diagnostics.kernel.pedaling
+    if not st.tripped then
+        if last.input.pedal and not pedaling then st.tripped = step else return { pedal = true } end
+    end
+    if step <= st.tripped + 60 then return { pedal = true } end
+    if not st.resumed then
+        if pedaling then st.resumed = step else return { pedal = true, brake = true } end
+    end
+    if step <= st.resumed + 30 then return { pedal = true } end
+    if step <= st.resumed + 60 then return {} end
+    if not st.again then
+        if last.input.pedal and not pedaling then st.again = step else return { pedal = true } end
+    end
+    if step <= st.again + 10 then return { pedal = true } end
+    return nil
+end }
+
+-- A held for 2 s at 15 m/s, well past the top pedaling speed. The flat world
+-- has no drag, so it holds that speed as a long downhill would.
+scenarios.pedal_downhill = { speed = 15, max_steps = 130, script = function(step)
+    if step <= 10 then return {} end
+    return { pedal = true }
+end }
+
+-- Rolling at 8.5 m/s with A released, B alone into the band below 7.65 m/s,
+-- then A until the rider stops pedaling at the top speed again.
+scenarios.pedal_after_coast = { speed = 8.5, max_steps = 400, script = function(step, last, st)
+    if step <= 10 then return {} end
+    if not st.slowed then
+        if last.speed < 7.65 then st.slowed = step else return { brake = true } end
+    end
+    if not st.stopped then
+        if last.input.pedal and not last.result.diagnostics.kernel.pedaling then st.stopped = step else return { pedal = true } end
+    end
+    if step <= st.stopped + 10 then return { pedal = true } end
+    return nil
 end }
 
 -- R3 bunny hop at 4 m/s.
@@ -804,6 +858,163 @@ function Tests.run()
             fmt(reach(3)), fmt(reach(6)), fmt(top), fmt((stop_pedal - start) * H), fmt(top), fmt(tr[brake - 1].speed),
             fmt(tr[brake - 1].speed), fmt(brake_seconds), fmt(brake_distance), fmt(tr[brake - 1].speed / brake_seconds),
             cost_line(out)))
+    end)
+
+    -- The kernel decides pedaling (forces.lua pedal_cadence) and the drawn
+    -- crank follows that decision, so at the top pedaling speed the drive and
+    -- the crank stop together with A still held.
+    local tuning = Forces.tuning()
+    local top_speed, resume_speed = tuning.pedal_top_speed, tuning.pedal_resume_speed
+    local level_step = Rider.leveling_rate * H + 1e-9
+    local function pedaling(r) return r.result.diagnostics.kernel.pedaling == true end
+    -- The kernel's motor speed: the faster of the body and the rear rim.
+    local function motor(r) return math.max(r.speed, r.tick.wheels[2].angular_speed * r.tick.wheels[2].radius) end
+    local function crank(r)
+        local rider = r.result.presentation.rider
+        check(rider.valid and rider.crank and rider.crank.valid and rider.articulation, "step " .. r.step .. " presents the crank")
+        return rider.crank.state, rider.articulation.crank_phase
+    end
+    local function turned(a, b) return math.abs(math.atan2(math.sin(b - a), math.cos(b - a))) end
+    -- Over reads from..to: the raw crank advances (or holds) on every read and
+    -- the drawn crank only levels while it holds.
+    local function crank_runs(tr, from, to, advancing, why)
+        for i = from, to do
+            local previous_state, previous_phase = crank(tr[i - 1])
+            local state, phase = crank(tr[i])
+            if advancing then
+                check(turned(previous_state.raw_phase, state.raw_phase) > 0 and not state.coasting, why .. ": the crank turns at step " .. i)
+            else
+                check(state.raw_phase == previous_state.raw_phase and state.coasting, why .. ": the raw crank holds at step " .. i)
+                check(turned(previous_phase, phase) <= level_step, why .. ": the drawn crank only levels at step " .. i)
+            end
+        end
+    end
+
+    scenario("pedaling stops at the top pedaling speed and resumes below the band", function()
+        local out = run(scenarios.pedal_top_speed)
+        invariants("pedal_top_speed", out)
+        local tr = out.trace
+        local start = first(tr, 1, function(r) return r.input.pedal end)
+        local trip = first(tr, start, function(r) return not pedaling(r) end)
+        local braking = trip and first(tr, trip, function(r) return r.input.brake end)
+        local resumed = braking and first(tr, braking, pedaling)
+        local released = resumed and first(tr, resumed, function(r) return not r.input.pedal end)
+        local pressed = released and first(tr, released, function(r) return r.input.pedal end)
+        local again = pressed and first(tr, pressed, function(r) return not pedaling(r) end)
+        check(again ~= nil and again < #tr, "pedal_top_speed reaches every phase")
+        for i = start, #tr do check(tr[i].mode == "rolling" and tr[i].result.commands.submit, "pedal_top_speed rolls and submits") end
+
+        -- Accelerating with A: pedaling, the crank turns and the bike speeds up.
+        for i = start, trip - 1 do check(pedaling(tr[i]) and motor(tr[i]) < top_speed, "A below the top speed pedals") end
+        for i = start + 2, trip - 1 do check(tr[i].speed > tr[i - 1].speed, "pedaling drives the bike at step " .. i) end
+        crank_runs(tr, start + 2, trip - 1, true, "accelerating")
+        check(motor(tr[trip]) >= top_speed, "the rider stops pedaling on reaching the top speed")
+
+        -- A still held at the top speed: no drive, so with no drag the speed
+        -- holds, and the crank stops and levels.
+        for i = trip, braking - 1 do check(tr[i].input.pedal and not pedaling(tr[i]), "A held at the top speed coasts") end
+        check(math.abs(tr[braking - 1].speed - tr[trip].speed) < 1e-4, "no pedal drive at the top speed")
+        crank_runs(tr, trip, braking - 1, false, "top speed")
+        for i = braking - 20, braking - 1 do
+            local _, previous_phase = crank(tr[i - 1])
+            local _, phase = crank(tr[i])
+            check(turned(previous_phase, phase) <= 1e-12, "the coasting crank has come level and stays there")
+        end
+
+        -- Braked into the band with A held: still coasting until the resume speed.
+        for i = braking, resumed - 1 do check(not pedaling(tr[i]) and motor(tr[i]) > resume_speed, "inside the band A still coasts") end
+        crank_runs(tr, braking, resumed - 1, false, "band")
+        check(motor(tr[resumed]) <= resume_speed and motor(tr[resumed]) > resume_speed - .1,
+            "pedaling resumes on the first read at the resume speed")
+        for i = resumed, released - 1 do check(pedaling(tr[i]), "below the band A pedals again") end
+        for i = resumed + 2, released - 1 do check(tr[i].speed > tr[i - 1].speed, "resumed pedaling drives the bike at step " .. i) end
+        crank_runs(tr, resumed, released - 1, true, "resumed")
+
+        -- Released: coasting, as before this change.
+        for i = released, pressed - 1 do check(not pedaling(tr[i]), "a released pedal coasts") end
+        crank_runs(tr, released, pressed - 1, false, "released")
+        -- Pressed again below the top speed: pedaling up to it, and no further.
+        for i = pressed, again - 1 do check(pedaling(tr[i]) and motor(tr[i]) < top_speed, "A pressed again below the top speed pedals") end
+        crank_runs(tr, pressed, again - 1, true, "pressed again")
+        check(motor(tr[again]) >= top_speed, "and stops again at the top speed")
+
+        -- No flicker: pedaling changes only at the five scripted points.
+        local changes = 0
+        for i = start + 1, #tr do if pedaling(tr[i]) ~= pedaling(tr[i - 1]) then changes += 1 end end
+        check(changes == 5, "pedaling changes exactly five times, not " .. changes)
+        note(string.format("pedal_top_speed: stops pedaling at %s m/s after %s s of A and holds %s m/s with A held; braked with A held it pedals again at %s m/s; %s",
+            fmt(motor(tr[trip])), fmt((trip - start) * H), fmt(tr[braking - 1].speed), fmt(motor(tr[resumed])), cost_line(out)))
+    end)
+
+    scenario("A held at 15 m/s never turns the crank or drives the bike", function()
+        local out = run(scenarios.pedal_downhill)
+        invariants("pedal_downhill", out)
+        local tr = out.trace
+        local start = first(tr, 1, function(r) return r.input.pedal end)
+        -- The same run without A, for the command each read would send.
+        local released = { speed = scenarios.pedal_downhill.speed, max_steps = scenarios.pedal_downhill.max_steps,
+            script = function(step) return {} end }
+        local coast = run(released).trace
+        check(#coast == #tr, "the released run has as many reads")
+        for i = start, #tr do
+            local r = tr[i]
+            check(r.mode == "rolling" and r.result.commands.submit, "pedal_downhill rolls and submits")
+            check(r.result.diagnostics.kernel.pedal == 1 and not pedaling(r), "A held at 15 m/s is not pedaling")
+            local c, k = r.result.commands, coast[i].result.commands
+            check(M.length(M.sub(c.force, k.force)) == 0 and M.length(M.sub(c.torque, k.torque)) == 0
+                and c.wheels[2].angular_speed == k.wheels[2].angular_speed, "A held at 15 m/s sends the released command exactly")
+        end
+        crank_runs(tr, start, #tr, false, "15 m/s")
+        check(math.abs(tr[#tr].speed - tr[start].speed) < 1e-3, "the speed holds with A held")
+    end)
+
+    scenario("late receipts keep the pedaling band", function()
+        -- Each receipt after the next read: every other read is withheld and
+        -- each submitted read previews across a serial gap. The latch follows
+        -- speed alone, so that reset carries it and the band still holds.
+        local spec = table.clone(scenarios.pedal_top_speed)
+        spec.late, spec.max_steps = true, 1800
+        local out = run(spec)
+        invariants("pedal_top_speed late", out)
+        local tr = out.trace
+        local start = first(tr, 1, function(r) return r.input.pedal end)
+        local trip = first(tr, start, function(r) return not pedaling(r) end)
+        local braking = trip and first(tr, trip, function(r) return r.input.brake end)
+        local resumed = braking and first(tr, braking, pedaling)
+        check(resumed ~= nil, "pedal_top_speed late reaches the resume")
+        local pending = 0
+        for i = start, resumed do
+            if not tr[i].result.commands.submit then
+                check(tr[i].result.diagnostics.kernel.issue == "receipt_pending", "a read is withheld only for its receipt at step " .. i)
+                pending += 1
+            end
+        end
+        check(pending * 3 > resumed - start, "about every other read waits for a receipt, " .. pending .. " of " .. (resumed - start + 1))
+        check(motor(tr[trip]) >= top_speed, "late receipts still stop pedaling at the top speed")
+        for i = trip, resumed - 1 do check(not pedaling(tr[i]) and motor(tr[i]) > resume_speed, "late receipts: inside the band A still coasts") end
+        check(motor(tr[resumed]) <= resume_speed, "late receipts: pedaling resumes only at the resume speed")
+        note(string.format("pedal_top_speed late receipts: %d of %d reads withheld; stops at %s m/s, pedals again at %s m/s",
+            pending, resumed - start + 1, fmt(motor(tr[trip])), fmt(motor(tr[resumed]))))
+    end)
+
+    scenario("A pressed inside the band after coasting down from above pedals at once", function()
+        local out = run(scenarios.pedal_after_coast)
+        invariants("pedal_after_coast", out)
+        local tr = out.trace
+        local slowing = first(tr, 1, function(r) return r.input.brake end)
+        local pressed = slowing and first(tr, slowing, function(r) return r.input.pedal end)
+        local stopped = pressed and first(tr, pressed, function(r) return not pedaling(r) end)
+        check(stopped ~= nil and stopped < #tr, "pedal_after_coast reaches every phase")
+        check(motor(tr[slowing]) > top_speed, "the bike starts above the top speed")
+        for i = 1, pressed - 1 do check(not pedaling(tr[i]), "without A the rider coasts") end
+        check(motor(tr[pressed]) > resume_speed and motor(tr[pressed]) < top_speed, "A is pressed inside the band")
+        check(pedaling(tr[pressed]), "A pressed inside the band pedals on its first read")
+        for i = pressed, stopped - 1 do check(tr[i].input.pedal and pedaling(tr[i]) and motor(tr[i]) < top_speed, "A pedals at once below the top speed") end
+        for i = pressed + 2, stopped - 1 do check(tr[i].speed > tr[i - 1].speed, "pedaling drives the bike at step " .. i) end
+        crank_runs(tr, pressed, stopped - 1, true, "pressed after coasting")
+        check(motor(tr[stopped]) >= top_speed, "and stops again at the top speed")
+        note(string.format("pedal_after_coast: A pressed at %s m/s pedals at once and stops again at %s m/s",
+            fmt(motor(tr[pressed])), fmt(motor(tr[stopped]))))
     end)
 
     scenario("bunny hop", function()

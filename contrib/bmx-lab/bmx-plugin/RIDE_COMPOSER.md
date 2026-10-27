@@ -196,7 +196,8 @@ The composer calls `preview` instead and keeps the candidate until the native ow
   refused kernel) is retired as `cancelled`, because nothing was sent. A hop on an unguarded read is
   cancelled rather than held, because nothing says the next read will be guarded.
 - The committed kernel advances only through `accept`. A read that does not directly follow the last
-  accepted read previews from a reset kernel, as after a serial gap.
+  accepted read previews from a reset kernel, as after a serial gap. The pedal latch (FORCES.md) is
+  carried across that reset, because it follows speed alone; a recovery or a bail still clears it.
 - A bail makes the waiting command's candidate unadoptable, and recovery drops it
   (`recovered.dropped_command`).
 - `command_limits = {force, torque}` caps the submit path below the kernel's 40000 N and 4000 N m.
@@ -268,7 +269,8 @@ lock_on)` expose the graph. Every edge the composer takes goes through `allowed`
   crank plus the movement crank angle, and the trick targets. `Ride:matrices()` places that pose
   through `trick_presentation.present`.
 - **Rider.** `rider_presentation` gets the crank cadence (rear wheel at an authored 25/9 drive while
-  pedalling), the support and wheel normals, the trick releases and landing evidence. The C++
+  the kernel's preview says the rider is pedalling, which it does not at the top pedaling speed even
+  with A held; FORCES.md), the support and wheel normals, the trick releases and landing evidence. The C++
   landing Tracker is not ported. The composer's own evidence uses the last unsupported read's
   velocity into the normal as the approach speed.
 - **Camera.** `camera_policy` steps in `plan` with grounded meaning a supported wheel or a grind, and
@@ -443,6 +445,8 @@ Batches table's 1- to 3-batch rows changed as stated there.
 | Scenario | Script | Measured |
 | --- | --- | --- |
 | Pedal, coast, brake | From rest: A for 4 s, 0.5 s coast, B to a stop. | 3 m/s in 1.200 s, 6 m/s in 2.383 s, 7.751 m/s after 4 s. Coast loses nothing. Brake: 2.183 s and 8.414 m to rest, 3.55 m/s^2 mean. Rolling throughout. |
+| Pedal at top speed | From rest: A until the rider stops pedaling and 1 s more, B with A held until the rider pedals again, A for 0.5 s, 0.5 s released, A until the rider stops again. Separately, A for 2 s at 15 m/s. | Stops pedaling at 7.900 m/s after 4.717 s of A and holds 7.900 m/s with A held while the crank stops and levels. Braked with A held, it pedals again at 7.369 m/s, the first read at or below 7.4 m/s. Pedaling changes exactly five times. At 15 m/s the raw crank never moves and every command equals the released pedal's. With each receipt one read late, half the reads wait for their receipt and it still stops at 7.900 m/s and pedals again at 7.369 m/s. |
+| Pedal after a coast | At 8.5 m/s with A released, B alone below 7.65 m/s, then A until the rider stops pedaling. | A pressed at 7.555 m/s, inside the band, pedals at once: only a held pedal at the top speed arms the latch. It stops again at 7.902 m/s. |
 | Bunny hop | R3 at 4 m/s. | Takeoff 4.337 m/s up, COM apex 0.996 m, 0.900 s from the hop read to the first supported read. Lands at 4.32 m/s down and rides on at 4.0 m/s. rolling -> airborne -> rolling, and the trick model sees take-off and landing. |
 | Manual | Right stick -0.53 (input manual 0.492) for 2 s at 4 m/s, then neutral. | The pull starts the balance; the mode stays rolling until the front tyre leaves support 0.100 s later, then manual. The tyre clears its 2 cm contact gap 0.083 s after that, then goes past the 0.15 m wheel ray. `balancing` from 0.617 s after lift-off until the release 1.900 s after it: 1.283 s, 101 samples. Peak pitch 0.217 rad, mean balancing pitch 0.193 rad, below the 0.22 rad point (the sag MANUAL_BALANCE.md records). Front down 0.400 s after release (`front_drop`). 2.3 s in manual mode in all. |
 | Manual held through a landing | R3, then the -0.53 pull held in the air and after landing. | No lift for the 40 held samples after landing. The balance is idle with manual 0. After 6 neutral samples, a fresh pull enters a manual from rolling. |
@@ -571,6 +575,8 @@ it is gone.
 11. **Receipt cadence.** One command waits for its receipt at a time. The offline owner answers
     before the next read, so nothing is withheld here. A native receipt that arrives two reads later
     would withhold every other read's command, and each preview after it starts from a reset kernel.
+    That reset carries the pedal latch, so the pedaling band still holds: the late-receipt pedal case
+    resumes at 7.369 m/s, as with prompt receipts.
     A receipt that arrives after the mapping has already dropped the hop (on a ground-context
     change) reports `hop_identity_mismatch` in `last_receipt.hop`.
 12. **Require cost.** See Per-tick cost: 34-43 ms of a 50 ms load call.
@@ -588,7 +594,7 @@ it is gone.
 & 'C:\Users\Jeffr\Desktop\reskate\build\bmx\parallel-tricks-presentation-proposal-v1\harness\build\Release\presentation_luau_tests.exe' 'C:\Users\Jeffr\Desktop\reskate\contrib\bmx-lab\bmx-plugin\plugin' ride_composer_tests
 ```
 
-The run prints `cases=27 assertions=72222` and one `ride_composer:` line per measured number. It
+The run prints `cases=31 assertions=95878` and one `ride_composer:` line per measured number. It
 took 10-20 s on the shared desktop.
 
 | Case | What it checks |
@@ -635,8 +641,8 @@ The run prints `cases=215 assertions=861`.
   its cast counts and its support owner are constructed. The Framev1 the guard is bound to is
   built from constructed sources with `newproxy` handles; Lua cannot authenticate native userdata,
   and no native source adapter has supplied `tick.input` to the composer. Native command latency (applied at N+1, FORCES.md) is not
-  modelled, and the offline receipt always arrives before the next read. The frame, rider and pegs
-  collide with nothing except through the composer's own contacts.
+  modelled, and the offline receipt arrives before the next read except in the late-receipt pedal
+  case. The frame, rider and pegs collide with nothing except through the composer's own contacts.
 - That native physics holds a bike the composer stops pushing is assumed, not measured. On a read
   that submits nothing, the constructed ground only cancels gravity for one step while a wheel was
   supported; no native body has been left unpushed under the composer.

@@ -82,7 +82,8 @@ Profiles `y = height(z)`, extruded along world X. All shapes are authored here.
 - **Native collision.** The frame, rider and wheel capsules collide with nothing. The kernel's
   tyre impulses are the only ground, so a crash stops the run instead of tumbling.
 - **Rolling resistance and drag.** `forces.lua` has neither and none was added. A coast keeps its
-  speed, so coast "distance" is speed times time, and top speed is the pedal cutoff.
+  speed, so coast "distance" is speed times time, and top speed is 7.9 m/s, where the rider stops
+  pedaling just under the 8 m/s pedal cutoff (FORCES.md).
 - **Recovery proof.** `recovery_step_verified` stays false as in `ride_input_mapping.lua`, so
   neutral air damping and recovery continuation never engage.
 - Lease, source and epoch identity, receipts and the owner's stop hook. Only the control law is
@@ -142,14 +143,15 @@ The metric definitions:
 ## Current baseline
 
 Recorded 2026-10-25 with forces.lua's defaults (106 kg, 26/32/10 kg m^2, hop_delta_speed 4.5,
-pedal_cutoff 8). These are today's values, not goals.
+pedal_cutoff 8). S01 was recorded again on 2026-10-26, when the rider began to stop pedaling at
+7.9 m/s; no other scenario changed. These are today's values, not goals.
 
 | Scenario | Numbers |
 | --- | --- |
-| S01 accelerate | 3 m/s in 1.20 s, 6 m/s in 2.38 s, 7.5 m/s in 3.47 s. 7.98 m/s and 34.7 m after 6 s. No lean or lateral drift. |
-| S01 coast, 3 s | -2.9e-6 m/s, 23.9 m, +0.035 J (see below). |
-| S01 brake | From 7.98 m/s: 2.25 s and 8.92 m to rest, 3.54 m/s^2 mean, the same as the peak. |
-| S01 rest, restart | 4.4 mm creep after release. 5.07 m/s and 5.12 m after 2 s of pedal. |
+| S01 accelerate | 3 m/s in 1.20 s, 6 m/s in 2.38 s, 7.5 m/s in 3.47 s. The rider stops pedaling at 7.90 m/s after 4.72 s with A still held. 7.90 m/s and 34.6 m after 6 s. No lean or lateral drift. |
+| S01 coast, 3 s | -4.1e-10 m/s, 23.7 m, +6.6e-7 J (see below). |
+| S01 brake | From 7.90 m/s: 2.22 s and 8.74 m to rest, 3.54 m/s^2 mean, the same as the peak. |
+| S01 rest, restart | 23.3 mm creep after release (the brake stopped at 0.047 m/s). 5.11 m/s and 5.20 m after 2 s of pedal. |
 | S02, 3 m/s | Radius 3.22 m, 0.944 rad/s, lean 0.183, steering not limited. +0.015 m/s and +8.6 J with no pedal. 0.140 rad more heading after release, settled in 0.45 s. |
 | S02, 6 m/s | Radius 7.13 m, 0.854 rad/s, lean 0.294, steering limited every step. +0.053 m/s and +19.0 J. 0.122 rad more heading after release, settled in 0.42 s. Left and right mirror exactly. |
 | S04, 3 m/s | Rise 0.449 of an ideal 0.488 m (92.0%). Rolls back at 2.79 m/s (93.1%), -67 J, peak pitch 0.270. |
@@ -176,9 +178,10 @@ What these say about the model, not about any game:
 - Held steering adds energy with no pedal (+8.6 J and +19 J), because the balance-assist torque
   is an actuator.
 - Coasting gains energy in one way only. Pedalling squats the rear tyre into its contact gap
-  (about 0.06 mm after S01's 6 s, about 5 mm after 0.5 s from rest). When the pedal stops, the
-  kernel's recovery bias lifts the COM back to the placed ride height. That is the +0.035 J in
-  S01's coast, and about +3 J after a 0.5 s pedal. The tests check two things. A coast from a
+  (about 5 mm after 0.5 s from rest). When the pedal stops, the kernel's recovery bias lifts the
+  COM back to the placed ride height: about +3 J after a 0.5 s pedal. S01's rider stops pedaling
+  1.3 s before its coast, so that lift is over by then and the coast gains only 6.6e-7 J. The tests
+  check two things. A coast from a
   placed, settled body never gains energy. A coast after pedalling may gain only that lift:
   kinetic energy does not rise, the COM stays at or below the placed ride height, and the gain is
   at most m g times the height recovered.

@@ -14,6 +14,7 @@ local defaults={gravity={0,-9.8,0},wheelbase=1.203956057050485*scale,steer_limit
     air_yaw_torque=200,air_pitch_torque=160,neutral_air_damping_rate=2.75,hop_delta_speed=4.5,
     contact_gap=.02,maximum_penetration=.10,recovery_fraction=.15,recovery_speed_limit=.4,
     force_limit=40000,torque_limit=4000,wheel_speed_limit=500,contact_iterations=12,pedal_fade_start=6,pedal_cutoff=8,
+    pedal_top_speed=7.9,pedal_resume_speed=7.4,
     curvature_rate_limit=6,curvature_step_limit=.2,curvature_min_speed=.5,brake_iterations=96}
 function F.tuning(overrides)
     local out=M.copy(defaults) for key,value in overrides or {} do assert(out[key]~=nil,"unknown force tuning") out[key]=M.copy(value) end return out
@@ -34,7 +35,7 @@ local function result(issue)
         desired_support_angular_velocity={0,0,0},balance_support_mask=0,balance_continuation_mask=0,brake_impulse={0,0},
         balance_reference_up={0,0,0},desired_balance_up={0,0,0},balance_torque={0,0,0},air_control_torque={0,0,0},
         motor_torque={0,0,0},contact_torque={0,0,0},pre_contact_prediction_available=false,pump_force={0,0,0},
-        air_damping_torque={0,0,0},air_rotation_reserved=false,neutral_air_damping_active=false}
+        air_damping_torque={0,0,0},air_rotation_reserved=false,neutral_air_damping_active=false,pedaling=false}
 end
 local function tuning_valid(t)
     if not M.vec(t.gravity,100) or M.length(t.gravity)<.1 then return false end
@@ -47,13 +48,13 @@ local function tuning_valid(t)
     end
     for _,name in {"pedal_torque","front_brake_torque","rear_brake_torque","balance_stiffness","balance_damping","balance_torque_limit",
         "lean_limit","manual_pitch","air_yaw_torque","air_pitch_torque","hop_delta_speed","contact_gap","maximum_penetration",
-        "recovery_fraction","recovery_speed_limit","pedal_fade_start","pedal_cutoff","curvature_rate_limit","curvature_step_limit",
-        "curvature_min_speed","neutral_air_damping_rate"} do if not M.finite(t[name]) or t[name]<0 or t[name]>1e6 then return false end end
+        "recovery_fraction","recovery_speed_limit","pedal_fade_start","pedal_cutoff","pedal_top_speed","pedal_resume_speed",
+        "curvature_rate_limit","curvature_step_limit","curvature_min_speed","neutral_air_damping_rate"} do if not M.finite(t[name]) or t[name]<0 or t[name]>1e6 then return false end end
     if type(t.friction)~="table" then return false end
     for _,key in {"longitudinal_friction","lateral_friction"} do local x=t.friction[key] if not M.finite(x) or x<0 or x>10 then return false end end
     return t.steer_limit<=1 and t.lean_limit<=.8 and t.manual_pitch<=.6 and t.hop_delta_speed<=4.5 and t.contact_gap<=.05 and
         t.maximum_penetration<=.15 and t.recovery_fraction<=1 and t.recovery_speed_limit<=1 and t.pedal_fade_start<t.pedal_cutoff and
-        t.pedal_cutoff<=50 and t.curvature_rate_limit<=10 and t.curvature_step_limit<=.35 and t.curvature_min_speed<=5 and t.neutral_air_damping_rate<=10
+        t.pedal_cutoff<=50 and t.pedal_resume_speed<t.pedal_top_speed and t.pedal_top_speed<=t.pedal_cutoff and t.curvature_rate_limit<=10 and t.curvature_step_limit<=.35 and t.curvature_min_speed<=5 and t.neutral_air_damping_rate<=10
 end
 function F.eligible_support(body,sample,tolerance,maximum_penetration)
     tolerance=tolerance or .005 maximum_penetration=maximum_penetration or .10
@@ -78,10 +79,37 @@ local function reservation(a,successor,enabled,support,intent,launch)
     if not a.airborne then a.airborne=true a.reserved=a.launch_reserved or intent else a.reserved=a.reserved or intent end
     return not a.reserved
 end
+-- Whether the rider turns the cranks. The drawn cadence follows the rear wheel,
+-- so a held pedal past the speed pedaling can reach spun the legs ever faster
+-- while the fade gave almost no push. At or above top_speed the rider coasts
+-- instead, pedal held or not, and pedals again only at or below resume_speed.
+-- top_speed sits just under pedal_cutoff, because with no drag a flat road
+-- only creeps toward the cutoff (SIMULATION.md). The band keeps a bike holding
+-- its top speed from switching every step on small speed changes. Only a rider
+-- who would pedal at the top speed arms the latch. Once armed it follows speed
+-- alone, so letting go and pressing again inside the band does not start a
+-- spin back up, while a bike that coasted down from above can be pedaled at
+-- once. The rear drive, the pump's pedal factor and the composer's drawn crank
+-- all read this one decision.
+-- s={enabled,pedal,motor_speed,top_speed,resume_speed}; previous is nil or a
+-- pedal_state().
+function F.pedal_state() return {spun_out=false} end
+function F.pedal_cadence(previous,s)
+    local refused=table.freeze({valid=false,pedaling=false,spun_out=false})
+    if previous~=nil and (type(previous)~="table" or type(previous.spun_out)~="boolean") then return refused,F.pedal_state() end
+    if type(s)~="table" or type(s.enabled)~="boolean" or not M.finite(s.pedal) or s.pedal<0 or s.pedal>1 or
+        not M.finite(s.motor_speed) or s.motor_speed<0 or s.motor_speed>1e6 or not M.finite(s.top_speed) or
+        not M.finite(s.resume_speed) or s.resume_speed<0 or s.resume_speed>=s.top_speed or s.top_speed>50 then return refused,F.pedal_state() end
+    local spun=(s.enabled and s.pedal>0 and s.motor_speed>=s.top_speed) or (previous~=nil and previous.spun_out and s.motor_speed>s.resume_speed)
+    return table.freeze({valid=true,pedaling=s.enabled and s.pedal>0 and not spun,spun_out=spun}),{spun_out=spun}
+end
 function F.new(tuning)
     local out=setmetatable({tuning=F.tuning(tuning)},Controller) out:reset() return out
 end
-function Controller:reset() self.last_hop_event=0 self.normals={{},{}} self.travel_direction=0 self.air={} self.steering={} self.pump=Pump.new() self.pump:reset() end
+-- reset clears the pedal latch with the rest. invalidate_continuity and a
+-- refused step keep it: it holds no derivative, and outside the band this
+-- step's speed decides it alone.
+function Controller:reset() self.last_hop_event=0 self.normals={{},{}} self.travel_direction=0 self.air={} self.steering={} self.pump=Pump.new() self.pump:reset() self.pedal_latch=F.pedal_state() end
 function Controller:invalidate_continuity()
     -- A missed command breaks one-step derivative and state-machine history.
     -- Accepted hop consumption and authored tuning remain authoritative.
@@ -95,7 +123,7 @@ function Controller:consumed_hop_event_id() return self.last_hop_event end
 function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     local out=result() local t=self.tuning
     local prior_normals,prior_direction,air,prior_steering,pump=M.copy(self.normals),self.travel_direction,M.copy(self.air),M.copy(self.steering),M.copy(self.pump)
-    setmetatable(pump,getmetatable(self.pump))
+    setmetatable(pump,getmetatable(self.pump)) local prior_latch=M.copy(self.pedal_latch)
     self.normals={{},{}} self.travel_direction=0 self.air={} self.steering={} self.pump:reset()
     if not M.finite(h) or math.abs(h-F.native_seconds)>1e-8 then out.issue="unsupported_step" return out end
     if not tuning_valid(t) or not M.valid_body(measured) or not M.vec(measured.linear_velocity,50) or not M.vec(measured.angular_velocity,40) or
@@ -210,8 +238,11 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
         end
     end
     local motor_speed=math.max(0,speed,wheels[2].angular_speed*wheels[2].radius)
+    local cadence,next_latch=F.pedal_cadence(prior_latch,{enabled=c.enabled,pedal=math.clamp(c.pedal,0,1),motor_speed=motor_speed,
+        top_speed=t.pedal_top_speed,resume_speed=t.pedal_resume_speed})
+    if not cadence.valid then return out end out.pedaling=cadence.pedaling
     local pedal_scale=math.clamp((t.pedal_cutoff-motor_speed)/(t.pedal_cutoff-t.pedal_fade_start),0,1)
-    local pedal=c.enabled and math.clamp(c.pedal,0,1)*pedal_scale or 0 local brake=c.enabled and math.clamp(c.brake,0,1) or 0
+    local pedal=cadence.pedaling and math.clamp(c.pedal,0,1)*pedal_scale or 0 local brake=c.enabled and math.clamp(c.brake,0,1) or 0
     local braking=brake>0 and (t.front_brake_torque>0 or t.rear_brake_torque>0)
     local pitch=c.enabled and math.clamp(c.nose_manual,0,1)-math.clamp(c.manual,0,1) or 0
     local assist={0,0,0} local world_up=M.unit(M.mul(t.gravity,-1)) if not world_up then return out end
@@ -237,7 +268,7 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     end
     local prediction=M.copy(measured) local gravity_delta=M.mul(t.gravity,h) prediction.linear_velocity=M.add(prediction.linear_velocity,gravity_delta)
     out.pump=pump:step(h,{enabled=c.enabled,operator_available=c.pump_operator_available,supported=out.grounded,inhibited=c.pump_inhibited or c.hop_strength>0,
-        input=c.ground_pump,manual=c.manual,nose_manual=c.nose_manual,world_upward_speed=measured.linear_velocity[2],pedal=c.pedal})
+        input=c.ground_pump,manual=c.manual,nose_manual=c.nose_manual,world_upward_speed=measured.linear_velocity[2],pedal=cadence.pedaling and c.pedal or 0})
     if not out.pump.valid then return result() end
     out.pump_force={0,-measured.mass*out.pump.down_acceleration,0}
     prediction.linear_velocity=M.add(prediction.linear_velocity,M.mul(out.pump_force,h/measured.mass))
@@ -283,7 +314,7 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     local loaded=false for i=1,2 do loaded=loaded or (out.normal_load[i]>0 and F.eligible_support(measured,samples[i],.005,t.maximum_penetration)) end
     if loaded and not out.hop_applied then reservation(air,c.recovery_step_verified,c.enabled,true,intent,launch) end
     self.air=air out.air_rotation_reserved=air.reserved==true if c.enabled then self.steering={valid=true,angle=out.front_steer_angle} end
-    self.pump=pump out.valid=true out.issue="none" return out
+    self.pump=pump self.pedal_latch=next_latch out.valid=true out.issue="none" return out
 end
 function Controller:_recovery_mask(h,body,samples,c,baseline)
     local t=self.tuning
@@ -315,7 +346,7 @@ function Controller:_recovery_mask(h,body,samples,c,baseline)
 end
 function Controller:_adopt(other)
     self.last_hop_event=other.last_hop_event self.normals=other.normals self.travel_direction=other.travel_direction
-    self.air=other.air self.steering=other.steering self.pump=other.pump
+    self.air=other.air self.steering=other.steering self.pump=other.pump self.pedal_latch=other.pedal_latch
 end
 function Controller:step(h,body,wheels,samples,controls,speculative)
     local c=F.controls(controls) local baseline_controller=self:clone()

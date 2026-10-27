@@ -136,6 +136,13 @@ actual transitive lifecycle calls, rather than enabling public mounting:
 | `world.physics.follow` | The lifecycle's reserve/publish/read/stop/ACK Follow calls. |
 | `world.entities` | Eight-part bounds/readiness checks and visual SET/removal requests. |
 
+`board_drop.lua`, the rider's skateboard while he rides
+([MOUNTED_POSE.md](MOUNTED_POSE.md#the-board-while-riding)), needs `board` for
+`board.bones`, `board.toss` and `board.clear` on the local board. Tracked Core
+does not call it yet, so this manifest does not declare `board`: the private
+trial packages that wire it with the mounted pose add it themselves. It joins
+this manifest with the commit that wires the drop into tracked Core.
+
 No mesh assets ship in this source package. Qualification requires a separate
 compatible resource layer registering `reskate/bmx/{frame,fork,rear_wheel,
 front_wheel,cranks,handlebars,left_pedal,right_pedal}`. Asset preflight stays

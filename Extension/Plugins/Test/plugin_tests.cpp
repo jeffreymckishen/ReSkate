@@ -6116,12 +6116,16 @@ void bmx_lua_menu_returns_to_board_without_inverting_the_target() {
                     if (widget.text == label) return widget.help;
             throw std::runtime_error(why + "missing board-return status: " + std::string(label));
         };
-        const auto other_actuators_inert = [&] {
+        const auto other_actuators_inert = [&](bool after_unload = false) {
+            // Host unload clears this owner's entities even when none were created.
+            const bool expected_cleanup = after_unload
+                ? game.calls == std::vector<std::string>{"entities clear " + id} && game.released == std::vector<std::string>{id}
+                : game.calls.empty() && game.released.empty();
             return !game.body_prepares && !game.body_create_calls && !game.body_read_calls &&
                 !game.body_submit_entries && !game.follow_reserves && !game.follow_publishes &&
                 !game.follow_reads && !game.follow_stops && !game.follow_acks &&
                 !game.native_action_requests && !game.native_recovery_requests && game.entities.empty() &&
-                game.binds.empty() && game.calls.empty() && environment.teleports.empty() && !environment.rays;
+                game.binds.empty() && expected_cleanup && environment.teleports.empty() && !environment.rays;
         };
         environment.panels_open = true; environment.shown = id;
         for (unsigned i = 0; i < 10; ++i) step();
@@ -6157,7 +6161,7 @@ void bmx_lua_menu_returns_to_board_without_inverting_the_target() {
                 host.apply({});
                 check(game.input_pulse_requests == 1 && game.input_pulse_cancels == 1 && !game.input_pulse_acks &&
                           game.input_pulses.size() == 1 && receipt.report_debt && receipt.orphaned && receipt.quarantined &&
-                          !receipt.claim_released && other_actuators_inert(),
+                          !receipt.claim_released && other_actuators_inert(true),
                       why + "unload retains unresolved report duty without a second request or fake completion");
                 continue;
             }

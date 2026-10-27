@@ -107,7 +107,10 @@ Check ($closeFailure.result.absence_verified -and -not $closeFailure.result.guar
 Reject {Invoke-BmxWatchdogCore -LimitSeconds 59} 'range|greater|less|60'
 Reject {Invoke-BmxWatchdogCore -LimitSeconds 601} 'range|greater|less|600'
 
-$base=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\build\bmx'))
+# The guardian is bound to one isolated installation. A source worktree changes
+# where this test lives, not where its disposable receipt fixtures are admitted.
+# Keep the real path/reparse checks and the installation's exact evidence root.
+$base='C:\Users\Jeffr\Desktop\reskate\build\bmx'
 $fixture=Join-Path $base ('watchdog-fixtures-'+[Guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($fixture)|Out-Null
 try {

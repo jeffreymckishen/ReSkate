@@ -25,8 +25,19 @@ local output, candidate = controller:preview(
 
 `step` commits model history immediately and is useful for portable tests;
 `preview` returns an isolated candidate controller. Each controller has detached
-history for support normals, steering, neutral-air reservations, pump windows and
-the last consumed hop ID. `reset` clears all of them. Inputs are not modified.
+history for support normals, steering, neutral-air reservations, pump windows, the
+pedaling latch and the last consumed hop ID. `reset` clears all of them. Inputs are not modified.
+
+At `pedal_top_speed` (7.9 m/s, just under the 8 m/s `pedal_cutoff`, which a flat road with no drag
+only creeps toward) the rider stops pedaling even with the pedal held, and starts again only at or
+below `pedal_resume_speed` (7.4 m/s), so the drawn cranks no longer spin with the wheel past the
+speed pedaling can reach. `Forces.pedal_cadence` makes that decision and the result's `pedaling`
+reports it; the rear drive, the pump's pedal factor and the composer's crank all follow it, and
+the latch survives `invalidate_continuity` and a refused step. Only a rider who would pedal at the
+top speed arms the latch. Once armed it follows speed alone, so letting go and pressing again inside
+the band does not start a spin back up, while a bike that coasted down from above can be pedaled at
+once. `bmx_chassis_control.h` has no such latch; the Host's 83 C++ parity rows pedal only at 5 m/s,
+so they do not cover it.
 
 Native acceptance and measured response have different phases. The
 [varying-force diagnostic](../native-phase-trial/README.md) observed command C_N

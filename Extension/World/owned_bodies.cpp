@@ -86,6 +86,11 @@ struct Slot {
     std::size_t made{};
     bool attempted{}, body_observed{}, active{}, retained{}, quarantined{}, creation_failed{};
     AllocationProgress allocation{};
+    // Historical cleanup bookkeeping only; no path reactivates this allocation.
+    bool reuse_faulted{}, owner_closed{};
+    std::uint64_t completed_ack_sequence{};
+    RetirementBasis completed_ack_basis{};
+    RetainedParkReceipt completed_ack_park{};
     std::uint64_t release_hold{};
     bool release_requested{};
     std::uint64_t parked_ms{}; // immutable successful retained park; never slot reuse
@@ -124,6 +129,8 @@ struct Service {
     bool eligible{};
     std::uint64_t generation{}, world_generation{}, tick_at{}, command_sequence{};
     std::uint64_t release_generation{}; // process lifetime, never wraps
+    // An unsupported off-thread owner close withholds optional provenance until restart.
+    std::atomic<bool> owner_close_uncertain{};
     SyncProbe probe{};
     std::uint32_t probe_generation{};
     // High32 is the immutable probe generation, low32 a bounded loss count.
@@ -375,6 +382,14 @@ bool pending_zero(const Slot& s) noexcept {
     return array4(s.anchor.state, r::pending_force, s.body.index, force, a) && force == V4{} &&
         array4(s.anchor.state, r::pending_torque, s.body.index, torque, b) && torque == V4{};
 }
+void clear_reuse_handoff(Slot& s) noexcept {
+    s.completed_ack_sequence = 0;
+    s.completed_ack_basis = {}; s.completed_ack_park = {};
+}
+void taint_reuse(Slot& s) noexcept {
+    s.reuse_faulted = true;
+    clear_reuse_handoff(s);
+}
 bool park(Slot& s) noexcept {
     s.mailbox.cancel();
     if (!body_current(s)) return false;
@@ -395,6 +410,7 @@ bool park(Slot& s) noexcept {
         vector(service.api.angular, s.body, zero.data()) && body_current(s) && set_int(service.api.motion, s.body, 2) && body_current(s) && pending_zero(s);
 }
 void retire(Slot& s, bool may_park) noexcept {
+    if (s.quarantined || s.creation_failed) taint_reuse(s);
     if (service.probe.owner == s.owner && service.probe.handle == s.handle &&
         service.probe.result.status == body_sync_probe::Status::pending) {
         service.probe.result.status = body_sync_probe::Status::invalidated;
@@ -407,6 +423,7 @@ void retire(Slot& s, bool may_park) noexcept {
     if (s.release_hold) { s.release_requested = true; return; }
     const bool parked = may_park && park(s);
     s.active = false; s.retained = true; s.quarantined = s.allocation.quarantine(parked); s.latest = {};
+    if (s.quarantined) taint_reuse(s);
     s.parked_ms = s.quarantined ? 0 : GetTickCount64();
     // No qualified native destructor exists. This slot is never recycled and its old
     // handles are never adopted by another owner, even after a level reload.
@@ -423,7 +440,7 @@ void produce(NativeHandle* incoming_pointer, std::uintptr_t wrapper) noexcept {
         if (std::find(s.anchor.wrappers.begin(), s.anchor.wrappers.end(), wrapper) == s.anchor.wrappers.end()) continue;
         NativeHandle incoming{}; Epoch current{};
         if (!peek(reinterpret_cast<std::uintptr_t>(incoming_pointer), incoming) || !producer_owner(s, incoming) || !command_clock(s, current)) {
-            s.mailbox.cancel(); s.quarantined = true; s.active = false; continue;
+            s.mailbox.cancel(); s.quarantined = true; s.active = false; taint_reuse(s); continue;
         }
         Command command{};
         if (!s.mailbox.consume(current, GetTickCount64(), command)) continue;
@@ -442,7 +459,7 @@ void produce(NativeHandle* incoming_pointer, std::uintptr_t wrapper) noexcept {
             }
         }
         s.mailbox.finish(attempted_force, attempted_torque, ok);
-        if (!ok) { s.quarantined = true; s.active = false; }
+        if (!ok) { s.quarantined = true; s.active = false; taint_reuse(s); }
     }
     ReleaseSRWLockExclusive(&service.lock);
 }
@@ -751,7 +768,7 @@ std::string create(std::uint64_t owner, const Definition& definition, Handle& ou
         auto& s = *at; s.attempted = true; s.owner = owner; s.definition = definition; s.anchor = anchor;
         s.handle = {++service.generation, static_cast<std::uint32_t>(at - service.slots.begin())};
         if (!create_native(s)) {
-            s.creation_failed = true; retire(s, anchor_current(s.anchor));
+            s.creation_failed = true; taint_reuse(s); retire(s, anchor_current(s.anchor));
             return s.quarantined ? "partial native body creation retained in quarantine; allocation retry prohibited" :
                 "partial native body creation retained and parked; allocation retry prohibited";
         }
@@ -964,6 +981,7 @@ bool acquire_release_hold(std::uint64_t owner, const MeasuredSource& source, Bod
     value.base_ = service.base; value.world_ = s->anchor.world; value.state_ = s->anchor.state;
     value.body_index_ = s->body.index; value.body_generation_ = s->body.generation;
     s->release_hold = value.id_;
+    clear_reuse_handoff(*s); // a new dependent duty cannot inherit an earlier completion
     out = value;
     return true;
 }
@@ -1135,7 +1153,7 @@ bool observe_retained_park(std::uint64_t owner, const RetirementBasis& basis, Re
     out = value; diagnostic.check = Check::passed; return true;
 }
 
-// Both callers already hold the World lock. This checks stored terminal
+// Callers already hold the World lock. This checks stored terminal
 // identities only; it does not recapture an actor, clock or native allocation.
 bool matches_retained_park_locked(std::uint64_t owner, const RetirementBasis& basis, const RetainedParkReceipt& receipt) noexcept {
     if (!owner || owner != basis.owner_ || !receipt.available()) return false;
@@ -1175,6 +1193,65 @@ bool seal_parked_command_cleanup(std::uint64_t owner, const RetirementBasis& bas
     auto* s = lookup(owner, basis.handle_);
     if (!s || s->active || !s->retained || s->quarantined || !s->release_requested || s->release_hold) return false;
     return s->mailbox.seal_parked_without_successor(basis.epoch_, receipt.observed_epoch_);
+}
+
+CompletedAckHandoff record_completed_follow_ack(std::uint64_t owner, std::uint64_t sequence,
+    const RetirementBasis& basis, const RetainedParkReceipt& receipt) noexcept {
+    LastError error;
+    if (!owner || !sequence || owner != basis.owner_ || !receipt.available() ||
+        GetCurrentThreadId() != service.thread || !TryAcquireSRWLockExclusive(&service.lock))
+        return CompletedAckHandoff::unavailable;
+    struct Unlock { ~Unlock() { ReleaseSRWLockExclusive(&service.lock); } } unlock;
+    auto* s = lookup(owner, basis.handle_);
+    if (!s) return CompletedAckHandoff::unavailable;
+    const auto same_basis = [](const RetirementBasis& a, const RetirementBasis& b) noexcept {
+        return a.owner_ == b.owner_ && a.handle_ == b.handle_ && a.world_generation_ == b.world_generation_ &&
+            a.base_ == b.base_ && a.world_ == b.world_ && a.state_ == b.state_ && a.body_ == b.body_ &&
+            a.shapes_ == b.shapes_ && a.made_ == b.made_ && a.epoch_ == b.epoch_ && a.captured_ms_ == b.captured_ms_;
+    };
+    // Pair the exact opaque history first. No native read, restamping or claim
+    // snapshot may manufacture a replacement for the retaining service's proof.
+    if (!same_basis(basis, receipt.basis_) ||
+        !basis.world_generation_ || basis.epoch_.world != basis.world_generation_ ||
+        basis.epoch_.body != basis.handle_.generation || !basis.epoch_.serial ||
+        !std::isfinite(basis.epoch_.time) || basis.epoch_.time < 0 || !calibrated(basis.epoch_.seconds) ||
+        !basis.captured_ms_ || !basis.made_ || basis.made_ > maximum_capsules ||
+        receipt.observed_epoch_.world != basis.epoch_.world || receipt.observed_epoch_.body != basis.epoch_.body ||
+        receipt.observed_epoch_.serial <= basis.epoch_.serial || !std::isfinite(receipt.observed_epoch_.time) ||
+        receipt.observed_epoch_.time <= basis.epoch_.time || !calibrated(receipt.observed_epoch_.seconds) ||
+        receipt.parked_ms_ < basis.captured_ms_ || receipt.observed_ms_ <= receipt.parked_ms_ ||
+        receipt.observed_ms_ <= basis.captured_ms_) return CompletedAckHandoff::unavailable;
+    if (s->active || !s->retained || s->release_hold || !s->release_requested ||
+        s->mailbox.pending || s->mailbox.producing || !s->mailbox.failed)
+        return CompletedAckHandoff::unavailable;
+    if (s->quarantined || s->creation_failed) taint_reuse(*s);
+    const bool allocation_known = s->body_observed && !s->creation_failed && s->allocation.body_confirmed &&
+        s->made && s->made == s->definition.count && s->made <= maximum_capsules &&
+        s->allocation.shapes_attempted == s->made && s->allocation.shapes_confirmed == s->made;
+    // These SDK facts only withhold historical provenance. None is a new gate
+    // for the retaining service's ordinary terminal ACK or a native safety proof.
+    if (!allocation_known || s->reuse_faulted || s->owner_closed || service.owner_close_uncertain.load(std::memory_order_acquire) ||
+        !service.eligible || !service.hooked.load(std::memory_order_acquire) ||
+        service.world != basis.world_ || service.state != basis.state_ ||
+        service.context != s->anchor.context || service.client != s->anchor.client ||
+        !matches_retained_park_locked(owner, basis, receipt)) {
+        clear_reuse_handoff(*s);
+        return CompletedAckHandoff::closed_ineligible;
+    }
+    if (s->completed_ack_sequence) {
+        if (s->completed_ack_sequence != sequence || !same_basis(s->completed_ack_basis, basis) ||
+            !same_basis(s->completed_ack_park.basis_, basis) ||
+            s->completed_ack_park.observed_epoch_ != receipt.observed_epoch_ ||
+            s->completed_ack_park.parked_ms_ != receipt.parked_ms_ ||
+            s->completed_ack_park.observed_ms_ != receipt.observed_ms_)
+            return CompletedAckHandoff::unavailable; // never replace another completed handoff
+        return CompletedAckHandoff::recorded;
+    }
+    // Terminal command rows may remain. This record neither acknowledges them
+    // nor establishes the zero receipt debt any future reuse would require.
+    s->completed_ack_basis = basis; s->completed_ack_park = receipt;
+    s->completed_ack_sequence = sequence;
+    return CompletedAckHandoff::recorded;
 }
 
 #include "owned_body_sync_probe.inl"
@@ -1402,9 +1479,15 @@ std::string acknowledge(std::uint64_t owner, const Handle& handle, std::uint64_t
 }
 void release_all(std::uint64_t owner) noexcept {
     LastError error;
+    const bool client_thread = GetCurrentThreadId() == service.thread;
+    if (owner && !client_thread) service.owner_close_uncertain.store(true, std::memory_order_release);
     cancel_motion_refresh_probes(owner);
-    if (GetCurrentThreadId() != service.thread) return;
+    if (!client_thread) return;
     Locked lock(service.lock);
+    for (auto& s : service.slots) if (s.attempted && s.owner == owner) {
+        s.owner_closed = true;
+        clear_reuse_handoff(s);
+    }
     if (owner && service.probe.owner == owner && service.probe.result.status == body_sync_probe::Status::pending) {
         service.probe.result.status = body_sync_probe::Status::invalidated;
         service.probe_live.store(0, std::memory_order_release);

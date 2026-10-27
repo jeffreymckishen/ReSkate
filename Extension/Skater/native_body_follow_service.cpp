@@ -518,6 +518,10 @@ bool acknowledge_completed(std::uint64_t owner, Handle handle) noexcept {
     if (!matches(s, owner, handle) || !completed_ack_ready(s) || !seal_completed_commands(s)) return false;
     // Request/orphan/final/park fields are fulfilled terminal history here.
     // Foreign callers still cannot consume the exact owner's receipt.
+    // Provenance is advisory: a busy or unavailable old body cannot revoke
+    // this ACK. Orphan cleanup is not a live consumer's completed ACK.
+    if (!s.orphaned)
+        (void)body_follow_native::completed_ack_handoff(s.binding, s.park_fence, s.park_receipt);
     acknowledge_locked(s);
     return true;
 }

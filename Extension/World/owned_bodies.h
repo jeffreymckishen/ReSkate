@@ -74,6 +74,8 @@ const char* park_observation_check_name(ParkObservationCheck) noexcept;
 class SourceBorrow;
 class RetirementBasis;
 class RetainedParkReceipt;
+// Internal historical handoff only. Its result must not gate ordinary terminal ACK.
+enum class CompletedAckHandoff { unavailable, closed_ineligible, recorded };
 class BodyReleaseHold;
 class MeasuredSource;
 // What World can say about a sample a plugin presents as proof for a retaining
@@ -215,6 +217,7 @@ private:
     friend bool matches_retained_park(std::uint64_t, const RetirementBasis&, const RetainedParkReceipt&) noexcept;
     friend bool matches_retained_park_locked(std::uint64_t, const RetirementBasis&, const RetainedParkReceipt&) noexcept;
     friend bool seal_parked_command_cleanup(std::uint64_t, const RetirementBasis&, const RetainedParkReceipt&) noexcept;
+    friend CompletedAckHandoff record_completed_follow_ack(std::uint64_t, std::uint64_t, const RetirementBasis&, const RetainedParkReceipt&) noexcept;
     struct Identity {
         std::uintptr_t world{};
         std::uint32_t index{}, generation{};
@@ -240,6 +243,7 @@ private:
     friend bool matches_retained_park(std::uint64_t, const RetirementBasis&, const RetainedParkReceipt&) noexcept;
     friend bool matches_retained_park_locked(std::uint64_t, const RetirementBasis&, const RetainedParkReceipt&) noexcept;
     friend bool seal_parked_command_cleanup(std::uint64_t, const RetirementBasis&, const RetainedParkReceipt&) noexcept;
+    friend CompletedAckHandoff record_completed_follow_ack(std::uint64_t, std::uint64_t, const RetirementBasis&, const RetainedParkReceipt&) noexcept;
     RetirementBasis basis_{};
     owned_body::Epoch observed_epoch_{};
     std::uint64_t parked_ms_{}, observed_ms_{};
@@ -265,5 +269,14 @@ bool matches_retained_park(std::uint64_t, const RetirementBasis&, const Retained
 // new successor, receipt ACK, allocation reuse or actor authority is produced.
 // Busy or lost proof preserves every mailbox record and the caller's proof.
 bool seal_parked_command_cleanup(std::uint64_t, const RetirementBasis&, const RetainedParkReceipt&) noexcept;
+
+// Trusted Follow service only, after its completed stop/drain/park history and
+// command cleanup seal, before it discards that history at terminal ACK. Records
+// only immutable SDK provenance, without native reads/writes or receipt ACKs.
+// Every result is optional bookkeeping and must not gate ordinary Follow ACK.
+// recorded is not reuse eligibility: terminal body rows may still need ACK, and
+// any future reuse would also require zero body receipt debt and separate proof.
+CompletedAckHandoff record_completed_follow_ack(std::uint64_t owner, std::uint64_t sequence,
+    const RetirementBasis&, const RetainedParkReceipt&) noexcept;
 
 } // namespace dingosdk::owned_bodies

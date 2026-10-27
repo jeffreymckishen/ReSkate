@@ -346,6 +346,59 @@ void mesh_metadata_rows(MeshMetadataOutput& out, const dingosdk::frostbite::Mesh
             out.record("STATIC_COMMON_OFFSET\tlod_relative_offset=116\tresource_offset=", mesh.lod_offset + 116,
                        "\twidth=16\traw_bytes_hex=", metadata_hex(observed.geometry_identity_raw), "\tcandidate_role=geometry_identity",
                        "\tbasis=existing_static_reader\tinterpretation=unverified_common_layout");
+            out.record("STATIC_SECTION_LIMITS\tsection_count_limit=64\tcombined_candidate_span_bytes_limit=32768"
+                       "\telement_count_limit=16\tstream_count_limit=16\tdiagnostics_per_candidate_limit=16\tlimits_provenance=authored");
+            for (std::size_t candidate_index = 0; candidate_index < mesh.static_section_candidates.size() && out.open(); ++candidate_index) {
+                const auto& candidate = mesh.static_section_candidates[candidate_index];
+                const bool diagnostics_truncated = candidate.diagnostic_count > candidate.diagnostics.size();
+                if (diagnostics_truncated) out.mark_truncated();
+                out.record("STATIC_SECTION_CANDIDATE\tindex=", candidate_index, "\tsection_stride=", candidate.stride,
+                           "\ttable_pointer_resolved=", candidate.table_pointer_resolved ? 1 : 0,
+                           candidate.table_pointer_resolved ? "\ttable_offset=" + std::to_string(candidate.table_offset) : std::string{},
+                           "\ttable_span_valid=", candidate.table_span_valid ? 1 : 0,
+                           "\tcandidate_span_bytes_available=", candidate.table_span_valid ? 1 : 0,
+                           candidate.table_span_valid ? "\tcandidate_span_bytes=" + std::to_string(candidate.span_bytes) : std::string{},
+                           "\tobservation_complete=", candidate.observation_complete ? 1 : 0,
+                           "\tsections_reported=", candidate.sections.size(), "\tdiagnostic_count=", candidate.diagnostic_count,
+                           "\tdiagnostics_truncated=", diagnostics_truncated ? 1 : 0,
+                           "\tbasis=existing_mesh_reader_offsets\tinterpretation=unverified_static_section_layout");
+                for (const auto& diagnostic : candidate.diagnostics) {
+                    if (!out.open()) break;
+                    out.record("DIAGNOSTIC\tscope=static_section_candidate\tcandidate=", candidate_index,
+                               "\tmessage=", out.text(diagnostic));
+                }
+                for (std::size_t section_index = 0; section_index < candidate.sections.size() && out.open(); ++section_index) {
+                    const auto& section = candidate.sections[section_index];
+                    out.record("STATIC_SECTION_RAW\tcandidate=", candidate_index, "\tindex=", section_index,
+                               "\tresource_offset=", section.resource_offset,
+                               "\tprimitive_relative_offset=31\tprimitive_raw=", static_cast<unsigned>(section.primitive_raw),
+                               "\ttriangle_count_relative_offset=32\ttriangle_count_raw=", section.triangle_count_raw,
+                               "\tfirst_index_relative_offset=36\tfirst_index_raw=", section.first_index_raw,
+                               "\tvertex_start_relative_offset=40\tvertex_start_raw=", section.vertex_start_raw,
+                               "\tvertex_count_relative_offset=44\tvertex_count_raw=", section.vertex_count_raw,
+                               "\telement_count_relative_offset=208\telement_count_raw=", static_cast<unsigned>(section.element_count_raw),
+                               "\tstream_count_relative_offset=209\tstream_count_raw=", static_cast<unsigned>(section.stream_count_raw),
+                               "\tdeclarations_observed=", section.declarations_observed ? 1 : 0,
+                               "\tbasis=existing_mesh_reader_offsets\tinterpretation=unverified_static_section_layout");
+                    for (std::size_t element_index = 0; element_index < section.elements.size() && out.open(); ++element_index) {
+                        const auto& element = section.elements[element_index];
+                        const auto relative_offset = 112 + 4 * element_index;
+                        out.record("STATIC_ELEMENT_RAW\tcandidate=", candidate_index, "\tsection=", section_index, "\tindex=", element_index,
+                                   "\tsection_relative_offset=", relative_offset, "\tresource_offset=", section.resource_offset + relative_offset,
+                                   "\tusage_raw=", static_cast<unsigned>(element.usage_raw), "\tformat_raw=", static_cast<unsigned>(element.format_raw),
+                                   "\toffset_raw=", static_cast<unsigned>(element.offset_raw), "\tstream_raw=", static_cast<unsigned>(element.stream_raw),
+                                   "\tbasis=existing_mesh_reader_offsets\tinterpretation=unverified_static_section_layout");
+                    }
+                    for (std::size_t stream_index = 0; stream_index < section.streams.size() && out.open(); ++stream_index) {
+                        const auto& stream = section.streams[stream_index];
+                        const auto relative_offset = 176 + 2 * stream_index;
+                        out.record("STATIC_STREAM_RAW\tcandidate=", candidate_index, "\tsection=", section_index, "\tindex=", stream_index,
+                                   "\tsection_relative_offset=", relative_offset, "\tresource_offset=", section.resource_offset + relative_offset,
+                                   "\tstride_raw=", static_cast<unsigned>(stream.stride_raw), "\tclassification_raw=", static_cast<unsigned>(stream.classification_raw),
+                                   "\tbasis=existing_mesh_reader_offsets\tinterpretation=unverified_static_section_layout");
+                    }
+                }
+            }
         }
         return;
     }

@@ -44,6 +44,26 @@ struct MeshLodCommonOffsetObservation {
     std::uint32_t index_format_raw{}, index_bytes_raw{}, vertex_bytes_raw{};
     std::array<std::byte, 16> geometry_identity_raw{};
 };
+// These bytes use existing reader offsets without qualifying a static section layout.
+struct MeshElementObservation {
+    std::uint8_t usage_raw{}, format_raw{}, offset_raw{}, stream_raw{};
+};
+struct MeshStreamObservation { std::uint8_t stride_raw{}, classification_raw{}; };
+struct MeshSectionObservation {
+    std::size_t resource_offset{};
+    std::uint8_t primitive_raw{}, element_count_raw{}, stream_count_raw{};
+    std::uint32_t triangle_count_raw{}, first_index_raw{}, vertex_start_raw{}, vertex_count_raw{};
+    std::vector<MeshElementObservation> elements;
+    std::vector<MeshStreamObservation> streams;
+    bool declarations_observed{};
+};
+struct MeshSectionCandidateObservation {
+    std::size_t stride{}, table_offset{}, span_bytes{};
+    bool table_pointer_resolved{}, table_span_valid{}, observation_complete{};
+    std::vector<MeshSectionObservation> sections;
+    std::size_t diagnostic_count{}; // diagnostics holds at most 16 messages
+    std::vector<std::string> diagnostics;
+};
 struct MeshLodMetadata {
     std::array<std::uint32_t, 4> header{};
     bool skinned{}, lod_kind_supported{};
@@ -51,6 +71,7 @@ struct MeshLodMetadata {
     std::uint32_t lod_kind{}, index_format{}, section_count{};
     MeshLod geometry;
     std::optional<MeshLodCommonOffsetObservation> static_common_offsets;
+    std::vector<MeshSectionCandidateObservation> static_section_candidates;
     std::vector<MeshSectionLayoutMetadata> candidates;
     std::vector<std::string> diagnostics;
     bool ambiguous{}, complete{};
@@ -59,9 +80,13 @@ struct MeshLodMetadata {
 // returns complete false with a diagnostic. When lod_kind_supported is false, only header,
 // skinned, lod_count, lod_index, lod_offset, lod_kind and diagnostics are available. For the
 // exact static header, static_common_offsets may additionally hold six raw observations when
-// their full 132-byte span is present. No pointer is followed or identity interpreted for them.
-// The other fields remain defaults, not observations. Kind 1 still requires its full LOD span
-// and leaves static_common_offsets empty.
+// their full 132-byte span is present. Then static_section_candidates always holds both 384/416
+// stride attempts, including failures; neither is selected or interpreted. A resolved pointer
+// makes table_offset available, and a valid full table span makes span_bytes available.
+// observation_complete only means all bounded raw section/declaration bytes were observed.
+// Counts are capped at 64, combined table spans at 32768 bytes, and each declaration at 16 slots.
+// No geometry identity is interpreted. Other fields remain defaults, not observations. Kind 1
+// still requires its full LOD span and leaves both static observation fields empty.
 // Parseable candidate errors and unknown declarations are returned explicitly. Static section
 // strides are never chosen by first fit: both plausible candidates make complete false.
 // complete means this reader reported one structurally sound, understood declaration layout;

@@ -8,6 +8,11 @@ local Controller={} Controller.__index=Controller
 local scale=.7737670588235294
 F.wheel_radius=.34*scale
 local steering_axis={0,.9601196050643921,-.2795896530151367} -- the source float coefficients
+-- Hop-only authored landing policy. The compliance arithmetic comes from our
+-- native contact_compliance.h; earlier braking from a fresh measured ray is a
+-- separate policy, not a native collision or a claim that a clear wheel rests.
+local landing={stiffness=100000,maximum_deflection=.015,deflection_tolerance=1e-8,contact_gap=.005,
+    approach_gap=.65,approach_acceleration=25,floor_cosine=.95,stationary_speed=.0001}
 local defaults={gravity={0,-9.8,0},wheelbase=1.203956057050485*scale,steer_limit=.4,steer_speed_scale=8,
     pedal_torque=75,front_brake_torque=60,rear_brake_torque=45,friction={longitudinal_friction=1,lateral_friction=1},
     balance_stiffness=1600,balance_damping=360,balance_torque_limit=1200,lean_limit=.47,manual_pitch=.4,
@@ -35,7 +40,8 @@ local function result(issue)
         desired_support_angular_velocity={0,0,0},balance_support_mask=0,balance_continuation_mask=0,brake_impulse={0,0},
         balance_reference_up={0,0,0},desired_balance_up={0,0,0},balance_torque={0,0,0},air_control_torque={0,0,0},
         motor_torque={0,0,0},contact_torque={0,0,0},pre_contact_prediction_available=false,pump_force={0,0,0},
-        air_damping_torque={0,0,0},air_rotation_reserved=false,neutral_air_damping_active=false,pedaling=false}
+        air_damping_torque={0,0,0},air_rotation_reserved=false,neutral_air_damping_active=false,pedaling=false,
+        landing_approach_mask=0,compliant_normal_mask=0,approach_normal_impulse={0,0},approach_normal_force={0,0}}
 end
 local function tuning_valid(t)
     if not M.vec(t.gravity,100) or M.length(t.gravity)<.1 then return false end
@@ -132,14 +138,19 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     for _,name in {"enabled","recovery_step_verified","rotation_reserved","pump_operator_available","pump_inhibited",
         "contact_compliance_available","landing_contact_compliance_selected"} do if type(c[name])~="boolean" then return out end end
     if not M.finite(c.hop_event_id) or c.hop_event_id<0 or c.hop_event_id%1~=0 or c.hop_event_id>9007199254740991 then return out end
-    if c.contact_compliance_available or c.landing_contact_compliance_selected then out.issue="unsupported_policy" return out end
+    if c.contact_compliance_available~=c.landing_contact_compliance_selected then out.issue="unsupported_policy" return out end
+    local landing_selected=c.contact_compliance_available and c.landing_contact_compliance_selected
+    if landing_selected and not (t.recovery_fraction>0 and t.recovery_fraction<1) then out.issue="unsupported_policy" return out end
     local q=M.normalized(measured.orientation)
+    local gravity_up=M.unit(M.mul(t.gravity,-1)) if not gravity_up then return out end
     local body_up,body_forward,body_left=M.turn(q,{0,1,0}),M.turn(q,{0,0,1}),M.turn(q,{1,0,0})
     local steer=c.enabled and math.clamp(c.steer,-1,1) or 0
     local contacts,next_normals={},{{},{}} local support_sum,surface_sum={0,0,0},{0,0,0} local surface_count=0
     for i=1,2 do
         local s=samples[i] if type(s)~="table" or type(s.contact)~="table" then return out end
         contacts[i]=M.copy(s.contact) local contact=contacts[i]
+        -- Only this step's selected law may create solver policy fields.
+        contact.normal_only,contact.normal_softness,contact.normal_floor_delta=nil,nil,nil
         if contact.status=="unavailable" then out.issue="unavailable_contact" return out end
         if contact.status~="hit" and contact.status~="clear" then return out end
         if contact.status=="hit" then
@@ -147,7 +158,20 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
             if not M.finite(s.separation) or not basis or not M.vec(contact.point) or not M.vec(contact.surface_velocity,50) then return out end
             contact.normal=basis.normal contact.forward=basis.forward
             if s.separation < -t.maximum_penetration then out.issue="penetration_limit" return out end
-            if s.separation>t.contact_gap then contact.status="clear"
+            local landing_plane=landing_selected and c.enabled and M.dot(basis.normal,gravity_up)>=landing.floor_cosine
+                and M.length(contact.surface_velocity)<=landing.stationary_speed
+            if landing_plane and s.separation < -landing.maximum_deflection-landing.deflection_tolerance then out.issue="landing_deflection_limit" return out end
+            local approach=landing_plane and s.separation>landing.contact_gap and s.separation<=landing.approach_gap
+            if approach then
+                -- For semi-implicit steps, v^2/(2*a)+v*h bounds the stopping
+                -- distance. This leaves distance for a finite normal deceleration
+                -- instead of demanding a full landing stop in one 60 Hz step.
+                local ah=landing.approach_acceleration*h
+                local allowed=math.sqrt(ah*ah+2*landing.approach_acceleration*s.separation)-ah
+                contact.surface_velocity=M.sub(contact.surface_velocity,M.mul(basis.normal,allowed))
+                contact.normal_only=true
+                out.landing_approach_mask=bit32.bor(out.landing_approach_mask,2^(i-1))
+            elseif s.separation>t.contact_gap then contact.status="clear"
             else
                 local balance=basis.normal if s.balance_normal_available then balance=M.unit(s.balance_normal) if not balance or M.dot(balance,basis.normal)<=0 then return out end end
                 surface_sum=M.add(surface_sum,contact.surface_velocity) surface_count+=1
@@ -170,7 +194,15 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
                     history.verified_plane=s.verified_plane history.recovery_seconds=actual and 0 or (prior_normals[i].recovery_seconds or 0)+h
                     history.recovery_seeded=c.recovery_step_verified and s.verified_plane and s.separation<0 and (actual or prior_normals[i].recovery_seeded)
                 end
-                contact.surface_velocity=M.add(contact.surface_velocity,M.mul(basis.normal,bias-math.max(0,s.separation)/h))
+                local target=bias-math.max(0,s.separation)/h
+                contact.surface_velocity=M.add(contact.surface_velocity,M.mul(basis.normal,target))
+                if landing_plane and s.separation<=landing.contact_gap then
+                    -- Keep the original recovery target. The independent hard
+                    -- floor protects 15 mm of linear predicted deflection.
+                    contact.normal_softness=t.recovery_fraction/(landing.stiffness*h*h)
+                    contact.normal_floor_delta=(-landing.maximum_deflection-s.separation)/h-target
+                    out.compliant_normal_mask=bit32.bor(out.compliant_normal_mask,2^(i-1))
+                end
             end
         end
     end
@@ -206,7 +238,7 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
         local delta=math.min(rate_delta,joint_delta) out.front_steer_angle=math.clamp(out.requested_front_steer_angle,prior_steering.angle-delta,prior_steering.angle+delta)
     end
     local candidate_angle=out.front_steer_angle
-    local front_heading=contacts[1].status=="hit" and contacts[1].forward or body_forward
+    local front_heading=contacts[1].status=="hit" and not contacts[1].normal_only and contacts[1].forward or body_forward
     local function heading(angle)
         local front=balance_frame and M.basis(up,M.around(front_heading,axis,angle)) or nil if not front then return nil end
         local value=math.atan2(M.dot(up,M.cross(forward,front.forward)),math.clamp(M.dot(forward,front.forward),-1,1))
@@ -223,7 +255,7 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     end
     local wheel_axes={}
     for i=1,2 do
-        if contacts[i].status=="hit" then
+        if contacts[i].status=="hit" and not contacts[i].normal_only then
             if i==1 then contacts[i].forward=M.around(contacts[i].forward,axis,out.front_steer_angle) end
             local wheel_basis=M.basis(contacts[i].normal,contacts[i].forward) if not wheel_basis then return out end
             wheel_axes[i]=wheel_basis.lateral
@@ -304,9 +336,26 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
         out.wheels[i].angular_speed=actuated_wheels[i].angular_speed+amount*(braking and out.wheels[i].angular_speed-actuated_wheels[i].angular_speed or effects[i].spin)
         out.brake_impulse[i]=amount*effects[i].brake out.normal_impulse[i]=amount*effects[i].solved.normal_impulse out.normal_load[i]=out.normal_impulse[i]/h
         out.longitudinal_impulse[i]=amount*effects[i].solved.longitudinal_impulse out.lateral_impulse[i]=amount*effects[i].solved.lateral_impulse
+        out.approach_normal_impulse[i]=amount*(effects[i].solved.approach_impulse or 0)
+        out.approach_normal_force[i]=out.approach_normal_impulse[i]/h
     end
     if not M.vec(out.force) or not M.vec(out.torque) or M.length(out.force)>t.force_limit or M.length(M.mul(M.add(out.linear_impulse,out.hop_impulse),1/h))>t.force_limit or
         M.length(out.torque)>t.torque_limit or math.abs(out.wheels[1].angular_speed)>t.wheel_speed_limit or math.abs(out.wheels[2].angular_speed)>t.wheel_speed_limit then return result("output_limit") end
+    if landing_selected then
+        -- Recheck the actual bounded packet, including any shared budget scale.
+        -- This is a linear point prediction, not a repaired pose or native proof.
+        local bounded=M.copy(measured)
+        bounded.linear_velocity=M.add(M.add(measured.linear_velocity,gravity_delta),M.mul(M.add(out.linear_impulse,out.hop_impulse),1/measured.mass))
+        bounded.angular_velocity=M.add(measured.angular_velocity,M.tensor(measured,out.angular_impulse,true))
+        for i=1,2 do
+            if contacts[i].normal_only or contacts[i].normal_softness then
+                local sample=samples[i]
+                local velocity=M.sub(M.point_velocity(bounded,sample.contact.point),sample.contact.surface_velocity)
+                local gap=sample.separation+M.dot(velocity,contacts[i].normal)*h
+                if not M.finite(gap) or gap < -landing.maximum_deflection-landing.deflection_tolerance then return result("landing_deflection_limit") end
+            end
+        end
+    end
     if new_event then self.last_hop_event=c.hop_event_id end
     if support_mask~=0 and not out.hop_applied and c.enabled then
         for i=1,2 do next_normals[i].normal_load=out.normal_load[i] end self.normals=next_normals self.travel_direction=direction~=0 and direction or prior_direction
@@ -355,6 +404,7 @@ function Controller:step(h,body,wheels,samples,controls,speculative)
             -- The private speculative normal law is deliberately outside this
             -- ordinary-kernel slice. Never silently fall back to invented support.
             c.contact_compliance_available=true
+            c.landing_contact_compliance_selected=false
         end
     end
     local baseline=baseline_controller:_impl(h,body,wheels,samples,c,0)

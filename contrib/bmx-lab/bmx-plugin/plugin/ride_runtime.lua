@@ -313,6 +313,21 @@ local function retire(s,pending,disposition)
     if not pending.hop_retired then s.unknown=true;stop(s,"hop retirement unavailable") end
     return pending.hop_retired
 end
+local function accepted_hop_owner(s,id)
+    for _,pending in ipairs(s.pending) do
+        if pending.hop_id==id and Identity.is_nonzero_u64(pending.sequence) and not pending.hop_retired then return true end
+    end
+    return false
+end
+local function suppress_hop(s,id)
+    local retired=invoke(s,s.mapping.retire_hop,s.mapping,id,"suppressed")
+    local confirmed=retired[1] and retired.n==3 and retired[2]==true and retired[3]=="none"
+    s.hop_disposition={id=id,disposition="suppressed",confirmed=confirmed==true}
+    if not confirmed or not retired.current or s.stopped then
+        s.unknown=true;stop(s,"hop suppression unavailable");return false
+    end
+    return true
+end
 local function status(s)
     metrics_inflight(s)
     local p=s.pending[1]
@@ -501,16 +516,17 @@ local function companion_result(s,frame,contact,actions)
     end
     return out
 end
-local function wheel_plan(frame,geometry,gravity)
+local function wheel_plan(frame,geometry,gravity,probe_extra)
     if type(geometry)~="table" or not M.vec(geometry.com,10) or not M.vec(geometry.front_axle,10)
         or not M.vec(geometry.rear_axle,10) or not M.finite(geometry.wheel_radius)
-        or geometry.wheel_radius<.01 or geometry.wheel_radius>2 then return nil end
+        or geometry.wheel_radius<.01 or geometry.wheel_radius>2
+        or not M.finite(probe_extra) or probe_extra<.15 or probe_extra>.75 then return nil end
     local down=M.unit(gravity)
     if not down then return nil end
     local rays,centers={},{}
     for i,axle in ipairs({geometry.front_axle,geometry.rear_axle}) do
         local center=M.add(frame.body.center_of_mass,M.turn(frame.body.orientation,M.sub(axle,geometry.com)))
-        local target=M.add(center,M.mul(down,geometry.wheel_radius+.15))
+        local target=M.add(center,M.mul(down,geometry.wheel_radius+probe_extra))
         if not M.vec(center,100000) or not M.vec(target,100000) then return nil end
         centers[i]=center
         rays[i]={from=native(center),to=native(target)}
@@ -664,7 +680,7 @@ local function observe(s,source_frame,raw,context)
         serial=sample.serial,time=sample.time,seconds=sample.seconds,body=body,sample=sample,source=model_source,
         owner={body_handle=s.body,lease_handle=model_source.lease_handle},gates={focused=true,menu_open=false},
         now_ms=s.now,active=true,loaded=true,telemetry=copy(context.telemetry),observed=copy(context.observed)})
-    local plan,centers=wheel_plan(frame,s.geometry,s.force.tuning.gravity)
+    local plan,centers=wheel_plan(frame,s.geometry,s.force.tuning.gravity,s.wheel_probe_extra)
     if not plan then stop(s,"authored wheel geometry unavailable");return end
     local category_lane=s.contact.CATEGORY_WHEEL_LANE_QUALIFIED==true
     local query_options=category_lane
@@ -715,14 +731,13 @@ local function observe(s,source_frame,raw,context)
     if controls.physics_epoch~=sample.epoch or controls.h~=sample.seconds or not same_observation(controls.source,model_source) then
         stop(s,"mapped native frame mismatch");return
     end
-    if s.hop_policy=="suppress" and controls.hop then
+    -- Polling below can retire this accepted event while controls still holds
+    -- its earlier projection. Remember its owner before consuming receipts.
+    local hop_owned=controls.hop and accepted_hop_owner(s,controls.hop.id) or false
+    if controls.hop and (s.hop_policy=="suppress"
+        or s.hop_policy=="grounded_once" and not contact.grounded and not hop_owned) then
         local id=controls.hop.id
-        local retired=invoke(s,s.mapping.retire_hop,s.mapping,id,"suppressed")
-        local confirmed=retired[1] and retired.n==3 and retired[2]==true and retired[3]=="none"
-        s.hop_disposition={id=id,disposition="suppressed",confirmed=confirmed==true}
-        if not confirmed or not retired.current or s.stopped then
-            s.unknown=true;stop(s,"hop suppression unavailable");return
-        end
+        if not suppress_hop(s,id) then return end
         -- Refresh the same pure action projection after local retirement. No
         -- source observation, body step, force receipt or native hop is made.
         local refreshed=invoke(s,s.mapping.controls,s.mapping,{physics_epoch=sample.epoch,h=sample.seconds,
@@ -739,7 +754,7 @@ local function observe(s,source_frame,raw,context)
         end
         controls=next_controls
     end
-    if controls.hop and not Identity.bounded_delta(key.observed_ms,controls.hop.observed_ms,100) then
+    if controls.hop and not hop_owned and not Identity.bounded_delta(key.observed_ms,controls.hop.observed_ms,100) then
         stop(s,"hop request expired before body progress");return
     end
     if s.tricks and type(controls.actions)~="table" then stop(s,"bound trick action snapshot unavailable");return end
@@ -827,6 +842,21 @@ local function observe(s,source_frame,raw,context)
         s.wheels=wheels
         s.model_history={kind="predictive_accepted",serial=p.serial,sequence=sequence,
             reason="exact_force_admission",native_wheel_state_known=false}
+        if s.hop_policy=="grounded_once" then
+            if p.hop_id then
+                local claimed=invoke(s,s.mapping.claim_hop,s.mapping,p.hop_id)
+                if not claimed[1] or claimed.n~=3 or claimed[2]~=true or claimed[3]~="none"
+                    or not claimed.current or s.stopped then
+                    -- The exact sequence still permits receipt cleanup. Pure
+                    -- ownership uncertainty must not quarantine that transport.
+                    p.hop_claim_unknown=true;s.unknown=true;stop(s,"accepted hop ownership unavailable");return
+                end
+            elseif controls.hop and not hop_owned and model.hop_applied==false then
+                -- The forecast can already be airborne while measured contact
+                -- is grounded. Its accepted preview consumed this local ID.
+                if not suppress_hop(s,controls.hop.id) then return end
+            end
+        end
         if not submitted.current or not adopted.current or s.stopped then stop(s,"stopped during force admission") end
     elseif submitted[1] and submitted.n==3 and submitted[2]==false and type(submitted[3])=="string" then
         table.remove(s.pending,#s.pending)
@@ -854,9 +884,19 @@ function Ride.new(force_api,models,options)
         -- Snapshot an immutable model capability once. Raw Forces has no hop
         -- policy and retains its receipt-owned hop behavior unchanged.
         s.hop_policy=s.force.hop_policy
+        s.wheel_probe_extra=.15
         local valid=type(s.body)=="userdata" and s.incarnation~=nil and type(force_api)=="table"
             and type(s.contact)=="table" and type(s.contact.decode)=="function" and type(s.contact.actor_lane_qualified)=="function"
-            and (s.hop_policy==nil or s.hop_policy=="suppress")
+            and (s.hop_policy==nil or s.hop_policy=="suppress" or s.hop_policy=="grounded_once")
+        if s.hop_policy=="grounded_once" then
+            local extra
+            if type(s.force.tuning)=="table" then extra=s.force.tuning.wheel_probe_extra else valid=false end
+            if extra~=nil then
+                if M.finite(extra) and extra>=.15 and extra<=.75 then s.wheel_probe_extra=extra
+                else valid=false end
+            end
+            valid=valid and type(s.mapping.claim_hop)=="function"
+        end
         if valid then
             for _,name in ipairs({"probe_batch","submit","receipt","acknowledge"}) do
                 if type(force_api[name])~="function" then valid=false end

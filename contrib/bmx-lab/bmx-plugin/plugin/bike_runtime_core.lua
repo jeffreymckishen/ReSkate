@@ -1730,6 +1730,14 @@ function object:prepare_backend()
     T.spawn_instances=(T.spawn_instances or 0)+1
     return true
 end
+function object:score_feed(after_n)
+    -- This cached log contains only bounded scoring projections. Avoid status(),
+    -- which also copies lifecycle, receipt and native cleanup diagnostics.
+    if not ride then return {generation=0,n=0,rows={},gap=after_n~=nil and after_n~=0} end
+    local ok,result=pcall(ride.trick_log,ride,after_n)
+    if ok and type(result)=="table" then return result end
+    return {n=0,rows={},gap=true,issue="ride trick log unavailable"}
+end
 function object:status()
     -- All three dependency status methods are local cached reads. Detached
     -- copying strips private epochs/handles and refuses opaque nested values.

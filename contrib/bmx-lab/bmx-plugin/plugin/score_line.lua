@@ -32,7 +32,7 @@ local function empty(self)
     self._airborne, self._manual, self._grind = false, nil, nil
 end
 function Line.new(rules)
-    local self = setmetatable({ _rules=Rules.sanitize(rules), _seconds=nil }, Object)
+    local self = setmetatable({ _rules=Rules.sanitize(rules), _seconds=nil, _finished=false }, Object)
     empty(self)
     return self
 end
@@ -58,6 +58,19 @@ function Object:_close(outcome, why)
     end
     empty(self)
     return closed
+end
+-- Terminal control has no elapsed-time observation. Close only existing credits;
+-- ordinary step timestamp admission remains strict and does not use synthetic ticks.
+function Object:finish(why,outcome)
+    if reason(why,nil)==nil or (outcome~="banked" and outcome~="lost" and outcome~="interrupted") then
+        return {snapshot=self:_snapshot(),credits={},closed=nil,issue="invalid_terminal"}
+    end
+    if self._finished then
+        return {snapshot=self:_snapshot(),credits={},closed=nil,issue="finished"}
+    end
+    self._finished=true
+    local closed=self:_close(outcome,why)
+    return {snapshot=self:_snapshot(),credits={},closed=closed,issue="none"}
 end
 function Object:_repeat(key)
     return math.max(self._rules.repeat_floor, 1-self._rules.repeat_step*(self._repeats[key] or 0))
@@ -111,19 +124,22 @@ local function read_air(air)
         local row=air.sequence[i]
         if not plain(row) or (row.kind~="bar" and row.kind~="tail" and row.kind~="move")
             or not integer(row.id,1000) or not number(row.start,0,air.air_seconds)
-            or not number(row.finish,row.start,air.air_seconds)
-            or not number(row.hold==nil and 0 or row.hold,0,row.finish-row.start)
+            or not number(row.finish,row.start,air.air_seconds+1e-9)
+            or not number(row.hold==nil and 0 or row.hold,0,row.finish-row.start+1e-9)
             or (row.dir~=nil and row.dir~=-1 and row.dir~=0 and row.dir~=1) then return nil end
+        -- Match the event projector's rounding bounds, then score a clipped copy.
+        local finish=math.min(row.finish,air.air_seconds)
         local info=Catalog.get(row.id)
         if not info or (row.kind=="bar" and info.key~="barspin")
             or (row.kind=="tail" and info.key~="tailwhip")
             or (info.key=="barspin" and row.kind~="bar")
             or (info.key=="tailwhip" and row.kind~="tail")
-            or row.finish<=row.start or (i>1 and row.start<out.rows[i-1].start) then return nil end
+            or finish<=row.start or (i>1 and row.start<out.rows[i-1].start) then return nil end
         for _,prior in ipairs(out.rows) do
-            if prior.info.key==info.key and row.start<prior.finish and row.finish>prior.start then return nil end
+            if prior.info.key==info.key and row.start<prior.finish and finish>prior.start then return nil end
         end
-        out.rows[i]={ kind=row.kind, info=info, start=row.start, finish=row.finish, hold=row.hold or 0 }
+        out.rows[i]={ kind=row.kind, info=info, start=row.start, finish=finish,
+            hold=math.min(row.hold or 0,finish-row.start) }
     end
     if air.landing~=nil then
         local l=air.landing
@@ -224,6 +240,7 @@ function Object:step(h,feed)
     local function result(issue)
         return {snapshot=self:_snapshot(),credits=credits,closed=closed,issue=issue or "none"}
     end
+    if self._finished then return result("finished") end
     if not number(h,0,10) or not plain(feed) or not number(feed.seconds,0,MAX)
         or not modes[feed.mode] or not number(feed.speed,-1000,1000)
         or not valid_event(feed.manual,"manual") or not valid_event(feed.grind,"grind")

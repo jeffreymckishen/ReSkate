@@ -11,6 +11,7 @@
 #include "Extension/Throwdowns/throwdown_kit.h"
 #include "Engine/Vfs/mod_list.h"
 #include "Engine/Core/Platform/plugin_time_budget.h"
+#include "Engine/Core/Platform/launcher_support.h"
 #include "Engine/Game/BMX/bmx_chassis_control.h"
 #include "Engine/Game/BMX/bmx_interaction.h"
 #include "Engine/Game/BMX/equipment_switch.h"
@@ -24,6 +25,7 @@
 #include "Extension/Customization/board_material.h"
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <cmath>
 #include <format>
 #include <fstream>
@@ -247,11 +249,12 @@ struct FakeGame final : Game {
     std::map<std::uint64_t, OwnedBody> owned;
     std::vector<std::uint64_t> body_releases;
     unsigned body_creates{}, body_submissions{}, body_release_calls{};
-    unsigned body_submit_entries{};
+    unsigned body_submit_entries{}, body_receipt_calls{}, body_acknowledge_calls{};
     unsigned body_prepares{};
     std::string body_prepare_error;
     std::string body_prepare() override { ++body_prepares; return body_prepare_error; }
 #include "body_follow_fake_game_fixture.inc"
+#include "hop_inert_fake_game_fixture.inc"
 #ifdef DINGOSDK_BODY_REACTIVATION_QUALIFICATION
     // Constructed facade/provider boundary only. The shared pure arm is supplied
     // by each fixture; this fake never parses RealGame launch environment/paths.
@@ -554,6 +557,7 @@ struct FakeGame final : Game {
         return result;
     }
     std::string body_receipt(std::uint64_t owner, const owned_body::Handle& h, std::uint64_t selected, owned_body::Receipt& receipt) override {
+        ++body_receipt_calls;
         auto* b = body_of(owner, h); if (!b) return "owner or generation";
         if (!b->released && !b->quarantined && b->mailbox.needs_successor()) {
             b->latest = b->sample; (void)b->mailbox.observe_successor(b->sample);
@@ -562,6 +566,7 @@ struct FakeGame final : Game {
         receipt.retained = b->released; receipt.quarantined = b->quarantined; return {};
     }
     std::string body_acknowledge(std::uint64_t owner, const owned_body::Handle& h, std::uint64_t sequence) override {
+        ++body_acknowledge_calls;
         auto* b = body_of(owner, h); return b && b->mailbox.acknowledge(sequence) ? std::string{} : "not ready to acknowledge";
     }
     std::string body_release(std::uint64_t owner, const owned_body::Handle& h) override {
@@ -953,7 +958,8 @@ struct FakeGame final : Game {
                         (solid ? "" : " ghost"));
         return {};
     }
-    void entity_remove(std::string_view plugin, std::uint32_t id) override { entities.erase({std::string(plugin), id}); }
+    unsigned entity_remove_calls{};
+    void entity_remove(std::string_view plugin, std::uint32_t id) override { ++entity_remove_calls; entities.erase({std::string(plugin), id}); }
     std::optional<std::array<Vec3, 2>> entity_bounds(std::string_view blueprint) override {
         ++test_bounds_lookups; test_bounds_names.emplace_back(blueprint);
         if (const auto found = test_entity_boxes.find(std::string(blueprint)); found != test_entity_boxes.end()) return found->second;
@@ -1389,8 +1395,9 @@ struct FakeGame final : Game {
     bool key_down(int virtual_key) override { return keys_held.contains(virtual_key); }
     std::vector<std::uint8_t> kept_keys;
     std::uint16_t kept_buttons{};
-    void game_keys(std::string_view, std::vector<std::uint8_t> keys) override { kept_keys = std::move(keys); }
-    void game_buttons(std::string_view, std::uint16_t hidden, std::uint16_t, bool) override { kept_buttons = hidden; }
+    unsigned game_filter_calls{};
+    void game_keys(std::string_view, std::vector<std::uint8_t> keys) override { ++game_filter_calls; kept_keys = std::move(keys); }
+    void game_buttons(std::string_view, std::uint16_t hidden, std::uint16_t, bool) override { ++game_filter_calls; kept_buttons = hidden; }
     std::vector<std::string> on_top_now;
     static std::string joined(const std::vector<std::string>& list) {
         std::string out;
@@ -9587,6 +9594,7 @@ void bmx_lua_spawn_uses_owned_chassis_and_measured_part_placement() {
 #include "motion_refresh_host_fixture.inc"
 #include "body_reactivation_probe_host_fixture.inc"
 #include "body_prepare_host_fixture.inc"
+#include "hop_inert_host_fixture.inc"
 #include "body_follow_host_fixture.inc"
 #include "body_follow_motion_policy_host_fixture.inc"
 #include "body_follow_renew_host_fixture.inc"
@@ -9647,6 +9655,7 @@ int main() {
         run(the_tracked_input_pulse_fixture_bounds_and_separates_active_observations);
         run(the_private_input_trace_fixture_loads_inert_when_present);
         run(the_private_native_recovery_fixture_loads_inert_when_present);
+        run(the_sealed_private_hop_fixture_loads_inert_when_selected);
         run(owned_body_batches_are_permissioned_opaque_and_transactional);
         run(body_contact_details_are_known_and_epoch_bound);
         run(owned_body_batches_select_a_named_query_preset);

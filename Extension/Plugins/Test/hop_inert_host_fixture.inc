@@ -81,7 +81,7 @@ void hop_inert_verify(const std::filesystem::path& directory) {
     check(manifest.api == 1 && manifest.entry == "plugin/main.lua" && manifest.side == Side::client &&
         manifest.permissions == permissions, "The sealed hop manifest's actual permissions or entry changed");
 }
-void hop_inert_no_control(const TestEnvironment& environment) {
+void hop_inert_no_control(const TestEnvironment& environment, bool shutdown = false) {
     const auto& game = environment.fake;
     check(!game.body_prepares && !game.body_create_calls && !game.body_creates && !game.body_read_calls &&
         !game.body_release_calls && !game.body_submit_entries && !game.body_submissions && !game.body_receipt_calls &&
@@ -97,8 +97,11 @@ void hop_inert_no_control(const TestEnvironment& environment) {
         !game.native_action_requests && !game.native_action_reads && !game.native_action_cancels && !game.native_action_acks &&
         !game.native_recovery_requests && !game.native_recovery_reads && !game.native_recovery_cancels && !game.native_recovery_acks,
         "Hop bootstrap reached input, equipment or recovery services before Start");
-    check(game.calls.empty() && game.binds.empty() && game.entities.empty() && !game.entity_remove_calls &&
-        game.presses.empty() && environment.teleports.empty() && !environment.rays && !environment.native_ray_casts,
+    const std::vector<std::string> framework_calls = shutdown
+        ? std::vector<std::string>{std::string("entities clear ") + hop_inert_id} : std::vector<std::string>{};
+    check(game.calls == framework_calls && game.binds.empty() && game.entities.empty() && !game.entity_remove_calls &&
+        game.presses.empty() && !game.probes && !game.world_picks && !game.native_casts &&
+        environment.teleports.empty() && !environment.rays && !environment.native_ray_casts,
         "Hop bootstrap reached pose, legacy control, entity or world services before Start");
 #ifdef DINGOSDK_BODY_REACTIVATION_QUALIFICATION
     check(!game.reactivation_begins && !game.reactivation_polls && !game.reactivation_provider_calls,
@@ -142,6 +145,59 @@ void hop_inert_ready_ui(const TestEnvironment& environment, bool menu) {
         return widget.kind == plugin_ui::Widget::Kind::button && widget.id == "hop-trial-stop" && widget.text == "Stop trial";
     }) == 1, "The reviewed hop page must retain its explicit Stop control");
 }
+void hop_inert_shutdown(Host& host, TestEnvironment& environment, const std::filesystem::path& storage) {
+    auto& game = environment.fake;
+    check(game.input_pulse_releases.empty() && game.input_trace_releases.empty() && game.native_recovery_releases.empty() &&
+        game.native_action_releases.empty() && game.body_releases.empty() && game.release_order.empty() && game.released.empty(),
+        "Pre-Start hop bootstrap must not have closed an owner");
+    host.shutdown();
+    check(host.status().empty(), "Explicit idle shutdown must remove the hop plugin");
+    hop_inert_no_control(environment, true);
+    // Plugin::unload closes the VM, then its destructor repeats idempotent close.
+    // Host::unload calls Game::release once; the fake logs one entity-clear there.
+    check(game.body_releases.size() == 2 && game.body_releases.front() != 0,
+        "Idle shutdown must retain the two expected framework close receipts");
+    const auto owner = game.body_releases.front();
+    const std::vector<std::uint64_t> owners(2, owner);
+    check(game.body_releases == owners && game.input_pulse_releases == owners && game.input_trace_releases == owners &&
+        game.native_recovery_releases == owners && game.native_action_releases == owners &&
+        game.released == std::vector<std::string>{hop_inert_id} && !game.follow_closes && !game.follow_host_cleanups,
+        "Idle shutdown must only close the same constructed owner and release its plugin once");
+    const std::vector<std::pair<std::uint64_t, std::string>> order{
+        {owner, "recovery"}, {owner, "equipment"}, {owner, "body"},
+        {owner, "recovery"}, {owner, "equipment"}, {owner, "body"}};
+    check(game.release_order == order, "Idle framework close must not hide an acquired input or Follow duty");
+    // The real entry deliberately preserves unflushed idle evidence on unload.
+    // This diagnostic is not a mount ledger or a successful native cleanup receipt.
+    const auto document = dingosdk::Json::parse(hop_inert_read(storage));
+    constexpr const char* key = "hop.warmup-p0-20261027-v1.incomplete";
+    check(document.is_object() && document.size() == 1 && document.contains(key),
+        "Idle unload must persist only the exact run's incomplete diagnostic");
+    const auto& record = document.at(key);
+    check(record.at("schema").get<int>() == 1 && record.at("kind").get<std::string>() == "hop-trial-evidence" &&
+        record.at("run_id").get<std::string>() == "warmup-p0-20261027-v1" &&
+        !record.at("complete").get<bool>() && record.at("interrupted").get<bool>() &&
+        record.at("emergency_attempted").get<bool>() && !record.at("final_snapshot_unavailable").get<bool>() &&
+        record.at("observation_loss").get<bool>() && record.at("unqualified").get<bool>() &&
+        record.at("stop_requested").get<bool>() && !record.at("storage_fault").get<bool>() &&
+        record.at("first_fault").get<std::string>() == "explicit_unload_incomplete" &&
+        !record.at("native_qualified").get<bool>() && !record.at("native_retirement_known").get<bool>() &&
+        record.at("storage_scope").get<std::string>() == "Host cache acceptance only; disk durability unobserved.",
+        "Idle unload diagnostic must preserve interruption and native uncertainty");
+    check(record.at("chunks").get<int>() == 0 && record.at("stored_rows").get<int>() == 0 && record.at("dropped").get<int>() == 0 &&
+        !record.at("unresolved_debt").get<bool>() && !record.at("cleanup_unknown_seen").get<bool>() &&
+        !record.at("board_restore_unresolved").get<bool>() && !record.at("pose_release_unresolved").get<bool>(),
+        "Idle unload must not invent persisted activity or acquired native cleanup debt");
+    const auto& latest = record.at("latest");
+    check(latest.at("phase").get<std::string>() == "done" && latest.at("unloaded").get<bool>() &&
+        latest.at("detail").get<std::string>() == "unload before startup; no game authority acquired" &&
+        latest.at("stock_toggle_blocked").get<bool>() && !latest.at("bike_authority").get<bool>() &&
+        !latest.at("cleanup_pending").get<bool>() && !latest.at("cleanup_unknown").get<bool>(),
+        "Idle unload must retain the facade's actual inactive final snapshot");
+    for (const auto* field : {"stop_latched", "bike_cleanup_complete", "native_preparation", "body", "follow", "receipt", "source", "ride", "mounted_pose"}) {
+        check(!latest.contains(field), std::string("Idle fallback must not synthesize native lifecycle evidence: ") + field);
+    }
+}
 void the_sealed_private_hop_fixture_loads_inert_when_selected() {
     const auto selected = hop_inert_selection();
     if (!selected) {
@@ -173,7 +229,7 @@ void the_sealed_private_hop_fixture_loads_inert_when_selected() {
     // Root's reviewed launcher setting is 6 ms; the normal 50 ms callback cap,
     // 64 MiB heap and three-window enforcement are not relaxed for this test.
     const auto limits = game_limits(6);
-    check(limits.tick_ms == 6 && limits.call_ms == 50 && limits.memory == (64u << 20) && limits.over_windows == 3,
+    check(limits.tick_ms == 6 && limits.call_ms == 50 && limits.unload_ms == 20 && limits.memory == (64u << 20) && limits.over_windows == 3,
         "The hop Host test must use the reviewed game's ordinary configured limits");
     Host host(environment, Side::client, limits);
     host.set_level("constructed_hop_stock_level");
@@ -204,10 +260,12 @@ void the_sealed_private_hop_fixture_loads_inert_when_selected() {
     environment.fake.menu_now.open = true;
     advance(12); // Real menu cadence is 100 ms, not every Host tick.
     hop_inert_ready_ui(environment, true);
+    hop_inert_shutdown(host, environment, storage);
     hop_inert_verify(directory); // Reject a fixture changed while the Host read it.
     std::cout << "sealed private hop Host inert-load PASS: run=warmup-p0-20261027-v1 phase=P0 files=72 "
         "ticks=432 tick_ms=6 call_ms=50; READY/start-once/Lifecycle idle; 0 native-control Game entries; "
+        "idle shutdown checked with only its incomplete unqualified diagnostic and expected framework cleanup; "
         "Start UNDISPATCHED, native/game qualification UNRUN\n";
-    // Assertions above precede Host destruction's normal owner cleanup.
+    // The explicit shutdown cleared entries; the Host destructor has no owner left to unload.
 }
 } // namespace

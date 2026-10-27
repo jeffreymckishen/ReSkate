@@ -51,7 +51,7 @@ The manifest contract is API 1, client side, entry `plugin/main.lua`, permission
 ## Assertions and limits
 
 The fixture uses `game_limits(6)`, matching Main's reviewed P0 launcher setting.
-The ordinary 50 ms per-callback cap, 64 MiB heap and three consecutive average
+The ordinary 50 ms per-callback cap, 20 ms unload budget, 64 MiB heap and three consecutive average
 budget windows remain enforced. It does not increase the load timeout. It checks
 that the plugin is running immediately after load and after each of 432 ticks at
 16.7 ms. Cold loading starts with the menu open; subsequent 120-tick stages close,
@@ -75,7 +75,7 @@ one-shot transition. The separate Lua composition suites cover that behavior.
 
 Each tick checks zero entries at the fake Game boundary for native prepare,
 body create/read/release, force submission, command receipts/acknowledgements,
-Follow, native probes, input leases/capture/pulses/traces, equipment/recovery,
+Follow, native probes, world probe/pick/native casts, input leases/capture/pulses/traces, equipment/recovery,
 legacy game input filters, entity removal and the existing recorded control/pose
 calls. Lease/capture overrides delegate to the unchanged base refusals after
 counting; body receipt/ack, filter and entity removal counters also count before
@@ -83,7 +83,24 @@ results. This observes attempted backend calls, including refused ones, rather
 than only the final empty ownership state. Calls rejected earlier inside the API
 are outside those Game-entry counters; affirmative UI and running-state checks
 separately catch a failed bootstrap. Pre-Start storage must remain absent.
-All assertions precede normal Host destruction and owner cleanup.
+Before PASS, the fixture calls `Host::shutdown()` explicitly and repeats the
+boundary-counter assertions, allowing only the fake's one framework
+`entities clear <id>` call from `Game::release`. It checks the actual idempotent
+close bookkeeping: `Plugin::unload` and the plugin destructor each close the same
+nonzero owner, yielding two entries in the pulse/trace/recovery/equipment/body
+release vectors; `Game::release` runs once. Those framework close receipts are
+separate from plugin-driven requests and do not qualify native cleanup.
+
+Idle unload intentionally writes the actual entry's emergency evidence because
+its cached observations were not flushed. The test requires exactly one storage
+key, `hop.warmup-p0-20261027-v1.incomplete`, with `complete=false`,
+`interrupted=true`, `observation_loss=true`, `unqualified=true`,
+`first_fault=explicit_unload_incomplete` and both native qualification flags false.
+No lifecycle mount ledger, completed summary or evidence chunks may appear. Its
+last facade snapshot is `done`/unloaded, with no authority or acquired cleanup
+debt; absent native facts remain absent. This diagnostic is expected even though
+Start was never dispatched. The explicit shutdown completes before PASS; later
+Host destruction has no plugin entry left to unload.
 
 ## Main-owned execution
 
@@ -97,7 +114,7 @@ $env:RESKATE_HOP_INERT_FIXTURE = 'E:\RESKATE DEV\warmup-hop-validation-20261027-
 
 The required result contains `sealed private hop Host inert-load PASS`, the exact
 run, `files=72`, `ticks=432 tick_ms=6 call_ms=50`, the READY/start-once/idle cues,
-and zero native-control Game entries. A skip is not a passing bootstrap receipt.
+and zero native-control Game entries, followed by the checked idle-shutdown diagnostic and expected framework cleanup. A skip is not a passing bootstrap receipt.
 Restore the prior process environment value afterwards. Record the executed
 binary identity, integrated revision and full suite result separately. A native
 P0/H1 game run still needs its own operator protocol, execution window and facts.

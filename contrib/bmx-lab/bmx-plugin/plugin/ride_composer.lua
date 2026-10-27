@@ -1375,11 +1375,12 @@ function Ride:step(tick)
     -- read's steer and wheel phases and last read's presented crank, because
     -- the rider cue that presents the crank reads this read's trick targets.
     for i = 1, 2 do self._wheel_phase[i] = wrap(self._wheel_phase[i] + t.wheels[i].angular_speed * h) end
-    -- The kernel's own pedaling decision (forces.lua pedal_cadence), so the
-    -- drawn crank turns only on a read whose preview pedals. At the top
-    -- pedaling speed with the pedal held it stops, and rider_presentation
-    -- levels it as for a released pedal.
+    -- Keep this read's preview cadence, but require its actual faded axle
+    -- torque as well as pedal intent. Zero-torque tuning, coasting and the
+    -- top-speed latch hold the crank; rider_presentation levels it.
+    local pedal_torque = kernel.effective_pedal_torque
     local pedaling = kernel.valid == true and kernel.pedaling == true
+        and finite(pedal_torque) and pedal_torque > 0 and pedal_torque <= 1e6
     if pedaling then self._raw_crank = wrap(self._raw_crank + t.wheels[2].angular_speed * h / self._crank_ratio) end
     local support, support_issue = support_packet(tick.support)
     diagnostics.support.owner = support_issue

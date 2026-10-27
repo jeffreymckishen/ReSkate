@@ -35,7 +35,7 @@ local function result(issue)
         desired_support_angular_velocity={0,0,0},balance_support_mask=0,balance_continuation_mask=0,brake_impulse={0,0},
         balance_reference_up={0,0,0},desired_balance_up={0,0,0},balance_torque={0,0,0},air_control_torque={0,0,0},
         motor_torque={0,0,0},contact_torque={0,0,0},pre_contact_prediction_available=false,pump_force={0,0,0},
-        air_damping_torque={0,0,0},air_rotation_reserved=false,neutral_air_damping_active=false,pedaling=false}
+        air_damping_torque={0,0,0},air_rotation_reserved=false,neutral_air_damping_active=false,pedaling=false,effective_pedal_torque=0}
 end
 local function tuning_valid(t)
     if not M.vec(t.gravity,100) or M.length(t.gravity)<.1 then return false end
@@ -247,6 +247,7 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     if not cadence.valid then return out end out.pedaling=cadence.pedaling
     local pedal_scale=math.clamp((t.pedal_cutoff-motor_speed)/(t.pedal_cutoff-t.pedal_fade_start),0,1)
     local pedal=cadence.pedaling and math.clamp(c.pedal,0,1)*pedal_scale or 0 local brake=c.enabled and math.clamp(c.brake,0,1) or 0
+    local pedal_torque=pedal*t.pedal_torque
     local braking=brake>0 and (t.front_brake_torque>0 or t.rear_brake_torque>0)
     local pitch=c.enabled and math.clamp(c.nose_manual,0,1)-math.clamp(c.manual,0,1) or 0
     local assist={0,0,0} local world_up=M.unit(M.mul(t.gravity,-1)) if not world_up then return out end
@@ -285,7 +286,7 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     out.wheels=M.copy(wheels)
     for i=1,2 do
         -- The contact-free drive stage needs an axle, not a fabricated clear plane.
-        local b,w=Tire.axle_couple(prediction,out.wheels[i],wheel_axes[i],(i==2 and pedal*t.pedal_torque or 0)*h)
+        local b,w=Tire.axle_couple(prediction,out.wheels[i],wheel_axes[i],(i==2 and pedal_torque or 0)*h)
         if not b then return result() end prediction=b out.wheels[i]=w
     end
     local actuated,actuated_wheels=M.copy(prediction),M.copy(out.wheels)
@@ -318,6 +319,9 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     local loaded=false for i=1,2 do loaded=loaded or (out.normal_load[i]>0 and F.eligible_support(measured,samples[i],.005,t.maximum_penetration)) end
     if loaded and not out.hop_applied then reservation(air,c.recovery_step_verified,c.enabled,true,intent,launch) end
     self.air=air out.air_rotation_reserved=air.reserved==true if c.enabled then self.steering={valid=true,angle=out.front_steer_angle} end
+    -- Report the exact faded axle torque only for a valid model prediction.
+    -- Pedaling intent can remain true with zero-torque tuning.
+    out.effective_pedal_torque=pedal_torque
     self.pump=pump self.pedal_latch=next_latch out.valid=true out.issue="none" return out
 end
 function Controller:_recovery_mask(h,body,samples,c,baseline)

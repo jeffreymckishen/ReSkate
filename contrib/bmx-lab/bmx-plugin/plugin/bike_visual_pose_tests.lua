@@ -256,6 +256,74 @@ function Tests.run()
         table.clear(g.sets)
         check(plain:follow_visual(g.sample("2",1/60),1010)==true and #g.sets==0,"nil after a neutral pose places nothing")
     end)
+    case("a reused mutable pose redraws every changed presentation value",function()
+        local owner,f=visual_fixture()
+        local sample=f.sample("2",1/60)
+        local pose=Visual.neutral();pose.unused={caller=true}
+        check(owner:follow_visual(sample,1000,pose)==true,"initial mutable pose draws")
+        local keys={"steer","front_wheel_phase","rear_wheel_phase","crank_phase","barspin","tailwhip",
+            "movement_bike_pitch","movement_bike_roll"}
+        for index,key in ipairs(keys) do
+            local prior=owner.pose
+            local before=pose[key]
+            pose[key]=index/10
+            table.clear(f.sets)
+            check(owner:follow_visual(sample,1000+index,pose)==true and #f.sets==8,"reused "..key.." redraws the same body")
+            check(prior[key]==before and owner.pose~=pose and owner.pose[key]==pose[key],"the prior "..key.." value stays detached")
+            local want=assert(Visual.from_sample(sample,pose))
+            for i,row in ipairs(f.sets) do for k=1,16 do
+                check(same_number(row.matrix[k],want[i][k]),"reused "..key.." matrix "..i.."["..k.."]")
+            end end
+        end
+        local fields=0;for _ in owner.pose do fields+=1 end
+        check(fields==8 and owner.pose.unused==nil,"the snapshot contains only the eight presentation values")
+        table.clear(f.sets)
+        check(owner:follow_visual(sample,1010,table.clone(pose))==true and #f.sets==0,"equal values in a different table still skip placement")
+        check(owner:status().visual_updates==9 and owner:status().posed_updates==9,"only the initial and changed draws are counted")
+    end)
+    case("a setter cannot change the pose snapshot for matrices already drawn",function()
+        local owner,f=visual_fixture()
+        local sample=f.sample("2",1/60)
+        local pose=pose_of({steer=.2,crank_phase=.4})
+        local drawn=table.clone(pose)
+        local want=assert(Visual.from_sample(sample,drawn))
+        local place=owner.api.entities.set
+        owner.api.entities.set=function(id,...)
+            if id==1 then pose.steer=.6;pose.crank_phase=.8 end
+            return place(id,...)
+        end
+        check(owner:follow_visual(sample,1000,pose)==true and #f.sets==8,"the original snapshot is placed")
+        check(owner.pose.steer==drawn.steer and owner.pose.crank_phase==drawn.crank_phase,"cache describes the values captured before callbacks")
+        for i,row in ipairs(f.sets) do for k=1,16 do
+            check(same_number(row.matrix[k],want[i][k]),"callback draw "..i.."["..k.."]")
+        end end
+        owner.api.entities.set=place
+        table.clear(f.sets)
+        check(owner:follow_visual(sample,1010,pose)==true and #f.sets==8,"the callback's caller mutation needs another draw")
+        check(owner.pose.steer==.6 and owner.pose.crank_phase==.8 and owner:status().visual_updates==2,"only the later draw publishes the mutated values")
+    end)
+    case("a partial placement refusal keeps the last successful pose snapshot",function()
+        local owner,f=visual_fixture()
+        local sample=f.sample("2",1/60)
+        local pose=pose_of({steer=.2})
+        check(owner:follow_visual(sample,1000,pose)==true,"initial draw succeeds")
+        local prior=owner.pose
+        pose.steer=.5
+        local place=owner.api.entities.set
+        owner.api.entities.set=function(id,...)
+            if id==3 then return false,"constructed partial placement" end
+            return place(id,...)
+        end
+        table.clear(f.sets)
+        local ok,why=owner:follow_visual(sample,1010,pose)
+        check(not ok and why=="bike visual request refused: constructed partial placement" and #f.sets==2,"two accepted parts do not complete the draw")
+        check(owner.pose==prior and prior.steer==.2 and owner.sample==sample,"failed publication retains the last pose and body")
+        check(owner:status().visual_updates==1 and owner:status().posed_updates==1,"a partial draw advances no update counter")
+        owner.api.entities.set=place
+        table.clear(f.sets)
+        check(owner:follow_visual(sample,1020,pose)==true and #f.sets==8,"the still-unpublished values need all eight placements")
+        check(owner.pose~=pose and owner.pose.steer==.5 and owner:status().visual_updates==2,"full success publishes the detached replacement")
+    end)
     case("the same body in a newer pose is drawn again without advancing the body",function()
         local owner,f=visual_fixture()
         local sample=f.sample("1",0)

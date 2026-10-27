@@ -110,7 +110,7 @@ function Tests.run()
         local s=ride(f,3)
         local model=f.models[3].model
         local before=s[2].presentation_pose.crank_phase
-        check(model.pedaling==true,"pedaling")
+        check(model.pedaling==true and model.effective_pedal_torque>0,"the default pedal applies axle torque")
         check(s[3].presentation_pose.crank_phase==wrap(before+model.wheels[2].angular_speed*H/Composer.crank_ratio),
             "the cranks turn by the rear wheel over Composer.crank_ratio")
     end)
@@ -163,6 +163,20 @@ function Tests.run()
                 "held pedal at top speed: wheels roll, cranks still, step "..i)
         end
     end)
+    case("zero pedal torque holds the cranks while a moving wheel rolls",function()
+        local f=fixture({speed=2});f.held={a=true}
+        -- This is the exact controller both Ride and the preview recorder use.
+        f.force.tuning.pedal_torque=0
+        local statuses=ride(f,6)
+        for i=2,6 do
+            local model=f.models[i].model
+            local before,pose=statuses[i-1].presentation_pose,statuses[i].presentation_pose
+            check(not statuses[i].stop_requested and statuses[i].submitted==i,"zero torque accepts the ordinary step "..i)
+            check(model.pedaling==true and model.effective_pedal_torque==0,"held input has intent but no axle torque, step "..i)
+            check(pose.rear_wheel_phase~=before.rear_wheel_phase,"the moving wheel still rolls, step "..i)
+            check(pose.crank_phase==before.crank_phase,"zero effective torque keeps the cranks still, step "..i)
+        end
+    end)
     case("the pose is shared, not copied, by each status",function()
         local f=fixture();f.held={a=true}
         ride(f,3)
@@ -209,7 +223,12 @@ function Tests.run()
     for _,spec in ipairs({{"a steer past 1 rad",function(m) m.front_steer_angle=1.2 end},
         {"a nonfinite steer",function(m) m.front_steer_angle=0/0 end},
         {"a string steer",function(m) m.front_steer_angle="0" end},
-        {"a numeric cadence",function(m) m.pedaling=1 end}}) do
+        {"a numeric cadence",function(m) m.pedaling=1 end},
+        {"a negative effective pedal torque",function(m) m.effective_pedal_torque=-1 end},
+        {"a string effective pedal torque",function(m) m.effective_pedal_torque="75" end},
+        {"a nonfinite effective pedal torque",function(m) m.effective_pedal_torque=0/0 end},
+        {"an infinite effective pedal torque",function(m) m.effective_pedal_torque=math.huge end},
+        {"an excessive effective pedal torque",function(m) m.effective_pedal_torque=1e6+1 end}}) do
         case("a model with "..spec[1].." stops before its command",function()
             local f=fixture();f.held={a=true}
             ride(f,2)

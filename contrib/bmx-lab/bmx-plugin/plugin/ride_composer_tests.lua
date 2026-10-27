@@ -890,6 +890,29 @@ function Tests.run()
         end
     end
 
+    scenario("zero pedal torque holds the crank while the bike rolls", function()
+        local spec = { speed = 2, max_steps = 30, options = { forces = { pedal_torque = 0 } },
+            script = function(step) return step <= 10 and {} or { pedal = true } end }
+        local out = run(spec)
+        invariants("zero pedal torque", out)
+        local tr = out.trace
+        local coast = run({ speed = spec.speed, max_steps = spec.max_steps, options = spec.options,
+            script = function() return {} end }).trace
+        local start = first(tr, 1, function(r) return r.input.pedal end)
+        check(start ~= nil and start > 1 and #coast == #tr, "the zero-torque run starts pedaling after neutral reads")
+        for i = start, #tr do
+            local r = tr[i]
+            check(r.mode == "rolling" and r.result.commands.submit and r.tick.wheels[2].angular_speed > 0,
+                "the zero-torque bike still rolls and submits, step " .. i)
+            check(r.result.diagnostics.kernel.pedal == 1 and pedaling(r),
+                "zero torque preserves the kernel's held-pedal intent, step " .. i)
+            local c, k = r.result.commands, coast[i].result.commands
+            check(M.length(M.sub(c.force, k.force)) == 0 and M.length(M.sub(c.torque, k.torque)) == 0
+                and c.wheels[2].angular_speed == k.wheels[2].angular_speed,
+                "zero-torque held pedal sends the exact coast command, step " .. i)
+        end
+        crank_runs(tr, start, #tr, false, "zero pedal torque")
+    end)
     scenario("pedaling stops at the top pedaling speed and resumes below the band", function()
         local out = run(scenarios.pedal_top_speed)
         invariants("pedal_top_speed", out)

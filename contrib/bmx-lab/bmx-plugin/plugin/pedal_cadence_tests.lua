@@ -160,6 +160,32 @@ function tests.run()
         check(near(pump(3,1),11*.75) and near(pump(3,0),11),"pedaling still softens the pump")
         check(near(pump(8.5,1),11) and near(pump(8.5,0),11),"a held pedal past the top speed pumps fully")
     end
+    cases+=1 do
+        -- Presentation must use the actual faded axle torque, not pedal intent.
+        local b,w,s=fixture(3)
+        local held=F.new({pedal_torque=0}):step(h,b,w,s,{pedal=1})
+        local coast=F.new({pedal_torque=0}):step(h,b,w,s,{pedal=0})
+        check(held.valid and coast.valid and held.pedaling and not coast.pedaling,"zero tuning does not change the cadence latch")
+        check(held.effective_pedal_torque==0 and coast.effective_pedal_torque==0 and held.wheels[2].angular_speed~=0,
+            "the rolling wheel has no pedal axle torque with zero tuning")
+        check(same(held.force,coast.force) and same(held.torque,coast.torque)
+            and held.wheels[2].angular_speed==coast.wheels[2].angular_speed,"zero-torque held pedal remains the exact coasting force step")
+        local full=F.new():step(h,b,w,s,{pedal=1})
+        local half=F.new():step(h,b,w,s,{pedal=.5})
+        check(full.valid and half.valid and full.effective_pedal_torque==75 and half.effective_pedal_torque==37.5,
+            "default and fractional inputs report the exact rear axle torque")
+        b,w,s=fixture(7)
+        local faded=F.new():step(h,b,w,s,{pedal=1})
+        check(faded.valid and faded.effective_pedal_torque==37.5,"the unchanged speed fade reports half torque")
+        b,w,s=fixture(top)
+        local stopped=F.new():step(h,b,w,s,{pedal=1})
+        check(stopped.valid and not stopped.pedaling and stopped.effective_pedal_torque==0,"the top-speed latch reports no torque")
+        b,w,s=fixture(3)
+        local disabled=F.new():step(h,b,w,s,{pedal=1,enabled=false})
+        local invalid=F.new():step(h*2,b,w,s,{pedal=1})
+        check(disabled.valid and disabled.effective_pedal_torque==0,"disabled input reports no torque")
+        check(not invalid.valid and invalid.effective_pedal_torque==0,"a refused prediction reports no effective torque")
+    end
     return {cases=cases,assertions=assertions}
 end
 return tests

@@ -107,21 +107,23 @@ local NEUTRAL_POSE = table.freeze({steer=0,front_wheel_phase=0,rear_wheel_phase=
 -- The presentation pose after an accepted step: the front steer angle the
 -- kernel commanded, each wheel turned by its accepted angular speed over the
 -- step, and the cranks turned by the rear wheel through CRANK_RATIO only while
--- the kernel's pedal latch says the rider pedals (forces.lua pedal_cadence),
--- so a coast or a held pedal at top speed leaves them still. These are
+-- the kernel's pedal latch and positive effective axle torque agree, so a
+-- coast, zero-torque tuning or a held pedal at top speed leaves them still. These are
 -- accepted Lua predictions drawn on the measured body, never native wheel
 -- state. ForceStage's zero stage commands nothing and reports no steer or
 -- cadence: the bars and cranks hold. One new table a step, which status
 -- shares; nil for a model that reports either malformed.
 local function presentation(previous,model,wheels,h)
-    local steer,pedaling=model.front_steer_angle,model.pedaling
+    local steer,pedaling,pedal_torque=model.front_steer_angle,model.pedaling,model.effective_pedal_torque
     if steer==nil then steer=previous.steer
     elseif not M.finite(steer) or math.abs(steer)>1 then return nil end
     if pedaling==nil then pedaling=false elseif type(pedaling)~="boolean" then return nil end
+    if pedal_torque==nil then pedal_torque=0
+    elseif not M.finite(pedal_torque) or pedal_torque<0 or pedal_torque>1e6 then return nil end
     local rear=wheels[2].angular_speed*h
     return {steer=steer,front_wheel_phase=wrap(previous.front_wheel_phase+wheels[1].angular_speed*h),
         rear_wheel_phase=wrap(previous.rear_wheel_phase+rear),
-        crank_phase=pedaling and wrap(previous.crank_phase+rear/CRANK_RATIO) or previous.crank_phase,
+        crank_phase=pedaling and pedal_torque>0 and wrap(previous.crank_phase+rear/CRANK_RATIO) or previous.crank_phase,
         barspin=0,tailwhip=0,movement_bike_pitch=0,movement_bike_roll=0}
 end
 -- The measured tilt of the body's up axis from world up, in degrees, and its

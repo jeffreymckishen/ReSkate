@@ -35,6 +35,7 @@ local function same(a,b)
     for i=1,4 do if not equal_number(a.rotation[i],b.rotation[i]) then return false end end
     return true
 end
+local NEUTRAL=table.freeze(Visual.neutral())
 -- The sample's part matrices in pose (neutral when nil), or nil and why when it
 -- is not a valid measured body or pose. A caller that also places the parts
 -- uses these, rather than building all eight matrices a second time from the
@@ -49,13 +50,20 @@ local function valid_matrices(sample,pose)
     for i,axis in {"x","y","z"} do
         if math.abs(sample.inertia[axis]-G.inertia[i])>.001 then return nil,"Invalid measured bike body for follow visuals" end
     end
-    if pose~=nil and not Visual.valid_pose(pose) then return nil,"Invalid presentation pose for follow visuals" end
+    if pose~=nil then
+        if type(pose)~="table" then return nil,"Invalid presentation pose for follow visuals" end
+        -- Capture only the values that draw the parts. The caller may reuse
+        -- its table, including while the entity setters below are running.
+        local values={}
+        for key in NEUTRAL do values[key]=pose[key] end
+        if not Visual.valid_pose(values) then return nil,"Invalid presentation pose for follow visuals" end
+        pose=table.freeze(values)
+    end
     local matrices=Visual.from_sample(sample,pose)
     if not matrices then return nil,"Invalid measured bike body for follow visuals" end
-    return matrices
+    return matrices,nil,pose
 end
 -- Whether two presentation poses draw the same, nil being neutral.
-local NEUTRAL=table.freeze(Visual.neutral())
 local function same_pose(a,b)
     if a==b then return true end
     for key,value in NEUTRAL do
@@ -178,7 +186,7 @@ function Runtime:_follow_visual(sample,now_ms,pose)
     end
     if not M.finite(now_ms) or now_ms<0 or now_ms>9007199254740991
         or self.follow_wall and now_ms<self.follow_wall then return false,"Invalid or reversed follow visual wall clock" end
-    local measured,invalid=valid_matrices(sample,pose)
+    local measured,invalid,drawn_pose=valid_matrices(sample,pose)
     if not measured then return false,invalid end
     local order=compare(sample.serial,self.sample.serial)
     if order<0 or sample.time<self.sample.time or (order>0 and sample.time<=self.sample.time)
@@ -194,12 +202,12 @@ function Runtime:_follow_visual(sample,now_ms,pose)
         self.follow_wall,self.follow_observed_at=now_ms,observed
         -- The same body is drawn again only in a newer pose: Ride can accept
         -- its first step on the sample the handoff drew.
-        if same_pose(pose,self.pose) then return true end
+        if same_pose(drawn_pose,self.pose) then return true end
     end
     local placed,reason=self:_place(measured)
     if not placed then return false,reason end
     if order>0 then self.sample=sample self.follow_observed_at=now_ms end
-    self.pose=pose self.follow_wall=now_ms self.updates+=1
+    self.pose=drawn_pose self.follow_wall=now_ms self.updates+=1
     if pose~=nil then self.posed_updates+=1 end
     self.detail="Bike visuals follow supplied measured chassis; mounted alignment remains unproved."
     return true

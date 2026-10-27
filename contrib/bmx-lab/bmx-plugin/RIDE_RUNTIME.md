@@ -14,6 +14,29 @@ Core runs readiness and Follow callbacks, then Source authorization, then its fi
 
 These are sequential sampled checks, **not an atomic native selected-lease/body transaction**. Native authority can change after the final read/clock and before SDK entry. No alternating guard loop, rollback or native consumption proof is supplied. Whole-Host/native timing for the additional calls is unqualified.
 
+## Bike presentation and measured stops
+
+Ride publishes the bike's steering angle, wheel phases and crank phase only after a
+force command is accepted and its prediction is adopted. Wheel phases follow the
+accepted virtual wheel speeds. The cranks advance through the authored 25/9 gearing
+only when the model supplies positive effective pedal torque; zero torque tuning,
+coasting and the pedal cutoff leave them still. These are Lua predictions drawn on
+the measured chassis, not observations of native wheel motion or rider bones.
+The composer uses the same effective-torque condition for its crank and pedaling
+cue, while retaining its existing read/preview presentation cadence and coast
+leveling. Its diagnostic `pedaling` field still records the pedal latch's intent.
+Spawn retains a value snapshot of the eight pose fields after successful placement.
+Reusing and changing a caller's pose table at the same body serial therefore redraws
+the parts; equal values still skip redundant placement, and nil means neutral.
+
+Before contact queries or force commands, Ride stops if measured body tilt exceeds
+15 degrees from world up or roll exceeds 1 rad/s about the bike's forward axis. The
+tilt bound includes pitch and can end a manual or hard turn; these trial limits are
+not a general riding envelope. A missing or refused trick adapter leaves that step
+without a trick. Frame mismatches, unknown effects, reentrant stops and recovery's
+stop requests retain their refusal behavior. Core and Ride's activation gates remain
+closed; source and constructed tests do not qualify these behaviors in game.
+
 ## Cadence and model boundaries
 
 Source identity and native input observation times remain canonical decimal strings, independent from Lua wall time and physics time. Ride stages at most32 ordered source observations over100 native input milliseconds. It consumes at most one queued observation on a real consecutive body step, preserving a non-hop selection followed by neutral release. A bounded older consumed model input is not restamped as the newest native report. Higher source cadence that overflows the FIFO stops; no coalescing, dropped-edge or synthetic-dt policy is added.

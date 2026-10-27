@@ -3,12 +3,17 @@ local M = {}
 function M.finite(x) return type(x)=="number" and x==x and math.abs(x)<math.huge end
 function M.vec(v,bound)
     if type(v)~="table" then return false end
-    for i=1,3 do if not M.finite(v[i]) or math.abs(v[i])>(bound or 1e6) then return false end end
+    -- M.finite written out: vec runs hundreds of times a step.
+    for i=1,3 do
+        local x=v[i]
+        if not (type(x)=="number" and x==x and math.abs(x)<math.huge) or math.abs(x)>(bound or 1e6) then return false end
+    end
     return true
 end
 function M.copy(v)
     if type(v)~="table" then return v end
-    local out={} for k,x in v do out[k]=M.copy(x) end return out
+    -- Scalars are stored directly rather than through a call each.
+    local out={} for k,x in v do if type(x)=="table" then out[k]=M.copy(x) else out[k]=x end end return out
 end
 function M.add(a,b) return {a[1]+b[1],a[2]+b[2],a[3]+b[3]} end
 function M.sub(a,b) return {a[1]-b[1],a[2]-b[2],a[3]-b[3]} end
@@ -24,15 +29,27 @@ function M.normalized(q)
     local n=0 for i=1,4 do n+=q[i]*q[i] end n=math.sqrt(n)
     return {q[1]/n,q[2]/n,q[3]/n,q[4]/n}
 end
+-- turn and tensor do their arithmetic in scalars: each operation and its
+-- order is that of the table form, v+(twice*q[4]+axis x twice) with
+-- twice=(axis x v)*2, so the results are the same numbers, made with one
+-- result table instead of seven per rotation (they run in every step).
+local function turn3(q1,q2,q3,q4,v1,v2,v3)
+    local t1,t2,t3=(q2*v3-q3*v2)*2,(q3*v1-q1*v3)*2,(q1*v2-q2*v1)*2
+    return v1+(t1*q4+(q2*t3-q3*t2)),v2+(t2*q4+(q3*t1-q1*t3)),v3+(t3*q4+(q1*t2-q2*t1))
+end
 function M.turn(q,v)
-    local axis={q[1],q[2],q[3]} local twice=M.mul(M.cross(axis,v),2)
-    return M.add(v,M.add(M.mul(twice,q[4]),M.cross(axis,twice)))
+    return {turn3(q[1],q[2],q[3],q[4],v[1],v[2],v[3])}
 end
 function M.tensor(b,v,inverse)
-    local q=M.normalized(b.orientation)
-    local local_v=M.turn({-q[1],-q[2],-q[3],q[4]},v)
-    for i=1,3 do local_v[i]*=inverse and 1/b.inertia_body[i] or b.inertia_body[i] end
-    return M.turn(q,local_v)
+    local o=b.orientation
+    local n=0 for i=1,4 do n+=o[i]*o[i] end n=math.sqrt(n)
+    local q1,q2,q3,q4=o[1]/n,o[2]/n,o[3]/n,o[4]/n
+    local l1,l2,l3=turn3(-q1,-q2,-q3,q4,v[1],v[2],v[3])
+    local inertia=b.inertia_body
+    l1*=inverse and 1/inertia[1] or inertia[1]
+    l2*=inverse and 1/inertia[2] or inertia[2]
+    l3*=inverse and 1/inertia[3] or inertia[3]
+    return {turn3(q1,q2,q3,q4,l1,l2,l3)}
 end
 function M.around(v,axis,angle)
     local c,s=math.cos(angle),math.sin(angle)

@@ -97,7 +97,9 @@ function Admission.facts(call,lookup)
     local p=call("skater.get",lookup("skater.get"))
     local w=call("skater.telemetry",lookup("skater.telemetry"))
     local l=call("level.current",lookup("level.current"))
-    for _,r in ipairs({f,a,m,p,w,l}) do if not r[1] or r.n~=2 then return nil end end
+    -- The six results checked in order, without a list made for the loop.
+    if not f[1] or f.n~=2 or not a[1] or a.n~=2 or not m[1] or m.n~=2 or not p[1] or p.n~=2
+        or not w[1] or w.n~=2 or not l[1] or l.n~=2 then return nil end
     f,a,m,p,w,l=f[2],a[2],m[2],p[2],w[2],l[2]
     if type(f)~="table" or type(a)~="boolean" or type(m)~="table" or type(m.open)~="boolean"
         or type(p)~="table" or type(w)~="table" or type(w.watch)~="table" or type(l)~="table"

@@ -22,8 +22,14 @@ local function finite_tree(value,depth,budget)
     if kind~="table" or getmetatable(value)~=nil or depth>=12 then return false end
     for key,item in pairs(value) do
         budget.n+=1
-        if budget.n>2048 or not (type(key)=="string" or type(key)=="number" and M.finite(key))
-            or not finite_tree(item,depth+1,budget) then return false end
+        if budget.n>2048 or not (type(key)=="string" or type(key)=="number" and M.finite(key)) then return false end
+        -- A scalar item gets finite_tree's own answer here, without a call per field.
+        local inner=type(item)
+        if inner=="number" then
+            if not (item==item and math.abs(item)<math.huge) then return false end
+        elseif inner=="table" then
+            if not finite_tree(item,depth+1,budget) then return false end
+        elseif inner~="boolean" and inner~="string" then return false end
     end
     return true
 end

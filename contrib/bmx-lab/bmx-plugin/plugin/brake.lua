@@ -131,17 +131,32 @@ function B.project(k,g1,g2,g3,l1,l2,l3,fast,hint1,hint2,hint3)
         if l1==0 then r1=0 aa=1 off=0 end
         if l2==0 then r2=0 dd=1 off=0 end
         local hint if mode==-1 then hint=hint1 elseif mode==0 then hint=hint2 else hint=hint3 end
-        local x,y,root=disk(aa,off,dd,r1,r2,fast,hint) if x==nil then return nil end
+        -- disk's first test, the same expressions in the same order: most braked
+        -- projections end there, with the alpha-zero point inside the unit disk.
+        -- Any other case goes to disk, which repeats that test and goes on.
+        local x,y,root
+        do
+            local square,cross1,cross2=off*off,off*r1,off*r2
+            local ia,id=aa+0,dd+0 local determinant=ia*id-square
+            if determinant>0 and determinant<math.huge and ia>0 and id>0 then
+                local ux,uy=(-id*r1+cross2)/determinant,(cross1-ia*r2)/determinant
+                if ux>-math.huge and ux<math.huge and uy>-math.huge and uy<math.huge and math.sqrt(ux*ux+uy*uy)<=1 then
+                    x,y,root=ux,uy,0
+                end
+            end
+        end
+        if x==nil then x,y,root=disk(aa,off,dd,r1,r2,fast,hint) if x==nil then return nil end end
         if mode==-1 then root1=root elseif mode==0 then root2=root else root3=root end
         local z=free and -(b3+a31*x+a32*y)/a33 or mode
-        if not M.finite(z) or math.abs(z)>1+1e-12 then continue end z=math.clamp(z,-1,1)
+        -- M.finite written out (z and objective are always numbers here).
+        if not (type(z)=="number" and z==z and math.abs(z)<math.huge) or math.abs(z)>1+1e-12 then continue end z=math.clamp(z,-1,1)
         -- Preserve the original row-wise work summation, including nonsymmetric
         -- last-bit matrix values; zero remains the feasible initial winner.
         local objective=b1*x
         objective+=.5*x*a11*x objective+=.5*x*a12*y objective+=.5*x*a13*z
         objective+=b2*y objective+=.5*y*a21*x objective+=.5*y*a22*y objective+=.5*y*a23*z
         objective+=b3*z objective+=.5*z*a31*x objective+=.5*z*a32*y objective+=.5*z*a33*z
-        if not M.finite(objective) then return nil end
+        if not (type(objective)=="number" and objective==objective and math.abs(objective)<math.huge) then return nil end
         if objective<best then best=objective wx,wy,wz=x,y,z end
     end
     return wx*l1,wy*l2,wz*l3,root1,root2,root3

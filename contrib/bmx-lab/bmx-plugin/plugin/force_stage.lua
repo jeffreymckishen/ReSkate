@@ -73,7 +73,7 @@ local function speed_issue(body,tuning)
 end
 function Stage.new(...)
     assert(select("#",...)==0,"force stage accepts no runtime configuration")
-    assert(STAGE=="zero_force" or STAGE=="support" or STAGE=="pedal" or STAGE=="hop","invalid force stage")
+    assert(STAGE=="zero_force" or STAGE=="support" or STAGE=="pedal" or STAGE=="ride" or STAGE=="hop","invalid force stage")
     local kernel=Forces.new()
     -- Only the authored hop stage retains hop intent. The longer current ray
     -- gives its landing law braking distance; it grants no contact or support.
@@ -117,11 +117,21 @@ function Controller:preview(h,body,wheels,samples,controls)
     -- The raw pad and Mapping's action record stay unchanged. All force
     -- channels are neutral except each stage's finite, bounded authored inputs.
     local selected=Forces.controls()
-    if STAGE=="pedal" or STAGE=="hop" then
+    if STAGE=="pedal" or STAGE=="ride" or STAGE=="hop" then
         local pedal=controls and controls.pedal
         if pedal==nil then pedal=0 end
         if not M.finite(pedal) or pedal<0 or pedal>1 then return invalid("invalid_pedal") end
         selected.pedal=pedal
+    end
+    if STAGE=="ride" then
+        -- Ride passes only ground driving channels. Hops, manuals, air inputs
+        -- and the hop stage's landing law keep their separate authored policy.
+        local steer,brake=controls and controls.steer,controls and controls.brake
+        if steer==nil then steer=0 end
+        if brake==nil then brake=0 end
+        if not M.finite(steer) or steer<-1 or steer>1 then return invalid("invalid_steer") end
+        if not M.finite(brake) or brake<0 or brake>1 then return invalid("invalid_brake") end
+        selected.steer,selected.brake=steer,brake
     end
     if STAGE=="hop" then
         local id=controls and controls.hop_event_id

@@ -7,10 +7,11 @@ local stock_modules={"./equipment_transition","./equipment_runtime","./bike_runt
 -- One cold module per startup tick, each after everything it requires. The
 -- two middle rows are Ride and Contact with their dependencies, so
 -- prepare_backend binds them from cache and the first following tick imports nothing.
--- The trick adapter is not staged; Core passes none.
+-- The pure trick adapter and authored pose targets are staged with their dependencies.
 local mount_modules={"./lease_identity","./lease_source","./force_math","./bike_geometry","./bike_visual","./bike_spawn",
     "./tire","./brake","./pump","./force_solver","./forces","./force_stage","./catalog","./input","./ride_input_mapping",
-    "./frame_identity","./contact_runtime","./ride_inflight","./ride_runtime",
+    "./frame_identity","./motions","./tricks","./trick_runtime","./pose_targets",
+    "./contact_runtime","./ride_inflight","./ride_runtime",
     "./bones","./mounted_pose","./board_drop",
     "./equipment_transition","./equipment_runtime","./bike_runtime_core"}
 local function finite(v) return type(v)=="number" and v==v and math.abs(v)<math.huge end

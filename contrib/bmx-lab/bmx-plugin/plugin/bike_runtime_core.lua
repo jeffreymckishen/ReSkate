@@ -278,13 +278,181 @@ end
 function BikeRuntime.follow_pose(ride_status)
     return type(ride_status)=="table" and ride_status.presentation_pose or nil
 end
--- Wheel phases belong to the bike mesh. The rider uses only the accepted
--- steering and crank phases; trick releases remain neutral in this ride lane.
-function BikeRuntime.mounted_articulation(pose)
+-- Wheel phases belong to the bike mesh. Only the current accepted projection
+-- supplies authored angles and releases; an ordinary pose keeps them neutral.
+function BikeRuntime.mounted_articulation(pose,targets)
     local p=type(pose)=="table" and pose or {}
-    return {steer=p.steer or 0,crank_phase=p.crank_phase or 0,barspin=0,tailwhip=0,
-        movement_bike_pitch=0,movement_bike_roll=0,barspin_release=0,tailwhip_release=0,
-        release_left_hand=0,release_right_hand=0,release_left_foot=0,release_right_foot=0}
+    local t=type(targets)=="table" and targets or nil
+    return {steer=p.steer or 0,crank_phase=p.crank_phase or 0,
+        barspin=t and p.barspin or 0,tailwhip=t and p.tailwhip or 0,
+        movement_bike_pitch=t and p.movement_bike_pitch or 0,movement_bike_roll=t and p.movement_bike_roll or 0,
+        barspin_release=t and t.barspin_release or 0,tailwhip_release=t and t.tailwhip_release or 0,
+        release_left_hand=t and t.release_left_hand or 0,release_right_hand=t and t.release_right_hand or 0,
+        release_left_foot=t and t.release_left_foot or 0,release_right_foot=t and t.release_right_foot or 0}
+end
+-- Pure presentation bookkeeping. Opaque ownership stays here, never in status.
+-- Ride alone steps the trick model and owns the accepted command history.
+function BikeRuntime.trick_presenter(Identity,PoseTargets)
+    local names={"generation","user","sequence","source_epoch","context_generation","observation_serial","observed_ms","packet"}
+    local opaque={"ride","binding","owner","incarnation","body","follow","generation","lease","source_frame","epoch","sample"}
+    local caps={barspin=8*math.pi,tailwhip=8*math.pi,movement_bike_pitch=4*math.pi,
+        movement_bike_roll=4*math.pi,movement_crank_angle=8*math.pi}
+    local weights={"phase","progress","barspin_release","tailwhip_release","release_left_hand",
+        "release_right_hand","release_left_foot","release_right_foot"}
+    local function plain(v) return type(v)=="table" and getmetatable(v)==nil end
+    local function finite(v) return type(v)=="number" and v==v and math.abs(v)<math.huge end
+    local function bounded(v,limit) return finite(v) and math.abs(v)<=limit end
+    local function frozen(v)
+        if type(v)=="table" and not table.isfrozen(v) then
+            for _,child in pairs(v) do frozen(child) end
+            table.freeze(v)
+        end
+        return v
+    end
+    local function same_key(a,b)
+        if not plain(a) or not plain(b) then return false end
+        for _,name in ipairs(names) do if a[name]~=b[name] then return false end end
+        return true
+    end
+    local function source_key(frame)
+        if not plain(frame) or frame.input_ok~=true or frame.cleanup_pending or frame.cleanup_unknown
+            or typeof(frame.lease_handle)~="userdata" or not plain(frame.sample) then return nil end
+        local p=frame.sample
+        if not finite(frame.generation) or frame.generation<0 or frame.generation>MAX or frame.generation%1~=0
+            or not finite(p.user) or p.user<0 or p.user>3 or p.user%1~=0
+            or not finite(p.packet) or p.packet<0 or p.packet>4294967295 or p.packet%1~=0 then return nil end
+        for _,name in ipairs({"sequence","source_epoch","context_generation","observation_serial","observed_ms"}) do
+            if not Identity.is_nonzero_u64(p[name]) then return nil end
+        end
+        return {generation=frame.generation,user=p.user,sequence=p.sequence,source_epoch=p.source_epoch,
+            context_generation=p.context_generation,observation_serial=p.observation_serial,observed_ms=p.observed_ms,packet=p.packet}
+    end
+    local function capture(c)
+        if not plain(c) or c.live~=true or c.ride==nil or not plain(c.binding) or not plain(c.owner)
+            or c.binding.owner~=c.owner or c.owner.incarnation==nil or c.owner.generation~=c.generation
+            or c.owner.body~=c.body or c.owner.follow~=c.follow or typeof(c.body)~="userdata"
+            or typeof(c.follow)~="userdata" or not plain(c.sample) or typeof(c.sample.epoch)~="userdata"
+            or not Identity.is_nonzero_u64(c.sample.serial) or not finite(c.sample.time) or c.sample.time<0
+            or not finite(c.sample.seconds) or c.sample.seconds<=0 then return nil end
+        local key=source_key(c.source_frame)
+        local bound=c.owner.source
+        if not key or not plain(bound) or c.source_frame.lease_handle~=bound.lease_handle then return nil end
+        for _,name in ipairs({"generation","user","sequence","source_epoch","context_generation"}) do
+            if key[name]~=bound[name] then return nil end
+        end
+        return {ride=c.ride,binding=c.binding,owner=c.owner,incarnation=c.owner.incarnation,body=c.body,follow=c.follow,
+            generation=c.generation,lease=c.source_frame.lease_handle,source_frame=c.source_frame,sample=c.sample,
+            epoch=c.sample.epoch,serial=c.sample.serial,time=c.sample.time,seconds=c.sample.seconds,key=key}
+    end
+    local function same_context(a,b)
+        if not a or not b then return false end
+        for _,name in ipairs(opaque) do if a[name]~=b[name] then return false end end
+        return a.serial==b.serial and a.time==b.time and a.seconds==b.seconds and same_key(a.key,b.key)
+    end
+    local function pose_copy(raw)
+        if not plain(raw) then return nil end
+        local out={}
+        for name,limit in pairs({steer=1,front_wheel_phase=2*math.pi,rear_wheel_phase=2*math.pi,
+            crank_phase=2*math.pi,barspin=8*math.pi,tailwhip=8*math.pi,movement_bike_pitch=4*math.pi,movement_bike_roll=4*math.pi}) do
+            if not bounded(raw[name],limit) then return nil end
+            out[name]=raw[name]
+        end
+        return out
+    end
+    local function target_copy(raw)
+        if not plain(raw) or raw.valid~=true or raw.scope~="model_target_only" or raw.realized~=false
+            or raw.pose_provenance~="authored_motions_policy" or not finite(raw.movement_id) or raw.movement_id%1~=0
+            or type(raw.bar_neutral)~="boolean" or type(raw.rear_neutral)~="boolean" then return nil end
+        local out={valid=true,scope=raw.scope,realized=false,pose_provenance=raw.pose_provenance,
+            movement_id=raw.movement_id,bar_neutral=raw.bar_neutral,rear_neutral=raw.rear_neutral}
+        for name,limit in pairs(caps) do if not bounded(raw[name],limit) then return nil end;out[name]=raw[name] end
+        for _,name in ipairs(weights) do
+            if not finite(raw[name]) or raw[name]<0 or raw[name]>1 then return nil end
+            out[name]=raw[name]
+        end
+        return out
+    end
+    local witnesses,scope,pending,accepted,active,base,last_sequence={},nil,nil,nil,nil,nil,nil
+    local object={}
+    local function fallback() return frozen({pose=base,realized=false}) end
+    function object:reset()
+        witnesses,scope,pending,accepted,active,base,last_sequence={},nil,nil,nil,nil,nil,nil
+    end
+    function object:begin(context)
+        pending,accepted,active=nil,nil,nil
+        local c=capture(context)
+        if not c then self:reset();return false end
+        if scope and (scope.binding~=c.binding or scope.owner~=c.owner or scope.incarnation~=c.incarnation or scope.lease~=c.lease) then self:reset() end
+        scope=c
+        local previous=witnesses[#witnesses]
+        if previous then
+            local order=Identity.compare(c.key.observation_serial,previous.observation_serial)
+            if order<0 or order==0 and not same_key(c.key,previous)
+                or Identity.compare(c.key.observed_ms,previous.observed_ms)<0 then return false end
+            if order==0 then pending=c;return true end
+        end
+        -- Ride retains at most 32 queued observations and one consumed source.
+        -- No age expiry: an empty queue may keep using its last real observation.
+        witnesses[#witnesses+1]=frozen(c.key)
+        if #witnesses>33 then table.remove(witnesses,1) end
+        pending=c
+        return true
+    end
+    function object:finish(context,row)
+        local before=pending;pending=nil;accepted,active=nil,nil
+        local c=capture(context)
+        if not same_context(before,c) or not plain(row) or row.stop_requested~=false or row.unknown~=false then self:reset();return end
+        local history=row.model_history
+        local sequence=plain(history) and history.kind=="predictive_accepted" and history.sequence or nil
+        local advanced=Identity.is_nonzero_u64(sequence) and (last_sequence==nil or Identity.compare(sequence,last_sequence)>0)
+        if advanced then last_sequence=sequence end
+        local p=pose_copy(row.presentation_pose)
+        local projection=row.presentation_trick
+        if projection==nil then
+            if p and p.barspin==0 and p.tailwhip==0 and p.movement_bike_pitch==0 and p.movement_bike_roll==0 then base=frozen(p) end
+            return
+        end
+        if not advanced or history.serial~=c.serial or not plain(projection) or projection.scope~="accepted_model_target_only"
+            or projection.realized~=false or projection.sequence~=sequence or projection.serial~=c.serial
+            or projection.time~=c.time or projection.seconds~=c.seconds or not bounded(projection.pedal_phase,2*math.pi) then return end
+        local witnessed=false
+        for _,key in ipairs(witnesses) do if same_key(key,projection.source) then witnessed=true;break end end
+        if not witnessed then return end
+        local targets=target_copy(projection.targets)
+        if not p or not targets then return end
+        for _,name in ipairs({"barspin","tailwhip","movement_bike_pitch","movement_bike_roll"}) do
+            if p[name]~=targets[name] then return end
+        end
+        local crank=(projection.pedal_phase+targets.movement_crank_angle)%(2*math.pi)
+        if crank>math.pi then crank-=2*math.pi end
+        if p.crank_phase~=crank then return end
+        local drive=table.clone(p)
+        drive.crank_phase=projection.pedal_phase
+        drive.barspin,drive.tailwhip,drive.movement_bike_pitch,drive.movement_bike_roll=0,0,0,0
+        base=frozen(drive)
+        local ok,authored=pcall(PoseTargets.sample,targets.movement_id,targets.phase)
+        if not ok or not plain(authored) then return end
+        local view={pose=p,targets=targets,scope="authored_limb_torso_only",realized=false}
+        -- PoseTargets returns fresh authored tables. Copy the permitted fields;
+        -- no calibrated head frame exists, so head_yaw never reaches the poser.
+        if authored.limb_targets then
+            view.limb_targets={}
+            for name,limb in pairs(authored.limb_targets) do
+                view.limb_targets[name]={direction={limb.direction[1],limb.direction[2],limb.direction[3]},reach=limb.reach}
+            end
+        end
+        if authored.torso then
+            local torso=authored.torso
+            view.torso={weight=torso.weight,pelvis={torso.pelvis[1],torso.pelvis[2],torso.pelvis[3]},pitch=torso.pitch}
+        end
+        active=frozen(view);accepted=c
+    end
+    function object:display(context)
+        local c=capture(context)
+        if active and same_context(accepted,c) then return active end
+        return fallback()
+    end
+    return object
 end
 -- The stop text for a follow visual that did not draw. A refusal carries
 -- Spawn's own reason (a pose, the body, the envelope, its clock or a part
@@ -456,7 +624,7 @@ local T=shared_state or {phase="idle",detail="Stock switching and inspection onl
     remove_attempted={},remove_accepted={}}
 local object={}
 local stop_all,latch_stop,source,spawn,equipment,facts,closed_ready,snapshot,flush_removals
-local ride,ride_binding,selected_source_frame,stop_ride,drain_ride,observe_ride
+local ride,ride_binding,selected_source_frame,stop_ride,drain_ride,observe_ride,trick_presenter
 -- Return intent is separate from the bike generation: normal draining stops
 -- that generation again, but must not authorize or cancel another stock action.
 local board={phase="idle",detail="No board return requested.",pending=false,target_state=100}
@@ -748,7 +916,7 @@ snapshot=function()
             ride_modules_bound=T.ride_modules_bound==true,ride_trick_adapter=T.ride_trick_adapter==true,
             core_instances=T.core_instances or 0,equipment_instances=T.equipment_instances or 0,
             source_instances=T.source_instances or 0,spawn_instances=T.spawn_instances or 0,
-            pose_instances=T.pose_instances or 0,board_instances=T.board_instances or 0},
+            pose_instances=T.pose_instances or 0,board_instances=T.board_instances or 0,trick_instances=T.trick_instances or 0},
         geometry_scope="Original actor+3m/+0.5m spawn; COM attachment and anchor remain unqualified",
         evidence_scope="Host storage cache acceptance only; no disk durability, native consumption or mounted success inferred"})
 end
@@ -890,7 +1058,7 @@ local function pose_xyz(p) return {p[1],p[2],p[3]} end
 local function pose_status(plan)
     local st=poser:status()
     local row={state=st.state,blend=st.blend,weight=st.weight,reason=st.reason and short(st.reason) or nil,
-        capability=st.capability,sends=st.sends,ends=st.ends,last_sent=st.last_sent,qualified=st.qualified,
+        capability=st.capability,sends=st.sends,ends=st.ends,last_sent=st.last_sent,qualified=st.qualified,trick_scope=T.pose_trick_scope,
         issue=T.pose_issue,mount_ms=T.pose_mount_ms,mounted_ms=T.pose_mounted_ms,ticks=T.pose_ticks or 0,
         sent_ticks=T.pose_sent_ticks or 0,nil_calls=T.pose_nil_calls or 0,nil_accepted=T.pose_nil_accepted,
         stopped=T.pose_stopped==true,memo_hits=poser.memo_hits or 0,memo_misses=poser.memo_misses or 0}
@@ -901,7 +1069,7 @@ local function pose_status(plan)
     end
     T.pose_status=freeze_tree(row)
 end
-local function pose_step(sample,pose,now,generation)
+local function pose_step(sample,pose,now,generation,view)
     T.pose_ticks=(T.pose_ticks or 0)+1
     if not T.pose_mount_ms then
         T.pose_mount_ms=now
@@ -913,8 +1081,13 @@ local function pose_step(sample,pose,now,generation)
     -- A capability probe can reenter Stop or unload. Do not send the first
     -- actual posture after that callback revoked the owner.
     if not current(generation) or T.pose_stop_requested then return end
-    local r=poser:tick(now/1000,{bike={center_of_mass=sample.position,rotation=sample.rotation},
-        articulation=BikeRuntime.mounted_articulation(pose)})
+    local input={bike={center_of_mass=sample.position,rotation=sample.rotation},
+        articulation=BikeRuntime.mounted_articulation(pose,view and view.targets)}
+    -- Active authored targets stay outside articulation. Their presence bypasses
+    -- MountedPose's neutral memo; the poser applies each release weight once.
+    if view then input.limb_targets,input.torso=view.limb_targets,view.torso end
+    T.pose_trick_scope=view and view.scope or nil
+    local r=poser:tick(now/1000,input)
     if r.sent==true then T.pose_sent_ticks=(T.pose_sent_ticks or 0)+1 end
     if r.ok~=true and r.reason~=nil then T.pose_issue=T.pose_issue or short(r.reason) end
     if not T.pose_mounted_ms and r.state=="mounted" then T.pose_mounted_ms=now end
@@ -932,11 +1105,11 @@ pose_stop=function()
     pcall(pose_status,nil)
     board_restore()
 end
-local function pose_tick(sample,pose,now)
+local function pose_tick(sample,pose,now,view)
     if not poser or T.pose_dead or T.pose_stopped or T.stop_latched or T.unloaded then return end
     local generation=T.generation
     T.pose_busy=true;T.pose_generation=generation
-    local ok,why=pcall(pose_step,sample,pose,now,generation)
+    local ok,why=pcall(pose_step,sample,pose,now,generation,view)
     T.pose_busy=false
     if not ok then T.pose_dead=true;T.pose_issue=T.pose_issue or short("pose step raised: "..tostring(why)) end
     if not ok or T.pose_stop_requested or not current(generation) then pose_stop()
@@ -951,6 +1124,8 @@ end
 latch_stop=function(why)
     if not T.stop_latched then
         T.stop_latched=true;T.generation+=1;T.stop_at=T.now;T.stop_reason=short(why)
+        if trick_presenter then trick_presenter:reset() end
+        T.pose_trick_scope=nil
         T.phase="stopping";T.detail=T.stop_reason;T.stop_needs_cleanup=true
         -- Pure local Ride stop precedes any reentrant Follow/Source callback.
         if stop_ride then stop_ride(T.stop_reason) end
@@ -1500,8 +1675,8 @@ local function create_ride(frame)
     api.submit=transport.submit;api.receipt=transport.receipt;api.acknowledge=transport.acknowledge
     table.freeze(api)
     -- Ride and its models were bound by prepare_backend from staged modules, so
-    -- this first following tick resolves no module. No trick adapter: it refuses
-    -- support that is not measured_support, which Contact never reports.
+    -- this first following tick resolves no module. The adapter remains pure;
+    -- its own support qualification and Ride activation gates remain closed.
     local built=call("ride.new",function()
         return RideRuntime.new(api,ride_models,{body_handle=owner.body,incarnation=owner.incarnation})
     end)
@@ -1510,6 +1685,14 @@ local function create_ride(frame)
         T.ride_unknown=true;stop_all("subordinate construction or force ledger unavailable");return
     end
     if not current(owner.generation) then stop_ride("cancelled during subordinate construction") end
+end
+local function presentation_context(sample,frame)
+    local binding=ride_binding
+    if not binding then return nil end
+    frame=frame or selected_source_frame
+    return {ride=ride,binding=binding,owner=binding.owner,body=T.body,follow=T.follow,generation=T.generation,
+        source_frame=frame,sample=sample,live=frame==selected_source_frame and T.active==true and T.input_current==true
+            and T.phase=="following" and not T.stop_latched and not T.unloaded and not T.ride_unknown}
 end
 observe_ride=function(frame,sample,now,body_read_recovered)
     if not RIDE_COMPOSITION_QUALIFIED then return end
@@ -1525,13 +1708,15 @@ observe_ride=function(frame,sample,now,body_read_recovered)
     if not table.isfrozen(sample) then table.freeze(sample) end
     local binding=ride_binding
     binding.sample=sample;binding.observing=true
+    trick_presenter:begin(presentation_context(sample,frame))
     local r=call("ride.observe",ride.observe,ride,frame,sample,
         {now_ms=now,focused=T.facts.focused,menu_open=not T.facts.interface_closed or not T.facts.game_menu_closed,loaded=true,
             body_read_recovered=body_read_recovered==true})
     binding.observing=false;binding.sample=nil
     if not r[1] or r.n~=2 or not remember_ride(r[2]) then
         T.ride_unknown=true;stop_all("subordinate observation outcome unknown")
-    elseif r[2].stop_requested then stop_all("subordinate requested stop") end
+    elseif r[2].stop_requested then stop_all("subordinate requested stop")
+    else trick_presenter:finish(presentation_context(sample),r[2]) end
 end
 
 -- Only this exact public-read refusal is retryable. It says no sample was
@@ -1787,9 +1972,15 @@ function object:prepare_backend()
     local Ride=require("./ride_runtime")
     local Contact=require("./contact_runtime")
     local ForceStage=require("./force_stage")
+    local TrickRuntime=require("./trick_runtime")
+    local PoseTargets=require("./pose_targets")
     if type(Ride)~="table" or type(Ride.new)~="function" or type(Contact)~="table"
-        or type(Contact.decode)~="function" or type(ForceStage)~="table" or type(ForceStage.new)~="function" then return false end
-    RideRuntime=Ride;ride_models=table.freeze({contact=Contact,force=ForceStage.new()})
+        or type(Contact.decode)~="function" or type(ForceStage)~="table" or type(ForceStage.new)~="function"
+        or type(TrickRuntime)~="table" or type(TrickRuntime.new)~="function"
+        or type(PoseTargets)~="table" or type(PoseTargets.sample)~="function" then return false end
+    RideRuntime=Ride;ride_models=table.freeze({contact=Contact,force=ForceStage.new(),tricks=TrickRuntime.new()})
+    trick_presenter=BikeRuntime.trick_presenter(Identity,PoseTargets)
+    T.trick_instances=(T.trick_instances or 0)+1
     T.ride_modules_bound=true;T.ride_trick_adapter=ride_models.tricks~=nil
     -- Staged before Core construction. The closed qualification literal in
     -- MountedPose still refuses native presentation; constructing it is inert.
@@ -2069,13 +2260,17 @@ local function tick(dt)
                         now=T.now -- The renewal's own clock reads, if it made any.
                         observe_ride(selected_source_frame,r[2],now,recovered)
                         -- The same read, drawn in the pose of Ride's step on it (or its last accepted one).
+                        local view=trick_presenter and trick_presenter:display(presentation_context(r[2]))
                         local pose=BikeRuntime.follow_pose(ride and T.ride_status)
+                        if view then pose=view.pose end
                         local v=current(generation) and call("spawn.follow_visual",spawn.follow_visual,spawn,r[2],now,pose) or {false,n=1}
                         now=clock()
                         if not yes(v) or not now or not current(generation) then
                             stop_all(BikeRuntime.follow_visual_stop("follow visual",v))
                         elseif not lease_live(now) then stop_all("ride window or Follow lease ended during visual update")
-                        else pose_tick(r[2],pose,now) end
+                        elseif view and view.targets and trick_presenter:display(presentation_context(r[2]))~=view then
+                            stop_all("trick presentation owner changed during visual update")
+                        else pose_tick(r[2],pose,now,view) end
                     end
                 end
             end

@@ -92,14 +92,32 @@ local function pad_equal(a, b)
     for _, name in ipairs(buttons) do if a.buttons[name] ~= b.buttons[name] then return false end end
     return a.playstation == b.playstation
 end
+local function pressed(pad)
+    for _, name in ipairs(buttons) do if pad.buttons[name] then return true end end
+    return false
+end
+local function zero(pad)
+    for _, name in ipairs(axes) do if pad[name] ~= 0 then return false end end
+    return not pressed(pad)
+end
+-- The SDK's rest fact (its XInput thresholds, which this mod does not copy).
+-- An older runtime has none and stays nil. Only checks that need no threshold
+-- are made here: a pressed button is never neutral, an exact-zero pad always is.
+local function neutral_copy(value, pad)
+    if value == nil then return true, nil end
+    if type(value) ~= "boolean" or (value and pressed(pad)) or (not value and zero(pad)) then return false end
+    return true, value
+end
 local function sample_copy(s, row)
     if not observer(row) or not bound_matches(s, row) or type(row.epoch) ~= "userdata" or
         not Identity.is_nonzero_u64(row.observation_serial) or not Identity.is_nonzero_u64(row.observed_ms) or
         not integer(row.packet, 0, 4294967295) then return nil, "invalid source sample" end
     local pad = pad_copy(row.pad)
     if not pad then return nil, "invalid original pad" end
+    local valid, neutral = neutral_copy(row.neutral, pad)
+    if not valid then return nil, "invalid neutral fact" end
     local result = copy_fields(row, sample_fields)
-    result.pad = pad
+    result.pad, result.neutral = pad, neutral
     local previous = s.sample
     if previous then
         local serial = Identity.compare(result.observation_serial, previous.observation_serial)
@@ -107,7 +125,9 @@ local function sample_copy(s, row)
             return nil, "source observation regressed"
         end
         if serial == 0 and (result.observed_ms ~= previous.observed_ms or result.packet ~= previous.packet or
-            not pad_equal(result.pad, previous.pad)) then return nil, "changed duplicate observation" end
+            result.neutral ~= previous.neutral or not pad_equal(result.pad, previous.pad)) then
+            return nil, "changed duplicate observation"
+        end
     end
     return table.freeze(result)
 end
@@ -431,7 +451,7 @@ local function advance(s, now_ms, gates)
             stop(s, "capture admission outcome unknown: " .. detail(capture_why)); return frame(s, false, false)
         end
         if not admitted then s.reason = "capture admission refused: " .. detail(capture_why); return frame(s, false, fresh) end
-        s.capture_admitted, s.phase, s.reason = true, "waiting_neutral", "waiting for later exact-neutral original report"
+        s.capture_admitted, s.phase, s.reason = true, "waiting_neutral", "waiting for a later neutral original report"
     end
     local capture_called, capture_row, capture_why = invoke(s, "lease_capture_state", s.handle)
     local checked_capture = capture_called and capture_copy(s, capture_row) or nil

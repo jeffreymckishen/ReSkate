@@ -43,6 +43,8 @@ local function source_fixture(options)
     local f={now=1000,slot=options.slot or 0,serial=5,renewals=0,reserves=0,publishes=0,follow_reads=0,
         body_reads=0,stops=0,spawn_requests=0,visuals=0,published=false,follow=newproxy(),body=newproxy()}
     f.pad=frame().sample.pad
+    -- The SDK's sample.neutral, or nil for a runtime without it (Core stays exact zero).
+    f.neutral=options.neutral
     local s={time={},input={},skater={},level={},storage={},json={},menu={},entities={},world={physics={}}}
     local function forbidden(name) return function() error(name.." must not be reached",0) end end
     function s.time.now() return f.now end
@@ -73,7 +75,7 @@ local function source_fixture(options)
     function s.input.lease_read(handle)
         if handle~=f.lease or f.lease_status~="active" then return nil,"unavailable" end
         local row=stream({mode="observe",capturing=false,report_debt=false,observation_serial=tostring(f.serial),
-            observed_ms=tostring(2000+f.serial),packet=f.serial,pad=f.pad})
+            observed_ms=tostring(2000+f.serial),packet=f.serial,pad=f.pad,neutral=f.neutral})
         row.epoch=newproxy()
         return row
     end
@@ -185,9 +187,11 @@ local function source_fixture(options)
         end
         return out
     end
-    function f.set_pad(edit)
+    -- neutral, when given, is the SDK's fact for the new pad; nil keeps the last one.
+    function f.set_pad(edit,neutral)
         local pad=table.clone(f.pad);pad.buttons=table.clone(f.pad.buttons)
         edit(pad);f.pad=pad;f.serial+=1
+        if neutral~=nil then f.neutral=neutral end
     end
     return f,core,state
 end
@@ -241,7 +245,7 @@ function Tests.run()
         case("post-publication axis "..key,function()
             local row=frame()
             row.sample.pad[key]=key:find("trigger",1,true) and .5 or -.5
-            check(not Core.selected_pad_admitted(row,0,false),"before publication the pad must be exactly zero")
+            check(not Core.selected_pad_admitted(row,0,false),"without the SDK's neutral fact the pad must be exactly zero")
             check(not Core.selected_pad_admitted(row,0,1),"truthy mode does not enable driving")
             check(Core.selected_pad_admitted(row,0,true),"riding admits the selected bounded axis")
         end)
@@ -288,9 +292,35 @@ function Tests.run()
         check(not Core.selected_pad_admitted(row,4,true),"slot beyond native range refused")
         check(not Core.selected_pad_admitted(row,.5,true),"fractional slot refused")
     end)
+    -- The SDK's sample.neutral decides rest before publication, so a controller
+    -- resting in the hands passes; Core holds no thresholds of its own.
+    case("the SDK's neutral fact admits a resting pad",function()
+        local row=frame();row.sample.pad.left_x=.2;row.sample.pad.right_trigger=.1;row.sample.neutral=true
+        check(Core.selected_pad_admitted(row,0,false),"stick and trigger noise the SDK calls neutral is admitted")
+        row.sample.neutral=false
+        check(not Core.selected_pad_admitted(row,0,false),"the same pad is refused when the SDK says it is not at rest")
+        check(Core.selected_pad_admitted(row,0,true),"riding still admits the bounded axis")
+        row.sample.neutral=nil
+        check(not Core.selected_pad_admitted(row,0,false),"without the fact (an older runtime) noise is refused")
+        row=frame();row.sample.neutral=nil
+        check(Core.selected_pad_admitted(row,0,false),"without the fact an exactly zero pad is still admitted")
+    end)
+    for _,key in ipairs(buttons) do
+        case("a neutral fact never admits button "..key,function()
+            local row=frame();row.sample.pad.buttons[key]=true;row.sample.neutral=true
+            check(not Core.selected_pad_admitted(row,0,false),"a pressed button is never at rest")
+        end)
+    end
+    for _,value in ipairs({"true",1,0,{}}) do
+        case("a malformed neutral fact",function()
+            local row=frame();row.sample.neutral=value
+            check(not Core.selected_pad_admitted(row,0,false),"only a boolean true admits")
+        end)
+    end
     -- B4 at Core's own call site: riding is the join of the gate, following and
     -- observed publication. The tracked gate is false, so there is no mapper and
-    -- exact zero applies both before and after publication.
+    -- rest applies both before and after publication. This fixture's runtime has
+    -- no neutral fact, so rest is exact zero.
     for _,edit in ipairs({{"an axis",function(p) p.left_y=.5 end},{"a button",function(p) p.buttons.a=true end}}) do
         case("Core stops when "..edit[1].." leaves exact zero before publication",function()
             local f=source_fixture({spawn_ticks=3})
@@ -299,12 +329,26 @@ function Tests.run()
                 "a neutral selected pad reaches the spawn request")
             f.set_pad(edit[2])
             out=f.step()
-            check(out.stop_reason=="selected raw pad left exact zero" and out.published_seen==false,
+            check(out.stop_reason=="selected pad left neutral" and out.published_seen==false,
                 "before publication the selected pad must stay exactly zero")
             for _=1,4 do out=f.step() end
             check(f.reserves==0 and f.publishes==0,"nothing is reserved or published after the stop")
         end)
     end
+    case("a resting pad the SDK calls neutral rides on, and stops when it leaves rest",function()
+        local f=source_fixture({neutral=true})
+        f.set_pad(function(p) p.left_x=.2;p.left_y=-.1;p.right_trigger=.1 end)
+        local out=f.until_phase("following")
+        check(out.phase=="following" and out.stop_reason==nil and out.published_seen==true and f.publishes==1,
+            "a noisy resting pad reaches publication")
+        local body
+        out,body=f.step()
+        check(out.phase=="following" and out.stop_reason==nil and body==1,"and keeps following while it rests")
+        f.set_pad(function(p) p.left_x=.9 end,false)
+        out,body=f.step()
+        check(out.stop_reason=="selected pad left neutral" and body==0 and f.stops==1,
+            "when the SDK says the pad left rest, the ride stops before its body read")
+    end)
     case("with the gate false, exact zero still applies after publication",function()
         local f=source_fixture()
         local out=f.until_phase("following")
@@ -315,7 +359,7 @@ function Tests.run()
         check(out.phase=="following" and out.stop_reason==nil and body==1,"a neutral following tick reads the body")
         f.set_pad(function(p) p.right_trigger=.25 end)
         out,body=f.step()
-        check(out.stop_reason=="selected raw pad left exact zero" and body==0 and f.stops==1,
+        check(out.stop_reason=="selected pad left neutral" and body==0 and f.stops==1,
             "with no mapper, a pad off zero stops the ride before its body read")
     end)
     case("Core admits the selected slot's pad, not slot 0's",function()

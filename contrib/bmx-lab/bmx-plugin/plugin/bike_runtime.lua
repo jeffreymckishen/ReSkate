@@ -21,19 +21,28 @@ function BikeRuntime.new(services,options)
         generation=0,cancel_version=0,calls={},counts={},receipts={},omitted_calls=0,omitted_receipts=0,
         remove_attempted={},remove_accepted={}}
     local object={}
-    local core,api,pending,running,cancelling
+    local core,api,pending,running,cancelling,board_startup
     local loaded={}
     local function status()
-        if core then return core:status() end
-        if Admission then return Admission.snapshot(T,qualification_only) end
-        return {schema=1,kind="bike-lifecycle-v1",storage_key="bmx_bike_lifecycle_v1",phase=T.phase,detail=T.detail,
+        local snapshot
+        if core then snapshot=core:status()
+        elseif Admission then snapshot=Admission.snapshot(T,qualification_only)
+        else snapshot={schema=1,kind="bike-lifecycle-v1",storage_key="bmx_bike_lifecycle_v1",phase=T.phase,detail=T.detail,
             mount_enabled=false,qualification_only=qualification_only,used=T.used==true,bike_authority=false,
             cleanup_pending=false,cleanup_unknown=false,stock_toggle_blocked=T.unloaded==true,
             unloaded=T.unloaded==true,equipment={phase="idle",retained=false,unloaded=false},qualification_ms=500,
-            startup={pending=false,loaded=0,core_ready=false,backend_ready=false}}
+            startup={pending=false,loaded=0,core_ready=false,backend_ready=false}} end
+        if board_startup then snapshot.board_return=table.clone(board_startup)
+        elseif not snapshot.board_return then
+            snapshot.board_return={phase="idle",detail="No board return requested.",pending=false,target_state=100}
+        end
+        return snapshot
     end
     local function cancel(why,unloading)
-        if pending and pending.kind=="stock" then T.startup_closed=true end
+        if pending and pending.kind~="mount" then T.startup_closed=true end
+        if board_startup and board_startup.pending then
+            board_startup.phase="cancelled";board_startup.detail=why;board_startup.pending=false
+        end
         T.cancel_version+=1;T.generation+=1
         T.stop_latched=true;T.stop_reason=why;T.stop_at=T.now
         pending=nil;T.startup_pending=false
@@ -58,6 +67,7 @@ function BikeRuntime.new(services,options)
     local function admission(kind,slot)
         if not valid_slot(slot) then return false,"Choose an XInput slot from0 to3" end
         if kind=="mount" and not qualification_only then return false,"Native bike lifecycle qualification unavailable" end
+        local stock_intent=kind=="stock" or kind=="board"
         if running then
             cancel("reentrant lifecycle intent during startup")
             return false,"Bike lifecycle operation already in progress"
@@ -65,7 +75,7 @@ function BikeRuntime.new(services,options)
         if core and core:status().stock_toggle_blocked then
             return false,"Bike, input, equipment or retained reload cleanup blocks startup"
         end
-        local clean_new_stock=kind=="stock" and T.used==true and T.bike_cleanup_complete and not T.marker_unknown
+        local clean_new_stock=stock_intent and T.used==true and T.bike_cleanup_complete and not T.marker_unknown
             and not T.reload_blocked and not T.storage_fault and not T.clock_unknown
         if pending or T.unloaded or T.startup_closed or T.stop_latched and not clean_new_stock or kind=="mount" and (T.used or vm_attempt_used) then
             return false,"One attempt per VM; busy or retained duty prevents rearm"
@@ -90,12 +100,17 @@ function BikeRuntime.new(services,options)
         local ok,missing=true,nil
         if kind=="mount" then ok,missing=api.available() end
         local now=clear and ok and api.clock() or nil
-        local observed=clear and ok and (kind=="stock" or now) and api.facts() or nil
+        local first_clock=now
+        local observed=clear and ok and (stock_intent or now) and api.facts() or nil
         if now then now=api.clock() end
+        -- Board readiness callbacks consume the original intent's window too.
+        local board_clock_ready=kind~="board" or finite(first_clock) and first_clock>=0
+            and first_clock<=9007199254740991-60000 and finite(now) and now>=first_clock and now-first_clock<60000
+        local admitted_at=kind=="board" and first_clock or now
         local accepted=clear and ok and generation==T.generation and not T.unloaded and not T.storage_fault
-            and not T.clock_unknown and Admission.ready(observed) and now~=nil
+            and not T.clock_unknown and Admission.ready(observed) and now~=nil and board_clock_ready
         if accepted then
-            T.admitted_facts=observed;T.startup_admitted_at=now
+            T.admitted_facts=observed;T.startup_admitted_at=admitted_at
             if kind=="mount" then
                 T.arm_at=now;T.level=observed.level;T.wipeouts=observed.wipeouts
                 T.initial_facts=observed;T.facts=observed
@@ -105,11 +120,16 @@ function BikeRuntime.new(services,options)
         if accepted then
             pending={kind=kind,slot=slot,generation=generation,modules=kind=="mount" and mount_modules or stock_modules,index=1}
             T.phase="startup";T.detail="Request accepted; preparing. Stop cancels it before acquisition."
-        elseif kind=="stock" and clear and generation==T.generation and not T.stop_latched
+            if kind=="board" then
+                board_startup={phase="draining",detail="Preparing return; no equipment action requested.",pending=true,
+                    slot=slot,admitted_at_ms=math.floor(admitted_at),deadline_ms=math.floor(admitted_at)+60000,target_state=100}
+            end
+        elseif stock_intent and clear and generation==T.generation and not T.stop_latched
             and not T.unloaded and not T.storage_fault and not T.clock_unknown then
             -- No transaction or authority was started. A later explicit click may try fresh readiness.
             T.startup_pending=false;T.phase=T.used and T.bike_cleanup_complete and "done" or "idle"
-            T.detail="Stock request refused by fresh readiness; no transaction started."
+            T.detail=not board_clock_ready and "Board return admission deadline elapsed or clock is invalid."
+                or "Stock request refused by fresh readiness; no transaction started."
         elseif not T.reload_blocked and not T.marker_unknown then
             cancel(not ok and "Required API unavailable: "..tostring(missing) or "Startup intent refused, cancelled or readiness lost")
         else T.startup_pending=false end
@@ -134,6 +154,24 @@ function BikeRuntime.new(services,options)
             return table.unpack(result,1,result.n)
         end
         return admission("stock",slot)
+    end
+    function object:request_board(slot)
+        if not valid_slot(slot) then return false,"Choose an XInput slot from0 to3" end
+        if running then cancel("reentrant board return request");return false,"Bike lifecycle operation already in progress" end
+        -- Another explicit click cannot replace a staged intent or extend its deadline.
+        if pending then return false,"A lifecycle request is already preparing" end
+        if core then
+            board_startup=nil
+            running=true;local result=table.pack(core:request_board(slot));running=false
+            return table.unpack(result,1,result.n)
+        end
+        local generation=T.generation
+        local accepted,why=admission("board",slot)
+        if not accepted then
+            board_startup={phase=T.generation~=generation and "cancelled" or "refused",
+                detail=why or "Board return refused before startup.",pending=false,slot=slot,target_state=100}
+        end
+        return accepted,why
     end
     function object:request_stop(why)
         if T.unloaded then return false,"Runtime is unloaded; SDK retains cleanup" end
@@ -180,6 +218,8 @@ function BikeRuntime.new(services,options)
                 T.gear_admission_at=math.floor(T.startup_admitted_at)
                 local accepted,why
                 if intent.kind=="mount" then accepted,why=core:request_mount(intent.slot,T)
+                elseif intent.kind=="board" then
+                    board_startup=nil;accepted,why=core:request_board(intent.slot,T)
                 else accepted,why=core:request_stock_toggle(intent.slot,T) end
                 T.startup_handoff=false;T.gear_admission_at=nil
                 if not accepted and T.phase=="startup" then

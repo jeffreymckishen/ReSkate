@@ -6,6 +6,7 @@ local bike = BikeRuntime.new()
 local mount_request = "Unavailable: native lifecycle qualification has not completed."
 local stop_request = "No stop requested."
 local switch_request = "No switch requested."
+local board_request = "No board return requested."
 local mapper
 local observing = false
 local source_epoch = 1
@@ -65,7 +66,7 @@ end)
 
 reskate.menu.page("BMX Lua migration", function(ui)
     ui:warn("BMX mounting is unavailable while native lifecycle qualification remains incomplete. This package is not rideable.")
-    ui:note("Mount requests stay disabled in public mode. Stop/cleanup remains available; stock switches require clear bike ownership.")
+    ui:note("Mount requests stay disabled in public mode. Return to skateboard waits for cleanup; stock toggles require clear bike ownership.")
     for slot = 0, 3 do
         if ui:button("bike_mount" .. slot, "Mount bike (unavailable): slot " .. slot) then
             local accepted, why = bike:request_mount(slot)
@@ -77,6 +78,14 @@ reskate.menu.page("BMX Lua migration", function(ui)
         local accepted, why = bike:request_stop("explicit menu stop")
         stop_request = accepted and "Stop requested. Cleanup continues on ticks."
             or string.sub(tostring(why or "No active bike request"), 1, 160)
+    end
+    ui:note("Return to skateboard stops the bike and waits for cleanup. Close the menu and leave every control released; Stop cancels the return.")
+    for slot = 0, 3 do
+        if ui:button("bike_board" .. slot, "Return to skateboard: slot " .. slot) then
+            local accepted, why = bike:request_board(slot)
+            board_request = accepted and "Return accepted; inspect the return status. Close the menu and release every control."
+                or string.sub(tostring(why or "Return refused"), 1, 160)
+        end
     end
     ui:note("For stock switching, choose your controller slot, close the menu, and leave every control released. Each click requests one switch.")
     for slot = 0, 3 do
@@ -95,6 +104,10 @@ reskate.menu.page("BMX Lua migration", function(ui)
     ui:info("Stock toggle blocked", tostring(lifecycle.stock_toggle_blocked == true))
     ui:info("Last mount click", mount_request)
     ui:info("Last stop click", stop_request)
+    local board = lifecycle.board_return or {}
+    ui:info("Board return phase", tostring(board.phase or "idle"))
+    ui:info("Board return detail", tostring(board.detail or "No board return requested."))
+    ui:info("Last board return click", board_request)
     local switch = lifecycle.equipment or {}
     ui:info("Switch phase", tostring(switch.phase or "idle"))
     ui:info("Switch result", tostring(switch.outcome or "idle"))

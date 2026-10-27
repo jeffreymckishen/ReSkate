@@ -431,9 +431,17 @@ local T=shared_state or {phase="idle",detail="Stock switching and inspection onl
 local object={}
 local stop_all,latch_stop,source,spawn,equipment,facts,closed_ready,snapshot,flush_removals
 local ride,ride_binding,selected_source_frame,stop_ride,drain_ride,observe_ride
+-- Return intent is separate from the bike generation: normal draining stops
+-- that generation again, but must not authorize or cancel another stock action.
+local board={phase="idle",detail="No board return requested.",pending=false,target_state=100}
+local check_board
 local function finite(v) return type(v)=="number" and v==v and math.abs(v)<math.huge end
 local function short(v) return type(v)=="string" and v:gsub("[%c]"," "):sub(1,180) or "unavailable or malformed result" end
 local function reason(v) return type(v)=="string" and #v>0 and #v<=200 end
+local function finish_board(phase,why)
+    board.pending=false;board.phase=phase;board.detail=short(why)
+    T.persist_dirty=true
+end
 -- Every call resolves its path afresh, so a replaced or removed function is
 -- seen at once. Only the split of each literal path is kept: about a hundred
 -- lookups a following tick each split their string again (S1 profile).
@@ -626,20 +634,20 @@ local function source_clear(read_status)
     local s=read(source)
     return s and (not T.source_armed and s.phase=="idle" or source_clean(read))
 end
-local function unknown_duty(read_status)
+local function unknown_duty(read_status,allow_force_drain)
     local read=read_status or status_of
     local s=read(source);local b=read(spawn);local e=read(equipment)
     return T.reload_blocked==true or T.marker_unknown==true or T.storage_fault==true or T.clock_unknown==true
         or T.handoff_unknown==true or T.reserve_unknown==true or T.gear_unknown==true
         or T.cleanup_expired==true or T.protocol_unknown==true or T.ride_unknown==true
-        or T.stop_latched==true and not force_clear()
+        or not allow_force_drain and T.stop_latched==true and not force_clear()
         or T.ack_attempted==true and T.acknowledged~=true
         or T.release_attempted==true and T.release_accepted~=true
         or s and s.cleanup_unknown==true or b and (b.cleanup_unknown==true or b.creation_unknown==true)
         or e and e.outcome=="unresolved" or T.removal_unknown==true
 end
 local function stock_blocked(read_status)
-    if T.unloaded or T.busy or T.gear_requested or T.startup_pending or T.startup_closed or unknown_duty(read_status) then return true end
+    if board.pending or T.unloaded or T.busy or T.gear_requested or T.startup_pending or T.startup_closed or unknown_duty(read_status) then return true end
     local e=(read_status or status_of)(equipment)
     if e and e.storage_fault==true then return true end
     if not force_clear() or not equipment_clear(read_status) or not source_clear(read_status) then return true end
@@ -667,6 +675,8 @@ snapshot=function()
         retained_reload_marker=T.reload_blocked==true,marker_unknown=T.marker_unknown==true,
         bike_cleanup_complete=T.bike_cleanup_complete==true,
         stock_requested=T.gear_requested==true,equipment_purpose=T.gear_purpose,
+        board_return={phase=board.phase,detail=board.detail,pending=board.pending,slot=board.slot,
+            admitted_at_ms=board.admitted_at_ms,deadline_ms=board.deadline_ms,target_state=100},
         native_follow_lease_ms=BASE_LEASE_MS,qualification_ms=RIDE_WINDOW_MS,ride_window_ms=RIDE_WINDOW_MS,
         lease_margin_ms=LEASE_MARGIN_MS,reserve_ms=T.reserve_at,publish_ms=T.publish_at,lease_until_ms=T.lease_until,
         lease_renewals=T.lease_renewals,lease_reports=T.lease_reports or 0,lease_report_last=T.lease_report_last,
@@ -759,7 +769,12 @@ latch_stop=function(why)
         if stop_ride then stop_ride(T.stop_reason) end
     end
 end
-stop_all=function(why)
+stop_all=function(why,draining_board)
+    -- Only known cleanup continuations can preserve the explicit return. All
+    -- ordinary stops, faults and reentrant callbacks cancel it before effects.
+    if board.pending and not (draining_board and board.phase=="draining") then
+        finish_board("cancelled",why)
+    end
     latch_stop(why)
     T.cancel_version+=1
     if T.bike_cleanup_complete and T.gear_requested then
@@ -886,13 +901,19 @@ for _,method in ipairs({"pulse","pulse_state","pulse_cancel","pulse_acknowledge"
             if T.unloaded or T.gear_cancelled or T.storage_fault or T.clock_unknown or not T.gear_requested then
                 return nil,"stock intent cancelled before pulse"
             end
+            if T.gear_purpose=="board" and (not board.pending or not check_board()) then
+                return nil,"board return cancelled before pulse"
+            end
             local version=T.cancel_version
             local direction=status_of(equipment)
             local observed=facts()
+            local board_now=T.gear_purpose=="board" and clock() or nil
             if T.cancel_version~=version or T.unloaded or T.gear_cancelled or T.storage_fault or T.clock_unknown
                 or not T.gear_requested or not direction or direction.initial_state~=T.gear_initial
                 or direction.expected_state~=T.gear_expected or not closed_ready(observed,true,true)
-                or observed.state~=T.gear_initial then
+                or observed.state~=T.gear_initial
+                or T.gear_purpose=="board" and (not board.pending or not board_now or board_now>=board.deadline_ms
+                    or observed.level~=board.level or observed.wipeouts~=board.wipeouts) then
                 return nil,"bound stock direction or fresh readiness refused before pulse"
             end
         end
@@ -938,6 +959,22 @@ closed_ready=function(f,grounded,stock)
     return base_ready(f,stock) and f.interface_closed and f.game_menu_closed and f.input_allowed
         and (not grounded or f.grounded)
 end
+check_board=function()
+    if not board.pending then return nil end
+    local now=clock()
+    local f=now and facts() or nil
+    if now then now=clock() end
+    local e=status_of(equipment)
+    if not board.pending then return nil end
+    if not now or not board.admitted_at_ms or now<board.admitted_at_ms or now>=board.deadline_ms
+        or T.unloaded or T.startup_closed or unknown_duty(nil,true) or T.follow_unknown
+        or not e or e.storage_fault or e.unloaded
+        or not base_ready(f,true) or not f.grounded or f.level~=board.level or f.wipeouts~=board.wipeouts then
+        stop_all("Board return cancelled by deadline, readiness, context or unresolved cleanup.")
+        return nil
+    end
+    return f
+end
 local phases={reserved=true,following=true,stopping=true,retained=true,abandoned=true,completed=true}
 local reasons={none=true,invalid_owner=true,invalid_kind=true,unavailable=true,busy=true,receipt_capacity=true,context_changed=true,
     focus_changed=true,teleporting=true,motion_owned=true,actor_changed=true,actor_destroyed=true,world_changed=true,
@@ -978,9 +1015,31 @@ local function release_once()
     T.release_accepted=yes(r)
     if T.release_accepted then T.body=nil end
 end
+local function bind_board_focus(dto,handle)
+    if board.pending and board.phase=="draining" and board.admitted_menu_open and handle and handle==T.follow
+        and dto and dto.reason=="focus_changed" and (dto.phase=="stopping" or dto.phase=="retained"
+            or dto.phase=="abandoned" or dto.phase=="completed") then
+        -- This receipt was observed before the explicit return stop. Keep the
+        -- exact private owner identity; never persist or adopt either token.
+        board.prior_focus_handle=handle;board.prior_focus_sequence=dto.sequence
+        return true
+    end
+    return false
+end
+local function board_cleanup_receipt(dto)
+    -- Native Follow has no park result while draining or after clean
+    -- abandonment. Only completed publication requires an observed park.
+    local park=dto.park_reason=="none" or dto.phase~="completed" and dto.park_reason=="unavailable"
+    -- A menu at admission is not proof of a prior native stop. Only the exact
+    -- receipt/owner observed before our stop can explain that retained reason.
+    local cause=dto.reason=="none" or dto.reason=="cancelled" or dto.reason=="expired"
+        or dto.reason=="focus_changed" and T.follow~=nil and T.follow==board.prior_focus_handle
+            and dto.sequence==board.prior_focus_sequence
+    return park and cause
+end
 local function accept_terminal(dto)
     if T.terminal then return end
-    stop_all("native follow terminal receipt observed")
+    stop_all("native follow terminal receipt observed",board_cleanup_receipt(dto))
     T.terminal=dto
     if not persist(true) or T.unloaded then return end
     T.ack_attempted=true
@@ -993,7 +1052,7 @@ local function accept_terminal(dto)
     stop_spawn_when_allowed(T.stop_reason)
     persist(true)
 end
-local function read_follow(force)
+local function read_follow(force,observe_board_stop)
     if not T.follow or T.ack_attempted then return false end
     if not force and T.follow_read_at and T.now and T.now-T.follow_read_at<FOLLOW_POLL_MS then return false end
     local stopping=T.stop_latched==true
@@ -1004,16 +1063,21 @@ local function read_follow(force)
     end
     if stopping then T.cleanup_reads=(T.cleanup_reads or 0)+1 else T.follow_reads_tick=(T.follow_reads_tick or 0)+1 end
     T.follow_read_at=T.now
-    local r=call("follow.read",lookup("world.physics.read_follow"),T.follow)
+    local handle=T.follow
+    local r=call("follow.read",lookup("world.physics.read_follow"),handle)
     local dto=r[1] and r.n==2 and receipt_copy(r[2]) or nil
     if not dto then T.follow_unknown=true;stop_all("follow receipt unavailable or contradictory");return false end
+    if observe_board_stop then bind_board_focus(dto,handle) end
     T.sequence=T.sequence or dto.sequence;T.receipt=dto
     if dto.phase=="following" or dto.final_revision~="0" then T.published_seen=true end
     if #T.receipts==16 then table.remove(T.receipts,1);T.omitted_receipts+=1 end
     table.insert(T.receipts,copied(dto))
     if dto.orphaned and not dto.terminal then stop_all("native receipt reports orphaned ownership") end
     if dto.phase=="stopping" or dto.phase=="retained" or T.published_seen and dto.phase=="reserved" then
-        stop_all("native follow is no longer following")
+        local observed_stop=observe_board_stop and board.pending and T.follow==handle
+        local draining=(stopping or observed_stop) and (dto.phase=="stopping" or dto.phase=="retained")
+            and board_cleanup_receipt(dto)
+        stop_all("native follow is no longer following",draining)
     end
     if dto.terminal then accept_terminal(dto) end
     return true
@@ -1373,6 +1437,34 @@ local function begin_equipment(slot,purpose,initial)
         or "Explicit stock toggle armed; close menus and keep the selected controller neutral."
     return true
 end
+local function advance_board()
+    if not board.pending or board.phase~="draining" then return end
+    local f=check_board()
+    if not f then return end
+    -- This is the existing cleanup proof, not permission to reuse a chassis or
+    -- reset any one-shot mount state. The cold stock-only owner has no bike.
+    if T.used and not T.bike_cleanup_complete or T.active or T.follow or T.body
+        or T.handoff_unknown or T.reserve_unknown or T.gear_requested
+        or not force_clear() or not source_clear() or not equipment_clear() then return end
+    if f.state==100 then
+        finish_board("done","Already on the skateboard; no input report requested.")
+        T.phase=T.used and "done" or "idle";T.detail=board.detail
+        return
+    end
+    -- Bind 504 -> 100; begin_equipment's telemetry proxy rejects a different
+    -- initial state and its final pulse proxy checks again after storage calls.
+    board.phase="stock_switching";board.detail="Cleanup clear; qualifying feet504 to board100. Close menus and release every control."
+    local previous=T.gear_admission_at
+    T.gear_admission_at=board.admitted_at_ms
+    local accepted,why=begin_equipment(board.slot,"board",504)
+    T.gear_admission_at=previous
+    if not accepted and board.pending then
+        finish_board("refused",why)
+        if not T.gear_requested and equipment_clear() and not unknown_duty() then
+            T.phase=T.used and "done" or "idle";T.detail=board.detail
+        end
+    end
+end
 local function equipment_tick()
     if not T.gear_requested or T.gear_cancelled then return end
     local version=T.cancel_version
@@ -1397,6 +1489,16 @@ local function equipment_tick()
             T.detail="Feet504 acquisition complete; waiting for closed-menu neutral source qualification."
             T.ready_since=nil;T.ready_ticks=0;T.ready_last=nil
             persist(true)
+        elseif T.gear_purpose=="board" then
+            T.gear_requested=false;T.phase=T.used and "done" or "idle"
+            local observed=board.pending and check_board() or nil
+            if board.pending and e.initial_state==504 and e.expected_state==100 and e.qualified_transition
+                and e.acknowledged and not e.unloaded and observed and observed.state==100 then
+                finish_board("done","Skateboard100 qualified after matching report ACK; native consumption remains unobserved.")
+            elseif board.pending then
+                finish_board("refused","Board return ended without matching ACK and a qualified current target; no automatic retry.")
+            end
+            T.detail=board.detail
         else
             T.gear_requested=false;T.phase=T.used and "done" or "idle"
             T.detail=e.current_transition==true and "Stock target observed; consumption remains unobserved."
@@ -1495,9 +1597,56 @@ function object:request_mount(slot,admitted)
 end
 function object:request_stop(why)
     if T.unloaded then return false,"Runtime is unloaded; SDK retains cleanup" end
-    if not T.used and not T.gear_requested and not T.intent_inflight then return true end
+    if not T.used and not T.gear_requested and not T.intent_inflight and not board.pending then return true end
     stop_all(reason(why) and why or "explicit Stop")
     if T.ledger_owned then persist(true) end
+    return true
+end
+function object:request_board(slot,admitted)
+    if not valid_slot(slot) then return false,"Choose an XInput slot from0 to3" end
+    if T.busy then
+        if board.pending or T.intent_inflight or T.active or T.gear_requested then stop_all("reentrant board return request") end
+        return false,"Bike lifecycle operation already in progress"
+    end
+    if board.pending then return false,"Board return already pending; its original deadline is unchanged" end
+    if T.unloaded or T.startup_closed or T.startup_pending or T.gear_requested or unknown_duty(nil,true)
+        or T.follow_unknown or not equipment_clear() then
+        finish_board("refused","Bike startup, equipment or unresolved cleanup blocks board return.")
+        return false,board.detail
+    end
+    -- Latch before storage/facts callbacks, including the already-board no-op.
+    T.busy=true;T.intent_inflight=true
+    board={phase="draining",detail="Checking the explicit board return intent.",pending=true,slot=slot,target_state=100}
+    local clear=marker_clear()
+    local now=clear and clock() or nil
+    local at=admitted==T and (T.gear_admission_at or T.startup_admitted_at) or now
+    local f=now and facts() or nil
+    if now then now=clock() end
+    local accepted=board.pending and clear and now~=nil and finite(at) and at>=0 and at<=MAX-60000
+        and now>=at and now-at<60000 and not T.unloaded and not T.startup_closed
+        and not unknown_duty(nil,true) and not T.follow_unknown
+        and base_ready(f,true) and f.grounded
+        and (admitted~=T or Admission.matches(T.admitted_facts,f))
+    if accepted then
+        board.admitted_at_ms=math.floor(at);board.deadline_ms=board.admitted_at_ms+60000
+        board.level=f.level;board.wipeouts=f.wipeouts
+        board.admitted_menu_open=not f.interface_closed or not f.game_menu_closed
+        board.detail="Return requested; waiting for bike, input and report cleanup."
+        if T.follow and not bind_board_focus(T.receipt,T.follow) then
+            -- Use the existing receipt quota. An unobserved focus-change cause
+            -- never receives the exception if this bounded read is unavailable.
+            read_follow(true,true)
+        end
+        if T.used and not T.bike_cleanup_complete or T.active or T.follow or T.body then
+            stop_all("explicit board return; drain before stock input",true)
+        end
+        if T.ledger_owned then persist(true) end
+        accepted=board.pending and check_board()~=nil
+    elseif board.pending then
+        finish_board("refused","Board return refused by fresh readiness, original deadline or retained marker.")
+    end
+    T.intent_inflight=false;T.busy=false
+    if not accepted then return false,board.detail end
     return true
 end
 function object:request_stock_toggle(slot,admitted)
@@ -1532,7 +1681,7 @@ local function tick(dt)
     T.follow_reads_tick=0;T.lease_reads_tick=0;T.renewals_tick=0
     selected_source_frame=nil;tick_facts=nil;tick_authorization=nil
     if T.unloaded or T.phase=="blocked" then return end
-    if not T.used and not T.gear_requested or T.phase=="done" and not T.gear_requested then
+    if not board.pending and (not T.used and not T.gear_requested or T.phase=="done" and not T.gear_requested) then
         -- No tick-end save runs from here, so a throttled snapshot would
         -- otherwise remain the cached ledger for the rest of this VM.
         if T.persist_dirty then persist(true) end
@@ -1540,13 +1689,17 @@ local function tick(dt)
     end
     -- The tick that completes or cancels a stock request leaves the next tick
     -- on the quiescent return above, so that terminal record is saved now.
-    local stock_open=T.gear_purpose=="stock" and T.gear_requested==true and not T.gear_cancelled
+    local stock_open=(T.gear_purpose=="stock" or T.gear_purpose=="board") and T.gear_requested==true and not T.gear_cancelled
+    local board_open=board.pending
     local published_now=false
     local now=clock()
     if not finite(dt) or dt<=0 or dt>MAX_TICK_MS or now and T.last_step_at and now<=T.last_step_at then
         stop_all("invalid, stalled or reversed wall tick")
     end
     if now then T.last_step_at=now end
+    -- Bike readiness normally stops being sampled after stop_latched. Return
+    -- intent must still observe every drain tick so lost readiness cannot revive.
+    if board.pending then check_board() end
     if T.gear_requested and not T.gear_cancelled then equipment_tick() end
     if T.active and now and not T.stop_latched then
         local f=facts();T.facts=f;tick_facts=f
@@ -1576,7 +1729,7 @@ local function tick(dt)
         T.source_inflight=true;T.input_current=false
         local frame=call("source.step",source.step,source,T.now or 0,{allow_acquire=allow,allow_drive=allow})
         T.source_inflight=false
-        if T.stop_needs_cleanup then stop_all(T.stop_reason) end
+        if T.stop_needs_cleanup then stop_all(T.stop_reason,true) end
         if frame[1] and frame.n==2 and type(frame[2])=="table" then
             T.source_record=source_record(frame[2])
             if not T.stop_latched and T.input_seen and frame[2].input_ok~=true then stop_all("current selected-stream input permission lost") end
@@ -1644,11 +1797,12 @@ local function tick(dt)
         end
     end
     if T.stop_latched and not T.bike_cleanup_complete then cleanup_tick() end
-    persist(stock_open and (not T.gear_requested or T.gear_cancelled==true))
+    advance_board()
+    persist(stock_open and (not T.gear_requested or T.gear_cancelled==true) or board_open and not board.pending)
 end
 function object:step(dt_ms)
     if T.busy then
-        if T.intent_inflight or T.active or T.gear_requested then stop_all("reentrant lifecycle step") end
+        if board.pending or T.intent_inflight or T.active or T.gear_requested then stop_all("reentrant lifecycle step") end
         return self:status()
     end
     T.busy=true
@@ -1664,7 +1818,7 @@ end
 function object:unload()
     if T.unloaded then return self:status() end
     T.unloaded=true;T.generation+=1
-    if T.used or T.gear_requested or T.intent_inflight then stop_all("unload; SDK retains unresolved native duty") end
+    if board.pending or T.used or T.gear_requested or T.intent_inflight then stop_all("unload; SDK retains unresolved native duty") end
     drain_ride()
     if source then call("source.unload",source.unload,source) end
     call("equipment.unload",equipment.unload,equipment)

@@ -6084,6 +6084,122 @@ void bmx_lua_menu_switches_explicit_slots_and_retains_cleanup_duty() {
     std::cout << "BMX Lua menu: four explicit slots, refusal, focus loss, permission denial and unresolved unload; constructed observations only\n";
 }
 
+void bmx_lua_menu_returns_to_board_without_inverting_the_target() {
+    using dingosdk::Json;
+    namespace p = game_input_pulse;
+    const auto directory = std::filesystem::path(RESKATE_SOURCE_DIR) / "contrib" / "bmx-lab" / "bmx-plugin";
+    for (unsigned scenario = 0; scenario < 8; ++scenario) {
+        const auto id = "bmx-lua-board-return-menu-" + std::to_string(scenario);
+        const auto why = id + ": ";
+        TestEnvironment environment;
+        environment.local_skater = SkaterState{};
+        auto& game = environment.fake;
+        game.focus_now = {true, true, true};
+        game.input_allowed_now = true;
+        game.telemetry = SkaterTelemetry{};
+        game.telemetry->skater = true;
+        auto& watch = game.telemetry->watch;
+        watch.valid = watch.ragdoll_known = true;
+        watch.state = scenario == 4 ? 100 : 504;
+        Host host(environment, Side::client);
+        host.set_level("sanvan");
+        host.apply({Candidate{id, directory, "bmx-board-return-menu-v1", {}}});
+        running(host, id, environment);
+        const auto step = [&] { environment.now += 100; host.tick(100); running(host, id, environment); };
+        const auto click = [&](const std::string& widget) {
+            environment.actions = {plugin_ui::Action{id, "BMX Lua migration", widget, false}};
+            step();
+        };
+        const auto panel_value = [&](std::string_view label) {
+            for (const auto& panel : environment.panels)
+                for (const auto& widget : panel.widgets)
+                    if (widget.text == label) return widget.help;
+            throw std::runtime_error(why + "missing board-return status: " + std::string(label));
+        };
+        const auto other_actuators_inert = [&] {
+            return !game.body_prepares && !game.body_create_calls && !game.body_read_calls &&
+                !game.body_submit_entries && !game.follow_reserves && !game.follow_publishes &&
+                !game.follow_reads && !game.follow_stops && !game.follow_acks &&
+                !game.native_action_requests && !game.native_recovery_requests && game.entities.empty() &&
+                game.binds.empty() && game.calls.empty() && environment.teleports.empty() && !environment.rays;
+        };
+        environment.panels_open = true; environment.shown = id;
+        for (unsigned i = 0; i < 10; ++i) step();
+        check(!game.input_pulse_requests && !game.input_pulse_reads && !game.input_pulse_cancels && !game.input_pulse_acks &&
+                  other_actuators_inert(), why + "load and menu rebuilds cannot start a return transaction");
+        const auto slot = scenario % 4;
+        click("bike_board" + std::to_string(slot));
+        for (unsigned i = 0; i < 14; ++i) step();
+        check(!game.input_pulse_requests, why + "board return cannot publish an input report through an open menu");
+        if (scenario == 1) {
+            // A second slot click must not replace the first transaction's selected source.
+            click("bike_board" + std::to_string((slot + 1) % 4));
+        }
+        if (scenario == 5) { game.focus_now.focused = false; step(); game.focus_now.focused = true; }
+        if (scenario == 7) click("bike_stop");
+        environment.panels_open = false; game.focus_now.interface_open = false;
+        for (unsigned i = 0; i < 13; ++i) step();
+        const unsigned requests = scenario < 4 || scenario == 6 ? 1u : 0u;
+        check(game.input_pulse_requests == requests, why + "only a still-valid feet-to-board intent publishes once");
+        if (requests) {
+            check(game.input_pulses.size() == 1, why + "the transaction retains its one opaque report receipt");
+            auto& receipt = game.input_pulses.begin()->second.receipt;
+            check(receipt.user == slot && receipt.button == 0x8000, why + "return uses the original explicit slot and only Y");
+            if (scenario == 6) {
+                receipt.status = p::Status::pressing; receipt.report_debt = true;
+                step();
+                environment.panels_open = true; game.focus_now.interface_open = true;
+                click("bike_board" + std::to_string((slot + 1) % 4));
+                for (unsigned i = 0; i < 5; ++i) step();
+                check(game.input_pulse_requests == 1 && !game.input_pulse_acks && game.input_pulses.size() == 1 &&
+                          receipt.report_debt && panel_value("Board return phase") != "done",
+                      why + "a duplicate return cannot replace or credit unresolved report duty");
+                host.apply({});
+                check(game.input_pulse_requests == 1 && game.input_pulse_cancels == 1 && !game.input_pulse_acks &&
+                          game.input_pulses.size() == 1 && receipt.report_debt && receipt.orphaned && receipt.quarantined &&
+                          !receipt.claim_released && other_actuators_inert(),
+                      why + "unload retains unresolved report duty without a second request or fake completion");
+                continue;
+            }
+            receipt.status = p::Status::revoked; receipt.reason = p::Reason::unavailable;
+            receipt.press_candidates = receipt.press_publications = 7; receipt.neutral_publications = 1;
+            receipt.claim_released = true; receipt.observed_ms += 50;
+            watch.state = 100;
+        }
+        for (unsigned i = 0; i < 50; ++i) step();
+        check(game.input_pulse_requests == requests && game.input_pulse_acks == (scenario < 4 ? 1u : 0u) &&
+                  other_actuators_inert(), why + "a return never retries, mounts a bike or invokes another actuator");
+        environment.panels_open = true; game.focus_now.interface_open = true;
+        step();
+        if (scenario <= 4) {
+            check(panel_value("Board return phase") == "done" && watch.state == 100 && game.input_pulses.empty(),
+                  why + "the menu reports completion only after board100 no-op or qualified target and receipt ACK");
+        } else {
+            check(panel_value("Board return phase") == "cancelled",
+                  why + "focus loss or explicit Stop cannot resurrect a return when readiness later recovers");
+        }
+        click("bike_mount" + std::to_string(slot));
+        check(panel_value("Last mount click") == "Native bike lifecycle qualification unavailable" &&
+                  panel_value("Mount enabled") == "false" && !game.body_creates && game.input_pulse_requests == requests,
+              why + "a return does not enable public mounting or rearm native bike authority");
+        host.apply({});
+        const auto stored_path = environment.storage_root() / id / "storage.json";
+        if (scenario == 4) {
+            check(!std::filesystem::exists(stored_path), why + "already-board no-op creates no equipment or bike lifecycle ledger");
+        } else if (scenario < 4) {
+            std::ifstream stored(stored_path, std::ios::binary);
+            check(stored.good(), why + "the equipment transaction saves its bounded progress");
+            const auto document = Json::parse(std::istreambuf_iterator<char>(stored), std::istreambuf_iterator<char>());
+            const auto& progress = document.at("bmx_equipment_runtime_v1");
+            check(progress.at("initial_state").get<unsigned>() == 504 && progress.at("expected_state").get<unsigned>() == 100 &&
+                      progress.at("outcome").string() == "target_observed" && progress.at("acknowledged").get<bool>() &&
+                      !progress.at("retained").get<bool>() && !document.contains("bmx_bike_lifecycle_v1"),
+                  why + "cold board return preserves the fixed direction without claiming a bike lifecycle marker");
+        }
+    }
+    std::cout << "BMX Lua board return menu: four slots, duplicate intent, board no-op, cancellation and unresolved unload; constructed observations only\n";
+}
+
 void bmx_lua_recovery_policy_keeps_native_cleanup_separate() {
     const auto directory = std::filesystem::path(RESKATE_SOURCE_DIR) / "contrib" / "bmx-lab" / "bmx-plugin";
     std::map<std::string, std::string> files{{manifest_file, R"({"api":1,"entry":"plugin/main.lua","permissions":[]})"}};
@@ -9328,6 +9444,7 @@ int main() {
         run(bmx_lua_persistence_keeps_terminal_records_and_public_fault_gates);
         run(equipment_interruption_fixture_keeps_effects_one_shot);
         run(bmx_lua_menu_switches_explicit_slots_and_retains_cleanup_duty);
+        run(bmx_lua_menu_returns_to_board_without_inverting_the_target);
         run(bmx_lua_recovery_policy_keeps_native_cleanup_separate);
         run(bmx_lua_trick_policy_uses_actual_package_modules);
         run(bmx_lua_forces_use_actual_modules_and_match_the_portable_kernel);

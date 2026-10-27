@@ -34,7 +34,7 @@ class Tests(unittest.TestCase):
         self.assertTrue(issubclass(h.StartGate,gate));self.assertEqual((h.MAX_LATE_MS,h.MAX_DURATION_MS,h.START_GATE_LIMIT_MS,h.PERIOD_MS),(120,6000,60000,20))
         ready=[]
         def original_wait(gate,guard,ledger,clock):guard.check();ready.append(clock.now())
-        with patch.object(self.h.StartGate.__bases__[0],'wait',original_wait):r,_,_,_=self.run_fake(gate=object.__new__(self.h.StartGate))
+        with patch.object(self.h.StartGate.__bases__[0],'wait',original_wait):r,_,_,_=self.run_fake(gate=f.nonlead_gate(self.h,w.SCENARIO))
         self.assertTrue(r['completed']);self.assertEqual(len(ready),1);self.assertGreaterEqual(ready[0],2)
     def test_missing_live_gate_including_abbreviations_before_source(self):
         for args in (['--execute'],['--exec'],['--e'],['--exec','--start-gate','fake'],['--execute','--start-nonce','a'*32]):
@@ -54,7 +54,7 @@ class Tests(unittest.TestCase):
             with self.subTest(options=options):
                 r,b,g,_=self.run_fake(**options);self.assertFalse(r['completed']);self.assertTrue(r['neutral_release_succeeded'] and r['disconnect_succeeded']);self.assertEqual(b.states[-1],self.h.NEUTRAL);self.assertEqual((b.closed,g.closed),(1,1))
         with patch.object(self.h.StartGate.__bases__[0],'wait',side_effect=AssertionError('ready after guard loss')):
-            r,b,_,_=self.run_fake(abort_at=1,gate=object.__new__(self.h.StartGate))
+            r,b,_,_=self.run_fake(abort_at=1,gate=f.nonlead_gate(self.h,w.SCENARIO))
         self.assertFalse(r['completed']);self.assertEqual(r['driver_report_count'],0);self.assertTrue(r['neutral_release_succeeded'] and r['disconnect_succeeded'])
     def test_owner_before_backend_and_actual_default_dryrun_driver_free(self):
         h=self.h

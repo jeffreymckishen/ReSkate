@@ -52,6 +52,14 @@ class Guard:
     def close(self): self.closed += 1
 
 
+def nonlead_gate(h, scenario):
+    # Skip filesystem setup only when the base wait is patched; retain gate validation.
+    gate = object.__new__(h.StartGate)
+    gate.scenario, gate.lead_ms = scenario, None
+    gate._lead_configuration = gate._ready_configuration = None
+    return gate
+
+
 class RecoveryLegTests(unittest.TestCase):
     def setUp(self): self.h = w.load_driver()
 
@@ -191,7 +199,7 @@ class RecoveryLegTests(unittest.TestCase):
             ledger.write("fake_original_ready")
         with patch.object(base_gate, "wait", original_wait):
             result, backend, _, sink = self.fake_run(h.scenarios()[w.DEFAULT_SCENARIO],
-                clock=clock, gate=object.__new__(h.StartGate))
+                clock=clock, gate=nonlead_gate(h, w.DEFAULT_SCENARIO))
         self.assertTrue(result["completed"])
         self.assertEqual(len(calls), 1)
         self.assertGreaterEqual(calls[0], 2)
@@ -208,7 +216,7 @@ class RecoveryLegTests(unittest.TestCase):
         base_gate = h.StartGate.__bases__[0]
         with patch.object(base_gate, "wait", side_effect=AssertionError("ready before preflight")):
             result, backend, guard, _ = self.fake_run(h.scenarios()[w.DEFAULT_SCENARIO],
-                abort_at=1, gate=object.__new__(h.StartGate))
+                abort_at=1, gate=nonlead_gate(h, w.DEFAULT_SCENARIO))
         self.assertFalse(result["completed"])
         self.assertEqual(result["driver_report_count"], 0)
         self.assertTrue(all(s.buttons == 0 for s in backend.states))

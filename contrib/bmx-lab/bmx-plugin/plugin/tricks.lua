@@ -35,12 +35,13 @@ local function turns(angle, period) return math.floor(math.abs(angle) / period +
 local function channel()
     return { armed = false, rotating = false, waiting = false, caught = false, failed = false,
         attempted = false, direction = 0, elapsed = 0, catch_elapsed = 0, blend_remaining = 0,
-        origin = 0, angle = 0, release = 0, count = 0, directional_counts = { 0, 0 } }
+        origin = 0, angle = 0, release = 0, count = 0, started_at = 0, directional_counts = { 0, 0 } }
 end
 local function movement()
     local out = { id = catalog.none, armed = false, active = false, holding = false, recovering = false,
         waiting = false, caught = false, failed = false, attempted = false, elapsed = 0,
-        recover_elapsed = 0, catch_elapsed = 0, phase = 0, progress = 0, release = 0, count = 0, counts = {} }
+        recover_elapsed = 0, catch_elapsed = 0, phase = 0, progress = 0, release = 0, count = 0,
+        started_at = 0, hold_seconds = 0, counts = {} }
     for id = 0, 79 do out.counts[id] = 0 end
     return out
 end
@@ -105,6 +106,7 @@ function Controller:_clear_live(failure)
     self._previous_quaternion = { 0, 0, 0, 1 }
     self._landing_pending, self._landing_seconds, self._landing_gap, self._landing_elapsed = false, 0, 0, 0
     self._hold_started, self._holding, self._hold_start = false, false, 0
+    self._sequence, self._sequence_overflow, self._fakie_takeoff = {}, false, false
 end
 function Controller:_cancel_live(failure)
     local pending = self._state.airborne and self:_attempted()
@@ -157,6 +159,17 @@ function Controller:_sync()
         if entry.family == "bri_flip" then s.movement_bike_pitch = entry.bike_pitch * math.sin(tau * smooth(m.progress)) end
     end
 end
+function Controller:_record(kind, id, dir, started, finished, hold)
+    -- Only catches enter this bounded log. Keep it outside state(), which the
+    -- adapter copies twice each step; landing publishes its detached snapshot.
+    if #self._sequence == 16 then self._sequence_overflow = true; return end
+    local row = {kind = kind, id = id, dir = dir, start = started, finish = finished, hold = hold}
+    local index = #self._sequence + 1
+    while index > 1 and self._sequence[index - 1].start > started do
+        self._sequence[index] = self._sequence[index - 1]; index = index - 1
+    end
+    self._sequence[index] = row
+end
 function Controller:_movement_channel(request, neutral, seconds)
     local m = self._movement
     if neutral and request == catalog.none then m.armed = true end
@@ -169,6 +182,7 @@ function Controller:_movement_channel(request, neutral, seconds)
             m.id, m.active, m.attempted, m.caught = request, true, true, false
             m.holding, m.recovering, m.waiting = false, false, false
             m.elapsed, m.recover_elapsed, m.catch_elapsed, m.phase, m.progress, m.release = 0, 0, 0, 0, 0, 0
+            m.started_at, m.hold_seconds = self._state.air_seconds, 0
             return false
         end
     end
@@ -183,6 +197,8 @@ function Controller:_movement_channel(request, neutral, seconds)
         if m.recover_elapsed + 1e-9 < entry.recover_seconds then return false end
         m.active, m.recovering, m.caught, m.phase, m.release = false, false, true, 0, 0
         m.count, m.counts[m.id] = m.count + 1, m.counts[m.id] + 1
+        self:_record("move", m.id, entry.direction, m.started_at,
+            m.started_at + entry.enter_seconds + m.hold_seconds, m.hold_seconds)
         return true
     end
     if not m.holding and not m.waiting then
@@ -190,9 +206,11 @@ function Controller:_movement_channel(request, neutral, seconds)
         m.phase = entry.motion == "pose" and smooth(m.progress) or math.sin(pi * m.progress)
         m.release = math.min(1, m.progress / .15)
         if m.progress < 1 then return false end
-        if entry.motion == "pose" then m.holding = true
+        if entry.motion == "pose" then
+            m.holding, m.hold_seconds = true, math.max(0, m.elapsed - entry.enter_seconds)
         else m.waiting = true; m.catch_elapsed = math.max(0, m.elapsed - entry.enter_seconds) end
-    elseif m.waiting then m.catch_elapsed = m.catch_elapsed + seconds end
+    elseif m.waiting then m.catch_elapsed = m.catch_elapsed + seconds
+    elseif m.holding then m.hold_seconds = m.hold_seconds + seconds end
     if m.waiting and m.catch_elapsed > self._settings.catch_window + 1e-9 then
         m.failed, m.release = true, 1; return false
     end
@@ -212,6 +230,7 @@ function Controller:_channel(c, request, neutral, seconds, duration, allowed)
             c.attempted, c.rotating, c.caught, c.elapsed = true, true, false, 0
             c.catch_elapsed, c.blend_remaining, c.origin = 0, 0, c.angle
             c.direction = request == "left" and -1 or 1
+            c.started_at = self._state.air_seconds
             return false -- Request arrived at the end of this sample.
         end
     end
@@ -230,6 +249,9 @@ function Controller:_channel(c, request, neutral, seconds, duration, allowed)
             c.waiting, c.caught, c.count = false, true, c.count + 1
             local index = c.direction < 0 and 1 or 2
             c.directional_counts[index] = c.directional_counts[index] + 1
+            local bar = c == self._bar
+            local id = bar and (c.direction < 0 and 34 or 44) or (c.direction < 0 and 56 or 52)
+            self:_record(bar and "bar" or "tail", id, c.direction, c.started_at, c.started_at + duration, 0)
             c.blend_remaining = self._settings.catch_blend
             return true
         end
@@ -309,6 +331,16 @@ function Controller:_land(input, forced)
     local event = events(); event.landed = true
     local failure = forced or self:_landing_failure(input)
     local s, b, t, m = self._state, self._bar, self._tail, self._movement
+    -- Use the model's airborne clock, excluding contact/settle time. A failed
+    -- landing still reports its completed parts, but the existing failed flag
+    -- remains authoritative. Unknown landing quality never gets default numbers.
+    event.air_seconds, event.spin_radians, event.flip_radians, event.roll_radians =
+        s.air_seconds, s.spin_radians, s.flip_radians, s.roll_radians
+    event.fakie_takeoff, event.sequence, event.overflow = self._fakie_takeoff, copy(self._sequence), self._sequence_overflow
+    if input.landing_quality_available and valid_quality(input) then
+        event.landing = {body_up = input.body_up_alignment,
+            heading_cos = math.cos(input.body_yaw - input.travel_yaw), closing = input.closing_normal_speed}
+    end
     if self:_attempted() and failure ~= "none" then
         event.failed, event.failure = true, failure; s.tally.failed_combos = add(s.tally.failed_combos, 1)
     elseif self:_attempted() then
@@ -410,6 +442,7 @@ function Controller:update(seconds, source)
         self._bar, self._tail, self._movement = channel(), channel(), movement()
         self._spin_attempted, self._flip_attempted, self._roll_attempted, self._previous_yaw = false, false, false, input.body_yaw
         self._full_orientation, self._previous_quaternion = input.orientation_available, copy(input.body_quaternion)
+        self._fakie_takeoff = math.cos(input.body_yaw - input.travel_yaw) < 0
         event.took_off = true
         self._bar.armed = input.bar_neutral and input.barspin == "none"
         self._tail.armed = input.rear_neutral and input.tailwhip == "none"

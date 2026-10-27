@@ -19,6 +19,8 @@ local state_bools = {"airborne", "landing_pending", "bar_rotating", "tail_rotati
     "tail_waiting_catch", "bar_caught", "tail_caught", "movement_holding", "movement_recovering", "movement_caught"}
 local event_bools = {"took_off", "landed", "combo_landed", "failed", "canceled", "bar_caught", "tail_caught", "movement_caught"}
 local event_numbers = {"barspins", "tailwhips", "spin_half_turns", "units", "movements", "front_flips", "back_flips", "barrel_rolls"}
+local detail_numbers = {"air_seconds", "spin_radians", "flip_radians", "roll_radians"}
+local detail_fields = {"air_seconds", "spin_radians", "flip_radians", "roll_radians", "sequence", "overflow", "fakie_takeoff", "landing"}
 local function plain(v) return type(v) == "table" and getmetatable(v) == nil end
 local function finite(v) return type(v) == "number" and v == v and math.abs(v) < math.huge end
 local function integer(v, lo, hi) return finite(v) and v >= lo and v <= hi and v % 1 == 0 end
@@ -146,6 +148,53 @@ local function model_state(s)
     end
     return out
 end
+local function event_detail(e, out)
+    for _, name in ipairs(detail_numbers) do
+        local n = rawget(e, name); if not finite(n) then return false end; out[name] = n
+    end
+    if out.air_seconds < 0 or out.air_seconds > 30 or type(rawget(e, "fakie_takeoff")) ~= "boolean"
+        or type(rawget(e, "overflow")) ~= "boolean" then return false end
+    local rows = rawget(e, "sequence")
+    if not plain(rows) then return false end
+    local count = 0
+    for key in pairs(rows) do
+        count += 1
+        if count > 16 or not integer(key, 1, 16) then return false end
+    end
+    if e.overflow and count ~= 16 then return false end
+    out.fakie_takeoff, out.overflow, out.sequence = e.fakie_takeoff, e.overflow, {}
+    local previous = 0
+    for i = 1, count do
+        local row = rawget(rows, i)
+        if not plain(row) then return false end
+        local kind, id, dir = rawget(row, "kind"), rawget(row, "id"), rawget(row, "dir")
+        local started, finished, hold = rawget(row, "start"), rawget(row, "finish"), rawget(row, "hold")
+        if not integer(id, 0, 79) or not catalog.valid(id) or id == catalog.none
+            or not integer(dir, -1, 1) or not finite(started) or not finite(finished) or not finite(hold)
+            or started < previous or finished <= started or finished > out.air_seconds + 1e-9
+            or hold < 0 or hold > finished - started + 1e-9 then return false end
+        local entry = motions.find(id)
+        if kind == "bar" then
+            if id ~= (dir == -1 and 34 or dir == 1 and 44 or -1) or hold ~= 0 then return false end
+        elseif kind == "tail" then
+            if id ~= (dir == -1 and 56 or dir == 1 and 52 or -1) or hold ~= 0 then return false end
+        elseif kind == "move" then
+            if not entry or catalog.legacy_rotation(id) or dir ~= entry.direction
+                or (entry.motion ~= "pose" and hold ~= 0) then return false end
+        else return false end
+        previous = started
+        out.sequence[i] = {kind = kind, id = id, dir = dir, start = started, finish = finished, hold = hold}
+    end
+    local landing = rawget(e, "landing")
+    if landing ~= nil then
+        if not plain(landing) then return false end
+        local up, heading, closing = rawget(landing, "body_up"), rawget(landing, "heading_cos"), rawget(landing, "closing")
+        if not finite(up) or math.abs(up) > 1.000001 or not finite(heading) or math.abs(heading) > 1
+            or not finite(closing) or closing < 0 or closing > 1e6 then return false end
+        out.landing = {body_up = up, heading_cos = heading, closing = closing}
+    end
+    return true
+end
 local function model_events(e)
     if not plain(e) then return nil end
     local out = {scope = "model_events_only", realized = false}
@@ -153,6 +202,12 @@ local function model_events(e)
     for _, name in ipairs(event_numbers) do if not integer(rawget(e, name), 0, MAX) then return nil end; out[name] = e[name] end
     if type(rawget(e, "failure")) ~= "string" or #e.failure > 100 then return nil end
     out.failure = e.failure
+    if out.landed then
+        if not event_detail(e, out) then return nil end
+    else
+        -- A partial or misplaced detail packet must not look like a scored air.
+        for _, name in ipairs(detail_fields) do if rawget(e, name) ~= nil then return nil end end
+    end
     return out
 end
 local function public_copy(raw)

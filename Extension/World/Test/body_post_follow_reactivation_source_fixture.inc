@@ -222,18 +222,25 @@ void post_follow_reactivation_handoff_loss_stops_activation_but_keeps_cleanup() 
         for(unsigned step=0;step<5 && reactivation_probe.next_stage!=stage;++step)f.later();
         check(reactivation_probe.result.phase==br::Phase::activation && reactivation_probe.next_stage==stage,
             "post-Follow test did not reach its selected next activation writer");
+        const bool dynamic=stage==br::Stage::wake;
+        check(f.native_dynamic()==dynamic,"post-Follow stage-loss fixture has the wrong motion state before cleanup");
         const auto writes=f.calls.size();clear_reuse_handoff(f.slot());
         f.later();const auto failed=f.poll();
-        const std::array cleanup{ReactivationCall::categories,ReactivationCall::collisions,ReactivationCall::clear_force,
-            ReactivationCall::clear_torque,ReactivationCall::linear,ReactivationCall::angular,ReactivationCall::park_motion};
-        const bool cleanup_only=f.calls.size()==writes || (f.calls.size()==writes+cleanup.size() &&
-            std::equal(cleanup.begin(),cleanup.end(),f.calls.data()+writes));
-        check(failed.first_failure!=br::Check::none && failed.cleanup_owed && cleanup_only &&
+        // park() clears force and torque only for a dynamic allocation. Earlier
+        // activation stages still use its five-leaf already-parked cleanup path.
+        std::vector<ReactivationCall> cleanup{ReactivationCall::categories,ReactivationCall::collisions};
+        if(dynamic) { cleanup.push_back(ReactivationCall::clear_force);cleanup.push_back(ReactivationCall::clear_torque); }
+        cleanup.push_back(ReactivationCall::linear);cleanup.push_back(ReactivationCall::angular);cleanup.push_back(ReactivationCall::park_motion);
+        const bool cleanup_only=f.calls.size()==writes+cleanup.size() &&
+            std::equal(cleanup.begin(),cleanup.end(),f.calls.data()+writes);
+        check(failed.first_failure==br::Check::dependency && failed.failure_phase==br::Phase::activation &&
+            failed.phase==br::Phase::await_repark && failed.cleanup_owed && cleanup_only &&
             f.slot().reuse_faulted && !f.slot().never_held,"lost completion provenance reached another activation writer or dropped cleanup");
         const auto out=reactivation_finish(f);
         check(out.status!=br::Status::observed && out.first_failure==failed.first_failure && out.cleanup==br::Cleanup::confirmed &&
-            !out.cleanup_owed && !out.native_retirement_known && !f.native_dynamic() && f.slot().retained && !f.slot().active,
-            "post-Follow provenance loss erased its failure or prevented exact retained repark cleanup");
+            !out.cleanup_owed && !out.native_retirement_known && !f.native_dynamic() && f.slot().retained && !f.slot().active &&
+            f.calls.size()==writes+cleanup.size(),
+            "post-Follow provenance loss erased its failure, repeated writes or prevented exact retained repark cleanup");
         f.no_extra_authority();
     }
 }

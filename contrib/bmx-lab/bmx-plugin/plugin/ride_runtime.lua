@@ -449,7 +449,8 @@ local function status(s)
         observed_steps=s.observed_steps,model_steps=s.model_steps,receipt=s.last_receipt,
         model_history=s.model_history,hop_disposition=s.hop_disposition,metrics=s.metrics,
         presentation_pose=s.pose,
-        model={trick_status=s.trick_status,alignment_status=s.alignment_status,recovery_status=s.recovery_status}})
+        model={trick_status=s.trick_status,trick_fallbacks=s.trick_fallbacks,
+            alignment_status=s.alignment_status,recovery_status=s.recovery_status}})
 end
 local function receipt_valid(row,p)
     if type(row)~="table" or row.sequence~=p.sequence or row.requested_serial~=p.serial
@@ -579,9 +580,18 @@ local function companion_result(s,frame,contact,actions)
     local out = {rotation_reserved=false,requests={},events={}}
     if s.tricks then
         local result = invoke(s,s.tricks.step,s.tricks,frame,contact,actions)
-        if not result[1] or result.n ~= 2 or not result.current or type(result[2]) ~= "table" then return nil,"trick adapter unavailable" end
-        local value = result[2]
-        if value.valid then
+        -- A trick is presentation and its air rotation reservation only. An
+        -- adapter that refuses or is unavailable leaves this step without a
+        -- trick, decided by the kernel and the recovery below as if Ride had
+        -- none. A stop during the call, or a trick bound to another frame or
+        -- asking for an unknown effect, still stops. A missing step callback
+        -- has no current flag (nothing was called), so only a call that ran
+        -- into a stop counts as one.
+        if result.current==false then return nil,"stopped during trick adapter" end
+        local value = result[1] and result.n == 2 and type(result[2]) == "table" and result[2] or nil
+        if not value then
+            out.trick_fallback = "trick adapter unavailable"
+        elseif value.valid then
             local bound=value.binding
             if type(bound)~="table" or bound.body_handle~=frame.body_handle or bound.physics_epoch~=frame.physics_epoch
                 or bound.lease_handle~=frame.source.lease_handle or bound.serial~=frame.serial or bound.time~=frame.time
@@ -597,7 +607,7 @@ local function companion_result(s,frame,contact,actions)
             -- stamp an unbound bare authored target as a measured native pose.
             out.visual_targets=value.visual_targets and copy(value) or nil
             out.trick=copy(value)
-        else return nil,"trick adapter refused: " .. detail(value.issue) end
+        else out.trick_fallback = "trick adapter refused: " .. detail(value.issue) end
     end
     if s.recovery then
         local result = invoke(s,s.recovery.update,s.recovery,frame)
@@ -895,7 +905,8 @@ local function observe(s,source_frame,raw,context)
     if not companions then stop(s,companion_issue);return end
     if s.stopped then return end
     s.model_steps+=1
-    s.trick_status=companions.trick and companions.trick.issue or nil
+    s.trick_status=companions.trick and companions.trick.issue or companions.trick_fallback
+    if companions.trick_fallback then s.trick_fallbacks+=1 end
     s.alignment_status=companions.alignment and companions.alignment.status or nil
     s.recovery_status=companions.recovery and companions.recovery.phase or nil
     -- Every coherent observed model step happens before the command gate.
@@ -976,7 +987,7 @@ function Ride.new(force_api,models,options)
         contact=models.contact,tricks=models.tricks,recovery=models.recovery,alignment=models.alignment,
         alignment_options=detached(options.alignment),geometry=detached(options.geometry or Geometry),
         wheels=Forces.proposed_wheels(),phase="inert",issue="native qualification required",generation=0,
-        pose=freeze(NEUTRAL_POSE),
+        pose=freeze(NEUTRAL_POSE),trick_fallbacks=0,
         submitted=0,acknowledged=0,pending={},metrics=new_metrics(),backpressure_steps=0,
         continuity_pending=false,continuity_skipped_steps=0,continuity_invalidations=0,
         input_queue={},input_staged=0,input_consumed=0,observed_steps=0,model_steps=0}

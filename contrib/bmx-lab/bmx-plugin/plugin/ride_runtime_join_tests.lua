@@ -31,8 +31,12 @@ function Tests.run()
                 local_actor_excluded=true,owned_bodies_excluded=true,rays={{status="clear"},{status="clear"}}}
         end
         local s=f.observe()
-        check(s.stop_requested and string.find(s.issue,"physical_support_unqualified",1,true),"actual decoder still refuses physical support")
-        check(count(f,"submit")==0 and model:status().model_updates==0,"actual unknown support never advances model or force")
+        -- The trick adapter still refuses physical support, but a refused trick
+        -- is presentation only: the ride goes on without one.
+        check(not s.stop_requested and string.find(s.model.trick_status,"physical_support_unqualified",1,true),
+            "actual decoder still refuses physical support: "..tostring(s.model.trick_status))
+        check(count(f,"submit")==1 and model:status().model_updates==0 and s.model.trick_fallbacks==1,
+            "actual unknown support never advances the trick model; the force goes on without a trick")
     end
     cases+=1 do
         local f,model=constructed();check(f.observe().submitted==1,"constructed ground primes exact BFAF")

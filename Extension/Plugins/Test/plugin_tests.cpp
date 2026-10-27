@@ -10,6 +10,7 @@
 #include "Extension/Throwdowns/custom_modes.h"
 #include "Extension/Throwdowns/throwdown_kit.h"
 #include "Engine/Vfs/mod_list.h"
+#include "Engine/Core/Platform/plugin_time_budget.h"
 #include "Engine/Game/BMX/bmx_chassis_control.h"
 #include "Engine/Game/BMX/bmx_interaction.h"
 #include "Engine/Game/BMX/equipment_switch.h"
@@ -4452,6 +4453,88 @@ void a_plugin_over_its_time_budget_is_stopped() {
     ticks(host, environment, 60 * 5);
     stopped(host, "busy", "ms a tick for 3 s");
     running(host, "light", environment);
+}
+
+// The plugin time budget the player picks in the launcher (Engine/Core/Platform/plugin_time_budget.h):
+// what the game is handed, parsed the way the game parses it. Reading the variable itself is tested
+// with launcher::plugin_tick_ms in Launcher/Test/launch_options_tests.cpp.
+void the_plugin_time_budget_setting_parses() {
+    namespace budget = dingosdk::plugin_time_budget;
+    check(budget::default_ms == 2 && Limits{}.tick_ms == budget::default_ms, "The budget is 2 ms a tick unless the player picks another");
+    for (const int ms : budget::choices_ms) {
+        check(budget::parse(std::to_string(ms)) == ms, "Each choice parses: " + std::to_string(ms));
+        check(budget::parse(std::to_wstring(ms)) == ms, "as the game's variable too: " + std::to_string(ms));
+    }
+    check(budget::choices_ms.front() == 2 && budget::choices_ms.back() == 6, "The choices run from 2 to 6 ms");
+    for (const std::string_view bad : {"", "0", "1", "7", "10", "60", "-2", "2.5", " 3", "3 ", "3ms", "x", "999"})
+        check(!budget::parse(bad), "Not a choice, so refused: \"" + std::string(bad) + "\"");
+}
+
+void the_chosen_budget_reaches_every_plugin() {
+    check(game_limits(4).tick_ms == 4 && game_limits(6).tick_ms == 6, "The game's limits carry the chosen budget");
+    for (const int bad : {0, 1, 7, 100, -6})
+        check(game_limits(bad).tick_ms == 2, "and a budget off the list is the default, never more: " + std::to_string(bad));
+    const Limits defaults;
+    check(game_limits(6).call_ms == defaults.call_ms && game_limits(6).over_windows == defaults.over_windows &&
+          game_limits(6).memory == defaults.memory, "Only the tick budget changes");
+    check(game_limits(2).tick_setting.find("Plugin time budget") != std::string::npos, "The game names where it is changed");
+    check(defaults.tick_setting.empty(), "and a host where nobody can change it names nothing");
+
+    TestEnvironment environment;
+    Host host(environment, Side::client, game_limits(4));
+    check(host.tick_budget_ms() == 4, "The host has the budget");
+    // A plugin has no way to its own: a budget in its manifest is not read, and it has no environment.
+    host.apply({script("first", R"(reskate.on("tick", function() end))"), script("second", "local x = 1"),
+        package("greedy", {{manifest_file, R"({"api": 1, "entry": "plugin/main.lua", "tick_ms": 6, "limits": {"tick_ms": 6}})"},
+            {"plugin/main.lua", R"(assert(os.getenv == nil, "no environment") reskate.log("greedy loaded"))"}})});
+    for (const auto* id : {"first", "second", "greedy"}) {
+        running(host, id, environment);
+        check(status_of(host, id).tick_budget_ms == 4, std::string("Every plugin gets the host's budget as it loads: ") + id);
+    }
+    check(environment.logged("greedy loaded"), "The greedy plugin ran\n" + environment.all());
+
+    TestEnvironment standard;
+    Host default_host(standard, Side::client);
+    default_host.apply({package("greedy", {{manifest_file, R"({"api": 1, "entry": "plugin/main.lua", "tick_ms": 6})"},
+        {"plugin/main.lua", "local x = 1"}})});
+    check(status_of(default_host, "greedy").tick_budget_ms == 2, "and its manifest does not raise it");
+}
+
+void a_plugin_over_the_chosen_budget_is_stopped_and_one_under_it_is_not() {
+    // About 3.5 ms a tick, as plugins that drive a body's physics measured in game; and 4.5 ms.
+    const auto busy = [](const std::string& id, double ms) {
+        return script(id, std::format(R"(reskate.on("tick", function() local s = os.clock() while os.clock() - s < {} do end end))", ms / 1000));
+    };
+    const auto light = [] { return script("light", R"(reskate.on("tick", function() local s = 0 for i = 1, 100 do s += i end end))"); };
+    {
+        TestEnvironment environment;
+        Host host(environment, Side::client, game_limits(6));
+        host.apply({busy("physics", 3.5), light()});
+        ticks(host, environment, 60 * 5);
+        running(host, "physics", environment);
+        running(host, "light", environment);
+        const auto measured = status_of(host, "physics").tick_ms;
+        std::cout << std::format("physics: {:.3f} ms a tick, under a 6 ms budget\n", measured);
+        check(measured > 3 && measured < 6, "Its measured time is shown against the budget: " + std::to_string(measured));
+    }
+    {
+        TestEnvironment environment;
+        Host host(environment, Side::client, game_limits(3));
+        host.apply({busy("heavy", 4.5), light()});
+        ticks(host, environment, 60 * 5);
+        stopped(host, "heavy", "over the plugin time budget of 3 ms");
+        stopped(host, "heavy", "(change it in the launcher: Settings, GAME, Plugin time budget)");
+        running(host, "light", environment);
+        check(environment.logged("[heavy] stopped: it took"), "The stop is logged with its reason\n" + environment.all());
+    }
+    {
+        TestEnvironment environment;
+        Host host(environment, Side::client, game_limits(dingosdk::plugin_time_budget::default_ms));
+        host.apply({busy("physics", 3.5), light()});
+        ticks(host, environment, 60 * 5);
+        stopped(host, "physics", "over the plugin time budget of 2 ms");
+        running(host, "light", environment);
+    }
 }
 
 void a_plugin_reloads_when_its_files_change() {
@@ -9207,6 +9290,9 @@ int main() {
         run(the_sandbox_holds);
         run(a_runaway_plugin_is_stopped_and_the_rest_go_on);
         run(a_plugin_over_its_time_budget_is_stopped);
+        run(the_plugin_time_budget_setting_parses);
+        run(the_chosen_budget_reaches_every_plugin);
+        run(a_plugin_over_the_chosen_budget_is_stopped_and_one_under_it_is_not);
         run(a_plugin_reloads_when_its_files_change);
         run(the_skater_can_be_read_moved_and_the_world_probed);
         run(plugins_distinguish_clear_unavailable_and_hit_world_probes);

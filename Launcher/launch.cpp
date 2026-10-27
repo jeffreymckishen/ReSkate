@@ -928,6 +928,8 @@ DWORD start_game(const Session& session, const launcher::LaunchOptions& options,
         throw std::runtime_error("The menu and console need different keys. Change one in Settings.");
     set_environment(L"RESKATE_MENU_KEY", std::to_wstring(options.menu_key).c_str());
     set_environment(L"RESKATE_CONSOLE_KEY", std::to_wstring(options.console_key).c_str());
+    // Always set, so a launcher kept open never leaves the game an earlier launch's budget.
+    set_environment(plugin_time_budget::variable, std::to_wstring(plugin_time_budget::or_default(options.plugin_tick_ms)).c_str());
     const auto steam_reason = options.offline ? std::wstring{} : launcher_app::steam_offline_reason();
     const bool offline = options.offline || !steam_reason.empty();
     set_environment(L"RESKATE_OFFLINE", offline ? L"1" : L"0");

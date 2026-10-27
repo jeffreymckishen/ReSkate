@@ -87,7 +87,7 @@ Loosely follows Frostbite's own layout.
 | `Hooks/` | Detours hook helpers |
 | `Json/` | JSON helpers over RapidJSON |
 | `Log/` | spdlog-based logger, log paths, crash/event logging |
-| `Platform/` | process injection, PE helpers, memory and path utilities |
+| `Platform/` | process injection, PE helpers, memory and path utilities, launch options (`launcher_support`, `plugin_time_budget`) |
 | `Profiling/` | profiler and sampler |
 | `Storage/` | SQLite save database |
 | `Text/` | chat word filter |

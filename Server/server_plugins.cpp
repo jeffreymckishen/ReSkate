@@ -349,7 +349,8 @@ std::optional<std::string> ServerPlugins::command(std::string_view line) {
     for (const auto &plugin : all) {
         if (!text.empty()) text += '\n';
         text += std::format("{}: {}", plugin.id, plugin.state);
-        if (plugin.state == "running") text += std::format(", {:.1f} MB, {:.3f} ms a tick", plugin.memory / 1048576.0, plugin.tick_ms);
+        if (plugin.state == "running")
+            text += std::format(", {:.1f} MB, {:.3f} of {} ms a tick", plugin.memory / 1048576.0, plugin.tick_ms, plugin.tick_budget_ms);
         else if (!plugin.reason.empty()) text += " (" + plugin.reason + ")";
     }
     return text;

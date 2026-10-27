@@ -96,6 +96,18 @@ OverlayKeys overlay_keys() noexcept {
     return keys;
 }
 
+int plugin_tick_ms(bool* off_list) noexcept {
+    if (off_list) *off_list = false;
+    // Every choice fits with room to spare; a longer value gives back the size it needs instead,
+    // and is no choice either.
+    std::array<wchar_t, 8> value{};
+    const auto length = GetEnvironmentVariableW(plugin_time_budget::variable, value.data(), static_cast<DWORD>(value.size()));
+    if (!length) return plugin_time_budget::default_ms;
+    const auto chosen = length < value.size() ? plugin_time_budget::parse(std::wstring_view(value.data(), length)) : std::nullopt;
+    if (!chosen && off_list) *off_list = true;
+    return chosen.value_or(plugin_time_budget::default_ms);
+}
+
 #endif // _WIN32
 
 bool offline_mode() noexcept {
@@ -235,6 +247,12 @@ LaunchOptions parse_launch_options(const std::vector<std::wstring>& arguments) {
             if (value.empty() || !end || *end != L'\0' || !bindable_key(key))
                 fail("--menu-key and --console-key take a virtual-key code such as 0x2D (Insert)");
             (menu_key ? options.menu_key : options.console_key) = static_cast<unsigned>(key);
+            continue;
+        }
+        if (argument.starts_with(L"--plugin-tick-ms=")) {
+            const auto chosen = plugin_time_budget::parse(argument.substr(argument.find(L'=') + 1));
+            if (!chosen) fail("--plugin-tick-ms takes 2, 3, 4, 5 or 6: the milliseconds each plugin may take of a tick");
+            options.plugin_tick_ms = *chosen;
             continue;
         }
         // Translate the friendly flag into the inspected engine settings below.

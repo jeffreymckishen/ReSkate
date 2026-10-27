@@ -8,6 +8,7 @@
 #include "start_maps.h"
 #include "thunderstore.h"
 
+#include "Engine/Core/Platform/plugin_time_budget.h"
 #include "Engine/Vfs/mod_conflicts.h"
 #include "Engine/Vfs/mod_list.h"
 #include "Extension/UI/skate_theme.h"
@@ -199,6 +200,9 @@ struct Settings {
     std::string start_map;
     int menu_key{static_cast<int>(launcher::default_menu_key)};
     int console_key{static_cast<int>(launcher::default_console_key)};
+    // Settings > GAME > Plugin time budget: the milliseconds each plugin may take of a tick
+    // (Engine/Core/Platform/plugin_time_budget.h), always one of its choices.
+    int plugin_tick_ms{plugin_time_budget::default_ms};
     int log_level{2};
     std::string arguments;
     bool keep_open_after_launch{};

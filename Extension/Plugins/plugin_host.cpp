@@ -3,6 +3,7 @@
 #include "plugin_api.h"
 #include "plugin_wire.h"
 #include "Engine/Core/Console/console_core.h"
+#include "Engine/Core/Platform/plugin_time_budget.h"
 #include "Extension/Throwdowns/throwdown_kit.h"
 #include <algorithm>
 #include <format>
@@ -14,6 +15,13 @@ std::string lowercase(std::string text) {
     for (auto& c : text) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + 32);
     return text;
 }
+}
+
+Limits game_limits(int tick_budget_ms) {
+    Limits limits;
+    limits.tick_ms = plugin_time_budget::or_default(tick_budget_ms);
+    limits.tick_setting = plugin_time_budget::setting;
+    return limits;
 }
 
 Host::Host(Environment& environment, Side side, Limits limits, std::string suffix)
@@ -565,10 +573,12 @@ std::vector<Status> Host::status() const {
     std::vector<Status> result;
     for (const auto& [id, entry] : entries_) {
         Status status{id};
+        status.tick_budget_ms = limits_.tick_ms;
         if (entry.plugin) {
             status.state = "running";
             status.memory = entry.plugin->memory();
             status.tick_ms = entry.plugin->tick_ms();
+            status.tick_budget_ms = entry.plugin->tick_budget_ms();
             status.commands = entry.plugin->commands();
         } else if (entry.held) {
             status.state = "switched off";

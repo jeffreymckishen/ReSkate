@@ -74,9 +74,16 @@ struct Status {
     std::string state;  // "running", "stopped", "switched off", "not loaded"
     std::string reason; // why it is not running
     std::size_t memory{};
-    double tick_ms{};
+    double tick_ms{};        // its average a tick over the last second
+    double tick_budget_ms{}; // what that may be (Limits::tick_ms): a running plugin's own, else the host's
     std::vector<CommandInfo> commands; // with the subcommands they declared
 };
+
+// The limits the game's plugins run under: the defaults, with the plugin time budget the player chose
+// in the launcher (Engine/Core/Platform/plugin_time_budget.h) as every plugin's tick_ms, and that
+// setting named in the reason one over it stops for. A budget that is not one of the choices is the
+// default, so nothing the game is handed can give a plugin more than the launcher offers.
+Limits game_limits(int tick_budget_ms);
 
 class Host final : private Services {
 public:
@@ -102,6 +109,8 @@ public:
     // Runs a plugin's console command when the text starts with one; false when none matched.
     bool run_console(std::string_view text);
     std::vector<Status> status() const;
+    // The time budget every plugin it loads gets (its Limits' tick_ms), for plugin list.
+    double tick_budget_ms() const noexcept { return limits_.tick_ms; }
     // The `plugin` console commands. Each returns what to print.
     std::string reload(std::string_view id);
     std::string switch_off(std::string_view id);

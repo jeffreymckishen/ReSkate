@@ -63,6 +63,10 @@ Settings load_settings(const fs::path& path) {
             settings.menu_key = static_cast<int>(launcher::default_menu_key);
             settings.console_key = static_cast<int>(launcher::default_console_key);
         }
+        // A value that is not one of the choices (a file edited by hand) is the default, and the
+        // rest of the settings are still read.
+        if (const auto found = json.find("plugin_tick_ms"); found != json.end() && found->is_number_integer())
+            settings.plugin_tick_ms = plugin_time_budget::or_default(found->get<std::int64_t>());
         const auto level = json.value("log_level", std::string("info"));
         for (std::size_t index = 0; index < log_levels.size(); ++index)
             if (level == log_levels[index]) settings.log_level = static_cast<int>(index);
@@ -111,6 +115,7 @@ void save_settings(const fs::path& path, const Settings& settings) {
     json["start_map"] = settings.start_map;
     json["menu_key"] = settings.menu_key;
     json["console_key"] = settings.console_key;
+    json["plugin_tick_ms"] = settings.plugin_tick_ms;
     json["log_level"] = log_levels[static_cast<std::size_t>(settings.log_level)];
     json["arguments"] = settings.arguments;
     json["close_on_launch"] = !settings.keep_open_after_launch;
@@ -147,6 +152,7 @@ launcher::LaunchOptions launch_options(const Settings& settings) {
     if (settings.offline) arguments.emplace_back(L"-offline");
     arguments.push_back(std::format(L"--menu-key={}", settings.menu_key));
     arguments.push_back(std::format(L"--console-key={}", settings.console_key));
+    arguments.push_back(std::format(L"--plugin-tick-ms={}", plugin_time_budget::or_default(settings.plugin_tick_ms)));
     arguments.push_back(L"--log-level=" + widen(log_levels[static_cast<std::size_t>(settings.log_level)]));
     if (settings.arguments.find_first_not_of(" \t") != std::string::npos) {
         int count{};

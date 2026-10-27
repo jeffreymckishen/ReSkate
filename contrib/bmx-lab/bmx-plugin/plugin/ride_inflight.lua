@@ -60,7 +60,8 @@ local function valid_samples(samples)
         if contact.status=="hit" then
             if not M.finite(sample.separation) or not vector(contact.point)
                 or not vector(contact.normal,2) or math.abs(M.length(contact.normal)-1)>.001
-                or not vector(contact.surface_velocity,50) then return false end
+                or not vector(contact.surface_velocity,50) or not vector(contact.forward)
+                or not M.basis(contact.normal,contact.forward) then return false end
         elseif contact.status~="clear" then return false end
     end
     return true
@@ -70,7 +71,7 @@ end
 -- a given active age. A present impulse and its positive uint32 ID are paired;
 -- the same event cannot appear in two accepted commands. Even ignored ages are
 -- validated. No missing force, torque or contact fact is replaced by zero.
--- Returns fresh mutable body and wheel tables, or nil/reason; inputs stay intact.
+-- Returns fresh mutable body and contact tables, or nil/reason; inputs stay intact.
 function I.fold(h,gravity,inflight,body,samples)
     if not M.finite(h) or h<=0 or h>.1 or not vector(gravity) then return nil,"fold input invalid" end
     local b,body_ok=copy(body)
@@ -120,6 +121,18 @@ function I.fold(h,gravity,inflight,body,samples)
     b.center_of_mass=M.add(b.center_of_mass,M.mul(v,h))
     b.orientation=rotate(b.orientation,w,h)
     if not valid_body(b) then return nil,"fold body invalid" end
+    -- Ride derives this tangent from the bike heading, not from the surface.
+    -- Keep it in the forecast body's frame while retaining each measured normal;
+    -- stale tangents otherwise look like front steering and rotate both tire axes.
+    local forward=M.turn(b.orientation,{0,0,1})
+    for _,sample in ipairs(out) do
+        local contact=sample.contact
+        if contact.status=="hit" then
+            local basis=M.basis(contact.normal,forward)
+            if not basis then return nil,"fold contact heading invalid" end
+            contact.forward=basis.forward
+        end
+    end
     if not valid_samples(out) then return nil,"fold contact invalid" end
     return b,out
 end

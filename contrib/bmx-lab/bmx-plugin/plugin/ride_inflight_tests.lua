@@ -1,5 +1,6 @@
 local I=require("./ride_inflight")
 local M=require("./force_math")
+local Forces=require("./forces")
 local Tests={}
 local function fixture()
     local body={mass=2,inertia_body={2,3,4},center_of_mass={1,2,3},orientation={0,0,0,1},
@@ -36,6 +37,7 @@ function Tests.run()
         check(vnear(predicted.angular_velocity,{0,h,0}),"torque keeps world-space inverse-inertia integration")
         check(vnear(predicted.center_of_mass,M.add(b.center_of_mass,M.mul(expected,h))),"semi-implicit body position preserved")
         check(near(predicted.orientation[2],math.sin(h*h/2)) and near(predicted.orientation[4],math.cos(h*h/2)),"world angular velocity advances normalized orientation")
+        check(vnear(rows[1].contact.forward,{math.sin(h*h),0,math.cos(h*h)}),"accepted yaw torque advances the contact heading with the forecast body")
         check(near(rows[1].separation,.02+(expected[2]-.2)*h),"wheel separation uses relative normal approach")
         check(vnear(rows[1].contact.point,{1+expected[1]*h,1,3+expected[3]*h}),"contact point follows tangential body velocity")
         check(rows[2].contact.status=="clear" and rows[2].separation==nil and rows[2].contact.point==nil,"clear stays absent without fabricated geometry")
@@ -169,6 +171,10 @@ function Tests.run()
             function(s) s[1].contact.status="unavailable" end,
             function(s) s[1].contact.point=nil end,
             function(s) s[1].contact.normal={0,2,0} end,
+            function(s) s[1].contact.forward=nil end,
+            function(s) s[1].contact.forward={0,0,0} end,
+            function(s) s[1].contact.forward={0,1,0} end,
+            function(s) s[1].contact.forward={0,0,1,0} end,
             function(s) s[1].contact.surface_velocity={51,0,0} end,
             function(s) s[1].separation=math.huge end,
             function(s) s[2]=nil;s[3]={contact={status="clear"}} end} do
@@ -190,6 +196,63 @@ function Tests.run()
         local c={age=1,force={1e5,0,0},torque={0,0,0}}
         refused({c},b,s)
         check(b.center_of_mass[1]==1 and b.linear_velocity[1]==2 and s[1].separation==.02,"overflow refusal leaves every measured input intact")
+    end
+    for _,yaw_rate in {-2,2} do cases+=1 do
+        local step=Forces.native_seconds
+        local b,w=Forces.proposed_body(),Forces.proposed_wheels()
+        b.center_of_mass={0,.9,0};b.linear_velocity={0,0,2};b.angular_velocity={0,yaw_rate,0}
+        local s={}
+        for i=1,2 do
+            w[i].angular_speed=2/w[i].radius
+            s[i]={contact={status="hit",point={0,0,i==1 and .5 or -.5},normal={0,1,0},
+                forward={0,0,1},surface_velocity={0,0,0}},separation=0,verified_plane=false,balance_normal_available=false}
+        end
+        local accepted={{age=1,force={0,b.mass*9.8,0},torque={0,0,0}}}
+        freeze(b);freeze(s);freeze(accepted)
+        local predicted,rows=I.fold(step,{0,-9.8,0},accepted,b,s)
+        check(predicted~=nil,"yawing supported body has a forecast without mutating frozen measurements")
+        local heading={math.sin(yaw_rate*step),0,math.cos(yaw_rate*step)}
+        for i=1,2 do
+            check(vnear(rows[i].contact.forward,heading) and vnear(s[i].contact.forward,{0,0,1}),"both tire headings follow forecast yaw while measured headings remain unchanged")
+            check(vnear(rows[i].contact.normal,s[i].contact.normal) and not rows[i].verified_plane,"heading projection preserves measured normals and plane provenance")
+        end
+        local out=Forces.new():preview(step,predicted,w,rows,Forces.controls())
+        check(out.valid and out.balance_support_mask==3 and out.front_steer_angle==0 and not out.steering_limited,"zero-steer yaw remains supported without a steering correction")
+        check(near(out.turning_lean_angle,0) and M.length(out.balance_torque)<1e-8,"forecast yaw alone requests no turn lean or balance torque")
+        local reference=M.copy(rows)
+        for _,sample in ipairs(reference) do sample.contact.forward=M.copy(heading) end
+        local expected=Forces.new():preview(step,predicted,w,reference,Forces.controls())
+        check(expected.valid and vnear(out.force,expected.force,1e-7) and vnear(out.torque,expected.torque,1e-7)
+            and near(out.wheels[1].angular_speed,expected.wheels[1].angular_speed,1e-8)
+            and near(out.wheels[2].angular_speed,expected.wheels[2].angular_speed,1e-8),"actual tire response matches independently calculated forecast headings on both wheels")
+        for _,sample in ipairs(reference) do sample.contact.forward={0,0,1} end
+        local stale=Forces.new():preview(step,predicted,w,reference,Forces.controls())
+        check(stale.valid and math.abs(stale.turning_lean_angle)>1e-3 and M.length(stale.balance_torque)>1,"regression detects the spurious lean caused by retaining measured headings")
+    end end
+    cases+=1 do
+        local b,s=fixture();b.angular_velocity={0,2,0}
+        s[2]=M.copy(s[1]);s[2].contact.normal={0,.6,.8};s[2].verified_plane=false
+        local original=M.copy(s);freeze(b);freeze(s)
+        local predicted,rows=I.fold(h,g,{},b,s)
+        check(predicted~=nil,"distinct measured slope normals remain forecastable")
+        local forward=M.turn(predicted.orientation,{0,0,1})
+        for i=1,2 do
+            local normal=original[i].contact.normal
+            local projected=M.unit(M.sub(forward,M.mul(normal,M.dot(forward,normal))))
+            check(vnear(rows[i].contact.forward,projected) and near(M.dot(rows[i].contact.forward,normal),0),"forecast heading is projected independently onto each retained measured normal")
+            check(vnear(rows[i].contact.normal,normal) and vnear(rows[i].contact.surface_velocity,original[i].contact.surface_velocity)
+                and rows[i].verified_plane==original[i].verified_plane,"projection changes no measured plane or surface velocity")
+        end
+    end
+    cases+=1 do
+        local b,s=fixture();b.angular_velocity={math.pi/(2*h),0,0}
+        local original=M.copy(s);freeze(b);freeze(s)
+        local predicted,why=I.fold(h,{0,0,0},{},b,s)
+        check(predicted==nil and why=="fold contact heading invalid","a forecast heading parallel to the measured normal refuses instead of inventing a tangent")
+        check(vnear(s[1].contact.forward,original[1].contact.forward) and vnear(s[1].contact.normal,original[1].contact.normal)
+            and near(s[1].separation,original[1].separation),"degenerate forecast refusal leaves the measured contact intact")
+        local clear=I.fold(h,{0,0,0},{},b,{{contact={status="clear"}}})
+        check(clear~=nil,"the same orientation needs no tangent or invented normal for a clear row")
     end
     return {cases=cases,assertions=assertions}
 end

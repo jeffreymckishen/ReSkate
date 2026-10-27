@@ -670,6 +670,17 @@ local function observe(s,source_frame,raw,context)
     s.last_sample=sample -- Consume before callbacks. This native serial cannot submit twice.
     s.observed_steps+=1
     s.metrics_step={serial=sample.serial,report=false}
+    -- Check observed limits before prediction, model work or command
+    -- backpressure can conceal them. Exact accepted receipts remain drainable.
+    if s.admit_measured then
+        local admitted=invoke(s,s.admit_measured,s.force,detached(body))
+        if not admitted[1] or admitted.n~=3 or not admitted.current or s.stopped
+            or type(admitted[2])~="boolean" or type(admitted[3])~="string"
+            or admitted[2] and admitted[3]~="none" or not admitted[2] and (admitted[3]=="none" or admitted[3]=="") then
+            stop(s,"measured body admission unavailable");return
+        end
+        if not admitted[2] then stop(s,"measured body refused: "..admitted[3]);return end
+    end
     -- One exact queued observation per body step preserves non-hop selection /
     -- release ordering without stepping Trick twice at one native epoch. Bind
     -- the frame to that real observation, never restamp it as the latest poll.
@@ -884,10 +895,12 @@ function Ride.new(force_api,models,options)
         -- Snapshot an immutable model capability once. Raw Forces has no hop
         -- policy and retains its receipt-owned hop behavior unchanged.
         s.hop_policy=s.force.hop_policy
+        s.admit_measured=s.force.admit_measured
         s.wheel_probe_extra=.15
         local valid=type(s.body)=="userdata" and s.incarnation~=nil and type(force_api)=="table"
             and type(s.contact)=="table" and type(s.contact.decode)=="function" and type(s.contact.actor_lane_qualified)=="function"
             and (s.hop_policy==nil or s.hop_policy=="suppress" or s.hop_policy=="grounded_once")
+            and (s.admit_measured==nil or type(s.admit_measured)=="function")
         if s.hop_policy=="grounded_once" then
             local extra
             if type(s.force.tuning)=="table" then extra=s.force.tuning.wheel_probe_extra else valid=false end

@@ -58,6 +58,7 @@ function World.new(options)
     assert(world.successor_delay%1==0 and world.successor_delay>=0 and world.successor_delay<=1)
     local controller=Hop.new()
     local proxy={hop_policy=controller.hop_policy,tuning=controller.tuning}
+    function proxy:admit_measured(body) return controller:admit_measured(body) end
     function proxy:preview(...)
         local model,candidate=controller:preview(...)
         world.previews[#world.previews+1]={tick=world.tick,model=M.copy(model)}

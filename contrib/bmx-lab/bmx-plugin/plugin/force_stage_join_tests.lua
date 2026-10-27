@@ -37,6 +37,7 @@ local function fixture(stage,options)
     -- This observer only records the real result. It does not supply controls,
     -- model values, candidates or history; all three operations delegate exactly.
     local observer={tuning=actual.tuning,hop_policy=actual.hop_policy}
+    function observer:admit_measured(body) return actual:admit_measured(body) end
     function observer:preview(...)
         local args=table.pack(...)
         local model,candidate=actual:preview(...)
@@ -172,8 +173,8 @@ function Tests.run()
     for _,stage in ipairs({UncappedSupport,UncappedPedal}) do
         case("unselected authored caps cannot produce a packet",function()
             local f=fixture(stage);local out=f.observe()
-            check(out.stop_requested and string.find(out.issue,"bounded force packet unavailable: authored_caps_unavailable",1,true)==1,
-                "missing authored decision refuses the nonzero stage with its exact reason")
+            check(out.stop_requested and string.find(out.issue,"measured body refused: authored_caps_unavailable",1,true)==1,
+                "missing authored decision refuses measured admission with its exact reason")
             check(out.submitted==0 and #f.commands==0 and f.adoptions==0,"nil caps never silently use kernel or SDK ceilings")
         end)
     end

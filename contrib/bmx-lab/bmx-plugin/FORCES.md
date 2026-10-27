@@ -55,7 +55,10 @@ path. Before preview, Ride folds its exact accepted commands that are younger
 than two native serials into detached body and wheel-contact copies. Only the
 age-one command acts during this forecast: velocity changes by `F*h/m + J/m`
 plus gravity, angular velocity changes through the world inertia, then pose and
-hit separations advance one step. An age-zero command waits; an age-two command
+hit separations advance one step. Each hit's forward tangent is projected from
+the forecast heading onto its retained measured normal, so yaw cannot create
+false steering or turn lean. Missing or degenerate tangents refuse; clear rays
+remain clear. An age-zero command waits; an age-two command
 is already visible and is not added again. Duplicate active ages or impulse IDs,
 invalid command data and incomplete hit geometry refuse the fold. Clear rays
 stay clear. Measured samples, contact provenance, receipt records and acceptance
@@ -143,8 +146,11 @@ runner creates its qualified copy with these authored caps:
 
 The hop stage requires its own positive `vertical_speed` cap. Other nonzero
 stages retain their existing three-dimensional speed check. Both hop speed
-checks use the body's velocity supplied to preview; in Ride that includes the
-in-flight forecast described above, not a newly measured velocity. Force and
+checks first run on the unchanged measured body, before queries, model work or
+command backpressure. Accepted braking cannot conceal a measured over-cap
+speed. Preview then checks the in-flight forecast against the same caps as an
+additional bound. Measured admission never adopts or invalidates force history,
+and a refusal leaves exact accepted receipts available for cleanup. Force and
 torque caps refuse an excessive full result; they never trim it into an admitted
 packet. Any kernel contact-budget scaling also refuses the nonzero stage.
 The existing SDK command limits still apply to the submitted packet.

@@ -10,7 +10,7 @@ void bmx_lua_contacts_use_actual_decoder_and_force_modules() {
     std::map<std::string, std::string> files{{manifest_file, manifest("")}};
     for (const auto* name : {"force_math.lua", "tire.lua", "brake.lua", "pump.lua", "force_solver.lua", "forces.lua",
             "lease_identity.lua", "catalog.lua", "input.lua", "ride_input_mapping.lua", "bike_geometry.lua",
-            "frame_identity.lua", "contact_runtime.lua", "ride_runtime.lua", "ride_runtime_tests.lua"})
+            "frame_identity.lua", "contact_runtime.lua", "ride_inflight.lua", "ride_runtime.lua", "ride_runtime_tests.lua"})
         files[std::string("plugin/") + name] = contents(directory / name);
 
     const std::string inactive = "local ACTIVATION_QUALIFIED = false";
@@ -27,7 +27,7 @@ void bmx_lua_contacts_use_actual_decoder_and_force_modules() {
         -- Dependencies are warmed one module per call before their importers.
         local paths = {"./force_math", "./tire", "./brake", "./pump", "./force_solver", "./forces",
             "./lease_identity", "./catalog", "./input", "./ride_input_mapping", "./bike_geometry",
-            "./frame_identity", "./contact_runtime", "./ride_runtime", "./ride_runtime_qualified_fixture",
+            "./frame_identity", "./contact_runtime", "./ride_inflight", "./ride_runtime", "./ride_runtime_qualified_fixture",
             "./ride_runtime_tests"}
         local loading, tests, job, complete = 1, nil, nil, false
         local completed_cases, completed_assertions = 0, 0
@@ -53,11 +53,11 @@ void bmx_lua_contacts_use_actual_decoder_and_force_modules() {
             assert(ok, result)
             if coroutine.status(job) ~= "dead" then return end
             complete = true
-            assert(result.cases == 48 and result.assertions == 128,
+            assert(result.cases == 48 and result.assertions == 129,
                 string.format("unexpected contact coverage: %s/%s", tostring(result.cases), tostring(result.assertions)))
             assert(completed_cases == result.cases and completed_assertions == result.assertions,
                 "contact final coverage must match every yielded case")
-            reskate.log("BMX Lua contacts: 48 cases, 128 assertions, constructed SDK boundaries")
+            reskate.log("BMX Lua contacts: 48 cases, 129 assertions, constructed SDK boundaries")
         end)
     )";
     check(Limits{}.call_ms == 50 && Limits{}.tick_ms == 2,
@@ -67,15 +67,15 @@ void bmx_lua_contacts_use_actual_decoder_and_force_modules() {
     host.apply({package("bmx-lua-contact-runtime-tests", files)});
     running(host, "bmx-lua-contact-runtime-tests", environment);
     check(!environment.logged("BMX Lua contacts:"), "Contact suite does not execute during startup");
-    // Sixteen cold imports, forty-eight completed case yields, one return.
+    // Seventeen cold imports, forty-eight completed case yields, one return.
     // No production limit is increased, and no assertion is skipped.
-    for (unsigned tick = 0; tick < 65; ++tick) {
+    for (unsigned tick = 0; tick < 66; ++tick) {
         environment.now += 1000.0 / 60.0;
         host.tick(1000.0 / 60.0);
         running(host, "bmx-lua-contact-runtime-tests", environment);
-        if (tick < 64) check(!environment.logged("BMX Lua contacts:"), "Contact suite cannot complete before all forty-eight cases");
+        if (tick < 65) check(!environment.logged("BMX Lua contacts:"), "Contact suite cannot complete before all forty-eight cases");
     }
-    check(environment.logged("BMX Lua contacts: 48 cases, 128 assertions") &&
+    check(environment.logged("BMX Lua contacts: 48 cases, 129 assertions") &&
             environment.fake.calls.empty() && environment.fake.binds.empty() && environment.teleports.empty() &&
             !environment.rays && !environment.native_ray_casts && !environment.fake.batch_calls &&
             !environment.fake.body_prepares && !environment.fake.body_create_calls && !environment.fake.body_read_calls &&

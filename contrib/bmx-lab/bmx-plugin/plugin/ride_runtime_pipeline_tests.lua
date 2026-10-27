@@ -20,7 +20,7 @@ end
 local function fixture()
     local f=Fixtures.fixture()
     local sample=f.sample
-    function f.sample() local row=sample();row.velocity=vector.create(0,0,1);return row end
+    function f.sample() local row=sample();row.velocity=vector.create(0,f.vertical_velocity or 0,1);return row end
     f.native={};f.records={};f.commands={};f.read_ids={};f.ack_ids={};f.ack_attempts={}
     f.next_id="9007199254745000";f.adoptions=0;f.resets=0;f.previews={}
     local preview,adopt,reset=f.force.preview,f.force._adopt,f.force.reset
@@ -233,7 +233,9 @@ function Tests.run()
     end)
     case("accepted hop history prevents replay while its receipt waits",function()
         local f=fixture();f.withhold_successors=true;f.observe()
-        f.advance();f.pad.buttons.right_stick=true;f.observe()
+        -- At N+1 no command is visible yet; supply that gravity-only velocity
+        -- rather than a frozen rest state that would forecast upward motion.
+        f.advance();f.vertical_velocity=-9.8*f.read.seconds;f.pad.buttons.right_stick=true;f.observe()
         f.advance();local s=f.observe()
         check(f.commands[2].command.impulse_id==1 and f.commands[3].command.impulse==nil,"same pending input hop is not emitted in two accepted packets")
         check(f.force:consumed_hop_event_id()==1 and f.mapping:status().pending_hop.id==1,"predictive event consumption is separate from receipt retirement")

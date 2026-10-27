@@ -50,6 +50,29 @@ Waiting for confirmation before every solve would reduce cadence and would not
 preserve this module's fixed-step contract. This module predicts velocities;
 it does not integrate future pose or establish future contact geometry.
 
+`ride_inflight.lua` now carries the trial's pure forecast into the tracked Ride
+path. Before preview, Ride folds its exact accepted commands that are younger
+than two native serials into detached body and wheel-contact copies. Only the
+age-one command acts during this forecast: velocity changes by `F*h/m + J/m`
+plus gravity, angular velocity changes through the world inertia, then pose and
+hit separations advance one step. An age-zero command waits; an age-two command
+is already visible and is not added again. Duplicate active ages or impulse IDs,
+invalid command data and incomplete hit geometry refuse the fold. Clear rays
+stay clear. Measured samples, contact provenance, receipt records and acceptance
+history are not replaced by these predicted copies.
+
+The forecast is an authored model of the measured N+2 phase, not an independent
+physics observation. It grants no support or command authority. Ride keeps the
+accepted impulse and ID beside force and torque, so an unconfirmed hop is also
+included once in the appropriate forecast interval. A ForceStage refusal now
+names its issue and the unsent force/torque magnitudes and forecast velocities.
+
+ForceStage's source-only `AUTHORED_CAPS` may include an optional positive
+`torque` no greater than the kernel's 4,000 N*m limit. Legacy `{force, speed}`
+caps remain valid. The cap refuses the full torque magnitude without clipping
+it and retains the untrimmed model only as diagnostics. The tracked `STAGE`
+stays `"zero_force"`, caps stay `nil`, and Ride's activation gate stays false.
+
 Vectors are three-element double-number tables. Quaternions are Hamilton XYZW,
 body axes to world. The body has `mass`, `inertia_body`, `orientation`,
 `center_of_mass`, `linear_velocity` and `angular_velocity`. Wheels are front then

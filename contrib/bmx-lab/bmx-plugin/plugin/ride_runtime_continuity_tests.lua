@@ -17,7 +17,7 @@ local function fixture()
     local f=Fixtures.fixture();local sample=f.sample
     f.angle=0;f.previews={};f.commands={}
     function f.sample()
-        local row=sample();row.velocity=vector.create(0,0,2);return row
+        local row=sample();row.velocity=vector.create(0,f.vertical_velocity or 0,2);return row
     end
     f.on_decode=function(row)
         for _,ray in ipairs(row.rays) do
@@ -80,7 +80,10 @@ function Tests.run()
             "bounded continuity diagnostics distinguish the coast assumption from native wheel evidence")
     end)
     case("consecutive commands retain normal and steering continuity",function()
-        local f=fixture();f.observe();f.angle=.1;f.pad.left_x=.8;f.advance();local s=f.observe()
+        local f=fixture();f.observe();f.angle=.1;f.pad.left_x=.8;f.advance()
+        -- The first command is not visible at N+1: that measured interval has
+        -- gravity only. A frozen zero velocity would make its later fold rise.
+        f.vertical_velocity=-9.8*Forces.native_seconds;local s=f.observe()
         local row=f.previews[2]
         check(s.submitted==2 and row.model.valid and row.normal_valid and row.steering_valid,
             "consecutive actual admissions keep their one-step histories")
@@ -124,7 +127,7 @@ function Tests.run()
     end)
     case("accepted hop high-water survives a gap while its receipt waits",function()
         local f=fixture();f.withhold_successors=true;f.observe()
-        f.advance();f.pad.buttons.right_stick=true;local hopped=f.observe()
+        f.advance();f.vertical_velocity=-9.8*Forces.native_seconds;f.pad.buttons.right_stick=true;local hopped=f.observe()
         local hop_sequence=hopped.pending_commands[2].sequence
         check(f.commands[2].impulse_id==1 and f.force:consumed_hop_event_id()==1,
             "the actual force candidate has consumed the accepted hop before the gap")
@@ -139,10 +142,11 @@ function Tests.run()
             "hop preservation occurs through the actual gap invalidation path")
     end)
     case("kernel invalidation preserves tuning and consumed events only",function()
-        local f=fixture();f.observe();f.advance();f.pad.buttons.right_stick=true;f.observe()
-        -- A hop clears normal history; a later actual grounded prediction
-        -- rebuilds that history without changing the accepted hop high-water.
-        f.advance();f.observe()
+        local f=fixture();f.observe();f.advance();f.vertical_velocity=-9.8*Forces.native_seconds;f.pad.buttons.right_stick=true;f.observe()
+        -- A hop clears normal history, and its age-one forecast is airborne.
+        -- Once that impulse is visible, the later supplied grounded sample
+        -- rebuilds history without changing the accepted hop high-water.
+        f.advance();f.observe();f.advance();f.observe()
         local tuning=f.force.tuning;local before_tuning=M.copy(tuning)
         local args=f.previews[2].args
         -- Explicit synthetic stale pump/air state tests the seam's full contract.

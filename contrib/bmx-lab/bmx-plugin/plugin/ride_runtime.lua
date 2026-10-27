@@ -6,6 +6,7 @@ local Forces = require("./forces")
 local M = require("./force_math")
 local Identity = require("./lease_identity")
 local Geometry = require("./bike_geometry")
+local InFlight = require("./ride_inflight")
 local Ride, Object = {}, {}
 local states = setmetatable({}, {__mode="k"})
 local MAX_SAFE = 9007199254740991
@@ -768,17 +769,41 @@ local function observe(s,source_frame,raw,context)
     end
     local force_controls=copy(controls.force_controls)
     force_controls.rotation_reserved=force_controls.rotation_reserved or companions.rotation_reserved==true
-    local preview=invoke(s,s.force.preview,s.force,sample.seconds,body,s.wheels,contact.samples,force_controls)
+    -- Solve from the state this command will act on. Accepted commands
+    -- younger than InFlight.VISIBLE_STEPS are not in the sample yet; fold them in first.
+    local inflight={}
+    for _,q in ipairs(s.pending) do
+        local age=q.sequence and q.force and q.torque and Identity.bounded_delta(sample.serial,q.serial,64)
+        if age and age<InFlight.VISIBLE_STEPS and (q.outcome==nil or q.outcome=="queued" or q.outcome=="applied") then
+            inflight[#inflight+1]={age=age,force=q.force,torque=q.torque,impulse=q.impulse,impulse_id=q.impulse_id}
+        end
+    end
+    local folded=invoke(s,InFlight.fold,sample.seconds,s.force.tuning.gravity,inflight,body,contact.samples)
+    if not folded[1] or not folded.current or s.stopped or type(folded[2])~="table" or type(folded[3])~="table" then
+        stop(s,"in-flight fold unavailable");return
+    end
+    local preview=invoke(s,s.force.preview,s.force,sample.seconds,folded[2],s.wheels,folded[3],force_controls)
     local model,candidate=preview[2],preview[3]
     if not preview[1] or preview.n~=3 or not preview.current or s.stopped or type(candidate)~="table" then
         stop(s,"force preview unavailable");return
     end
     local command=packet(model,companions,sample.seconds)
-    if not command then stop(s,"bounded force packet unavailable");return end
+    if not command then -- Name the ForceStage refusal and the unsent magnitudes.
+        local d=type(model)=="table" and (type(model.diagnostic)=="table" and model.diagnostic or model) or {}
+        local b=folded[2]
+        local why=type(model)=="table" and tostring(model.issue) or "no model"
+        if M.vec(d.force) and M.vec(d.torque) then why..=string.format(" |F| %.0f N |T| %.0f N*m",M.length(d.force),M.length(d.torque)) end
+        if M.vec(b.linear_velocity) and M.vec(b.angular_velocity) then
+            local v,w=b.linear_velocity,b.angular_velocity
+            why..=string.format(" v(%.2f,%.2f,%.2f) w(%.2f,%.2f,%.2f)",v[1],v[2],v[3],w[1],w[2],w[3])
+        end
+        stop(s,"bounded force packet unavailable: "..why);return
+    end
     local wheels=wheel_copy(model.wheels,s.wheels)
     if not wheels then stop(s,"bounded wheel model unavailable");return end
     local p={serial=sample.serial,time=sample.time,seconds=sample.seconds,submitted_at=s.now,
-        hop_id=model.hop_applied and model.hop_event_id or nil,wheels=wheels}
+        hop_id=model.hop_applied and model.hop_event_id or nil,wheels=wheels,
+        force=array(command.force),torque=array(command.torque),impulse=array(command.impulse),impulse_id=command.impulse_id}
     -- Core's closures enforce exact live ownership before AND after effects.
     -- This local reservation survives stop during submit and unknown admission.
     table.insert(s.pending,p)

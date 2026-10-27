@@ -44,9 +44,11 @@ local function caps_valid(tuning)
     local count=0
     for name in pairs(AUTHORED_CAPS) do
         count+=1
-        if name~="force" and name~="speed" then return false end
+        if name~="force" and name~="speed" and name~="torque" then return false end -- R1 declared change: optional torque cap
     end
-    return count==2 and M.finite(AUTHORED_CAPS.force) and AUTHORED_CAPS.force>0
+    if AUTHORED_CAPS.torque~=nil and not (M.finite(AUTHORED_CAPS.torque) and AUTHORED_CAPS.torque>0
+        and AUTHORED_CAPS.torque<=tuning.torque_limit) then return false end -- R1 declared change
+    return count==(AUTHORED_CAPS.torque~=nil and 3 or 2) and M.finite(AUTHORED_CAPS.force) and AUTHORED_CAPS.force>0
         and AUTHORED_CAPS.force<=tuning.force_limit and M.finite(AUTHORED_CAPS.speed) and AUTHORED_CAPS.speed>0
 end
 function Stage.new(...)
@@ -109,6 +111,10 @@ function Controller:preview(h,body,wheels,samples,controls)
         return invalid("kernel_output_limit",diagnostic_copy(model))
     end
     if STAGE~="zero_force" and M.length(model.force)>AUTHORED_CAPS.force then return invalid("authored_force_limit",diagnostic_copy(model)) end
+    -- R1 declared change: torque refuses like force and speed (Ride adds no companion torque here).
+    if STAGE~="zero_force" and AUTHORED_CAPS.torque~=nil and M.length(model.torque)>AUTHORED_CAPS.torque then
+        return invalid("authored_torque_limit",diagnostic_copy(model))
+    end
     local result
     if STAGE=="zero_force" then
         -- Diagnostics describe a hypothetical neutral-kernel step. The actual

@@ -463,4 +463,7 @@ option(DINGOSDK_BMX_NATIVE_COUPLED "Build the isolated native coupled-body backe
 if(DINGOSDK_BMX_NATIVE_COUPLED)
     target_compile_definitions(dingosdk_runtime PRIVATE DINGOSDK_BMX_NATIVE_COUPLED=1)
 endif()
+if(DINGOSDK_BODY_REACTIVATION_QUALIFICATION)
+    target_compile_definitions(dingosdk_runtime PRIVATE DINGOSDK_BODY_REACTIVATION_QUALIFICATION=1)
+endif()
 target_link_libraries(dingosdk_runtime PRIVATE dingosdk_capture)

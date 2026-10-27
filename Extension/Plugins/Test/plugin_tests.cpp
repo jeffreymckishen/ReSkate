@@ -16,6 +16,9 @@
 #include "Engine/Game/BMX/equipment_switch.h"
 #include "Engine/Game/Input/input_lease_policy.h"
 #include "Engine/Game/World/motion_refresh_probe.h"
+#ifdef DINGOSDK_BODY_REACTIVATION_QUALIFICATION
+#include "Engine/Game/World/body_reactivation_probe.h"
+#endif
 #include "Extension/BMX/bmx_world_transform.h"
 #include "Extension/BMX/bmx_collision_envelope.h"
 #include "Extension/Customization/board_material.h"
@@ -24,6 +27,8 @@
 #include <cmath>
 #include <format>
 #include <fstream>
+#include <functional>
+#include <memory>
 #include <iostream>
 #include <iterator>
 #include <limits>
@@ -247,6 +252,56 @@ struct FakeGame final : Game {
     std::string body_prepare_error;
     std::string body_prepare() override { ++body_prepares; return body_prepare_error; }
 #include "body_follow_fake_game_fixture.inc"
+#ifdef DINGOSDK_BODY_REACTIVATION_QUALIFICATION
+    // Constructed facade/provider boundary only. The shared pure arm is supplied
+    // by each fixture; this fake never parses RealGame launch environment/paths.
+    std::function<bool(std::uint64_t, std::string_view, const std::filesystem::path&)> reactivation_admit;
+    std::function<bool(std::uint64_t)> reactivation_current;
+    std::function<void(std::uint64_t)> reactivation_close_arm;
+    unsigned reactivation_begins{}, reactivation_polls{}, reactivation_provider_calls{}, reactivation_retirements{}, reactivation_closes{};
+    std::uint64_t reactivation_owner{}, reactivation_sequence{}, reactivation_next{9007199254740994ULL};
+    owned_body::Handle reactivation_body{};
+    std::string reactivation_id, reactivation_begin_error;
+    std::filesystem::path reactivation_directory;
+    bool reactivation_access{}, reactivation_cleanup_duty{}, reactivation_zero_sequence{};
+    dingosdk::body_reactivation_probe::Result reactivation_result{};
+    std::string begin_body_reactivation_probe(std::uint64_t owner, std::string_view id,
+        const std::filesystem::path& directory, const owned_body::Handle& body, std::uint64_t& sequence) override {
+        ++reactivation_begins; sequence = 0;
+        reactivation_id = id; reactivation_directory = directory;
+        if (!reactivation_admit || !reactivation_admit(owner, id, directory)) return "qualification arm unavailable";
+        ++reactivation_provider_calls;
+        if (!reactivation_begin_error.empty()) return reactivation_begin_error;
+        auto* selected = body_of(owner, body);
+        if (!selected || selected->released || selected->quarantined ||
+            reactivation_next == std::numeric_limits<std::uint64_t>::max()) return "body or sequence unavailable";
+        reactivation_owner = owner; reactivation_body = body; reactivation_sequence = ++reactivation_next;
+        reactivation_access = reactivation_cleanup_duty = true;
+        reactivation_result = {};
+        reactivation_result.phase = dingosdk::body_reactivation_probe::Phase::await_initial_park;
+        reactivation_result.cleanup_owed = true;
+        reactivation_result.target_position = selected->definition.position;
+        reactivation_result.target_rotation = selected->definition.rotation;
+        // Model only the required public-authority transition at begin return.
+        selected->released = true; selected->mailbox.cancel(); ++reactivation_retirements;
+        sequence = reactivation_zero_sequence ? 0 : reactivation_sequence;
+        return {};
+    }
+    std::string poll_body_reactivation_probe(std::uint64_t owner, const owned_body::Handle& body,
+        std::uint64_t sequence, dingosdk::body_reactivation_probe::Result& out) override {
+        ++reactivation_polls; out = {};
+        if (!reactivation_access || !owner || owner != reactivation_owner || body != reactivation_body ||
+            !sequence || sequence != reactivation_sequence || !reactivation_current || !reactivation_current(owner))
+            return "foreign, stale or revoked qualification";
+        out = reactivation_result; return {};
+    }
+    void close_reactivation_fixture(std::uint64_t owner) {
+        if (reactivation_close_arm) reactivation_close_arm(owner);
+        if (!owner || owner != reactivation_owner || !reactivation_access) return;
+        reactivation_access = false; ++reactivation_closes;
+        // Result access closes; independent provider cleanup duty survives.
+    }
+#endif
     struct SyncProbe {
         std::uint64_t owner{},sequence{};
         owned_body::Handle handle{};
@@ -521,6 +576,9 @@ struct FakeGame final : Game {
     void body_release_all(std::uint64_t owner) override {
         close_follow_fixture(owner);
         cancel_motion_refresh_probe(owner); // No owned-body prerequisite; repeated close is idempotent.
+#ifdef DINGOSDK_BODY_REACTIVATION_QUALIFICATION
+        close_reactivation_fixture(owner);
+#endif
         release_order.emplace_back(owner, "body");
         body_releases.push_back(owner);
         if (sync_probe.owner==owner && sync_probe.result.status==dingosdk::body_sync_probe::Status::pending)
@@ -9333,6 +9391,7 @@ void bmx_lua_spawn_uses_owned_chassis_and_measured_part_placement() {
 
 #include "measured_contact_host_fixture.inc"
 #include "motion_refresh_host_fixture.inc"
+#include "body_reactivation_probe_host_fixture.inc"
 #include "body_prepare_host_fixture.inc"
 #include "body_follow_host_fixture.inc"
 #include "body_follow_motion_policy_host_fixture.inc"
@@ -9367,6 +9426,7 @@ int main() {
         run(sync_probe_binding_rejects_malformed_backend_facts);
         run(sync_probe_terminal_partial_facts_and_body_release_remain_distinct);
         run(motion_refresh_host_fixture_v1);
+        run(body_reactivation_probe_host_fixture_v1);
         run(body_prepare_host_fixture_v1);
         run(body_follow_host_fixture_v1);
         run(body_follow_motion_policy_host_fixture_v1);

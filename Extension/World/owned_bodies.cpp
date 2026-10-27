@@ -86,8 +86,9 @@ struct Slot {
     std::size_t made{};
     bool attempted{}, body_observed{}, active{}, retained{}, quarantined{}, creation_failed{};
     AllocationProgress allocation{};
-    // Historical cleanup bookkeeping only; no path reactivates this allocation.
+    // Historical cleanup bookkeeping does not authorize ordinary allocation reuse.
     bool reuse_faulted{}, owner_closed{};
+    bool never_held{}; // creation witness; a completed or released dependency cannot restore it
     std::uint64_t completed_ack_sequence{};
     RetirementBasis completed_ack_basis{};
     RetainedParkReceipt completed_ack_park{};
@@ -150,6 +151,10 @@ Clock clock_feed;
 std::atomic<World> clock_world{};
 void motion_tick(std::uintptr_t base, bool ready) noexcept;
 void sync_capture_routes(SyncProbe& probe) noexcept;
+#if defined(DINGOSDK_BODY_REACTIVATION_QUALIFICATION) && DINGOSDK_BODY_REACTIVATION_QUALIFICATION
+void reactivation_tick_metadata(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept;
+void reactivation_tick_advance() noexcept;
+#endif
 static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
 struct LastError { DWORD value = GetLastError(); ~LastError() { SetLastError(value); } };
 struct Locked { SRWLOCK& lock; explicit Locked(SRWLOCK& value) : lock(value) { AcquireSRWLockExclusive(&lock); } ~Locked() { ReleaseSRWLockExclusive(&lock); } };
@@ -390,12 +395,14 @@ void taint_reuse(Slot& s) noexcept {
     s.reuse_faulted = true;
     clear_reuse_handoff(s);
 }
-bool park(Slot& s) noexcept {
+using ParkWriteCheck = bool (*)(Slot&) noexcept;
+bool park(Slot& s, ParkWriteCheck before_write = nullptr) noexcept {
     s.mailbox.cancel();
+    const auto permitted = [&]() noexcept { return !before_write || before_write(s); };
     if (!body_current(s)) return false;
     for (std::size_t i = 0; i < s.made; ++i)
-        if (!shape_current(s, i) || !mask(service.api.categories, s.shapes[i], 0) || !shape_current(s, i) ||
-            !mask(service.api.collides, s.shapes[i], 0) || !shape_current(s, i)) return false;
+        if (!shape_current(s, i) || !permitted() || !mask(service.api.categories, s.shapes[i], 0) || !shape_current(s, i) ||
+            !permitted() || !mask(service.api.collides, s.shapes[i], 0) || !shape_current(s, i)) return false;
     for (std::size_t i = 0; i < s.made; ++i) {
         std::uintptr_t categories{}, with{}; std::uint32_t category{}, collides{};
         const auto offset = std::uintptr_t{s.shapes[i].index} * 4;
@@ -404,12 +411,13 @@ bool park(Slot& s) noexcept {
             !peek(with + offset, collides) || collides != 0 || !shape_current(s, i)) return false;
     }
     alignas(16) const V4 zero{};
-    if (allocated(s.anchor.state, s.body.index, true) && (!vector(service.api.clear_force, s.body, zero.data()) || !body_current(s) ||
-        !vector(service.api.clear_torque, s.body, zero.data()) || !body_current(s))) return false;
-    return pending_zero(s) && vector(service.api.linear, s.body, zero.data()) && body_current(s) &&
-        vector(service.api.angular, s.body, zero.data()) && body_current(s) && set_int(service.api.motion, s.body, 2) && body_current(s) && pending_zero(s);
+    if (allocated(s.anchor.state, s.body.index, true) && (!permitted() || !vector(service.api.clear_force, s.body, zero.data()) || !body_current(s) ||
+        !permitted() || !vector(service.api.clear_torque, s.body, zero.data()) || !body_current(s))) return false;
+    return pending_zero(s) && permitted() && vector(service.api.linear, s.body, zero.data()) && body_current(s) &&
+        permitted() && vector(service.api.angular, s.body, zero.data()) && body_current(s) &&
+        permitted() && set_int(service.api.motion, s.body, 2) && body_current(s) && pending_zero(s);
 }
-void retire(Slot& s, bool may_park) noexcept {
+void retire(Slot& s, bool may_park, ParkWriteCheck before_write = nullptr) noexcept {
     if (s.quarantined || s.creation_failed) taint_reuse(s);
     if (service.probe.owner == s.owner && service.probe.handle == s.handle &&
         service.probe.result.status == body_sync_probe::Status::pending) {
@@ -421,7 +429,7 @@ void retire(Slot& s, bool may_park) noexcept {
     // A dependent native service owns release ordering, including VM unload.
     // Retain active SDK allocation state for its cleanup-only basis capture.
     if (s.release_hold) { s.release_requested = true; return; }
-    const bool parked = may_park && park(s);
+    const bool parked = may_park && park(s, before_write);
     s.active = false; s.retained = true; s.quarantined = s.allocation.quarantine(parked); s.latest = {};
     if (s.quarantined) taint_reuse(s);
     s.parked_ms = s.quarantined ? 0 : GetTickCount64();
@@ -677,6 +685,19 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
     LastError error;
     if (!service.thread) service.thread = GetCurrentThreadId();
     if (GetCurrentThreadId() != service.thread) return;
+#if defined(DINGOSDK_BODY_REACTIVATION_QUALIFICATION) && DINGOSDK_BODY_REACTIVATION_QUALIFICATION
+    // Metadata runs before every readiness/base early return, even for retained
+    // slots. The advance guard runs only after later World locks have unwound.
+    reactivation_tick_metadata(base, client, ready);
+    struct ReactivationAdvance {
+        std::uintptr_t base, client; bool ready;
+        ~ReactivationAdvance() {
+            reactivation_tick_metadata(base, client, ready && eligible());
+            reactivation_tick_advance();
+            reactivation_tick_metadata(base, client, ready && eligible());
+        }
+    } reactivation_advance{base, client, ready};
+#endif
     bool prepare{};
     {
         Locked lock(service.lock);
@@ -765,7 +786,7 @@ std::string create(std::uint64_t owner, const Definition& definition, Handle& ou
                 return "a previous partial allocation in this world prohibits another native allocation";
         const auto at = std::find_if(service.slots.begin(), service.slots.end(), [](const Slot& s) { return !s.attempted; });
         if (at == service.slots.end()) return "the eight retained body slots are exhausted; native destruction is unproven";
-        auto& s = *at; s.attempted = true; s.owner = owner; s.definition = definition; s.anchor = anchor;
+        auto& s = *at; s.attempted = true; s.never_held = true; s.owner = owner; s.definition = definition; s.anchor = anchor;
         s.handle = {++service.generation, static_cast<std::uint32_t>(at - service.slots.begin())};
         if (!create_native(s)) {
             s.creation_failed = true; taint_reuse(s); retire(s, anchor_current(s.anchor));
@@ -981,6 +1002,7 @@ bool acquire_release_hold(std::uint64_t owner, const MeasuredSource& source, Bod
     value.base_ = service.base; value.world_ = s->anchor.world; value.state_ = s->anchor.state;
     value.body_index_ = s->body.index; value.body_generation_ = s->body.generation;
     s->release_hold = value.id_;
+    s->never_held = false;
     clear_reuse_handoff(*s); // a new dependent duty cannot inherit an earlier completion
     out = value;
     return true;
@@ -1256,6 +1278,7 @@ CompletedAckHandoff record_completed_follow_ack(std::uint64_t owner, std::uint64
 
 #include "owned_body_sync_probe.inl"
 #include "owned_body_motion_refresh_probe.inl"
+#include "owned_body_reactivation_probe.inl"
 
 body_query::Result probe_batch(std::uint64_t owner, const Handle& handle, const body_query::Request& request, unsigned allowance) noexcept {
     LastError error;
@@ -1479,6 +1502,9 @@ std::string acknowledge(std::uint64_t owner, const Handle& handle, std::uint64_t
 }
 void release_all(std::uint64_t owner) noexcept {
     LastError error;
+#if defined(DINGOSDK_BODY_REACTIVATION_QUALIFICATION) && DINGOSDK_BODY_REACTIVATION_QUALIFICATION
+    revoke_body_reactivation_probe(owner);
+#endif
     const bool client_thread = GetCurrentThreadId() == service.thread;
     if (owner && !client_thread) service.owner_close_uncertain.store(true, std::memory_order_release);
     cancel_motion_refresh_probes(owner);

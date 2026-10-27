@@ -45,6 +45,10 @@ __declspec(align(16)) __declspec(thread) unsigned char source_test_tls[0x4000];
 
 namespace test_facts {
 std::atomic<unsigned> model_calls{}, world_calls{}, body_calls{}, shape_calls{}, mutations{}, forbidden_links{};
+#if defined(DINGOSDK_BODY_REACTIVATION_QUALIFICATION) && DINGOSDK_BODY_REACTIVATION_QUALIFICATION
+std::atomic<bool> reactivation_image_allowed{};
+std::atomic<unsigned> reactivation_image_queries{}, reactivation_allocations{}, reactivation_capsules{};
+#endif
 std::atomic<bool> multiplayer_active{}, inspect_initializer_lock{}, initializer_unlocked{};
 std::atomic<ULONGLONG> initializer_elapsed{};
 std::atomic<bool> motion_actor_enabled{}, motion_available{};
@@ -112,6 +116,12 @@ BoundedLocalSurfaceProbe probe_local_surface_geometry_bounded(const std::array<f
 }
 namespace supported_build {
 bool running_image_matches(std::uintptr_t) noexcept {
+#if defined(DINGOSDK_BODY_REACTIVATION_QUALIFICATION) && DINGOSDK_BODY_REACTIVATION_QUALIFICATION
+    if (test_facts::reactivation_image_allowed.load()) {
+        ++test_facts::reactivation_image_queries;
+        return true; // Counted image-identity leaf; provider prefix reads remain real.
+    }
+#endif
     ++test_facts::forbidden_links;
     if (test_facts::inspect_initializer_lock.load()) {
         const bool unlocked = TryAcquireSRWLockExclusive(&owned_bodies::service.lock) != 0;
@@ -124,7 +134,19 @@ bool running_image_matches(std::uintptr_t) noexcept {
 }
 }
 
+#if !defined(DINGOSDK_BODY_REACTIVATION_QUALIFICATION) || !DINGOSDK_BODY_REACTIVATION_QUALIFICATION
+// These names conflict at compile time if an OFF translation unit exposes the
+// diagnostic entry points. They are data sentinels, never executable routes.
+namespace dingosdk::owned_bodies {
+inline constexpr bool begin_body_reactivation_probe=false;
+inline constexpr bool poll_body_reactivation_probe=false;
+inline constexpr bool revoke_body_reactivation_probe=false;
+}
+#endif
 namespace dingosdk::owned_bodies::source_test {
+#if defined(DINGOSDK_BODY_REACTIVATION_QUALIFICATION) && DINGOSDK_BODY_REACTIVATION_QUALIFICATION
+void reset_reactivation_source_fixture();
+#endif
 unsigned checks{}, cases{};
 void check(bool value, const char* why) {
     ++checks;
@@ -218,8 +240,16 @@ void forbidden_scalar(NativeHandle*, float) { ++test_facts::mutations; }
 void forbidden_touch(NativeHandle*) { ++test_facts::mutations; }
 void forbidden_mask(NativeHandle*, const std::uint32_t*) { ++test_facts::mutations; }
 void forbidden_owner(NativeHandle*, const NativeHandle*) { ++test_facts::mutations; }
-NativeHandle* forbidden_allocate(std::uintptr_t, NativeHandle*) { ++test_facts::mutations; return nullptr; }
+NativeHandle* forbidden_allocate(std::uintptr_t, NativeHandle*) {
+#if defined(DINGOSDK_BODY_REACTIVATION_QUALIFICATION) && DINGOSDK_BODY_REACTIVATION_QUALIFICATION
+    ++test_facts::reactivation_allocations;
+#endif
+    ++test_facts::mutations; return nullptr;
+}
 NativeHandle* forbidden_capsule(std::uintptr_t, NativeHandle*, const NativeHandle*, const float*, const float*, float) {
+#if defined(DINGOSDK_BODY_REACTIVATION_QUALIFICATION) && DINGOSDK_BODY_REACTIVATION_QUALIFICATION
+    ++test_facts::reactivation_capsules;
+#endif
     ++test_facts::mutations; return nullptr;
 }
 
@@ -295,6 +325,9 @@ public:
         InitializeSRWLock(&service.lock); InitializeSRWLock(&clock_feed.lock);
         service.slots = {}; service.api = {}; service.thread = GetCurrentThreadId();
         service.owner_close_uncertain.store(false, std::memory_order_relaxed); // isolate constructed process cases
+#if defined(DINGOSDK_BODY_REACTIVATION_QUALIFICATION) && DINGOSDK_BODY_REACTIVATION_QUALIFICATION
+        reset_reactivation_source_fixture();
+#endif
         service.base = base; service.client = client; service.world = world; service.state = state;
         service.context = context; service.generation = handle.generation; service.world_generation = 23;
         service.eligible = true; service.tick_at = test_clock::now; service.hooked = true;
@@ -1517,6 +1550,7 @@ void motion_record_arrives_during_client_poll() {
 
 #include "body_prepare_source_fixture.inc"
 #include "owned_body_cleanup_source_fixture.inc"
+#include "body_reactivation_probe_source_fixture.inc"
 
 template<class F> void run(const char* name, F function, unsigned expected_links=0) {
     function();
@@ -1530,6 +1564,30 @@ template<class F> void run(const char* name, F function, unsigned expected_links
 int main() {
     using namespace dingosdk::owned_bodies::source_test;
     try {
+#if defined(DINGOSDK_BODY_REACTIVATION_QUALIFICATION) && DINGOSDK_BODY_REACTIVATION_QUALIFICATION
+        run("reactivation_begin_actual_no_hold_retirement",reactivation_begin_retires_without_a_follow_hold);
+        run("reactivation_one_cycle_explicit_retained_repark",reactivation_one_cycle_explicitly_reparks_retained_identity);
+        run("reactivation_all_receipt_debt_preserved",reactivation_receipt_debt_and_pending_states_are_preserved);
+        run("reactivation_never_held_witness",reactivation_actual_dependency_permanently_revokes_never_held_witness);
+        run("reactivation_admission_identity_configuration_clock",reactivation_admission_rejects_identity_allocation_configuration_and_clock_faults);
+        run("reactivation_owner_thread_lock_sequence",reactivation_admission_owner_thread_lock_and_sequence_fences);
+        run("reactivation_each_setter_failure_cleanup",reactivation_setter_faults_preserve_first_failure_and_cleanup_duty);
+        run("reactivation_void_setter_exact_readback",reactivation_silent_setter_refusal_requires_exact_readback);
+        run("reactivation_setter_identity_qualification_interleavings",reactivation_each_activation_setter_rechecks_identity_and_qualification);
+        run("reactivation_later_epoch_nonadvancing_poll",reactivation_later_epoch_and_copied_poll_do_not_advance_early);
+        run("reactivation_readiness_exit_cleanup_deadlines",reactivation_readiness_early_returns_still_expire_cleanup_metadata);
+        run("reactivation_owner_close_keeps_cleanup",reactivation_owner_close_keeps_cleanup_and_old_result_private);
+        run("reactivation_deadline_qualification_revocation",reactivation_deadline_and_qualification_revocation_stop_activation);
+        run("reactivation_closing_readback_deadline_equality",reactivation_final_readback_deadline_is_a_closing_fence);
+        run("reactivation_dynamic_observation_exact_native_facts",reactivation_dynamic_observation_rejects_changed_native_facts);
+        run("reactivation_closing_admission_interleavings",reactivation_closing_admission_revalidates_unlocked_capture);
+        run("reactivation_second_shape_failure_index",reactivation_second_shape_mask_failure_reports_exact_index);
+        run("reactivation_write_guard_closing_age_boundary",reactivation_write_guard_samples_age_after_closing_clock);
+        run("reactivation_slow_qualification_same_tick_cleanup",reactivation_slow_qualification_closes_cleanup_in_same_tick);
+        run("reactivation_slow_park_setter_stops_later_writes",reactivation_slow_park_setter_stops_following_writes_and_closes_cleanup);
+#else
+        run("reactivation_default_off_provider_absent",reactivation_default_off_has_no_executable_provider);
+#endif
         run("park_angular_xyz_zero_complete_observation",park_angular_xyz_zero_accepts_only_complete_observation);
         run("park_angular_xyz_nonzero_invalid_fourth",park_angular_xyz_nonzero_and_invalid_fourth_refuse);
         run("park_angular_xyz_fourth_stability_headers",park_angular_xyz_zero_keeps_fourth_stability_and_headers);
@@ -1583,6 +1641,9 @@ int main() {
         run("motion_clock_packet_identity_expiry_and_cap",motion_clock_packet_identity_expiry_and_cap);
         run("motion_try_lock_cold_setup_and_stale_routes",motion_try_lock_cold_setup_and_stale_routes);
         run("motion_record_arrives_during_client_poll",motion_record_arrives_during_client_poll);
+#if defined(DINGOSDK_BODY_REACTIVATION_QUALIFICATION) && DINGOSDK_BODY_REACTIVATION_QUALIFICATION
+        run("reactivation_slow_setup_exit_cleanup_deadline",reactivation_slow_initializer_exit_accounts_cleanup_deadline,1);
+#endif
         std::cout << cases << " actual-Service cases, " << checks << " checks passed; native mutations "
                   << test_facts::mutations.load() << '\n';
         return 0;

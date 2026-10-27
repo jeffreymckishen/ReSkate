@@ -27,6 +27,9 @@
 #include "Extension/Customization/board_material.h"
 #include "Engine/Vfs/mod_catalog.h"
 #include "Engine/Core/Log/logging.h"
+#if defined(DINGOSDK_BODY_REACTIVATION_QUALIFICATION) && DINGOSDK_BODY_REACTIVATION_QUALIFICATION
+#include "Engine/Core/Platform/user_data_paths.h"
+#endif
 #include <mutex>
 #include "Extension/Assets/live_mods.h"
 #include "Extension/Skater/game_speed.h"
@@ -173,14 +176,96 @@ std::filesystem::path game_folder() {
     return std::filesystem::path(executable.data()).parent_path();
 }
 
+#if defined(DINGOSDK_BODY_REACTIVATION_QUALIFICATION) && DINGOSDK_BODY_REACTIVATION_QUALIFICATION
+struct ReactivationLaunch {
+    body_reactivation_probe::LaunchArmValues values;
+    // Compare the exact supplied strings too: canonical aliases cannot conceal
+    // an observed edit to the arm after startup.
+    std::array<std::wstring, 5> environment{};
+};
+std::string reactivation_token(std::wstring_view value) {
+    if (value.empty() || value.size() > 128) return {};
+    std::string out;
+    out.reserve(value.size());
+    for (const wchar_t c : value) {
+        if (c < 0x21 || c > 0x7e) return {};
+        out.push_back(static_cast<char>(c));
+    }
+    return out;
+}
+ReactivationLaunch reactivation_launch() noexcept {
+    struct PreserveError { DWORD value{GetLastError()}; ~PreserveError() { SetLastError(value); } } error;
+    ReactivationLaunch out;
+    try {
+        constexpr std::array names{L"RESKATE_BODY_REACTIVATION_QUALIFY", L"RESKATE_BODY_REACTIVATION_ROOT",
+            L"RESKATE_BODY_REACTIVATION_PLUGIN_ROOT", L"RESKATE_BODY_REACTIVATION_PLUGIN_ID",
+            L"RESKATE_BODY_REACTIVATION_RUN_ID"};
+        for (std::size_t i = 0; i < names.size(); ++i) {
+            std::array<wchar_t, 1025> value{};
+            const auto size = GetEnvironmentVariableW(names[i], value.data(), static_cast<DWORD>(value.size()));
+            if (!size || size >= value.size()) return out;
+            out.environment[i].assign(value.data(), size);
+        }
+        if (out.environment[0] != L"1") return out;
+        const auto root = user_data::validate_override(out.environment[1]);
+        const auto selected = user_data::override_root();
+        if (!selected || *selected != root || root.native() != out.environment[1]) return out;
+        const std::filesystem::path supplied(out.environment[2]);
+        if (!supplied.is_absolute()) return out;
+        std::error_code issue;
+        const auto package = std::filesystem::weakly_canonical(supplied, issue);
+        if (issue || package.empty() || package.native() != out.environment[2] ||
+            !std::filesystem::is_directory(package, issue) || issue) return out;
+        out.values.plugin_id = reactivation_token(out.environment[3]);
+        out.values.run_id = reactivation_token(out.environment[4]);
+        out.values.profile_root = root; out.values.plugin_root = package;
+        out.values.opted_in = true;
+        out.values.isolation_current = user_data::runtime_development_selected({}, root.native());
+    } catch (...) {
+        out.values = {};
+    }
+    return out;
+}
+#endif
+
 class RealGame final : public Game {
 public:
-    explicit RealGame(std::uintptr_t base) : base_(base) {}
+    explicit RealGame(std::uintptr_t base) : base_(base) {
+#if defined(DINGOSDK_BODY_REACTIVATION_QUALIFICATION) && DINGOSDK_BODY_REACTIVATION_QUALIFICATION
+        reactivation_instance_ = this;
+#endif
+    }
     std::string body_prepare() override { return owned_bodies::prepare(); }
     std::string body_create(std::uint64_t owner, const owned_body::Definition& d, owned_body::Handle& h) override { return owned_bodies::create(owner, d, h); }
     std::string body_read(std::uint64_t owner, const owned_body::Handle& h, owned_body::Sample& s) override { return owned_bodies::read(owner, h, s); }
     std::string body_begin_sync_probe(std::uint64_t owner, const owned_body::Handle& h, std::uint64_t& sequence) override { return owned_bodies::begin_sync_probe(owner, h, sequence); }
     std::string body_poll_sync_probe(std::uint64_t owner, const owned_body::Handle& h, std::uint64_t sequence, body_sync_probe::Result& out) override { return owned_bodies::poll_sync_probe(owner, h, sequence, out); }
+#if defined(DINGOSDK_BODY_REACTIVATION_QUALIFICATION) && DINGOSDK_BODY_REACTIVATION_QUALIFICATION
+    std::string begin_body_reactivation_probe(std::uint64_t owner, std::string_view plugin_id,
+        const std::filesystem::path& plugin_directory, const owned_body::Handle& h, std::uint64_t& sequence) override {
+        sequence = 0;
+        const auto current = reactivation_launch();
+        std::error_code issue;
+        const auto package = std::filesystem::weakly_canonical(plugin_directory, issue);
+        {
+            std::lock_guard lock(reactivation_lock_);
+            if (current.environment != reactivation_launch_.environment) reactivation_arm_.revoke();
+            if (!reactivation_arm_.revalidate(current.values))
+                return "body reactivation qualification launch arm is unavailable";
+            if (issue || package.empty()) return "body reactivation qualification package unavailable";
+            // Consume before World admission. A matching failed attempt cannot
+            // retry or transfer the frozen run to a replacement VM.
+            if (!reactivation_arm_.begin(current.values, owner, plugin_id, package))
+                return "body reactivation qualification is not armed for this plugin instance";
+        }
+        return owned_bodies::begin_body_reactivation_probe(owner, h, sequence, reactivation_current);
+    }
+    std::string poll_body_reactivation_probe(std::uint64_t owner, const owned_body::Handle& h,
+        std::uint64_t sequence, body_reactivation_probe::Result& out) override {
+        // World owns the durable result and finalization even after revocation.
+        return owned_bodies::poll_body_reactivation_probe(owner, h, sequence, out);
+    }
+#endif
     std::string body_submit(std::uint64_t owner, const owned_body::Handle& h, const owned_body::Command& c, std::uint64_t& sequence) override { return owned_bodies::submit(owner, h, c, sequence); }
     std::string body_receipt(std::uint64_t owner, const owned_body::Handle& h, std::uint64_t selected, owned_body::Receipt& r) override { return owned_bodies::receipt(owner, h, selected, r); }
     std::string body_acknowledge(std::uint64_t owner, const owned_body::Handle& h, std::uint64_t sequence) override { return owned_bodies::acknowledge(owner, h, sequence); }
@@ -189,6 +274,14 @@ public:
         return owned_bodies::probe_batch(owner, h, request, allowed);
     }
     void body_release_all(std::uint64_t owner) override {
+#if defined(DINGOSDK_BODY_REACTIVATION_QUALIFICATION) && DINGOSDK_BODY_REACTIVATION_QUALIFICATION
+        {
+            std::lock_guard lock(reactivation_lock_);
+            reactivation_arm_.close(owner);
+        }
+        // Revoke admission without cancelling the provider's retained cleanup.
+        owned_bodies::revoke_body_reactivation_probe(owner);
+#endif
         // Stop native follow admission before body cleanup can request release.
         // The retaining service owns unresolved duty after the VM disappears.
         body_follow_service::release_all(owner);
@@ -1889,6 +1982,24 @@ public:
     }
 
 private:
+#if defined(DINGOSDK_BODY_REACTIVATION_QUALIFICATION) && DINGOSDK_BODY_REACTIVATION_QUALIFICATION
+    // World invokes this only outside its lock. It observes configuration and
+    // exact owner metadata; it never calls World, Follow or a native setter.
+    static bool reactivation_current(std::uint64_t owner) noexcept {
+        auto* self = reactivation_instance_;
+        if (!self) return false;
+        try {
+            const auto current = reactivation_launch();
+            std::lock_guard lock(self->reactivation_lock_);
+            if (current.environment != self->reactivation_launch_.environment) self->reactivation_arm_.revoke();
+            return self->reactivation_arm_.current(current.values, owner);
+        } catch (...) { return false; }
+    }
+    inline static RealGame* reactivation_instance_{};
+    const ReactivationLaunch reactivation_launch_{reactivation_launch()};
+    body_reactivation_probe::FrozenArm reactivation_arm_{reactivation_launch_.values};
+    std::mutex reactivation_lock_;
+#endif
     void publish_replacements() {
         std::vector<skater_animation::Replacement> list;
         for (const auto& [key, value] : replacements_) list.push_back(value.second);

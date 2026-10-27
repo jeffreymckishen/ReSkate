@@ -95,6 +95,21 @@ The ride-control suite additionally stages `ride_fixture` with
 `ride` only inside the owned test copy. Exact-manifest regression checks cover
 these four names and refuse each if planted in the source package.
 
+The combined hop/ride suites additionally use these four private fixtures, all with stage `hop_ride`:
+
+| Fixture suffix | Synthetic caps |
+| --- | --- |
+| `hop_ride_fixture` | `{force=6000,speed=3,torque=2000,vertical_speed=6}` |
+| `hop_ride_uncapped_fixture` | `nil` |
+| `hop_ride_low_force_fixture` | `{force=100,speed=3,torque=2000,vertical_speed=6}` |
+| `hop_ride_low_torque_fixture` | `{force=6000,speed=3,torque=35,vertical_speed=6}` |
+
+The full names still begin with `force_stage_`. Their exact-byte, lexical manifest, rerun,
+planted-source refusal and dropped-module checks use the existing `force-stage-manifest`
+regression. They leave the shipped stage and caps unchanged. The existing fixture-routing
+pattern covers direct references to these names; the suite glob registers the new `*_tests.lua`
+files on configure. These constructed limits do not establish native force admission or handling.
+
 When Core is present, the copy also includes `bike_runtime_core_mounted_pose_fixture.lua`.
 It replaces exactly one `MountedPose=require("./mounted_pose")` with
 `MountedPose=require("./mounted_pose_qualified_fixture")`; every Core literal, the Ride binding,
@@ -162,7 +177,7 @@ clears each registered case's scratch folder first.
 
 - `stage_writes_category_manifest`: the Contact test copy changes only its one category literal,
   enters the exact manifest, survives an identical rerun and refuses malformed or planted fixtures.
-- `stage_writes_force_stage_manifest`: all six ForceStage copies preserve every other byte,
+- `stage_writes_force_stage_manifest`: all ForceStage copies preserve every other byte,
   including CRLF endings, and enter the exact owned-file manifest. It checks an identical rerun,
   removal when the source module is dropped, every reserved fixture name, and missing, repeated or
   nonbaseline literals against both absent destinations and earlier owned copies.

@@ -351,11 +351,34 @@ local ride,ride_binding,selected_source_frame,stop_ride,drain_ride,observe_ride
 local function finite(v) return type(v)=="number" and v==v and math.abs(v)<math.huge end
 local function short(v) return type(v)=="string" and v:gsub("[%c]"," "):sub(1,180) or "unavailable or malformed result" end
 local function reason(v) return type(v)=="string" and #v>0 and #v<=200 end
+-- Every call resolves its path afresh, so a replaced or removed function is
+-- seen at once. Only the split of each literal path is kept: about a hundred
+-- lookups a following tick each split their string again (S1 profile).
+local path_parts={}
 local function lookup(path)
+    local parts=path_parts[path]
+    if not parts then
+        parts={}
+        for part in path:gmatch("[^.]+") do parts[#parts+1]=part end
+        path_parts[path]=parts
+    end
     local value=R
-    for part in path:gmatch("[^.]+") do value=type(value)=="table" and value[part] or nil end
+    for i=1,#parts do value=type(value)=="table" and value[parts[i]] or nil end
     return type(value)=="function" and value or nil
 end
+-- The calls that only read what an owner check reads: the clock, the six
+-- readiness facts, the Follow receipt and Source's three lease reads (and the
+-- authorize call that makes them). Every other recorded call counts in
+-- effects, so a check can tell whether anything that could change those facts,
+-- that Follow or that lease has run since an earlier check read them.
+local guard_reads={["time.now"]=true,["input.focus"]=true,["input.allowed"]=true,["menu.game"]=true,
+    ["skater.get"]=true,["skater.telemetry"]=true,["level.current"]=true,["follow.read"]=true,
+    ["input.lease_read"]=true,["input.lease_state"]=true,["input.lease_capture_state"]=true,["source.authorize"]=true}
+local effects=0
+-- plain's record of deep-frozen tables it may share (see frozen_shape).
+local shapes=setmetatable({},{__mode="k"})
+local row_shapes={}
+for n=4,8 do row_shapes[n]=table.freeze({fields=n,depth=0}) end
 local function event(name, result)
     T.counts[name]=(T.counts[name] or 0)+1
     local row={call=name,at_ms=T.now,called=result[1]==true,returns=result[1] and result.n-1 or 0,
@@ -363,8 +386,22 @@ local function event(name, result)
     if type(result[2])=="boolean" then row.accepted=result[2] end
     if type(result[3])=="string" then row.reason=short(result[3]) end
     if not result[1] then row.error=short(result[2]) end
-    if #T.calls==64 then table.remove(T.calls,1);T.omitted_calls+=1 end
-    table.insert(T.calls,row)
+    -- A row is never changed once written. Frozen, the snapshot shares it
+    -- instead of copying the whole call history every tick.
+    table.freeze(row)
+    -- Its shape, so plain shares it without walking it: each field is a
+    -- boolean, a string of at most 180 bytes or a whole count by construction,
+    -- leaving the name's length and the clock to check.
+    local at=row.at_ms
+    if type(name)=="string" and #name<=1200 and (at==nil or finite(at)) then
+        shapes[row]=row_shapes[4+(at~=nil and 1 or 0)+(row.accepted~=nil and 1 or 0)
+            +(row.reason~=nil and 1 or 0)+(row.error~=nil and 1 or 0)]
+    end
+    local calls=T.calls
+    local n=#calls
+    if n==64 then table.remove(calls,1);T.omitted_calls+=1;n=63 end
+    calls[n+1]=row
+    if not guard_reads[name] then effects+=1 end
 end
 local function call(name, fn, ...)
     local result=table.pack(pcall(fn,...))
@@ -384,21 +421,75 @@ local function clock()
     T.now=value
     return value
 end
+-- A frozen table whose every nested table is frozen too, with no metatable
+-- anywhere, can never change. Once it has passed plain's own checks it is
+-- remembered with its field count and depth, and plain shares it instead of
+-- copying it: the same checks and limits, applied to a table that cannot
+-- differ from what was checked. Call rows, receipts, readiness facts and
+-- Ride's status are such tables, and copying them was most of a tick's
+-- snapshot (S1 profile). false marks a table that cannot be shared.
+local function frozen_shape(value)
+    local shape=shapes[value]
+    if shape~=nil then return shape end
+    shape=false
+    shapes[value]=false -- While it is walked: a table that contains itself is copied, never shared.
+    if table.isfrozen(value) and getmetatable(value)==nil then
+        local fields,depth=0,0
+        local ok=true
+        for k,v in pairs(value) do
+            fields+=1
+            if not (type(k)=="string" or type(k)=="number" and finite(k)) then ok=false;break end
+            local kind=type(v)
+            if kind=="number" then
+                if not finite(v) then ok=false;break end
+            elseif kind=="string" then
+                if #v>1200 then ok=false;break end
+            elseif kind=="table" then
+                local inner=frozen_shape(v)
+                if not inner then ok=false;break end
+                fields+=inner.fields
+                if inner.depth+1>depth then depth=inner.depth+1 end
+            elseif kind~="boolean" then ok=false;break end
+        end
+        if ok then shape={fields=fields,depth=depth} end
+    end
+    shapes[value]=shape
+    return shape
+end
 local function plain(value, depth, budget)
     local kind=type(value)
     if kind=="nil" or kind=="boolean" then return value end
     if kind=="number" then assert(finite(value),"nonfinite diagnostic");return value end
     if kind=="string" then assert(#value<=1200,"oversized diagnostic");return value end
     assert(kind=="table" and depth<8,"opaque or deep diagnostic refused")
+    local shape=frozen_shape(value)
+    if shape then
+        budget.n+=shape.fields;assert(budget.n<=3000,"diagnostic field limit")
+        assert(depth+shape.depth<8,"opaque or deep diagnostic refused")
+        return value
+    end
     local out={}
     for k,v in pairs(value) do
         budget.n+=1;assert(budget.n<=3000,"diagnostic field limit")
         assert(type(k)=="string" or type(k)=="number" and finite(k),"invalid diagnostic key")
-        out[k]=plain(v,depth+1,budget)
+        -- A scalar value gets plain's own checks here, without a call per field.
+        local inner=type(v)
+        if inner=="boolean" then out[k]=v
+        elseif inner=="number" then assert(finite(v),"nonfinite diagnostic");out[k]=v
+        elseif inner=="string" then assert(#v<=1200,"oversized diagnostic");out[k]=v
+        else out[k]=plain(v,depth+1,budget) end
     end
     return out
 end
 local function copied(value) return plain(value,0,{n=0}) end
+-- Freezes what copied returned: its own fresh tables, around any it shared.
+local function freeze_tree(value)
+    if type(value)=="table" and not table.isfrozen(value) then
+        for _,v in pairs(value) do freeze_tree(v) end
+        table.freeze(value)
+    end
+    return value
+end
 local function source_record(f,defer_copy)
     if type(f)~="table" then return nil end
     -- Opaque lease handles and private input epochs never enter the storage DTO.
@@ -407,8 +498,9 @@ local function source_record(f,defer_copy)
         sample=f.sample,lease_state=f.lease_state,capture_state=f.capture_state}
     -- snapshot immediately validates and detaches the whole DTO with copied;
     -- its source subtree need not be recursively copied twice. Stored step
-    -- records still take their own copy and never retain dependency state.
-    return defer_copy and record or copied(record)
+    -- records still take their own copy and never retain dependency state;
+    -- frozen, so each snapshot shares that copy instead of copying it again.
+    return defer_copy and record or freeze_tree(copied(record))
 end
 local function status_of(object)
     if not object then return nil end
@@ -628,6 +720,7 @@ local input_methods={"lease","lease_read","lease_renew","lease_state","lease_rel
     "lease_capture","lease_capture_state","lease_release_capture","lease_acknowledge_capture"}
 for _,method in ipairs(input_methods) do
     local name=method
+    local label="input."..name -- The ledger name and SDK path, built once.
     input_proxy[name]=function(...)
         if T.stop_latched and name=="lease" then return nil,"bike lifecycle cancelled before lease acquisition" end
         if T.stop_latched and name=="lease_renew" then return false,"bike lifecycle cancelled before lease renewal" end
@@ -639,7 +732,7 @@ for _,method in ipairs(input_methods) do
             if T.capture_attempted or T.stop_latched then latch_stop("second or cancelled capture attempt refused");return false,"one-shot capture only" end
             T.capture_attempted=true
         end
-        local r=call("input."..name,lookup("input."..name),...)
+        local r=call(label,lookup(label),...)
         -- Let Source classify known false versus unknown before outer cleanup.
         if name=="lease_capture" and not yes(r) then latch_stop("capture refusal, exception or malformed result") end
         if not r[1] then error("input "..name.." callback failed",0) end
@@ -650,10 +743,11 @@ local Identity,G,RideRuntime,ride_models
 local spawn_api={input=R.input,skater=R.skater,world={physics={}},entities={}}
 for _,method in ipairs({"create","read","release"}) do
     local name=method
+    local label,path="spawn.body."..name,"world.physics."..name
     spawn_api.world.physics[name]=function(...)
         if name~="release" and T.stop_latched then return nil,"bike lifecycle cancelled before spawn body operation" end
         if name=="release" and T.transferred then return false,"spawn no longer owns body release" end
-        local r=call("spawn.body."..name,lookup("world.physics."..name),...)
+        local r=call(label,lookup(path),...)
         if name=="create" and r[1] and r.n==3 and r[2]==nil
             and r[3]=="body_preallocation_unavailable" then
             T.preallocation_refused=true
@@ -668,6 +762,7 @@ for _,method in ipairs({"create","read","release"}) do
 end
 for _,method in ipairs({"bounds","set","status","remove"}) do
     local name=method
+    local label="entities."..name
     spawn_api.entities[name]=function(...)
         if name=="set" and T.stop_latched then return false,"bike lifecycle cancelled before visual publication" end
         local args=table.pack(...)
@@ -680,7 +775,7 @@ for _,method in ipairs({"bounds","set","status","remove"}) do
             -- actual native return arity separately and never retries a failure.
             return
         end
-        local r=call("entities."..name,lookup("entities."..name),...)
+        local r=call(label,lookup(label),...)
         if not r[1] then error("entity "..name.." callback failed",0) end
         return table.unpack(r,2,r.n)
     end
@@ -741,7 +836,13 @@ local function available()
     return type(vector)=="table" and type(vector.create)=="function","vector.create"
 end
 
-facts=function() return Admission.facts(call,lookup) end
+-- Frozen: a facts table is never changed after it is read, and the snapshot
+-- then shares it rather than copying it each tick.
+facts=function()
+    local f=Admission.facts(call,lookup)
+    if type(f)=="table" then table.freeze(f) end
+    return f
+end
 local function base_ready(f,stock)
     return f and f.focused and f.gameplay and (stock and f.upright_stock or f.upright_onfoot)
         and (not T.level or f.level==T.level) and (not T.wipeouts or f.wipeouts==T.wipeouts)
@@ -927,6 +1028,19 @@ drain_ride=function()
     local r=call("ride.drain",ride.drain,ride)
     if not r[1] or r.n~=2 or not remember_ride(r[2]) then T.ride_unknown=true end
 end
+-- An owner check runs before and after each contact batch and the submit
+-- (B9). The readiness facts and Source authorization that a passing check
+-- read are what the next check would read again, as long as only the reads in
+-- guard_reads have run since: those change none of them. Then the next check
+-- reuses them instead of making the same nine SDK reads. Only a contact
+-- batch's check may do that: in a following tick it is the check before the
+-- rider tripwire, which comes straight after the wheel batch's post-call
+-- check. The check before a force publication always reads afresh (see
+-- create_ride): Contact, the kernel and the packet run between it and the last
+-- passing check, and focus, the menu or the lease can change in that time.
+-- Every Lua-side test, both clock reads and the Follow read still run in every
+-- check.
+local guard_memo,guard_pending
 local function current_ride_owner(binding,epoch,read)
     local owner=binding.owner
     if not current(owner.generation) or ride_binding~=binding or not binding.observing
@@ -935,7 +1049,10 @@ local function current_ride_owner(binding,epoch,read)
         or not binding.sample or epoch~=binding.sample.epoch then return false end
     local now=clock()
     if not now or not current(owner.generation) or not lease_live(now) then return false end
-    local f=facts();T.facts=f
+    local memo=guard_memo
+    if not (memo and memo.binding==binding and memo.frame==selected_source_frame and memo.effects==effects) then memo=nil end
+    local read_from=effects
+    local f=memo and memo.facts or facts();T.facts=f
     if not current(owner.generation) or not closed_ready(f,false) then return false end
     -- A post-call owner check (read=false) keeps every Lua-side check but reuses
     -- this tick's receipt, so each guarded SDK call costs one Follow read (B9).
@@ -946,12 +1063,27 @@ local function current_ride_owner(binding,epoch,read)
     -- Source owns this fresh read-only lease/capture check. It does not publish
     -- another model input or native body sample. All earlier guard callbacks
     -- run first; a post-effect failure still retains the accepted sequence.
-    local authorization=call("source.authorize",source.authorize,source,selected_source_frame)
+    local authorization
+    if memo and memo.effects==effects then authorization=memo.authorization
+    else authorization=call("source.authorize",source.authorize,source,selected_source_frame) end
+    -- Kept only when nothing but reads ran from the facts to here; owner_check
+    -- adopts it only when this check passes.
+    guard_pending=effects==read_from and {binding=binding,frame=selected_source_frame,facts=f,
+        authorization=authorization,effects=effects} or nil
     now=clock() -- Include authorization time in the ride window and lease bound.
     return now~=nil and current(owner.generation) and T.body==owner.body and T.follow==owner.follow
         and T.input_current==true and same_selected(selected_source_frame,owner.source)
         and lease_live(now) and binding.observing and binding.sample and epoch==binding.sample.epoch
         and authorization[1] and authorization.n==2 and authorization[2]==true
+end
+local transport_labels={submit="ride.submit",receipt="ride.receipt",acknowledge="ride.acknowledge"}
+local transport_paths={submit="world.physics.submit",receipt="world.physics.receipt",acknowledge="world.physics.acknowledge"}
+local function owner_check(binding,epoch,read)
+    guard_pending=nil
+    local held=current_ride_owner(binding,epoch,read)
+    guard_memo=held and guard_pending or nil
+    guard_pending=nil
+    return held
 end
 local function create_ride(frame)
     if not RIDE_COMPOSITION_QUALIFIED or ride or T.ride_construct_attempted then return end
@@ -965,7 +1097,7 @@ local function create_ride(frame)
     ride_binding=binding -- Reserve before constructors/callbacks can reenter.
     local api={}
     local function guard(epoch)
-        if binding.inflight or binding.unknown or not current_ride_owner(binding,epoch) then
+        if binding.inflight or binding.unknown or not owner_check(binding,epoch) then
             stop_all("current Core Source/Follow/body/epoch force guard refused")
             return false
         end
@@ -976,13 +1108,17 @@ local function create_ride(frame)
         function(epoch,rays,query_options)
             return call("ride.probe_batch",lookup("world.physics.probe_batch"),owner.body,epoch,rays,query_options)
         end,
-        function(epoch) return current_ride_owner(binding,epoch,false) end,stop_all,ride_models.contact.CATEGORY_WHEEL_LANE_QUALIFIED)
-    local transport=BikeRuntime.force_transaction_adapter(Identity,binding,guard,
+        function(epoch) return owner_check(binding,epoch,false) end,stop_all,ride_models.contact.CATEGORY_WHEEL_LANE_QUALIFIED)
+    -- The check before a force publication always reads afresh: only a probe
+    -- batch's check may adopt the reads of the passing check just before it.
+    local function submit_guard(epoch) guard_memo=nil;return guard(epoch) end
+    local transport=BikeRuntime.force_transaction_adapter(Identity,binding,submit_guard,
         function() return binding.sample and binding.sample.serial end,
         function(operation,body,...)
-            return call("ride."..operation,lookup("world.physics."..operation),body,...)
+            return call(transport_labels[operation] or "ride."..operation,
+                lookup(transport_paths[operation] or "world.physics."..operation),body,...)
         end,
-        function(epoch) return current_ride_owner(binding,epoch,false) end,stop_all,
+        function(epoch) return owner_check(binding,epoch,false) end,stop_all,
         function() T.ride_unknown=true end)
     api.submit=transport.submit;api.receipt=transport.receipt;api.acknowledge=transport.acknowledge
     table.freeze(api)
@@ -1298,7 +1434,7 @@ local function tick(dt)
     -- Core's per-tick Follow counters reset with each Core step, which is not
     -- an SDK tick credential: the SDK's own quota stays authoritative.
     T.follow_reads_tick=0;T.lease_reads_tick=0;T.renewals_tick=0
-    selected_source_frame=nil
+    selected_source_frame=nil;guard_memo=nil
     if T.unloaded or T.phase=="blocked" then return end
     if not T.used and not T.gear_requested or T.phase=="done" and not T.gear_requested then
         -- No tick-end save runs from here, so a throttled snapshot would

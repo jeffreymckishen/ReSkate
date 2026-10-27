@@ -108,7 +108,9 @@ local function neutral_copy(value, pad)
     if type(value) ~= "boolean" or (value and pressed(pad)) or (not value and zero(pad)) then return false end
     return true, value
 end
-local function sample_copy(s, row)
+-- check_only (authorize): the same checks, answering with the checked row
+-- itself rather than a frozen copy, which authorize only reads and drops.
+local function sample_copy(s, row, check_only)
     if not observer(row) or not bound_matches(s, row) or type(row.epoch) ~= "userdata" or
         not Identity.is_nonzero_u64(row.observation_serial) or not Identity.is_nonzero_u64(row.observed_ms) or
         not integer(row.packet, 0, 4294967295) then return nil, "invalid source sample" end
@@ -116,22 +118,24 @@ local function sample_copy(s, row)
     if not pad then return nil, "invalid original pad" end
     local valid, neutral = neutral_copy(row.neutral, pad)
     if not valid then return nil, "invalid neutral fact" end
-    local result = copy_fields(row, sample_fields)
-    result.pad, result.neutral = pad, neutral
+    -- Compared with the fields the copy takes, before it is made.
     local previous = s.sample
     if previous then
-        local serial = Identity.compare(result.observation_serial, previous.observation_serial)
-        if serial < 0 or Identity.compare(result.observed_ms, previous.observed_ms) < 0 then
+        local serial = Identity.compare(row.observation_serial, previous.observation_serial)
+        if serial < 0 or Identity.compare(row.observed_ms, previous.observed_ms) < 0 then
             return nil, "source observation regressed"
         end
-        if serial == 0 and (result.observed_ms ~= previous.observed_ms or result.packet ~= previous.packet or
-            result.neutral ~= previous.neutral or not pad_equal(result.pad, previous.pad)) then
+        if serial == 0 and (row.observed_ms ~= previous.observed_ms or row.packet ~= previous.packet or
+            neutral ~= previous.neutral or not pad_equal(pad, previous.pad)) then
             return nil, "changed duplicate observation"
         end
     end
+    if check_only then return row end
+    local result = copy_fields(row, sample_fields)
+    result.pad, result.neutral = pad, neutral
     return table.freeze(result)
 end
-local function lease_copy(s, row)
+local function lease_copy(s, row, check_only)
     if not observer(row) or not bound_matches(s, row) or not lease_statuses[row.status] or
         not lease_reasons[row.reason] or type(row.terminal) ~= "boolean" or
         type(row.source_released) ~= "boolean" or type(row.capture_reserved) ~= "boolean" or
@@ -158,9 +162,10 @@ local function lease_copy(s, row)
         Identity.compare(row.last_observation, previous.last_observation) < 0 or
         Identity.compare(row.observed_ms, previous.observed_ms) < 0 or
         (previous.terminal and not terminal)) then return nil end
+    if check_only then return row end
     return table.freeze(copy_fields(row, lease_fields))
 end
-local function capture_copy(s, row)
+local function capture_copy(s, row, check_only)
     if type(row) ~= "table" or not bound_matches(s, row) or not capture_phases[row.phase] or
         not capture_reasons[row.reason] or row.transport ~= "xinput" or row.source_identity ~= "observed_stream" or
         row.physical_device_identity ~= "unobserved" or row.mode ~= "capture" or
@@ -191,6 +196,7 @@ local function capture_copy(s, row)
             Identity.compare(row.publications, previous.publications) < 0 or
             Identity.compare(row.neutral_releases, previous.neutral_releases) < 0 then return nil end
     end
+    if check_only then return row end
     return table.freeze(copy_fields(row, capture_fields))
 end
 local function frame(s, permitted, fresh)
@@ -355,17 +361,17 @@ function Source:authorize(selected)
         return false, why
     end
     local called, raw = invoke(s, "lease_read", s.handle)
-    local sample = called and current() and sample_copy(s, raw) or nil
+    local sample = called and current() and sample_copy(s, raw, true) or nil
     if not sample then return refuse("fresh selected input unavailable") end
     local state_called, lease_row = invoke(s, "lease_state", s.handle)
-    local lease = state_called and current() and lease_copy(s, lease_row) or nil
+    local lease = state_called and current() and lease_copy(s, lease_row, true) or nil
     if not lease or lease.status ~= "active" or lease.orphaned or lease.source_released
         or not lease.capture_reserved or Identity.compare(lease.last_observation, sample.observation_serial) < 0
         or Identity.compare(lease.observed_ms, sample.observed_ms) < 0 then
         return refuse("fresh selected lease authority unavailable")
     end
     local capture_called, capture_row = invoke(s, "lease_capture_state", s.handle)
-    local capture = capture_called and current() and capture_copy(s, capture_row) or nil
+    local capture = capture_called and current() and capture_copy(s, capture_row, true) or nil
     -- Publications may increase within this capture. A new generation means
     -- revoke/reopen, even if the same retained lease key is still readable.
     if not capture or capture.phase ~= "capturing" or capture.quarantined or not capture.report_debt

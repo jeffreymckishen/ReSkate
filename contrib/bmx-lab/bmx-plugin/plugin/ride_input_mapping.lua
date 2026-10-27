@@ -32,7 +32,9 @@ end
 local function copy(v)
     if type(v) ~= "table" then return v end
     local out = {}
-    for name, value in pairs(v) do out[name] = copy(value) end
+    for name, value in pairs(v) do
+        if type(value) == "table" then out[name] = copy(value) else out[name] = value end
+    end
     return out
 end
 local function equal(a, b)

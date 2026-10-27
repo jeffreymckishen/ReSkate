@@ -16,16 +16,51 @@ local METRIC_STOP_REASON_LIMIT, METRIC_STOP_KEY_BYTES = 8, 1024
 local function copy(value)
     if type(value) ~= "table" then return value end
     local result = {}
-    for key, child in pairs(value) do result[key] = copy(child) end
+    for key, child in pairs(value) do
+        if type(child) == "table" then result[key] = copy(child) else result[key] = child end
+    end
     return result
 end
+-- Tables frozen whole by freeze or detached: frozen, with no metatable, and
+-- every table inside them frozen whole too, so none of them can change.
+-- detached shares them instead of copying; a status, frame or staged input
+-- copied each step was most of Ride's own cost (S1 profile).
+local whole = setmetatable({}, {__mode="k"})
 local function freeze(value)
-    if type(value) ~= "table" then return value end
-    for _, child in pairs(value) do freeze(child) end
+    if type(value) ~= "table" or whole[value] then return value end
+    local all = getmetatable(value) == nil
+    for _, child in pairs(value) do
+        freeze(child)
+        if type(child) == "table" and not whole[child] then all = false end
+    end
     if not table.isfrozen(value) then table.freeze(value) end
+    if all then whole[value] = true end
     return value
 end
-local function detached(value) return freeze(copy(value)) end
+-- A table its maker froze all through, with no metatable anywhere, is marked
+-- whole as it is, without freezing or copying anything; otherwise nil.
+local function frozen_whole(value)
+    if whole[value] then return value end
+    if type(value) ~= "table" or not table.isfrozen(value) or getmetatable(value) ~= nil then return nil end
+    for _, child in pairs(value) do
+        if type(child) == "table" and not frozen_whole(child) then return nil end
+    end
+    whole[value] = true
+    return value
+end
+-- The same tables as freeze(copy(value)), except that what is already frozen
+-- whole is shared rather than copied.
+local function detached(value)
+    if type(value) ~= "table" then return value end
+    if whole[value] then return value end
+    local result = {}
+    for key, child in pairs(value) do
+        if type(child) == "table" then result[key] = detached(child) else result[key] = child end
+    end
+    table.freeze(result)
+    whole[result] = true
+    return result
+end
 local function detail(value) return string.sub(tostring(value or "unavailable"), 1, 180) end
 local function array(value)
     if typeof(value) ~= "vector" then return nil end
@@ -123,10 +158,13 @@ local function stage_input(s,frame,key)
     if first and not Identity.bounded_delta(key.observed_ms,first.sample.observed_ms,100) then
         return false,"selected input staging window exceeded"
     end
-    local selected=copy(key)
+    -- One detached copy of the key; the queued sample is that copy less its
+    -- handle and generation, sharing its frozen pad.
+    local staged=detached(key)
+    local selected=table.clone(staged)
     selected.lease_handle,selected.generation=nil,nil
     s.input_queue[#s.input_queue+1]=detached({input_ok=true,lease_handle=key.lease_handle,generation=key.generation,sample=selected})
-    s.staged_last=detached(key)
+    s.staged_last=staged
     s.input_staged+=1
     return true
 end
@@ -140,7 +178,9 @@ local function sample_copy(raw)
         or not M.vec(body.angular_velocity,40) then return nil end
     local sample = {epoch=raw.epoch,serial=raw.serial,time=raw.time,seconds=raw.seconds,position=raw.position,
         rotation=copy(raw.rotation),velocity=raw.velocity,angular_velocity=raw.angular_velocity,inertia=raw.inertia,mass=raw.mass}
-    return detached(sample), detached(body)
+    -- Both tables and everything in them were made here: frozen in place,
+    -- they are what detaching them would copy.
+    return freeze(sample), freeze(body)
 end
 local function receipt_sample_copy(raw)
     -- Cleanup checks native record shape/correlation, not drive policy limits.
@@ -234,7 +274,7 @@ local function metric_ring(m,name,limit,row)
     m[stem.."_total"]+=1
     local ring=m[name]
     if #ring==limit then table.remove(ring,1);m[stem.."_omitted"]+=1 end
-    ring[#ring+1]=row
+    ring[#ring+1]=freeze(row) -- Never changed once kept; status shares it.
 end
 local function metrics_finish_step(s)
     local step=s.metrics_step
@@ -385,10 +425,10 @@ local function poll_pending(s)
                         local kind=delay==1 and "applied_delay_one" or "applied_delay_other"
                         s.metrics[kind]+=1
                     end
-                    s.last_receipt={outcome=row.outcome,sequence=row.sequence,requested_serial=row.requested_serial,
+                    s.last_receipt=freeze({outcome=row.outcome,sequence=row.sequence,requested_serial=row.requested_serial,
                         produced_serial=row.produced_serial,force_attempted=row.force_attempted,torque_attempted=row.torque_attempted,
                         retained=row.retained,quarantined=row.quarantined,successor_available=row.successor~=nil,
-                        cleanup_disposition=row.cleanup_disposition}
+                        cleanup_disposition=row.cleanup_disposition})
                     if row.quarantined then propose("force body retained or quarantined",60)
                     elseif row.retained then propose("force body retained or quarantined",10) end
                     if p.parked then propose("force body parked without successor",40) end
@@ -559,7 +599,9 @@ local function wheel_contacts(s,frame,decoded,centers,geometry)
             grounded=grounded or Forces.eligible_support(frame.body,samples[i],.005,.10)
         else return nil,"measured wheel surface unavailable" end
     end
-    return {samples=samples,grounded=grounded,decoded=copy(decoded),
+    -- Contact.decode returns a new table frozen all through: kept as it is,
+    -- where detaching copied it. Anything else is detached as before.
+    return {samples=samples,grounded=grounded,decoded=frozen_whole(decoded) or detached(decoded),
         support={known=true,grounded_known=true,grounded=grounded,epoch=frame.physics_epoch,
             provenance="measured_rays_authored_wheel_geometry",native_collision_contact=false,
             actor_lane=decoded.query.actor_lane,
@@ -630,7 +672,10 @@ local function observe(s,source_frame,raw,context)
     if s.bound_source and not same_source(key,s.bound_source) then stop(s,"selected source identity changed");return end
     local staged,why=stage_input(s,source_frame,key)
     if not staged then stop(s,why);return end
-    s.bound_source=detached(key)
+    -- stage_input has just made staged_last a detached copy of this key, or
+    -- found it field for field equal to it (same_input); either way it is the
+    -- detached key.
+    s.bound_source=s.staged_last
     -- Stage even on duplicate bodies and while a command receipt is pending.
     local sample,body=sample_copy(raw)
     if not sample then stop(s,"native body sample invalid");return end
@@ -657,7 +702,10 @@ local function observe(s,source_frame,raw,context)
     -- release ordering without stepping Trick twice at one native epoch. Bind
     -- the frame to that real observation, never restamp it as the latest poll.
     local input_frame=s.input_queue[1]
+    -- A key source_key makes is new and is never changed, so it is frozen in
+    -- place: the frame and model_source below then share it uncopied.
     local model_source=input_frame and source_key(input_frame) or s.model_source
+    if input_frame and model_source then freeze(model_source) end
     if not model_source then stop(s,"no staged model input observation");return end
     local frame=detached({valid=true,fresh=true,body_handle=s.body,physics_epoch=sample.epoch,
         serial=sample.serial,time=sample.time,seconds=sample.seconds,body=body,sample=sample,source=model_source,
@@ -686,8 +734,11 @@ local function observe(s,source_frame,raw,context)
         front_hit=contact.samples[1].contact.status=="hit",rear_hit=contact.samples[2].contact.status=="hit",
         front_separation=contact.samples[1].separation,rear_separation=contact.samples[2].separation,
         grounded=contact.grounded}
-    local enriched=copy(frame)
-    enriched.contact,enriched.support=copy(contact),copy(contact.support)
+    -- The frame is frozen whole, so a shallow copy shares everything in it.
+    local enriched=table.clone(frame)
+    -- contact is complete here and only read from now on (the fold and the
+    -- kernel copy what they change), so it is frozen in place.
+    enriched.contact,enriched.support=freeze(contact),detached(contact.support)
     frame=freeze(enriched)
     if input_frame then
         table.remove(s.input_queue,1)
@@ -800,8 +851,8 @@ local function observe(s,source_frame,raw,context)
             p.history_unknown=true;s.unknown=true;stop(s,"accepted force history adoption unavailable");return
         end
         s.wheels=wheels
-        s.model_history={kind="predictive_accepted",serial=p.serial,sequence=sequence,
-            reason="exact_force_admission",native_wheel_state_known=false}
+        s.model_history=freeze({kind="predictive_accepted",serial=p.serial,sequence=sequence,
+            reason="exact_force_admission",native_wheel_state_known=false})
         if not submitted.current or not adopted.current or s.stopped then stop(s,"stopped during force admission") end
     elseif submitted[1] and submitted.n==3 and submitted[2]==false and type(submitted[3])=="string" then
         table.remove(s.pending,#s.pending)

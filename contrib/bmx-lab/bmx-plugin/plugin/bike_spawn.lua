@@ -35,14 +35,18 @@ local function same(a,b)
     for i=1,4 do if not equal_number(a.rotation[i],b.rotation[i]) then return false end end
     return true
 end
-local function valid(sample)
+-- The sample's part matrices, or nil when it is not a valid measured body. A
+-- caller that also places the parts uses these, rather than building all
+-- eight matrices a second time from the same sample.
+local function valid_matrices(sample)
     if type(sample)~="table" or typeof(sample.epoch)~="userdata" or not canonical(sample.serial)
         or not M.finite(sample.time) or sample.time<0 or not M.finite(sample.seconds)
         or math.abs(sample.seconds-1/60)>1e-7 or not M.finite(sample.mass) or math.abs(sample.mass-G.mass)>.001
-        or not vec(sample.position) or not vec(sample.velocity) or not vec(sample.angular_velocity) or not vec(sample.inertia) then return false end
-    for i,axis in {"x","y","z"} do if math.abs(sample.inertia[axis]-G.inertia[i])>.001 then return false end end
-    return Visual.from_sample(sample)~=nil
+        or not vec(sample.position) or not vec(sample.velocity) or not vec(sample.angular_velocity) or not vec(sample.inertia) then return nil end
+    for i,axis in {"x","y","z"} do if math.abs(sample.inertia[axis]-G.inertia[i])>.001 then return nil end end
+    return (Visual.from_sample(sample))
 end
+local function valid(sample) return valid_matrices(sample)~=nil end
 local function floor_root(api,root,actor_y)
     local world=type(api.world)=="table" and api.world or nil
     if not world or type(world.raycast)~="function" then return nil,"floor ray API unavailable" end
@@ -155,7 +159,8 @@ function Runtime:_follow_visual(sample,now_ms)
     end
     if not M.finite(now_ms) or now_ms<0 or now_ms>9007199254740991
         or self.follow_wall and now_ms<self.follow_wall then return false,"Invalid or reversed follow visual wall clock" end
-    if not valid(sample) then return false,"Invalid measured bike body for follow visuals" end
+    local measured=valid_matrices(sample)
+    if not measured then return false,"Invalid measured bike body for follow visuals" end
     local order=compare(sample.serial,self.sample.serial)
     if order<0 or sample.time<self.sample.time or (order>0 and sample.time<=self.sample.time)
         or (order==0 and not same(sample,self.sample)) then
@@ -170,7 +175,7 @@ function Runtime:_follow_visual(sample,now_ms)
         self.follow_wall,self.follow_observed_at=now_ms,observed
         return true
     end
-    local matrices,why=Visual.from_sample(sample)
+    local matrices,why=measured,nil
     if not matrices then return false,why end
     local placed,reason=self:_place(matrices)
     if not placed then return false,reason end
@@ -316,7 +321,8 @@ function Runtime:_update(dt)
         if self.wall-self.phase_wall>5000 then self:stop("five-second unmounted spawn trial completed") return end
         local sample,why=self.api.world.physics.read(self.body)
         if not sample then self:stop("body observation unavailable: "..tostring(why)) return end
-        if not valid(sample) then self:stop("invalid measured bike body") return end
+        local measured=valid_matrices(sample)
+        if not measured then self:stop("invalid measured bike body") return end
         if self.sample then
             local order=compare(sample.serial,self.sample.serial)
             if order<0 or sample.time<self.sample.time or (order>0 and sample.time<=self.sample.time)
@@ -329,7 +335,7 @@ function Runtime:_update(dt)
         -- A bounded unmounted test; no controller is allowed to chase a lost body.
         local delta=M.sub(xyz(sample.position),M.add(self.root,M.turn(self.rotation,G.com)))
         if M.length(delta)>ENVELOPE_M then self:stop("body left the "..ENVELOPE_M.." m spawn envelope") return end
-        local placed,why=self:_place(assert(Visual.from_sample(sample)))
+        local placed,why=self:_place(assert(measured))
         if not placed then self:stop(why) return end
         self.sample=sample self.read_wall=self.wall self.updates+=1
         self.phase="spawned" self.detail="Lua bike parts follow the measured chassis. Rider and controls remain untouched."

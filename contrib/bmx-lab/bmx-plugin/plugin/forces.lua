@@ -117,7 +117,11 @@ function Controller:invalidate_continuity()
     self.pump=Pump.new() self.pump:reset()
 end
 function Controller:clone()
-    local out=setmetatable(M.copy(self),Controller) setmetatable(out.pump,getmetatable(self.pump)) return out
+    -- Tuning is fixed when the controller is made and nothing writes to it, so
+    -- a clone shares it; every other field is copied as before. Two clones a
+    -- step each copied the whole tuning table (S1 profile).
+    local out={} for k,x in self do out[k]=k=="tuning" and x or M.copy(x) end
+    setmetatable(out,Controller) setmetatable(out.pump,getmetatable(self.pump)) return out
 end
 function Controller:consumed_hop_event_id() return self.last_hop_event end
 function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)

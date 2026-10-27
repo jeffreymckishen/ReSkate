@@ -21,7 +21,8 @@ end
 local function steering(p,angle)
     return M.add(M.around(M.sub(p,G.steering_pivot),M.unit(G.steering_axis),angle),G.steering_pivot)
 end
-local function local_point(p,part,pose,q)
+-- A part-local point after the pose and before the body rotation q.
+local function posed_point(p,part,pose)
     if part==3 then p=rotate(p,1,pose.rear_wheel_phase,G.rear_axle) end
     if part==4 then p=rotate(p,1,pose.front_wheel_phase,G.front_axle) end
     if part==5 then p=rotate(p,1,pose.crank_phase,G.bottom_bracket) end
@@ -35,25 +36,48 @@ local function local_point(p,part,pose,q)
     else p=steering(p,pose.tailwhip) end
     p=rotate(p,1,pose.movement_bike_pitch,G.steering_pivot)
     p=rotate(p,3,pose.movement_bike_roll,G.steering_pivot)
-    return M.turn(q,p)
+    return p
 end
+local function local_point(p,part,pose,q) return M.turn(q,posed_point(p,part,pose)) end
 function V.neutral()
     return {steer=0,front_wheel_phase=0,rear_wheel_phase=0,crank_phase=0,
         barspin=0,tailwhip=0,movement_bike_pitch=0,movement_bike_roll=0}
+end
+-- Without a pose (the measured follow), everything before the body rotation is
+-- the same each time: the neutral pose's posed origin and unit axes of every
+-- part, computed once by the same arithmetic (G is fixed module data). Only
+-- the rotation by the measured q remains per sample, so the matrices are the
+-- same numbers without the 32 posed points a sample (S1 profile).
+local neutral_points
+local function neutral_posed()
+    if not neutral_points then
+        local pose,points=V.neutral(),{}
+        for part=1,8 do
+            local row={posed_point({0,0,0},part,pose)}
+            for axis=1,3 do
+                local basis={0,0,0} basis[axis]=1
+                row[axis+1]=posed_point(basis,part,pose)
+            end
+            points[part]=row
+        end
+        neutral_points=points
+    end
+    return neutral_points
 end
 function V.matrices(root,orientation,pose)
     if not M.vec(root,999990) then return nil,"invalid visual root" end
     local q=rotation(orientation)
     if not q then return nil,"invalid measured rotation" end
+    local posed=pose==nil and neutral_posed() or nil
     pose=pose or V.neutral()
     for key in V.neutral() do if not M.finite(pose[key]) then return nil,"invalid articulation" end end
     local out={}
     for part=1,8 do
-        local origin=local_point({0,0,0},part,pose,q)
+        local origin=posed and M.turn(q,posed[part][1]) or local_point({0,0,0},part,pose,q)
         local m=table.create(16,0) m[16]=1
         for axis=1,3 do
             local basis={0,0,0} basis[axis]=1
-            basis=M.sub(local_point(basis,part,pose,q),origin)
+            basis=M.sub(posed and M.turn(q,posed[part][axis+1]) or local_point(basis,part,pose,q),origin)
             for row=1,3 do m[(axis-1)*4+row]=basis[row] end
         end
         local at=M.add(root,origin)

@@ -4,10 +4,20 @@ local Identity = {}
 local MAX_U64 = "18446744073709551615"
 local MAX_SAFE = 9007199254740991
 
+-- Whether a string is a canonical uint64 depends on the string alone. Serials
+-- and counters are compared many times a tick (each compare checks both), so
+-- the strings already judged are remembered; the set is emptied when it grows
+-- past a few hundred, as each tick brings a few new serials.
+local judged, judged_count = {}, 0
 function Identity.is_u64(value)
     if type(value) ~= "string" or #value == 0 or #value > 20 then return false end
     if value == "0" then return true end
-    return value:match("^[1-9][0-9]*$") ~= nil and (#value < 20 or value <= MAX_U64)
+    local known = judged[value]
+    if known ~= nil then return known end
+    known = value:match("^[1-9][0-9]*$") ~= nil and (#value < 20 or value <= MAX_U64)
+    if judged_count >= 512 then table.clear(judged); judged_count = 0 end
+    judged[value], judged_count = known, judged_count + 1
+    return known
 end
 
 Identity.valid_u64 = Identity.is_u64

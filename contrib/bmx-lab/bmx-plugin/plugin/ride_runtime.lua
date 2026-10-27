@@ -11,6 +11,8 @@ local Ride, Object = {}, {}
 local states = setmetatable({}, {__mode="k"})
 local MAX_SAFE = 9007199254740991
 local MAX_PENDING = 3
+local TRICK_LOG_LIMIT = 8
+local next_log_generation = 0
 -- The rider tripwire's cadence in measured epochs: every second one.
 local TRIPWIRE_EVERY = 2
 local METRIC_SAMPLE_LIMIT, METRIC_TRANSITION_LIMIT = 24, 16
@@ -410,6 +412,77 @@ local function count_stop(s,text)
         s.stop_key_bytes=(s.stop_key_bytes or 0)+bytes
     else s.metrics.stop_counts_overflow+=1 end
 end
+local function append_trick_log(s,row)
+    if s.trick_log_n==MAX_SAFE then s.trick_log_exhausted=true;return end
+    s.trick_log_n+=1;row.n=s.trick_log_n
+    if #s.trick_log_rows==TRICK_LOG_LIMIT then table.remove(s.trick_log_rows,1) end
+    table.insert(s.trick_log_rows,freeze(row))
+end
+local event_flags={"took_off","landed","combo_landed","failed","canceled","bar_caught","tail_caught","movement_caught"}
+local event_counts={"barspins","tailwhips","spin_half_turns","units","movements","front_flips","back_flips","barrel_rolls"}
+local air_numbers={"air_seconds","spin_radians","flip_radians","roll_radians"}
+local function plain(v) return type(v)=="table" and getmetatable(v)==nil end
+local function projected_trick_event(e)
+    if e==nil then return nil end
+    if not plain(e) then return nil,"invalid trick event" end
+    -- Failure can only lose a line. Retain it even when coincident landing
+    -- detail is malformed, rather than downgrading a known loss to interruption.
+    if rawget(e,"failed")==true then
+        local why=rawget(e,"failure")
+        return {failed=true,failure=type(why)=="string" and #why>0 and string.sub(why,1,100) or "failed_trick"}
+    end
+    local out={}
+    for _,name in ipairs(event_flags) do
+        local v=rawget(e,name);if type(v)~="boolean" then return nil,"invalid trick event" end;out[name]=v
+    end
+    for _,name in ipairs(event_counts) do
+        local v=rawget(e,name)
+        if not M.finite(v) or v<0 or v>MAX_SAFE or v%1~=0 then return nil,"invalid trick event" end;out[name]=v
+    end
+    if type(rawget(e,"failure"))~="string" or #e.failure>100 then return nil,"invalid trick event" end
+    out.failure=e.failure
+    if out.landed then
+        for _,name in ipairs(air_numbers) do
+            local v=rawget(e,name);if not M.finite(v) then return nil,"invalid trick event" end;out[name]=v
+        end
+        if type(rawget(e,"fakie_takeoff"))~="boolean" or type(rawget(e,"overflow"))~="boolean"
+            or not plain(rawget(e,"sequence")) then return nil,"invalid trick event" end
+        out.fakie_takeoff,out.overflow,out.sequence=e.fakie_takeoff,e.overflow,{}
+        local count=0
+        for key in pairs(e.sequence) do
+            count+=1
+            if count>16 or not M.finite(key) or key%1~=0 or key<1 or key>16 then return nil,"invalid trick event" end
+        end
+        for i=1,count do
+            local row=rawget(e.sequence,i)
+            if not plain(row) or type(rawget(row,"kind"))~="string" or #row.kind>8 then return nil,"invalid trick event" end
+            local part={kind=row.kind}
+            for _,name in ipairs({"id","dir","start","finish","hold"}) do
+                local v=rawget(row,name);if not M.finite(v) then return nil,"invalid trick event" end;part[name]=v
+            end
+            out.sequence[i]=part
+        end
+        if rawget(e,"landing")~=nil then
+            if not plain(e.landing) then return nil,"invalid trick event" end
+            out.landing={}
+            for _,name in ipairs({"body_up","heading_cos","closing"}) do
+                local v=rawget(e.landing,name);if not M.finite(v) then return nil,"invalid trick event" end;out.landing[name]=v
+            end
+        end
+    end
+    return out
+end
+local function record_trick_step(s,frame,contact,companions)
+    local event,invalid=projected_trick_event(companions.events)
+    local model=companions.trick and companions.trick.model_state
+    local airborne=type(model)=="table" and model.airborne==true or not contact.grounded
+    local interrupted=invalid
+    if companions.trick_fallback and (airborne or s.trick_log_airborne) then interrupted=companions.trick_fallback end
+    local row={seconds=frame.time,h=frame.seconds,speed=M.length(frame.body.linear_velocity),
+        mode=airborne and "airborne" or "rolling",landing_pending=type(model)=="table" and model.landing_pending==true or false,
+        events=event,interrupted=interrupted}
+    append_trick_log(s,row);s.trick_log_airborne=airborne
+end
 local function stop(s, reason)
     -- Count every request, including cleanup observations after the pure
     -- lifecycle latch. Full keys remain distinct; only the first issue uses
@@ -419,6 +492,9 @@ local function stop(s, reason)
     count_stop(s,text)
     if not s.stopped then
         s.stopped=true;s.generation+=1;s.issue=detail(text)
+        -- A terminal control is not another body sample. It carries no fake
+        -- physical timestamp, elapsed time, motion or unfinished air credit.
+        append_trick_log(s,{control="ended",reason=detail(text)})
     end
     s.phase="stopped"
     s.input_queue={}
@@ -467,7 +543,7 @@ local function status(s)
         input_staged=s.input_staged,input_consumed=s.input_consumed,input_queued=#s.input_queue,
         observed_steps=s.observed_steps,model_steps=s.model_steps,receipt=s.last_receipt,
         model_history=s.model_history,hop_disposition=s.hop_disposition,metrics=s.metrics,
-        presentation_pose=s.pose,
+        presentation_pose=s.pose,trick_log_n=s.trick_log_n,
         model={trick_status=s.trick_status,trick_fallbacks=s.trick_fallbacks,
             alignment_status=s.alignment_status,recovery_status=s.recovery_status}})
 end
@@ -596,7 +672,7 @@ local function command_backpressure(s)
     return nil
 end
 local function companion_result(s,frame,contact,actions)
-    local out = {rotation_reserved=false,requests={},events={}}
+    local out = {rotation_reserved=false,requests={}}
     if s.tricks then
         local result = invoke(s,s.tricks.step,s.tricks,frame,contact,actions)
         -- A trick is presentation and its air rotation reservation only. An
@@ -942,6 +1018,7 @@ local function observe(s,source_frame,raw,context)
     if not companions then stop(s,companion_issue);return end
     if s.stopped then return end
     s.model_steps+=1
+    record_trick_step(s,frame,contact,companions)
     s.trick_status=companions.trick and companions.trick.issue or companions.trick_fallback
     if companions.trick_fallback then s.trick_fallbacks+=1 end
     s.alignment_status=companions.alignment and companions.alignment.status or nil
@@ -1058,12 +1135,15 @@ function Ride.new(force_api,models,options)
     models,options=models or {},options or {}
     local meta={__index=Object}
     local object=setmetatable({},meta)
+    if next_log_generation<MAX_SAFE then next_log_generation+=1 end
     local s={api=force_api,body=options.body_handle,incarnation=options.incarnation,
         mapping=models.mapping or Mapping.new(options.input),force=models.force or Forces.new(options.force),
         contact=models.contact,tricks=models.tricks,recovery=models.recovery,alignment=models.alignment,
         alignment_options=detached(options.alignment),geometry=detached(options.geometry or Geometry),
         wheels=Forces.proposed_wheels(),phase="inert",issue="native qualification required",generation=0,
         pose=freeze(NEUTRAL_POSE),trick_fallbacks=0,
+        trick_log_generation=next_log_generation,trick_log_n=0,trick_log_rows={},trick_log_airborne=false,
+        trick_log_exhausted=next_log_generation==MAX_SAFE,
         submitted=0,acknowledged=0,pending={},metrics=new_metrics(),backpressure_steps=0,
         continuity_pending=false,continuity_skipped_steps=0,continuity_invalidations=0,body_read_recoveries=0,
         input_queue={},input_staged=0,input_consumed=0,observed_steps=0,model_steps=0}
@@ -1124,4 +1204,15 @@ function Object:drain()
 end
 function Object:stop(reason) local s=states[self];stop(s,reason or "Core stop");return status(s) end
 function Object:status() return status(states[self]) end
+function Object:trick_log(after_n)
+    local s=states[self]
+    after_n=after_n==nil and 0 or after_n
+    local valid=M.finite(after_n) and after_n%1==0 and after_n>=0 and after_n<=s.trick_log_n
+    local out={generation=s.trick_log_generation,n=s.trick_log_n,rows={},gap=not valid or s.trick_log_exhausted==true}
+    if not valid then out.issue="invalid trick log cursor";return freeze(out) end
+    local first=s.trick_log_rows[1]
+    if first and after_n<first.n-1 then out.gap=true end
+    for _,row in ipairs(s.trick_log_rows) do if row.n>after_n then table.insert(out.rows,row) end end
+    return freeze(out)
+end
 return table.freeze(Ride)

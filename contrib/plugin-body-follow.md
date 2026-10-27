@@ -61,7 +61,7 @@ join. No Lua body sample, epoch, native address, eligibility callback or proof
 boolean substitutes for either check.
 
 The attachment table requires `offset_from_com` and `root_in_body` and accepts
-optional `cleanup` and `motion_policy`. The COM offset is finite, within +/-10 meters per axis, and
+optional `cleanup`, `motion_policy`, `lifetime` and `lead`. The COM offset is finite, within +/-10 meters per axis, and
 expressed in the measured principal-body basis. `root_in_body` is a unit Hamilton
 XYZW quaternion expressing the actor root basis in that same body basis. The
 runtime never chooses vehicle geometry or a yaw-only orientation for the mod.
@@ -73,6 +73,45 @@ unknown names, whitespace/case changes and NUL-suffixed strings are rejected
 before the reserve attempt reaches the backend. The policy is copied at reserve
 and cannot be changed by editing the attachment or a returned receipt. Both
 existing permissions and the client-phase restriction still apply.
+
+## Measured position lead
+
+A reserve can include `lead = {steps = 2, angular = true}`. Omission or nil
+keeps the existing target exactly. When the table is present, `steps` must be
+a number that is an integer from 0 through 3, and `angular` must be a boolean.
+Both fields are required; unknown fields, numeric keys and metatables are
+rejected before reserve quota or backend entry. The values are copied once at
+reserve. Editing the Lua table afterward does not change the attachment.
+
+For each admitted callback, the runtime first computes the ordinary target
+from that callback's newly measured body sample. With nonzero steps it adds
+`v_point * steps * h` to the target position, where `h` is that same sample's
+`epoch.seconds` in seconds, and `v_point` is the sample's linear velocity in
+meters per second. If angular is true, it also includes
+`angular_velocity cross rotate(body_rotation, offset_from_com)`, with angular
+velocity measured in radians per second. Root alignment changes the target
+basis, not this body-relative point. No Lua pose, velocity, clock or gain
+replaces the measured source. At 60 Hz, two steps lead by about 33.3 ms.
+
+Zero steps runs the original transform without reading the unused velocity or
+step fields and preserves all target words bit for bit, including padding.
+Nonzero lead requires a calibrated sample step, finite linear speed at most
+100 m/s, and, when angular is enabled, finite angular speed at most 100 rad/s.
+The combined point speed is at most 100 m/s and predicted position stays within
++/-100000 m per axis. Invalid or excessive lead uses the unchanged ordinary
+target for that callback. Each committed fallback increments the internal
+`lead_skipped` counter, included in the first-stop/cleanup diagnostic log;
+the counter saturates and resets with the reservation. Public receipt and lease
+schemas are unchanged. Failure of ordinary source or transform admission still
+refuses Follow: fallback does not admit a corrupt native body sample.
+
+This is a position prediction under the existing `world.physics` and
+`world.physics.follow` permissions. It adds no native velocity write, impulse,
+momentum or new permission, and changes no lifetime, claim or cleanup rule.
+It works with either existing motion policy. Prediction can overshoot at
+landing or during acceleration because it uses the last measured velocity;
+there is no landing snap or velocity feed-forward. Straight motion, turning,
+landing error and cleanup still require the coordinator's game trial.
 
 ## Experimental motion selector
 

@@ -272,7 +272,7 @@ FollowValue follow(lua_State* L, Plugin& p) {
     return follow_at(L, p, 1);
 }
 body_follow_api::Attachment follow_attachment(lua_State* L, int at) {
-    fields(L, at, {"offset_from_com", "root_in_body", "cleanup", "motion_policy", "lifetime"});
+    fields(L, at, {"offset_from_com", "root_in_body", "cleanup", "motion_policy", "lifetime", "lead"});
     body_follow_api::Attachment attachment;
     attachment.offset_from_com = vec_field(L, at, "offset_from_com");
     lua_getfield(L, at, "root_in_body"); luaL_checktype(L, -1, LUA_TTABLE);
@@ -314,6 +314,27 @@ body_follow_api::Attachment follow_attachment(lua_State* L, int at) {
         const std::string_view lifetime{text, length};
         if (lifetime == "renewable") attachment.lifetime = body_follow_api::Lifetime::renewable;
         else if (lifetime != "fixed") luaL_error(L, "follow lifetime is fixed or renewable");
+    }
+    lua_pop(L, 1);
+    // Lead changes only the target derived from the runtime's own measured
+    // sample. A plugin supplies no velocity and receives no new authority.
+    lua_getfield(L, at, "lead");
+    if (!lua_isnil(L, -1)) {
+        if (lua_type(L, -1) != LUA_TTABLE) luaL_error(L, "follow lead is a table with steps and angular");
+        if (lua_getmetatable(L, -1)) luaL_error(L, "follow lead must be a plain table");
+        const int lead_at = lua_absindex(L, -1);
+        fields(L, lead_at, {"steps", "angular"});
+        lua_getfield(L, lead_at, "steps");
+        if (lua_type(L, -1) != LUA_TNUMBER) luaL_error(L, "follow lead steps is an integer 0 to 3");
+        const double steps = lua_tonumber(L, -1);
+        if (!std::isfinite(steps) || steps < 0 || steps > body_follow_api::maximum_lead_steps || std::floor(steps) != steps)
+            luaL_error(L, "follow lead steps is an integer 0 to 3");
+        attachment.lead.steps = static_cast<std::uint8_t>(steps);
+        lua_pop(L, 1);
+        lua_getfield(L, lead_at, "angular");
+        if (lua_type(L, -1) != LUA_TBOOLEAN) luaL_error(L, "follow lead angular is a boolean");
+        attachment.lead.angular = lua_toboolean(L, -1) != 0;
+        lua_pop(L, 1);
     }
     lua_pop(L, 1);
     if (attachment.motion_policy == body_follow_api::MotionPolicy::callback_entry &&

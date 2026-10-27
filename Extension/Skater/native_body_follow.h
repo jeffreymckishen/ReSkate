@@ -72,7 +72,22 @@ struct Attachment {
     MotionPolicy motion_policy{MotionPolicy::native_lifetime};
     // Read by the retaining Service only; target preparation never sees a lease.
     Lifetime lifetime{Lifetime::fixed};
+    body_follow_api::Lead lead{};
 };
+// The runtime and the constructed Service tests use the same conversion, so a
+// new copied field cannot silently disappear at the plugin/native boundary.
+inline bool attachment_from_api(const body_follow_api::Attachment& value, Attachment& out) noexcept {
+    out = {};
+    if (!body_follow_api::valid(value)) return false;
+    out.offset_from_com = value.offset_from_com;
+    out.root_in_body = value.root_in_body;
+    out.cleanup = value.cleanup;
+    out.motion_policy = value.motion_policy == body_follow_api::MotionPolicy::callback_entry ?
+        MotionPolicy::callback_entry : MotionPolicy::native_lifetime;
+    out.lifetime = value.lifetime;
+    out.lead = value.lead;
+    return true;
+}
 // A NEW current-epoch measured source supplies both translation and full basis.
 // Exact supplied padding words are retained. No body borrow spans original.
 // Call remains alive through the future exact original invocation.
@@ -85,7 +100,7 @@ struct PreparedTarget {
     actor_control_native::FollowEntryObservation entry;
     alignas(16) std::array<float, 16> value{};
     const NativeMotionEntry* scope{};
-    bool ready{};
+    bool ready{}, lead_skipped{};
     PreparedTarget() noexcept = default;
     PreparedTarget(const PreparedTarget&) = delete;
     PreparedTarget& operator=(const PreparedTarget&) = delete;

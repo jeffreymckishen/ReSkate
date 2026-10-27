@@ -26,12 +26,18 @@ enum class Lifetime : std::uint8_t { fixed, renewable };
 constexpr bool valid_lifetime(Lifetime lifetime) noexcept {
     return lifetime == Lifetime::fixed || lifetime == Lifetime::renewable;
 }
+// Pose lead uses only the followed body's current measured motion. It neither
+// accepts a plugin velocity nor writes momentum into the actor.
+inline constexpr std::uint8_t maximum_lead_steps = 3;
+struct Lead { std::uint8_t steps{}; bool angular{}; };
+constexpr bool valid_lead(const Lead& lead) noexcept { return lead.steps <= maximum_lead_steps; }
 struct Attachment {
     owned_body::Vec offset_from_com{};
     owned_body::Quaternion root_in_body{0, 0, 0, 1};
     CleanupPolicy cleanup{CleanupPolicy::actor_lifetime};
     MotionPolicy motion_policy{MotionPolicy::native_lifetime};
     Lifetime lifetime{Lifetime::fixed};
+    Lead lead{};
 };
 enum class Phase : std::uint8_t { reserved, following, stopping, retained, abandoned, completed };
 enum class Pending : std::uint8_t { none, body_parked };
@@ -79,7 +85,7 @@ inline bool valid(const Attachment& attachment) noexcept {
         (attachment.motion_policy == MotionPolicy::callback_entry && attachment.cleanup != CleanupPolicy::owned_body)) return false;
     if (!valid_lifetime(attachment.lifetime) ||
         (attachment.lifetime == Lifetime::renewable && attachment.cleanup != CleanupPolicy::owned_body)) return false;
-    if (!owned_body::finite(attachment.offset_from_com, 10)) return false;
+    if (!valid_lead(attachment.lead) || !owned_body::finite(attachment.offset_from_com, 10)) return false;
     double norm{};
     for (const float lane : attachment.root_in_body) {
         if (!std::isfinite(lane)) return false;

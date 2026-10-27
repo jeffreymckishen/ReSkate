@@ -19,6 +19,9 @@ local M1_PROVISIONAL_FOLLOW_OFFSET=false
 -- world.physics.follow.renew, reserves a renewable Follow and renews it. The
 -- tracked false reserves the fixed three-second lease and never renews.
 local FOLLOW_RENEWAL_QUALIFIED=false
+-- Only a reviewed trial leads the actor target with the SDK's measured body motion.
+-- Lua supplies no velocity and never changes a target after reservation.
+local FOLLOW_LEAD_QUALIFIED=false
 local receipt_revisions={"final_revision","final_native_epoch","returned_revision"}
 local receipt_flags={"claim_known","orphaned","park_observed","native_retirement_known","terminal"}
 
@@ -1035,6 +1038,7 @@ local function handoff_and_follow()
             and vector.create(-G.com[1],.95-G.com[2],-.10-G.com[3])
             or vector.create(-G.com[1],-G.com[2],-G.com[3]),root_in_body={0,0,0,1},cleanup="owned_body",motion_policy="callback_entry"}
     if T.lease_renewable then attachment.lifetime="renewable" end
+    if FOLLOW_LEAD_QUALIFIED then attachment.lead={steps=2,angular=true} end
     local reserved=call("follow.reserve",lookup("world.physics.reserve_follow"),T.body,attachment)
     -- Adopt any returned userdata BEFORE inspecting why or cancellation.
     if reserved[1] and typeof(reserved[2])=="userdata" then T.follow=reserved[2];T.reserve_unknown=false end

@@ -27,6 +27,8 @@ namespace {
 // shows no category and needs only "world.physics" and "world.raycast".
 // "world.physics.follow" permits a local actor to follow an owned body and
 // requires "world.physics". It grants no input or equipment-transition access.
+// Its optional position lead uses only the followed body's own measured motion;
+// it needs no extra permission and grants no velocity or momentum write.
 // "world.physics.follow.renew" permits that Follow to be reserved with a renewable
 // lease and renewed past its fixed three seconds, up to two minutes, only by
 // presenting the followed body's latest sample (renew_follow, read_follow_lease).

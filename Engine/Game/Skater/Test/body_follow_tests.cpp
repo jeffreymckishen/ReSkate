@@ -547,6 +547,227 @@ void target_preserves_fourth_words() {
             require(after[lane] == before[lane], "target building preserves every fourth word bit for bit, including NaN payloads and signed zero");
     }
 }
+
+void lead_attachment_bounds() {
+    namespace api = dingosdk::body_follow_api;
+    api::Attachment attachment;
+    require(attachment.lead.steps == 0 && !attachment.lead.angular && api::valid(attachment),
+        "an omitted lead keeps the existing valid attachment default");
+    for (std::uint8_t steps = 0; steps <= 3; ++steps)
+        for (const bool angular : {false, true}) {
+            attachment.lead = {steps, angular};
+            require(api::valid_lead(attachment.lead) && api::valid(attachment),
+                "every bounded lead step and angular selector is a valid attachment");
+        }
+    for (const std::uint8_t steps : {std::uint8_t{4}, std::uint8_t{255}}) {
+        attachment.lead = {steps, true};
+        require(!api::valid_lead(attachment.lead) && !api::valid(attachment),
+            "an internal out-of-range step cannot enter an attachment");
+    }
+}
+
+void disabled_lead_preserves_target_bits() {
+    dingosdk::owned_body::Sample sample;
+    const auto q = std::sqrt(.5f);
+    const dingosdk::owned_body::Vec offset{1, 2, 3};
+    const dingosdk::owned_body::Quaternion root{q, 0, 0, q};
+    sample.position = {-0.0f, 30, 40};
+    sample.rotation = {0, q, 0, q};
+    // Motion is deliberately unusable. Zero steps must not inspect it or
+    // canonicalize the original transform's signed zeros and padding payloads.
+    sample.velocity = {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity(), -101};
+    sample.angular_velocity = {-std::numeric_limits<float>::infinity(), 101, std::numeric_limits<float>::quiet_NaN()};
+    sample.epoch.seconds = std::numeric_limits<float>::quiet_NaN();
+    for (const bool angular : {false, true}) {
+        auto original = transform_supplied;
+        for (std::size_t i = 0; i < transform_fourth_lanes.size(); ++i)
+            original[transform_fourth_lanes[i]] = std::bit_cast<float>(transform_fourth_patterns[i]);
+        original[3] = -0.0f;
+        auto led = original;
+        bool skipped = true;
+        require(t::transform(sample, offset, root, original), "the original builder ignores unused motion");
+        require(t::transform_led(sample, offset, root, {0, angular}, led, skipped) && !skipped,
+            "zero steps bypass invalid motion without recording a skipped prediction");
+        require(std::bit_cast<TransformBits>(led) == std::bit_cast<TransformBits>(original),
+            "zero steps preserve all sixteen original transform words bit for bit");
+    }
+}
+
+void measured_lead_translation() {
+    dingosdk::owned_body::Sample sample;
+    sample.position = {10, 20, 30};
+    sample.rotation = {0, 0, 0, 1};
+    sample.velocity = {3, -6, 9};
+    sample.epoch.seconds = static_cast<float>(dingosdk::owned_body::native_seconds);
+    const dingosdk::owned_body::Vec offset{1, 2, 3};
+    const dingosdk::owned_body::Quaternion root{0, 0, 0, 1};
+    for (std::uint8_t steps = 1; steps <= 3; ++steps) {
+        auto target = transform_supplied;
+        bool skipped = true;
+        require(t::transform_led(sample, offset, root, {steps, false}, target, skipped) && !skipped,
+            "constant measured velocity produces a bounded positional lead");
+        const double seconds = static_cast<double>(steps) * sample.epoch.seconds;
+        for (unsigned axis = 0; axis < 3; ++axis) {
+            const double expected = sample.position[axis] + offset[axis] + sample.velocity[axis] * seconds;
+            require(std::abs(target[12 + axis] - expected) < .00001,
+                "each lead component uses the selected number of measured steps");
+        }
+        for (const auto lane : transform_fourth_lanes)
+            require(std::bit_cast<std::uint32_t>(target[lane]) == std::bit_cast<std::uint32_t>(transform_supplied[lane]),
+                "positive lead preserves the supplied fourth words");
+    }
+    // This is still a calibrated sample, but measurably differs from the
+    // nominal constant. The target must use its own seconds, not a new read.
+    sample.position = {};
+    sample.velocity = {100, 0, 0};
+    sample.epoch.seconds += .00000005f;
+    auto target = transform_supplied;
+    bool skipped = true;
+    require(dingosdk::owned_body::calibrated(sample.epoch.seconds), "the constructed alternate step remains calibrated");
+    require(t::transform_led(sample, {}, root, {3, false}, target, skipped) && !skipped,
+        "the exact linear speed boundary is accepted");
+    const auto expected = static_cast<float>(100.0 * 3.0 * sample.epoch.seconds);
+    const auto nominal = static_cast<float>(100.0 * 3.0 * static_cast<float>(dingosdk::owned_body::native_seconds));
+    require(target[12] == expected && target[12] != nominal,
+        "lead time comes from this sample's epoch seconds rather than the nominal step");
+}
+
+void angular_lead_uses_rotated_offset() {
+    dingosdk::owned_body::Sample sample;
+    const auto q = std::sqrt(.5f);
+    sample.position = {20, 30, 40};
+    sample.rotation = {0, q, 0, q};
+    sample.velocity = {3, 0, 9};
+    sample.angular_velocity = {0, 2, 0};
+    sample.epoch.seconds = static_cast<float>(dingosdk::owned_body::native_seconds);
+    const dingosdk::owned_body::Vec offset{1, 2, 3};
+    const dingosdk::owned_body::Quaternion root{q, 0, 0, q};
+    // Body yaw rotates offset to (3,2,-1). World omega (0,2,0) cross that
+    // offset is (-2,0,-6), so point velocity is (1,0,3), independent of root.
+    for (const bool angular : {false, true}) {
+        auto original = transform_supplied;
+        auto target = original;
+        bool skipped = true;
+        require(t::transform(sample, offset, root, original), "the angular oracle has an admitted original target");
+        require(t::transform_led(sample, offset, root, {2, angular}, target, skipped) && !skipped,
+            "a bounded angular selector uses the same measured sample");
+        const std::array<double, 3> velocity = angular ? std::array<double, 3>{1, 0, 3} : std::array<double, 3>{3, 0, 9};
+        const std::array<double, 3> position{23, 32, 39};
+        for (unsigned axis = 0; axis < 3; ++axis)
+            require(std::abs(target[12 + axis] - (position[axis] + velocity[axis] * 2 * sample.epoch.seconds)) < .00002,
+                "omega cross rotated COM offset has the expected sign and world-space axes");
+        const auto original_bits = std::bit_cast<TransformBits>(original);
+        const auto target_bits = std::bit_cast<TransformBits>(target);
+        for (std::size_t lane = 0; lane < 12; ++lane)
+            require(target_bits[lane] == original_bits[lane], "lead leaves the root basis and its padding exact");
+        require(target_bits[15] == original_bits[15], "lead leaves the translation padding exact");
+    }
+    sample.velocity = {};
+    sample.angular_velocity = {0, 0, 100};
+    sample.rotation = {0, 0, 0, 1};
+    auto target = transform_supplied;
+    bool skipped = true;
+    require(t::transform_led(sample, {1, 0, 0}, {0, 0, 0, 1}, {1, true}, target, skipped) && !skipped,
+        "the exact angular and resulting point-speed boundaries are accepted");
+    require(std::abs(target[13] - (30.0 + 100.0 * sample.epoch.seconds)) < .00001,
+        "boundary spin moves the offset point in the positive cross-product direction");
+}
+
+void invalid_lead_falls_back_atomically() {
+    namespace body = dingosdk::owned_body;
+    body::Sample sample;
+    sample.position = {10, 20, 30};
+    sample.rotation = {0, 0, 0, 1};
+    sample.velocity = {3, 0, 0};
+    sample.epoch.seconds = static_cast<float>(body::native_seconds);
+    const body::Quaternion root{0, 0, 0, 1};
+    const auto fallback = [&](const body::Sample& changed, const body::Vec& offset,
+        const dingosdk::body_follow_api::Lead& lead) {
+        auto original = transform_supplied;
+        for (std::size_t i = 0; i < transform_fourth_lanes.size(); ++i)
+            original[transform_fourth_lanes[i]] = std::bit_cast<float>(transform_fourth_patterns[i]);
+        auto target = original;
+        bool skipped = false;
+        require(t::transform(changed, offset, root, original), "fallback case has a valid unled transform");
+        require(t::transform_led(changed, offset, root, lead, target, skipped) && skipped,
+            "invalid prediction falls back without rejecting a valid base transform");
+        require(std::bit_cast<TransformBits>(target) == std::bit_cast<TransformBits>(original),
+            "fallback commits no partial translation or padding change");
+        require(t::first_nonfinite_xyz(target) == t::no_failed_lane, "fallback never publishes nonfinite XYZ");
+    };
+    for (const auto bad : transform_invalid_xyz)
+        for (std::size_t axis = 0; axis < 3; ++axis) {
+            auto changed = sample;
+            changed.velocity[axis] = std::bit_cast<float>(bad);
+            fallback(changed, {}, {2, false});
+            changed = sample;
+            changed.angular_velocity[axis] = std::bit_cast<float>(bad);
+            fallback(changed, {1, 0, 0}, {2, true});
+        }
+    for (const body::Vec velocity : {body::Vec{100.01f, 0, 0}, body::Vec{-100.01f, 0, 0}, body::Vec{80, 80, 0}}) {
+        auto changed = sample;
+        changed.velocity = velocity;
+        fallback(changed, {}, {2, false});
+        changed = sample;
+        changed.angular_velocity = velocity;
+        fallback(changed, {}, {2, true});
+    }
+    for (const float seconds : {0.0f, -1.0f / 60.0f, 1.0f / 30.0f,
+        std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()}) {
+        auto changed = sample;
+        changed.epoch.seconds = seconds;
+        fallback(changed, {}, {2, false});
+    }
+    fallback(sample, {}, {4, false});
+    // Individually admitted linear and angular motion can still exceed the
+    // point-speed bound when combined at the chosen offset.
+    auto changed = sample;
+    changed.velocity = {90, 0, 0};
+    changed.angular_velocity = {0, 0, 20};
+    fallback(changed, {0, -1, 0}, {2, true});
+    changed = sample;
+    changed.position = {10, 100000, 30};
+    changed.velocity = {20, 1, 20};
+    fallback(changed, {}, {2, false});
+    changed.position = {10, 20, -100000};
+    changed.velocity = {20, 1, -1};
+    fallback(changed, {}, {2, false});
+
+    // Disabled angular motion is genuinely unused, rather than needlessly
+    // causing a fallback because an unrelated spin component is unavailable.
+    changed = sample;
+    changed.angular_velocity = {std::numeric_limits<float>::quiet_NaN(), 101, std::numeric_limits<float>::infinity()};
+    auto target = transform_supplied;
+    bool skipped = true;
+    require(t::transform_led(changed, {}, root, {2, false}, target, skipped) && !skipped,
+        "linear-only lead ignores unusable angular velocity");
+    require(std::abs(target[12] - (10.0 + 6.0 * changed.epoch.seconds)) < .00001,
+        "linear-only lead still applies the current linear motion");
+}
+
+void invalid_base_cannot_become_led() {
+    dingosdk::owned_body::Sample sample;
+    sample.position = {10, 20, 30};
+    sample.rotation = {0, 0, 0, 1};
+    sample.velocity = {3, 0, 0};
+    sample.epoch.seconds = static_cast<float>(dingosdk::owned_body::native_seconds);
+    for (unsigned fault = 0; fault < 4; ++fault)
+        for (const std::uint8_t steps : {std::uint8_t{0}, std::uint8_t{2}}) {
+            auto changed = sample;
+            dingosdk::owned_body::Vec offset{};
+            dingosdk::owned_body::Quaternion root{0, 0, 0, 1};
+            if (fault == 0) changed.position[0] = std::numeric_limits<float>::quiet_NaN();
+            else if (fault == 1) changed.rotation[3] = 0;
+            else if (fault == 2) offset[1] = 10.01f;
+            else root[0] = std::numeric_limits<float>::infinity();
+            auto target = transform_supplied;
+            bool skipped = true;
+            require(!t::transform_led(changed, offset, root, {steps, true}, target, skipped) && !skipped,
+                "an invalid base stays refused regardless of whether prediction is enabled");
+            require(std::bit_cast<TransformBits>(target) == std::bit_cast<TransformBits>(transform_supplied),
+                "base refusal leaves the supplied target untouched");
+        }
+}
 static_assert(!std::is_copy_constructible_v<f::Session> && !std::is_move_constructible_v<f::Session>);
 static_assert(std::is_same_v<f::Session, f::BasicSession<c::Arbiter>>);
 }
@@ -567,5 +788,11 @@ int main() {
     quarantine_never_borrows_foreign_or_unpublished_claims();
     supplied_xyz_finiteness();
     target_preserves_fourth_words();
+    lead_attachment_bounds();
+    disabled_lead_preserves_target_bits();
+    measured_lead_translation();
+    angular_lead_uses_rotated_offset();
+    invalid_lead_falls_back_atomically();
+    invalid_base_cannot_become_led();
     std::cout << "body_follow checks=" << checks << " native_actions=0\n";
 }

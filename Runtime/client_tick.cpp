@@ -144,8 +144,8 @@ void log_follow_diagnostic(const char* kind, const char* origin, actor_control_n
     // means the lease did not cause this receipt's first stop.
     const auto* revocation = body_follow_lease::revocation_name(state.revocation);
     logging::log(logging::Level::warning, logging::Channel::skater,
-        "Body follow first-{} lease: sequence={} renewals={} revocation={} dispatch_busy={}",
-        kind, state.sequence, state.renewals, revocation ? revocation : "unknown", state.dispatch_busy);
+        "Body follow first-{} lease: sequence={} renewals={} revocation={} dispatch_busy={} lead_skipped={}",
+        kind, state.sequence, state.renewals, revocation ? revocation : "unknown", state.dispatch_busy, state.lead_skipped);
     const auto& epochs = facts.opening_snapshot.global_epoch_values;
     // Only known SDK counter values are emitted. They locate a possible World
     // epoch interval; equal/different comparisons alone cannot locate that interval.

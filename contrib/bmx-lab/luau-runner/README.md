@@ -54,12 +54,19 @@ plugin. When `bike_spawn.lua` is present, it also receives
 plugin keeps the airborne default. A separate `floor-manifest` staging regression checks exact bytes,
 owned files, reruns and true/duplicate/planted floor gate refusals. It also stages
 `bike_runtime_core_provisional_follow_fixture.lua` from Core with only
-`local M1_PROVISIONAL_FOLLOW_OFFSET=false` changed to `true`, and
+`local M1_PROVISIONAL_FOLLOW_OFFSET=false` changed to `true`,
 `bike_runtime_core_follow_renewal_fixture.lua` from Core with only
-`local FOLLOW_RENEWAL_QUALIFIED=false` changed to `true` (LUA-12); the same regression
-checks both independent literals and their owned files. `core_follow_renewal_tests` runs the
+`local FOLLOW_RENEWAL_QUALIFIED=false` changed to `true` (LUA-12), and
+`bike_runtime_core_follow_lead_fixture.lua` with only `local FOLLOW_LEAD_QUALIFIED=false`
+changed to `true`. The same regression checks all three independent literals and
+their owned files, including true, missing, duplicate and planted lead refusals. `core_follow_renewal_tests` runs the
 tracked Core and that renewal copy against constructed `renew_follow` and `read_follow_lease`
-fakes shaped like the C++ binding. The provisional-offset suite
+fakes shaped like the C++ binding. `core_follow_lead_tests` uses the real public
+Core mount, Source and Spawn with constructed SDK services. It captures the actual
+reserve table with the literal off and on, then reaches a known refusal. The trial
+adds only `lead={steps=2,angular=true}`; other attachment fields and the constructed
+lifecycle/call reports remain equal. This does not prove SDK permission or native
+lead behavior. The provisional-offset suite
 uses the existing staging suite's constructed service factory and the real
 public Core mount/Source, without changing existing suite counts. Any suite that mentions a fixture, `./ride_runtime_tests` or `./ride_runtime_join_tests` runs
 against that copy; the others run against the plugin folder itself. The production gates (`ACTIVATION_QUALIFIED`,

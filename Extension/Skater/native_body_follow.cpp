@@ -165,7 +165,7 @@ bool prepare_target(const Binding& binding, std::uintptr_t rig, std::uintptr_t c
     diagnostic = {}; at(diagnostic, DiagnosticStage::prepare_guard);
     if (binding.motion_policy != MotionPolicy::native_lifetime || out.ready || out.call.active() || !binding.reserved || !binding.published || binding.stopped ||
         !supplied || binding.actor.rig != rig || binding.actor.context != context ||
-        !binding.admission || !owned_body::finite(attachment.offset_from_com, 10) || !body_follow_transform::unit(attachment.root_in_body) || !published(binding)) return false;
+        !binding.admission || !owned_body::finite(attachment.offset_from_com, 10) || !body_follow_transform::unit(attachment.root_in_body) || !body_follow_api::valid_lead(attachment.lead) || !published(binding)) return false;
     diagnostic.stage = diagnostic.actor_stage = DiagnosticStage::enter;
     if (!actor_control_native::enter(binding.owner, binding.sequence, binding.actor, out.call, diagnostic.actor)) return false;
     actor_control_native::Actor first; actor_control_native::State state;
@@ -194,7 +194,7 @@ bool prepare_target(const Binding& binding, std::uintptr_t rig, std::uintptr_t c
         at(diagnostic, DiagnosticStage::borrow_current);
         const auto* current = borrow.current();
         if (!current || (at(diagnostic, DiagnosticStage::borrow_join), !joined(first, *current)) ||
-            (at(diagnostic, DiagnosticStage::transform), !body_follow_transform::transform(current->sample(), attachment.offset_from_com, attachment.root_in_body, out.value))) return false;
+            (at(diagnostic, DiagnosticStage::transform), !body_follow_transform::transform_led(current->sample(), attachment.offset_from_com, attachment.root_in_body, attachment.lead, out.value, out.lead_skipped))) return false;
         out.sample = current->sample();
         at(diagnostic, DiagnosticStage::borrow_recheck);
         if (!borrow.current()) return false;
@@ -224,7 +224,7 @@ bool prepare_target(const Binding& binding, const NativeMotionEntry& entry, cons
         !binding.reserved || !binding.published || binding.stopped || !binding.admission ||
         binding.actor.rig != entry.rig() || binding.actor.context != entry.context() ||
         !owned_body::finite(attachment.offset_from_com, 10) ||
-        !body_follow_transform::unit(attachment.root_in_body) || !published(binding)) return false;
+        !body_follow_transform::unit(attachment.root_in_body) || !body_follow_api::valid_lead(attachment.lead) || !published(binding)) return false;
     diagnostic.stage = diagnostic.actor_stage = DiagnosticStage::enter;
     if (!actor_control_native::enter(binding.owner, binding.sequence, binding.actor, out.call, diagnostic.actor)) return false;
     actor_control_native::FollowEntryObservation first, after;
@@ -247,8 +247,8 @@ bool prepare_target(const Binding& binding, const NativeMotionEntry& entry, cons
         at(diagnostic, DiagnosticStage::borrow_current);
         const auto* current = borrow.current();
         if (!current || (at(diagnostic, DiagnosticStage::borrow_join), !joined(first, *current)) ||
-            (at(diagnostic, DiagnosticStage::transform), !body_follow_transform::transform(current->sample(),
-                attachment.offset_from_com, attachment.root_in_body, out.value))) return false;
+            (at(diagnostic, DiagnosticStage::transform), !body_follow_transform::transform_led(current->sample(),
+                attachment.offset_from_com, attachment.root_in_body, attachment.lead, out.value, out.lead_skipped))) return false;
         out.sample = current->sample();
         at(diagnostic, DiagnosticStage::borrow_recheck);
         if (!borrow.current()) return false;

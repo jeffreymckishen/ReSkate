@@ -12,6 +12,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <functional>
 #include <iostream>
 #include <limits>
@@ -28,6 +29,7 @@ ULONGLONG WINAPI service_test_now() noexcept { return service_test_clock::now.lo
 
 #include "Extension/Skater/native_body_follow_service.h"
 #include "Extension/Skater/native_actions.h"
+#include "Engine/Game/Skater/body_follow_transform.h"
 #define GetTickCount64 service_test_now
 #include "../native_body_follow_service.cpp"
 #undef GetTickCount64
@@ -49,12 +51,17 @@ struct Leaves {
     unsigned captures{}, reserve_bindings{}, publish_bindings{}, binding_stops{}, prepares{}, currents{}, originals{};
     unsigned proof_checks{}, holds{}, held_release_requests{}, hold_releases{}, body_releases{}, fences{}, parks{}, completions{};
     bool duties_busy{}, hold_refusal{}, publish_refusal{}, prepare_refusal{}, release_known{true};
+    bool measured_target{}, current_refusal{};
+    unsigned target_measurements{};
+    dingosdk::owned_body::Sample dispatch_sample{};
+    dingosdk::body_follow_native::Attachment prepared_attachment{};
+    std::array<float, 16> original_value{};
     std::uint64_t hold_id{}, requested_hold{};
     dingosdk::owned_bodies::RenewalProof proof_result{dingosdk::owned_bodies::RenewalProof::current};
     std::uint64_t proof_current_serial{}; // zero reports the proof's own serial as the current step
     dingosdk::owned_body::Epoch last_proof{};
     bool proof_identity_reserved{};
-    std::function<void()> during_proof, during_publish, during_prepare;
+    std::function<void()> during_proof, during_publish, during_prepare, during_original;
 };
 Leaves leaf;
 // Runs a scripted interleaving once; it is removed before it runs.
@@ -86,6 +93,16 @@ bool capture_source(std::uint64_t owner, const owned_body::Handle& handle, Measu
     out.clock_observed_ms_ = out.captured_ms_ = service_test_clock::now.load();
     out.base_ = 0x140000000; out.world_ = 0x5000; out.state_ = 0x6000;
     out.body_index_ = 3; out.body_generation_ = 7;
+    return true;
+}
+// Only the lead scenarios use this fresh constructed measurement. Production
+// World admission is not linked here, including its refusal of corrupt motion.
+bool try_measure_source(std::uint64_t owner, const MeasuredSource& identity, MeasuredSource& out) noexcept {
+    ++service_test::leaf.target_measurements;
+    out = {};
+    if (!owner || owner != identity.owner_) return false;
+    out = identity;
+    out.sample_ = service_test::leaf.dispatch_sample;
     return true;
 }
 RenewalProof check_renewal_proof(std::uint64_t owner, const MeasuredSource& identity, const owned_body::Epoch& proof,
@@ -165,13 +182,22 @@ bool stop(Binding& binding) noexcept {
     return true;
 }
 bool prepare_target(const Binding& binding, std::uintptr_t target_rig, std::uintptr_t target_context,
-    const std::array<float, 16>* supplied, const Attachment&, PreparedTarget& out, Reason& reason,
+    const std::array<float, 16>* supplied, const Attachment& attachment, PreparedTarget& out, Reason& reason,
     Diagnostic& diagnostic) noexcept {
     ++service_test::leaf.prepares; reason = Reason::unavailable; diagnostic = {};
     service_test::run_once(service_test::leaf.during_prepare);
     if (service_test::leaf.prepare_refusal || !supplied || binding.actor.rig != target_rig ||
         binding.actor.context != target_context) return false;
     out.source = binding.source; out.value = *supplied; out.owner = binding.owner; out.sequence = binding.sequence;
+    service_test::leaf.prepared_attachment = attachment;
+    if (service_test::leaf.measured_target) {
+        // Reuse the production arithmetic after the constructed current source
+        // read. This does not stand in for the unlinked native admission checks.
+        if (!owned_bodies::try_measure_source(binding.owner, binding.source, out.source)) return false;
+        out.sample = out.source.sample();
+        if (!body_follow_transform::transform_led(out.sample, attachment.offset_from_com, attachment.root_in_body,
+            attachment.lead, out.value, out.lead_skipped)) return false;
+    }
     out.ready = true; reason = Reason::none;
     return true;
 }
@@ -181,8 +207,9 @@ bool prepare_target(const Binding& binding, const NativeMotionEntry& entry, cons
 }
 bool current_target(const Binding&, PreparedTarget& target, Reason& reason, Diagnostic&) noexcept {
     ++service_test::leaf.currents;
-    reason = target.ready ? Reason::none : Reason::unavailable;
-    return target.ready;
+    const bool current = target.ready && !service_test::leaf.current_refusal;
+    reason = current ? Reason::none : Reason::unavailable;
+    return current;
 }
 bool current_target(const Binding& binding, const NativeMotionEntry&, PreparedTarget& target, Reason& reason,
     Diagnostic& diagnostic) noexcept {
@@ -329,7 +356,11 @@ owned_body::Epoch proof(std::uint64_t serial) { return {23, body.generation, ser
 bool renew_one(Handle handle, std::uint64_t serial, std::uint64_t& remaining, body_follow_lease::Refusal& refusal) {
     return renew(owner, handle, body, proof(serial), remaining, refusal);
 }
-void original(std::uintptr_t, std::uintptr_t, const std::array<float, 16>*, std::uint8_t) { ++leaf.originals; }
+void original(std::uintptr_t, std::uintptr_t, const std::array<float, 16>* value, std::uint8_t) {
+    ++leaf.originals;
+    if (value) leaf.original_value = *value;
+    service_test::run_once(leaf.during_original);
+}
 const std::array<float, 16> supplied_pose{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
 bool dispatch_one() {
     return dispatch(&original, service_test::rig, service_test::context, &supplied_pose, 0);
@@ -1084,6 +1115,202 @@ void dispatch_entry() {
     complete_and_acknowledge(handle);
 }
 
+// These scenarios drive the real Service with constructed current measurements.
+// Native body/actor admission remains outside this executable.
+owned_body::Sample lead_sample() {
+    owned_body::Sample sample;
+    sample.epoch = {23, body.generation, service_test::body_serial + 1, 2.0, 1.f / 60.f};
+    sample.position = {10, 20, 30}; sample.rotation = {0, 0, 0, 1};
+    sample.velocity = {3, 0, 0}; sample.angular_velocity = {0, 0, 2}; sample.mass = 12;
+    return sample;
+}
+Handle reserve_attachment(const body_follow_native::Attachment& attachment) {
+    tick(clear_guard());
+    owned_bodies::MeasuredSource expected;
+    check(owned_bodies::capture_source(owner, body, expected), "the lead reserve has a constructed source");
+    Handle handle; Reason reason{};
+    check(reserve(owner, body, expected, attachment, body_follow_api::eligible, handle, reason) &&
+        handle.sequence && reason == Reason::none, "the converted lead attachment is reserved");
+    return handle;
+}
+Handle follow_attachment(body_follow_api::Lead lead, bool scoped) {
+    body_follow_api::Attachment api;
+    api.offset_from_com = {0, 1, 0};
+    api.cleanup = body_follow_api::CleanupPolicy::owned_body;
+    api.motion_policy = scoped ? body_follow_api::MotionPolicy::callback_entry : body_follow_api::MotionPolicy::native_lifetime;
+    api.lead = lead;
+    body_follow_native::Attachment native;
+    check(body_follow_native::attachment_from_api(api, native), "the runtime's conversion accepts the lead");
+    const auto handle = reserve_attachment(native);
+    Reason reason{};
+    check(publish(owner, handle, reason) && reason == Reason::none, "the lead Follow is published");
+    leaf.measured_target = true; leaf.dispatch_sample = lead_sample();
+    return handle;
+}
+bool dispatch_lead(bool scoped) { return scoped ? dispatch_entry_one() : dispatch_one(); }
+std::array<float, 16> unled_pose(const owned_body::Sample& sample) {
+    auto value = supplied_pose;
+    const auto& attachment = service().attachment;
+    check(body_follow_transform::transform(sample, attachment.offset_from_com, attachment.root_in_body, value),
+        "the reference unled transform is valid");
+    return value;
+}
+bool same_pose(const std::array<float, 16>& left, const std::array<float, 16>& right) {
+    return std::memcmp(left.data(), right.data(), sizeof(left)) == 0;
+}
+
+void lead_attachment() {
+    reset("lead_attachment");
+    body_follow_api::Attachment api;
+    api.offset_from_com = {.2f, .4f, -.3f}; api.root_in_body = {0, .6f, 0, .8f};
+    api.cleanup = body_follow_api::CleanupPolicy::owned_body;
+    api.motion_policy = body_follow_api::MotionPolicy::callback_entry;
+    api.lifetime = body_follow_api::Lifetime::renewable; api.lead = {2, true};
+    body_follow_native::Attachment native;
+    check(body_follow_native::attachment_from_api(api, native), "the same conversion used by RuntimeGame succeeds");
+    check(native.offset_from_com == api.offset_from_com && native.root_in_body == api.root_in_body &&
+        native.cleanup == api.cleanup && native.motion_policy == body_follow_native::MotionPolicy::callback_entry &&
+        native.lifetime == api.lifetime && native.lead.steps == 2 && native.lead.angular,
+        "every requested field survives the plugin-to-native conversion");
+    const auto handle = reserve_attachment(native);
+    const auto& copied = service().attachment;
+    check(copied.offset_from_com == api.offset_from_com && copied.root_in_body == api.root_in_body &&
+        copied.cleanup == api.cleanup && copied.motion_policy == native.motion_policy &&
+        copied.lifetime == api.lifetime && copied.lead.steps == 2 && copied.lead.angular,
+        "the actual Service retains the complete converted attachment");
+    api.lead = {}; native.lead = {};
+    check(copied.lead.steps == 2 && copied.lead.angular, "later caller edits cannot change the reserved lead");
+    Reason reason{};
+    check(publish(owner, handle, reason), "the copied attachment publishes");
+    leaf.measured_target = true; leaf.dispatch_sample = lead_sample();
+    check(dispatch_entry_one(), "the callback-entry dispatch reaches the constructed native leaf");
+    check(leaf.prepared_attachment.lead.steps == 2 && leaf.prepared_attachment.lead.angular &&
+        leaf.target_measurements == 1 && !service().lead_skipped,
+        "the retained lead reaches preparation and uses one fresh measurement");
+    check(stop(owner, handle), "stop the lead Follow");
+    complete_and_acknowledge(handle);
+
+    // A bad API value must clear the out conversion and cannot reach reserve.
+    api.lead = {4, true}; native.lead = {3, true};
+    check(!body_follow_native::attachment_from_api(api, native) && native.lead.steps == 0 && !native.lead.angular,
+        "invalid API lead cannot leave a partially converted attachment");
+    const auto reserves = leaf.reserve_bindings, captures = leaf.captures;
+    owned_bodies::MeasuredSource expected;
+    native.lead = {4, true};
+    Handle refused;
+    check(!reserve(owner, body, expected, native, body_follow_api::eligible, refused, reason) &&
+        !refused.sequence && leaf.reserve_bindings == reserves && leaf.captures == captures,
+        "the Service independently refuses invalid native lead before source or claim work");
+    check(!service().occupied && !service().lead_skipped, "invalid lead adds no retained slot or counter duty");
+}
+
+void lead_dispatch() {
+    for (const bool scoped : {false, true}) {
+        reset("lead_dispatch");
+        auto handle = follow_attachment({2, true}, scoped);
+        check(dispatch_lead(scoped) && leaf.originals == 1 && leaf.target_measurements == 1,
+            "one admitted callback forwards one freshly measured target");
+        check(std::abs(leaf.original_value[12] - (10.f + 1.f / 30.f)) < 1e-5f &&
+            leaf.original_value[13] == 21.f && leaf.original_value[14] == 30.f,
+            "measured point velocity includes omega cross the attachment offset");
+        check(service().final.source.sample().epoch.serial == service_test::body_serial + 1 &&
+            same_pose(service().final.value, leaf.original_value), "the committed source and original target name this measurement");
+        check(leaf.prepared_attachment.lead.steps == 2 && leaf.prepared_attachment.lead.angular &&
+            service().binding.source.sample().velocity == owned_body::Vec{},
+            "the lead comes from current motion rather than the stationary reservation sample");
+
+        leaf.dispatch_sample.position = {}; leaf.dispatch_sample.velocity = {30, 0, 0};
+        leaf.dispatch_sample.angular_velocity = {};
+        leaf.dispatch_sample.epoch.seconds += 5e-8f; ++leaf.dispatch_sample.epoch.serial;
+        check(dispatch_lead(scoped) && leaf.originals == 2 && leaf.target_measurements == 2,
+            "the next callback takes a new measured velocity and step");
+        const float measured_lead = static_cast<float>(30.0 * 2.0 * leaf.dispatch_sample.epoch.seconds);
+        check(leaf.original_value[12] == measured_lead && std::abs(measured_lead - 1.f) > 1e-6f &&
+            leaf.original_value[13] == 1.f && leaf.original_value[14] == 0.f,
+            "the target uses the admitted sample step, not a hard-coded sixty-Hz interval or context read");
+        for (const unsigned lane : {3u, 7u, 11u, 15u})
+            check(leaf.original_value[lane] == supplied_pose[lane], "lead preserves supplied padding");
+        check(!service().lead_skipped && read_one(handle).phase == Phase::following,
+            "valid lead neither counts a fallback nor changes Follow state");
+        check(stop(owner, handle), "stop the measured lead");
+        complete_and_acknowledge(handle);
+
+        handle = follow_attachment({0, true}, scoped);
+        leaf.dispatch_sample.velocity[0] = std::numeric_limits<float>::quiet_NaN();
+        leaf.dispatch_sample.angular_velocity[1] = std::numeric_limits<float>::infinity();
+        leaf.dispatch_sample.epoch.seconds = 0;
+        const auto original_pose = unled_pose(leaf.dispatch_sample);
+        check(dispatch_lead(scoped) && same_pose(leaf.original_value, original_pose) && !service().lead_skipped,
+            "zero steps keep the exact old transform and do not inspect unused motion");
+        check(stop(owner, handle), "stop the unled Follow");
+        complete_and_acknowledge(handle);
+
+        handle = follow_attachment({2, false}, scoped);
+        leaf.dispatch_sample.angular_velocity[0] = std::numeric_limits<float>::quiet_NaN();
+        check(dispatch_lead(scoped) && std::abs(leaf.original_value[12] - 10.1f) < 1e-5f && !service().lead_skipped,
+            "angular=false uses linear motion only and ignores unused spin");
+        check(stop(owner, handle), "stop the linear-only lead");
+        complete_and_acknowledge(handle);
+    }
+}
+
+void lead_fallback() {
+    for (const bool scoped : {false, true}) {
+        reset("lead_fallback");
+        auto handle = follow_attachment({2, true}, scoped);
+        leaf.dispatch_sample.velocity[0] = std::numeric_limits<float>::quiet_NaN();
+        const auto unled = unled_pose(leaf.dispatch_sample);
+        check(dispatch_lead(scoped) && same_pose(leaf.original_value, unled) && service().lead_skipped == 1 &&
+            leaf.originals == 1 && read_one(handle).phase == Phase::following,
+            "an invalid constructed velocity commits the finite unled target and counts once");
+        leaf.dispatch_sample = lead_sample();
+        check(dispatch_lead(scoped) && service().lead_skipped == 1 && leaf.originals == 2,
+            "the next valid tick recovers without adding a fallback");
+        leaf.dispatch_sample.velocity = {101, 0, 0};
+        leaf.during_original = [handle] {
+            check(service().lead_skipped == 2, "the fallback count is committed before original runs");
+            check(stop(owner, handle), "a stop during original retains the committed fallback");
+        };
+        check(dispatch_lead(scoped) && same_pose(leaf.original_value, unled) && leaf.originals == 3,
+            "an excessive constructed velocity also forwards the complete finite baseline");
+        check(first_stop().state.lead_skipped == 2 && service().lead_skipped == 2,
+            "the first-stop diagnostic carries the committed fallback count");
+        check(!dispatch_lead(scoped) && leaf.originals == 3 && service().lead_skipped == 2,
+            "a stopped Follow neither follows nor counts again");
+        complete_and_acknowledge(handle);
+        check(!service().lead_skipped, "ACK resets the fallback count");
+
+        // This private fixture seed proves reserve also resets its own counter.
+        service().lead_skipped = 9;
+        handle = follow_attachment({2, true}, scoped);
+        check(!service().lead_skipped, "a new reserve has no earlier receipt's fallback count");
+        leaf.dispatch_sample.velocity = {101, 0, 0};
+        service().lead_skipped = std::numeric_limits<std::uint64_t>::max();
+        check(dispatch_lead(scoped) && service().lead_skipped == std::numeric_limits<std::uint64_t>::max(),
+            "the internal fallback counter saturates instead of wrapping");
+        check(stop(owner, handle), "stop the saturated-count Follow");
+        complete_and_acknowledge(handle);
+
+        handle = follow_attachment({2, true}, scoped);
+        leaf.dispatch_sample.velocity = {101, 0, 0};
+        leaf.current_refusal = true;
+        const auto originals = leaf.originals;
+        check(!dispatch_lead(scoped) && leaf.originals == originals && !service().lead_skipped &&
+            first_stop().origin == StopOrigin::dispatch_current,
+            "a prepared fallback that loses current-target admission is never committed or counted");
+        leaf.current_refusal = false;
+        complete_and_acknowledge(handle);
+
+        handle = follow_attachment({2, true}, scoped);
+        leaf.dispatch_sample.velocity = {101, 0, 0};
+        const auto deadline = service().lease.deadline;
+        leaf.during_prepare = [deadline] { at(deadline); };
+        check(!dispatch_lead(scoped) && leaf.originals == originals && !service().lead_skipped &&
+            first_stop().origin == StopOrigin::dispatch_forwarding_expired,
+            "a prepared fallback whose lease expires before forwarding is not counted");
+        complete_and_acknowledge(handle);
+    }
+}
 struct Scenario { const char* name; void (*run)(); };
 constexpr Scenario scenarios[] = {
     {"fixed_unchanged", fixed_unchanged}, {"renew_deadline", renew_deadline}, {"renew_windows", renew_windows},
@@ -1094,6 +1321,7 @@ constexpr Scenario scenarios[] = {
     {"renew_expired_windows", renew_expired_windows}, {"renew_guard_windows", renew_guard_windows},
     {"extended_deadline_lapse", extended_deadline_lapse}, {"tick_ready_only", tick_ready_only},
     {"dispatch_entry", dispatch_entry},
+    {"lead_attachment", lead_attachment}, {"lead_dispatch", lead_dispatch}, {"lead_fallback", lead_fallback},
 };
 } // namespace dingosdk::body_follow_service::test
 

@@ -198,7 +198,7 @@ struct InputLeaseApi {
         const auto value = handle(L, p, 1); lease::Snapshot sample; lease::Reason reason{};
         if (!p.services_.game().input_lease_read(p.instance(), value.handle, sample, reason)) return failure(L, reason);
         if (!valid(value, sample)) return failure(L, "input lease sample has invalid observations");
-        lua_createtable(L, 0, 16); metadata(L);
+        lua_createtable(L, 0, 17); metadata(L);
         opaque<EpochValue>(L, epoch_type)->lease = value;
         auto* epoch = static_cast<EpochValue*>(lua_touserdata(L, -1)); epoch->sample = sample;
         lua_setfield(L, -2, "epoch");
@@ -207,6 +207,9 @@ struct InputLeaseApi {
         text(L, "context_generation", sample.context_generation);
         number(L, "user", sample.user); number(L, "packet", sample.packet);
         pad(L, sample.pad); lua_setfield(L, -2, "pad");
+        // The SDK's one rest test, which capture admission and release also use,
+        // so a plugin does not carry its own copy of the thresholds.
+        boolean(L, "neutral", input_pulse::neutral(sample.pad));
         return 1;
     }
     static int renew(lua_State* L) {

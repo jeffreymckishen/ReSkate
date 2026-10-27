@@ -7,6 +7,8 @@ namespace {
 unsigned checks{};
 const char* scenario = "";
 constexpr t::Key key{7, 1, 9, 11, 0};
+// The left stick just outside its rest radius: the smallest physical activity.
+constexpr std::int16_t past_rest = static_cast<std::int16_t>(t::left_stick_rest + 1);
 
 void check(bool value, const char* expression, const char* test, int line) {
     ++checks;
@@ -58,6 +60,65 @@ void begin_press(t::Pulse& pulse) {
     for (const auto time : {100u, 134u, 167u}) CHECK(!poll(pulse, time).press_candidate);
     CHECK(poll(pulse, 200).press_candidate);
     CHECK(pulse.release_debt());
+}
+
+// XInput's own dead zones decide rest: sticks inside a circle, triggers at or
+// under the threshold, and no button at all.
+static_assert(t::neutral({}) && t::neutral({0, 30, 30, 7849, 0, 0, -8689}));
+static_assert(!t::neutral({0, 0, 0, 7850, 0, 0, 0}) && !t::neutral({0, 0, 31, 0, 0, 0, 0}));
+void rest_thresholds_define_neutral() {
+    CHECK(t::left_stick_rest == 7849 && t::right_stick_rest == 8689 && t::trigger_rest == 30);
+    CHECK(t::neutral({0, 0, 0, 7849, 0, 0, 0}) && !t::neutral({0, 0, 0, 7850, 0, 0, 0}));
+    CHECK(t::neutral({0, 0, 0, 0, -7849, 0, 0}) && !t::neutral({0, 0, 0, 0, -7850, 0, 0}));
+    CHECK(t::neutral({0, 0, 0, 0, 0, 8689, 0}) && !t::neutral({0, 0, 0, 0, 0, 8690, 0}));
+    CHECK(t::neutral({0, 0, 0, 0, 0, 0, -8689}) && !t::neutral({0, 0, 0, 0, 0, 0, -8690}));
+    // Radial, not per-axis: each axis is inside the radius in both, but only
+    // the first diagonal is inside the circle.
+    CHECK(t::neutral({0, 0, 0, 5550, 5550, 0, 0}) && !t::neutral({0, 0, 0, 6000, 6000, 0, 0}));
+    CHECK(t::neutral({0, 0, 0, 0, 0, 6143, -6143}) && !t::neutral({0, 0, 0, 0, 0, 6200, -6200}));
+    // The left radius is the smaller one; it does not apply to the right stick.
+    CHECK(!t::neutral({0, 0, 0, 8000, 0, 0, 0}) && t::neutral({0, 0, 0, 0, 0, 8000, 0}));
+    CHECK(!t::neutral({0, 0, 0, -32768, -32768, 0, 0}) && !t::neutral({0, 0, 0, 0, 0, 32767, 32767}));
+    CHECK(t::neutral({0, 30, 0, 0, 0, 0, 0}) && !t::neutral({0, 31, 0, 0, 0, 0, 0}));
+    CHECK(t::neutral({0, 0, 30, 0, 0, 0, 0}) && !t::neutral({0, 0, 255, 0, 0, 0, 0}));
+    for (unsigned bit = 0; bit < 16; ++bit)
+        CHECK(!t::neutral({static_cast<std::uint16_t>(1u << bit), 0, 0, 0, 0, 0, 0}));
+    CHECK(t::neutral({0, 30, 12, 7000, -3000, -8000, 2000}));
+}
+
+// A controller resting in the hands warms, presses and releases a pulse. Its
+// noise passes through untouched beside the pressed button, and a stick just
+// past its rest radius is still physical activity.
+void resting_noise_pulses() {
+    constexpr t::Pad resting{0, 30, 12, 7000, -3000, -8000, 2000};
+    const auto noisy = [&](std::uint64_t ms) { auto in = input(ms); in.raw = in.returned = resting; return in; };
+    t::Pulse pulse;
+    CHECK(pulse.request(key, 0x1000, 100));
+    for (const auto time : {100u, 134u, 167u}) CHECK(!apply(pulse, noisy(time)).press_candidate);
+    const auto press = apply(pulse, noisy(200));
+    CHECK((press.press_candidate && press.pad == t::Pad{0x1000, 30, 12, 7000, -3000, -8000, 2000}));
+    CHECK(apply(pulse, noisy(300)).press_candidate && pulse.phase() == t::Phase::press);
+    const auto release = apply(pulse, noisy(400));
+    CHECK(!release.press_candidate && release.release_candidate && release.pad == resting);
+    CHECK(pulse.phase() == t::Phase::complete && !pulse.release_debt());
+
+    t::Pulse deferred;
+    begin_partial_warmup(deferred);
+    auto waiting = deferred_input(199);
+    waiting.raw = waiting.returned = resting;
+    t::Output out;
+    CHECK(deferred.defer_warmup(deferred.ticket(), waiting, out) && out.pad == resting && !out.press_candidate);
+
+    t::Pulse pushed;
+    begin_press(pushed);
+    auto active = noisy(250);
+    active.raw.left_x = active.returned.left_x = past_rest;
+    CHECK(!apply(pushed, active).press_candidate &&
+        pushed.first_rejection_mask() == t::failure_bit(t::FailedCheck::physical_activity));
+    active = noisy(260);
+    active.raw.left_x = active.returned.left_x = past_rest;
+    CHECK(!apply(pushed, active).release_candidate && pushed.release_debt());
+    CHECK(apply(pushed, noisy(270)).release_candidate && !pushed.release_debt());
 }
 
 void neutral_warmup_and_bounded_press() {
@@ -116,7 +177,7 @@ void physical_inputs_are_preserved() {
     CHECK(pulse.phase() == t::Phase::releasing && pulse.release_debt());
     CHECK(!pulse.acknowledge(key));
     in = input(270);
-    in.raw.left_x = 1;
+    in.raw.left_x = past_rest;
     in.returned = in.raw;
     CHECK(!apply(pulse, in).release_candidate && pulse.release_debt());
     CHECK(poll(pulse, 280).release_candidate && pulse.phase() == t::Phase::revoked);
@@ -208,7 +269,7 @@ void admission_failures_revoke_without_rewriting() {
     CHECK(timeout.request(key, 0x1000, 100));
     for (unsigned time = 100; time <= 1000; time += 50) {
         auto in = input(time);
-        in.raw.left_x = 1;
+        in.raw.left_x = past_rest;
         in.returned = in.raw;
         CHECK(!apply(timeout, in).press_candidate);
     }
@@ -398,7 +459,7 @@ void first_rejection_records_checks_once() {
         case Check::menu: in.menu_closed = false; break;
         case Check::native_gap: in.seconds = .5; break;
         case Check::poll_gap: in = input(351); break;
-        case Check::physical_activity: in.raw.left_x = 1; in.returned = in.raw; break;
+        case Check::physical_activity: in.raw.left_x = past_rest; in.returned = in.raw; break;
         case Check::deadline: break; // Its full lifetime is exercised separately below.
         }
         CHECK(!apply(pulse, in).press_candidate);
@@ -445,7 +506,7 @@ void first_rejection_records_checks_once() {
     t::Pulse deadline;
     CHECK(deadline.request(key, 0x1000, 100));
     for (unsigned ms = 100; ms <= 1050; ms += 50) {
-        auto waiting = input(ms); waiting.raw.left_x = 1; waiting.returned = waiting.raw;
+        auto waiting = input(ms); waiting.raw.left_x = past_rest; waiting.returned = waiting.raw;
         CHECK(!apply(deadline, waiting).press_candidate && deadline.first_rejection_mask() == 0);
     }
     (void)poll(deadline, 1100);
@@ -585,7 +646,7 @@ void rejected_deferrals_do_not_mutate_or_hide_normal_rejection() {
         case 5: in.interference_clear = false; break;
         case 6: in.returned.buttons = 2; break;
         case 7: in.raw.buttons = 2; in.returned = in.raw; break;
-        case 8: in.raw.left_x = 1; in.returned = in.raw; break;
+        case 8: in.raw.left_x = past_rest; in.returned = in.raw; break;
         case 9: in.focused = false; break;
         case 10: in.gameplay = false; break;
         case 11: in.menu_closed = false; break;
@@ -678,6 +739,8 @@ void deferral_cannot_reenter_after_assertion_or_retirement() {
 }
 
 int main() {
+    rest_thresholds_define_neutral();
+    resting_noise_pulses();
     neutral_warmup_and_bounded_press();
     repeated_native_sample_cannot_launch();
     physical_inputs_are_preserved();

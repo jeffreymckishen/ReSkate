@@ -5,6 +5,37 @@
 
 namespace dingosdk::input_lease_capture {
 using Pad = input_pulse::Pad;
+// Controls a release has not yet handed back to the game. Each stays neutral in
+// the game's report until the source first shows it at rest (input_pulse's rest
+// thresholds), so a control held through the handoff reaches the game later as
+// a new press or push, never as a sudden one. Every other control passes.
+struct Held {
+    std::uint16_t buttons{};
+    bool left_trigger{}, right_trigger{}, left_stick{}, right_stick{};
+    bool operator==(const Held&) const = default;
+    static constexpr Held all() noexcept { return {0xffff, true, true, true, true}; }
+    constexpr bool any() const noexcept { return buttons || left_trigger || right_trigger || left_stick || right_stick; }
+    constexpr void rest(const Pad& raw) noexcept {
+        buttons = static_cast<std::uint16_t>(buttons & raw.buttons);
+        left_trigger = left_trigger && !input_pulse::trigger_at_rest(raw.left_trigger);
+        right_trigger = right_trigger && !input_pulse::trigger_at_rest(raw.right_trigger);
+        left_stick = left_stick && !input_pulse::stick_at_rest(raw.left_x, raw.left_y, input_pulse::left_stick_rest);
+        right_stick = right_stick && !input_pulse::stick_at_rest(raw.right_x, raw.right_y, input_pulse::right_stick_rest);
+    }
+    constexpr void hold(const Held& more) noexcept {
+        buttons = static_cast<std::uint16_t>(buttons | more.buttons);
+        left_trigger = left_trigger || more.left_trigger; right_trigger = right_trigger || more.right_trigger;
+        left_stick = left_stick || more.left_stick; right_stick = right_stick || more.right_stick;
+    }
+    constexpr Pad mask(Pad pad) const noexcept {
+        pad.buttons = static_cast<std::uint16_t>(pad.buttons & ~buttons);
+        if (left_trigger) pad.left_trigger = 0;
+        if (right_trigger) pad.right_trigger = 0;
+        if (left_stick) pad.left_x = pad.left_y = 0;
+        if (right_stick) pad.right_x = pad.right_y = 0;
+        return pad;
+    }
+};
 struct Key {
     std::uint64_t owner{}, lease_sequence{}, source_epoch{}, context_generation{};
     std::uint32_t user{};
@@ -32,10 +63,13 @@ struct Input {
     bool outer_game_poll{}, has_output{}, source_connected{};
 };
 struct Ticket { std::uint64_t generation{}; };
+// held is what stays held back after this report: on a release, what the caller
+// keeps holding back from the stream once the capture itself has completed.
 struct Plan {
     Pad pad{};
     std::uint64_t generation{}, revision{}, observation_serial{};
     bool suppress{}, start{}, release{};
+    Held held{};
     bool operator==(const Plan&) const = default;
 };
 struct Receipt {
@@ -53,6 +87,9 @@ struct Receipt {
 class Capture {
 public:
     static constexpr std::uint64_t maximum_age_ms = 100, maximum_lifetime_ms = 250;
+    // A release ends within this bound of its first sync or plan, so a pad
+    // that never reads neutral cannot hold the slot, or the game's input, for good.
+    static constexpr std::uint64_t maximum_release_ms = 1000;
     explicit Capture(std::uint64_t generation = 0, std::uint64_t revision = 0) noexcept {
         receipt_.generation = generation; receipt_.revision = revision;
     }
@@ -77,11 +114,15 @@ public:
         last_observed_ms_ = in.observed_ms;
         last_now_ = in.now_ms;
         pending_ = {};
+        held_ = {}; release_started_ms_ = 0;
         return true;
     }
 
     Ticket ticket() const noexcept { return {receipt_.generation}; }
     const Receipt& state() const noexcept { return receipt_; }
+    // What an open release still holds back, for the caller to keep neutral in
+    // a report the capture does not write itself. Nothing outside a release.
+    Held held() const noexcept { return receipt_.phase == Phase::releasing ? held_ : Held{}; }
     bool reserved() const noexcept { return receipt_.phase != Phase::idle && receipt_.phase != Phase::complete; }
 
     // The broker calls this with its verified new deadline after an exact issued
@@ -116,8 +157,12 @@ public:
         if (receipt_.phase != Phase::releasing) {
             receipt_.phase = Phase::releasing;
             receipt_.reason = Reason::interference;
+            release_started_ms_ = 0;
             bump(receipt_.generation); bump(receipt_.revision);
         }
+        // That fallback is one full neutral report, which takes back any control
+        // a release had already handed back, so each must rest again first.
+        held_ = Held::all();
         pending_ = {};
         return true;
     }
@@ -131,6 +176,11 @@ public:
     void continuation_result(Key key, bool published) noexcept {
         if (key != receipt_.key || !receipt_.debt ||
             (receipt_.phase != Phase::capturing && receipt_.phase != Phase::releasing)) return;
+        // The caller wrote that report fully neutral, so a control the release
+        // had handed back went up with it. Hold every control again until it is
+        // seen at rest, or the next report would press it a second time. The
+        // release bound is unchanged.
+        if (receipt_.phase == Phase::releasing) held_ = Held::all();
         if (published) bump(receipt_.publications);
         else {
             revoke(Reason::publication_unconfirmed);
@@ -144,8 +194,18 @@ public:
         if (receipt_.phase == Phase::idle || receipt_.phase == Phase::complete || receipt_.phase == Phase::releasing) return;
         receipt_.reason = reason;
         receipt_.phase = receipt_.debt ? Phase::releasing : Phase::complete;
+        held_ = receipt_.debt ? Held::all() : Held{}; release_started_ms_ = 0;
         bump(receipt_.generation); bump(receipt_.revision);
         pending_ = {};
+    }
+
+    // The native service calls this under the same gate on each sync, with its
+    // time and whether the captured stream is still connected under its epoch.
+    // It starts the release clock. A stream that is gone can never show its
+    // controls at rest, so its release ends at the bound, quarantined and without
+    // a neutral release, instead of reserving the slot and blocking pulses forever.
+    void sync(std::uint64_t now_ms, bool source_present) noexcept {
+        if (receipt_.phase == Phase::releasing && release_due(now_ms) && !source_present) end_lost_release();
     }
 
     Plan plan(Ticket ticket, const Input& in) noexcept {
@@ -156,7 +216,11 @@ public:
         const auto& key = receipt_.key;
         const bool same_source = in.source_connected && in.source_epoch == key.source_epoch && in.source_epoch;
         receipt_.quarantined = receipt_.debt && !same_source;
-        if (!same_source) { revoke(Reason::source_changed); return pass; }
+        if (!same_source) {
+            revoke(Reason::source_changed);
+            if (receipt_.phase == Phase::releasing && release_due(in.now_ms)) end_lost_release();
+            return pass;
+        }
         if (!in.has_output || in.original_result != 0 || in.returned_result != in.original_result) {
             revoke(Reason::interference); return pass;
         }
@@ -175,16 +239,31 @@ public:
             else if (in.now_ms >= receipt_.expires_ms) revoke(Reason::deadline);
         }
         if (receipt_.phase == Phase::complete) return pass;
-        // An independently owned filter/report wins. Keep our debt and source
+        // Rest is a physical fact of this fresh, in-order original, whoever owns
+        // the report: a control seen at rest leaves the held set even when
+        // another filter's report wins below, so interference cannot strand it.
+        if (receipt_.phase == Phase::releasing) held_.rest(in.raw);
+        // An independently owned filter/report wins, except that the caller keeps
+        // what is still held neutral in it (held()). Keep our debt and source
         // reservation, and wait for a clean same-source handoff opportunity.
         if (!in.safety.interference_clear || in.returned != in.raw) {
             revoke(Reason::interference); return pass;
         }
+        // A resting pad is neutral (input_pulse::neutral), not only an exact zero
+        // one. Capturing still writes an exact neutral report.
         if (receipt_.phase == Phase::waiting_neutral &&
-            (in.observation_serial <= admission_serial_ || in.raw != Pad{})) return pass;
+            (in.observation_serial <= admission_serial_ || !input_pulse::neutral(in.raw))) return pass;
         pending_ = {{}, receipt_.generation, receipt_.revision, in.observation_serial, true,
-                    receipt_.phase == Phase::waiting_neutral,
-                    receipt_.phase == Phase::releasing && in.raw == Pad{}};
+                    receipt_.phase == Phase::waiting_neutral, false};
+        if (receipt_.phase == Phase::releasing) {
+            // Each control was handed back above the first time the source showed
+            // it at rest; the rest stay neutral, so a resting pad finishes on this
+            // report. At the bound the capture finishes anyway; what is still held
+            // goes back to the caller in the plan to keep holding back.
+            pending_.pad = held_.mask(in.raw);
+            pending_.release = !held_.any() || release_due(in.now_ms);
+            pending_.held = held_;
+        }
         return pending_;
     }
 
@@ -204,6 +283,7 @@ public:
         if (plan.release) {
             receipt_.debt = false;
             receipt_.phase = Phase::complete;
+            held_ = {};
             bump(receipt_.neutral_releases);
             bump(receipt_.generation); bump(receipt_.revision);
         } else {
@@ -218,6 +298,7 @@ public:
         const auto generation = receipt_.generation, revision = receipt_.revision;
         receipt_ = {}; receipt_.generation = generation; receipt_.revision = revision;
         pending_ = {};
+        held_ = {}; release_started_ms_ = 0;
         return true;
     }
 
@@ -225,6 +306,22 @@ private:
     static constexpr auto maximum = std::numeric_limits<std::uint64_t>::max();
     static void bump(std::uint64_t& value) noexcept { if (value != maximum) ++value; }
     static bool fail(Reason& out, Reason reason) noexcept { out = reason; return false; }
+    // Starts the release clock on its first call and says whether the bound has
+    // passed. A regressed clock never brings the bound forward.
+    bool release_due(std::uint64_t now_ms) noexcept {
+        if (!now_ms) return false;
+        if (!release_started_ms_) release_started_ms_ = now_ms;
+        return now_ms >= release_started_ms_ && now_ms - release_started_ms_ >= maximum_release_ms;
+    }
+    // The stream this release owed has gone: the game already had its failure
+    // or a new epoch's report, and a new epoch never inherits the old one's
+    // held controls. The receipt says quarantined and adds no neutral release.
+    void end_lost_release() noexcept {
+        receipt_.phase = Phase::complete;
+        receipt_.debt = false; receipt_.quarantined = true;
+        held_ = {}; pending_ = {};
+        bump(receipt_.generation); bump(receipt_.revision);
+    }
     static bool valid(Key key) noexcept {
         return key.owner && key.lease_sequence && key.source_epoch && key.context_generation && key.user < 4;
     }
@@ -248,6 +345,8 @@ private:
     }
     Receipt receipt_{};
     Plan pending_{};
+    Held held_{};
     std::uint64_t last_sequence_{}, admission_serial_{}, last_serial_{}, last_observed_ms_{}, last_now_{};
+    std::uint64_t release_started_ms_{};
 };
 }

@@ -405,6 +405,29 @@ void physical_conflict() {
     check(read(h).report_debt && read(h).neutral_publications == 0, "physical conflict retains potential release duty");
     (void)frame(280); retire(281);
 }
+// A controller resting in the hands reports noise inside XInput's dead zones.
+// The actual service warms, presses and releases on it, and the noise reaches
+// the game untouched beside the pressed button.
+void resting_noise() {
+    Frame resting; resting.raw = resting.transformed = {0, 30, 12, 7000, -3000, -8000, 2000};
+    const auto reported = [&](std::uint64_t ms, const XINPUT_GAMEPAD& expected) {
+        const auto out = frame(ms, resting);
+        return std::memcmp(&out.value.Gamepad, &expected, sizeof(expected)) == 0;
+    };
+    time(100); service::tick(1, 2, true); (void)frame(100, resting);
+    const auto h = request();
+    for (const auto ms : {100u, 134u, 167u})
+        check(reported(ms, resting.raw), "resting warmup publishes no press and leaves the noise untouched");
+    auto pressed = resting.raw; pressed.wButtons = 0x1000;
+    check(reported(200, pressed), "a resting pad warms, and the press keeps its noise beside the button");
+    check(reported(300, pressed), "resting noise does not end the bounded press as physical activity");
+    check(reported(400, resting.raw) && !read(h).report_debt && read(h).neutral_publications == 1,
+        "a resting report is the release witness");
+    retire(401);
+    const auto result = read(h);
+    check(result.status == model::Status::released && result.claim_released && result.first_rejection_mask == 0,
+        "a resting pad's pulse releases normally");
+}
 void actor_clock_lost() {
     namespace observed = dingosdk::actor_observation;
     prime(100); const auto deferred_handle = request();
@@ -634,6 +657,7 @@ int main(int argc, char** argv) {
     else if (name == "acquire_failure" || name == "clock_enable_failure" || name == "clock_retire_failure") provider_failure(name);
     else if (name == "publication_deadline") publication_deadline();
     else if (name == "physical_conflict") physical_conflict();
+    else if (name == "resting_noise") resting_noise();
     else if (name == "actor_clock_lost") actor_clock_lost();
     else if (name == "environment_guards") environment_guards();
     else { std::cerr << "unknown scenario: " << name << '\n'; return 2; }

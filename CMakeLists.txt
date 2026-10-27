@@ -550,7 +550,7 @@ if(DINGOSDK_BUILD_PLUGIN_TESTS)
         target_compile_definitions(dingosdk_game_input_pulse_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
         foreach(scenario lifecycle rate capacity cancel_inflight unload_inflight disconnect original_failure filter_equal_bytes
                 source_stale packet_domain packet_wrap acquire_failure clock_enable_failure clock_retire_failure
-                publication_deadline physical_conflict actor_clock_lost environment_guards)
+                publication_deadline physical_conflict resting_noise actor_clock_lost environment_guards)
             add_test(NAME game_input_pulse_${scenario} COMMAND dingosdk_game_input_pulse_tests ${scenario})
             set_tests_properties(game_input_pulse_${scenario} PROPERTIES TIMEOUT 15)
         endforeach()
@@ -571,7 +571,9 @@ if(DINGOSDK_BUILD_PLUGIN_TESTS)
         target_compile_definitions(dingosdk_input_lease_capture_native_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
         foreach(scenario lifecycle staged_race staged_race_failed_write warming_race_failed_write failed_owned_write
                 original_failure original_failure_passthrough unknown_original unknown_original_stale owner_release
-                source_epoch pulse_exclusion packet_continuity older_capturing_held older_capturing_neutral
+                source_epoch resting_noise held_release held_bound held_interference continuation_rearm
+                pulse_exclusion packet_continuity
+                older_capturing_held older_capturing_neutral
                 older_releasing_held older_releasing_neutral older_complete_held older_complete_neutral
                 long_delay_held long_delay_neutral equal_capturing_held equal_capturing_neutral equal_releasing_held
                 equal_releasing_neutral equal_complete_held equal_complete_neutral preacquire_inflight

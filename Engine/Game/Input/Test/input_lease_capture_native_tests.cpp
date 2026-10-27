@@ -232,6 +232,10 @@ Frame physical(std::uint32_t user = 0) {
     f.raw = f.candidate = {0xA905, 17, 231, -32768, 32767, -12345, 23456};
     return f;
 }
+Frame controls(XINPUT_GAMEPAD pad) {
+    Frame f; f.raw = f.candidate = pad;
+    return f;
+}
 Buffer original_buffer(const Frame& f) {
     Buffer out; out.value.dwPacketNumber = f.prior_packet; out.value.Gamepad = f.raw; return out;
 }
@@ -256,6 +260,9 @@ Result frame(std::uint64_t ms, Frame f = {}) {
 }
 void prime(std::uint64_t ms) {
     fixture::time(ms); service::tick(1, 2, true); (void)frame(ms);
+}
+bool reported(const Result& result, XINPUT_GAMEPAD expected) {
+    return std::memcmp(&result.output.value.Gamepad, &expected, sizeof(expected)) == 0;
 }
 lease::Handle lease_request(std::uint64_t owner = 21) {
     lease::Handle handle; lease::Reason reason{};
@@ -476,6 +483,157 @@ void source_epoch() {
     model::Handle blocked; model::Reason reason{};
     check(!service::request(55, 0, 0x1000, blocked, reason) && reason == model::Reason::busy && !env.acquire_calls,
         "quarantined capture debt blocks pulse admission before actor access");
+    // The old stream is gone, so nothing can ever rest for it. The release clock
+    // started with the loss at 130; at its bound the capture ends quarantined,
+    // with no neutral release, instead of blocking the slot forever.
+    (void)frame(130 + capture::Capture::maximum_release_ms - 1);
+    check(state(handle).phase == capture::Phase::releasing && state(handle).debt,
+        "inside the release bound the lost stream's debt still reserves the slot");
+    (void)frame(130 + capture::Capture::maximum_release_ms);
+    const auto ended = state(handle);
+    check(ended.phase == capture::Phase::complete && !ended.debt && ended.quarantined && ended.neutral_releases == 0 &&
+        ended.publications == stopped.publications, "at the bound a lost stream's release ends quarantined, unwitnessed");
+    check(service::capture_acknowledge(21, handle), "the ended capture acknowledges after its polls drain");
+    source_cleanup(handle); no_actor_calls();
+    prime(env.wall + 1);
+    const auto pulse = fixture::request(55);
+    check(env.acquire_calls == 1, "the freed slot admits a pulse again");
+    check(service::cancel(55, pulse), "fixture cancels unstarted pulse");
+    fixture::retire(env.wall + 1);
+    check(service::acknowledge(55, pulse), "pulse claim cleanup remains independent after capture");
+}
+// A controller resting in the hands is neutral: stick and trigger noise inside
+// XInput's dead zones starts and ends capture. A stick pushed past its radius
+// (diagonally too), a trigger past its threshold or any button does not, and
+// meanwhile reaches the game unchanged.
+void resting_noise() {
+    const auto handle = arm(100, false);
+    const XINPUT_GAMEPAD resting{0, 30, 30, 7000, -3000, -8000, 2000};
+    for (const auto active : {XINPUT_GAMEPAD{0, 0, 0, 6000, 6000, 0, 0}, XINPUT_GAMEPAD{0, 0, 0, 0, 0, 0, 8690},
+             XINPUT_GAMEPAD{0, 31, 0, 0, 0, 0, 0}, XINPUT_GAMEPAD{XINPUT_GAMEPAD_BACK, 0, 0, 0, 0, 0, 0}}) {
+        const auto out = frame(env.wall + 10, controls(active));
+        check(reported(out, active) && state(handle).phase == capture::Phase::waiting_neutral && !state(handle).debt,
+            "a pushed stick, held trigger or button is not neutral and passes while capture waits");
+    }
+    check(reported(frame(env.wall + 10, controls(resting)), {}) && state(handle).phase == capture::Phase::capturing &&
+        state(handle).debt && state(handle).publications == 1,
+        "resting noise starts capture, and capture writes an exact neutral report");
+    check(reported(frame(env.wall + 10, physical()), {}), "capture still suppresses every control");
+    check(service::capture_release(21, handle), "owner ends capture");
+    check(reported(frame(env.wall + 10, controls(resting)), resting),
+        "the resting report completes the handoff and reaches the game as it is");
+    const auto done = state(handle);
+    check(done.phase == capture::Phase::complete && !done.debt && done.neutral_releases == 1 && !done.quarantined,
+        "a resting pad releases on its first fresh report");
+    check(service::capture_acknowledge(21, handle), "resting handoff acknowledges after poll drain");
+    source_cleanup(handle); no_actor_calls();
+}
+// Controls held through the handoff stay neutral until each is seen at rest;
+// every other control reaches the game at once. A button held through the
+// handoff reaches the game only later, as a new press.
+void held_release() {
+    const auto handle = arm();
+    const WORD a = XINPUT_GAMEPAD_A, b = XINPUT_GAMEPAD_B;
+    check(reported(frame(130, controls({a, 0, 0, 20000, 0, 0, 0})), {}), "capture suppresses the held button and stick");
+    check(service::capture_release(21, handle), "owner ends capture while A and the left stick are held");
+    check(reported(frame(140, controls({a, 0, 0, 20000, 0, 0, 0})), {}),
+        "the first releasing report holds back A and the pushed stick");
+    check(reported(frame(150, controls({a, 0, 200, 0, 0, 0, 0})), {0, 0, 200, 0, 0, 0, 0}),
+        "a control seen at rest (the right trigger) reaches the game at once while A stays out");
+    check(reported(frame(160, controls({static_cast<WORD>(a | b), 0, 0, 20000, 0, 0, 0})), {b, 0, 0, 20000, 0, 0, 0}),
+        "the stick, seen at rest, is handed back, so a new push reaches the game, as does B; A stays out");
+    auto receipt = state(handle);
+    check(receipt.phase == capture::Phase::releasing && receipt.debt && receipt.neutral_releases == 0,
+        "a held A keeps the release open");
+    check(reported(frame(170, controls({b, 0, 0, 0, 0, 0, 0})), {b, 0, 0, 0, 0, 0, 0}),
+        "releasing A completes the handoff with this report");
+    receipt = state(handle);
+    check(receipt.phase == capture::Phase::complete && !receipt.debt && receipt.neutral_releases == 1,
+        "the handoff is a witnessed neutral release");
+    check(reported(frame(180, controls({a, 0, 0, 0, 0, 0, 0})), {a, 0, 0, 0, 0, 0, 0}), "a new A press reaches the game");
+    check(service::capture_acknowledge(21, handle), "held handoff acknowledges after poll drain");
+    source_cleanup(handle); no_actor_calls();
+}
+// A report another filter owns during a release passes as it is, except what the
+// release still holds back: A and the stick held through the stop never reach
+// the game as a sudden press and turn. Rest is a physical fact, so the stick,
+// seen at rest under that filter, is handed back all the same, and only a clean
+// report completes the handoff.
+void held_interference() {
+    const auto handle = arm();
+    const WORD a = XINPUT_GAMEPAD_A;
+    auto held = controls({a, 0, 0, 20000, 0, 0, 0});
+    check(reported(frame(130, held), {}), "capture suppresses the held button and stick");
+    held.clean = false;
+    check(reported(frame(140, held), {}) && state(handle).phase == capture::Phase::releasing && state(handle).debt,
+        "interference ends capture, and its report still holds A and the pushed stick back");
+    auto rested = controls({a, 0, 0, 0, 0, 0, 0}); rested.clean = false;
+    check(reported(frame(150, rested), {}), "under interference A stays out");
+    auto pushed = controls({a, 0, 90, 20000, 0, 0, 0}); pushed.clean = false;
+    check(reported(frame(160, pushed), {0, 0, 90, 20000, 0, 0, 0}),
+        "the stick, seen at rest under interference, is handed back, so a new push passes; A stays out");
+    check(state(handle).phase == capture::Phase::releasing && state(handle).debt && !state(handle).neutral_releases,
+        "an interfered report never completes the handoff");
+    check(reported(frame(170, controls({})), {}), "a clean resting report completes the handoff");
+    const auto receipt = state(handle);
+    check(receipt.phase == capture::Phase::complete && !receipt.debt && receipt.neutral_releases == 1,
+        "the clean handoff is a witnessed neutral release");
+    check(reported(frame(180, controls({a, 0, 0, 0, 0, 0, 0})), {a, 0, 0, 0, 0, 0, 0}), "a new A press reaches the game");
+    check(service::capture_acknowledge(21, handle), "interfered handoff acknowledges after poll drain");
+    source_cleanup(handle); no_actor_calls();
+}
+// A delayed same-key completion during a release is written fully neutral, which
+// takes back a control the release had already handed back. The hold is re-armed
+// with it: A, handed back and pressed, goes up with that report and stays out
+// until it rests, so the game never sees a second A press the player did not make.
+void continuation_rearm() {
+    const auto handle = arm();
+    const WORD a = XINPUT_GAMEPAD_A;
+    check(service::capture_release(21, handle), "owner ends capture with the left stick pushed");
+    fixture::time(135); auto old = controls({0, 0, 0, 20000, 0, 0, 0}); old.original_ms = 135;
+    {
+        service::Poll poll; service::begin(true, 0, poll);
+        check(reported(frame(140, controls({0, 0, 0, 20000, 0, 0, 0})), {}), "the pushed stick stays held back");
+        check(reported(frame(150, controls({a, 0, 0, 20000, 0, 0, 0})), {a, 0, 0, 0, 0, 0, 0}),
+            "A, seen at rest and handed back, is pressed and reaches the game");
+        env.wall = 160;
+        Buffer out = original_buffer(old);
+        check(finish(poll, old, revision(), &out) == ERROR_SUCCESS, "delayed original keeps its successful transport");
+        const XINPUT_GAMEPAD neutral{};
+        check(std::memcmp(&out.value.Gamepad, &neutral, sizeof(neutral)) == 0, "the delayed report is written fully neutral");
+    }
+    check(reported(frame(170, controls({a, 0, 0, 20000, 0, 0, 0})), {}), "A, still held after that report, stays out");
+    check(reported(frame(180, controls({a, 0, 0, 0, 0, 0, 0})), {}), "and stays out once the stick rests");
+    check(state(handle).phase == capture::Phase::releasing && state(handle).debt, "the re-held A keeps the release open");
+    check(reported(frame(190, controls({})), {}) && state(handle).phase == capture::Phase::complete &&
+        !state(handle).debt, "releasing A completes the handoff");
+    check(reported(frame(200, controls({a, 0, 0, 0, 0, 0, 0})), {a, 0, 0, 0, 0, 0, 0}), "a new A press reaches the game");
+    check(service::capture_acknowledge(21, handle), "re-armed handoff acknowledges after poll drain");
+    source_cleanup(handle); no_actor_calls();
+}
+// A pad that never rests cannot keep the slot. The release completes at its
+// bound, the slot frees, and A, still held, stays out of the game until it is
+// released, so it never arrives as a sudden press.
+void held_bound() {
+    const auto handle = arm();
+    const WORD a = XINPUT_GAMEPAD_A;
+    check(service::capture_release(21, handle), "owner ends capture with A held");
+    check(reported(frame(140, controls({a, 0, 0, 0, 0, 0, 0})), {}), "the release clock starts with A held back");
+    check(reported(frame(140 + capture::Capture::maximum_release_ms - 1, controls({a, 0, 0, 0, 0, 0, 0})), {}) &&
+        state(handle).phase == capture::Phase::releasing && state(handle).debt,
+        "inside its bound a held A keeps the release open");
+    const auto bounded = frame(140 + capture::Capture::maximum_release_ms, controls({a, 0, 0, 0, 0, 0, 0}));
+    const auto receipt = state(handle);
+    check(reported(bounded, {}) && receipt.phase == capture::Phase::complete && !receipt.debt &&
+        receipt.neutral_releases == 1 && !receipt.quarantined, "at the bound the release completes while holding A back");
+    check(service::capture_acknowledge(21, handle), "the slot frees with A still held");
+    source_cleanup(handle);
+    const auto base = env.wall;
+    check(reported(frame(base + 10, controls({a, 0, 90, 0, 0, 0, 0})), {0, 0, 90, 0, 0, 0, 0}),
+        "after the slot frees, A held through the handoff still never reaches the game; other controls do");
+    check(reported(frame(base + 20, {}), {}), "A released");
+    check(reported(frame(base + 30, controls({a, 0, 0, 0, 0, 0, 0})), {a, 0, 0, 0, 0, 0, 0}),
+        "once seen at rest, a new A press reaches the game");
     no_actor_calls();
 }
 void pulse_exclusion() {
@@ -664,6 +822,11 @@ int main(int argc, char** argv) {
     else if (name == "unknown_original_stale") capture_fixture::unknown_original(true);
     else if (name == "owner_release") capture_fixture::owner_release();
     else if (name == "source_epoch") capture_fixture::source_epoch();
+    else if (name == "resting_noise") capture_fixture::resting_noise();
+    else if (name == "held_release") capture_fixture::held_release();
+    else if (name == "held_bound") capture_fixture::held_bound();
+    else if (name == "held_interference") capture_fixture::held_interference();
+    else if (name == "continuation_rearm") capture_fixture::continuation_rearm();
     else if (name == "pulse_exclusion") capture_fixture::pulse_exclusion();
     else if (name == "packet_continuity") capture_fixture::packet_continuity();
     else if (name == "older_capturing_held") capture_fixture::delayed(capture_fixture::HeldPhase::capturing, false);

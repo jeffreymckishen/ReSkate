@@ -1,0 +1,2 @@
+# The stager pins exact bytes; preserve reviewed source on checkout.
+* -text

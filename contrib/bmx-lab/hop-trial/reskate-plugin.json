@@ -1,0 +1,6 @@
+{
+  "api": 1,
+  "entry": "plugin/main.lua",
+  "side": "client",
+  "permissions": ["input", "input.control", "input.lease", "input.capture", "skater.read", "skater.animation", "menu", "storage", "overlay", "board", "world.physics", "world.physics.follow", "world.entities", "world.raycast"]
+}

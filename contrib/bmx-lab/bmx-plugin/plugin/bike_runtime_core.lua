@@ -38,9 +38,21 @@ local LEASE_MARGIN_MS=150
 -- S2's fixed report bounds. A report that disagrees is refused, not used.
 local RENEWAL_WINDOW_MS=500
 local LIFETIME_CEILING_MS=120000
+-- The longest step Core accepts: a larger dt stops the ride as a stalled tick.
+local MAX_TICK_MS=250
+-- A renewable Follow is renewed on its first following tick (see
+-- renew_follow_once), then only when Core's lease has less than this left, not
+-- on every following tick (S1b in game: 137 us a renewal). It is the 150 ms
+-- margin, the longest gap to the next tick that Core accepts (MAX_TICK_MS), and
+-- 75 ms of that tick's own reads before its renewal, so a lease not renewed now
+-- is still live, with its margin, when the next tick renews. An accepted
+-- renewal leaves RENEWAL_WINDOW_MS, which must be more. After the first tick's
+-- renewal, Core renews none while this much or more is left (about the first
+-- 2.5 s of the 3 s base lease), and then every second tick at 60 Hz.
+local RENEW_BELOW_MS=LEASE_MARGIN_MS+MAX_TICK_MS+75
 local LEASE_REPORT="world.physics.read_follow_lease"
--- S2 accepts one renewal a plugin tick; a renewable Core asks once a following
--- tick, after the body read, and never twice in one tick.
+-- S2 accepts one renewal a plugin tick; a renewable Core asks at most once a
+-- following tick, after the body read, and only below RENEW_BELOW_MS.
 local RENEW_FOLLOW="world.physics.renew_follow"
 local SDK_RENEWALS_PER_TICK=1
 local RENEWALS_PER_TICK=1
@@ -62,8 +74,10 @@ assert(2+PROBE_BATCHES_PER_SERIAL<=FOLLOW_READS_PER_TICK and FOLLOW_READS_PER_TI
     and LEASE_READS_PER_TICK<=SDK_LEASE_READS_PER_TICK and CLEANUP_READS*FOLLOW_POLL_MS>=CLEANUP_WATCHDOG_MS
     and RENEWALS_PER_TICK<=SDK_RENEWALS_PER_TICK,
     "Follow read budget exceeds the SDK's per-tick quota or the cleanup watchdog")
+assert(RENEW_BELOW_MS<RENEWAL_WINDOW_MS and RENEW_BELOW_MS<BASE_LEASE_MS,"a renewal must outlast its threshold")
 BikeRuntime.ride_limits=table.freeze({ride_window_ms=RIDE_WINDOW_MS,base_lease_ms=BASE_LEASE_MS,
     lease_margin_ms=LEASE_MARGIN_MS,renewal_window_ms=RENEWAL_WINDOW_MS,lifetime_ceiling_ms=LIFETIME_CEILING_MS,
+    max_tick_ms=MAX_TICK_MS,renew_below_ms=RENEW_BELOW_MS,
     renewals_per_tick=RENEWALS_PER_TICK,sdk_renewals_per_tick=SDK_RENEWALS_PER_TICK,
     follow_renewal_qualified=FOLLOW_RENEWAL_QUALIFIED,
     follow_reads_per_tick=FOLLOW_READS_PER_TICK,lease_reads_per_tick=LEASE_READS_PER_TICK,
@@ -163,6 +177,58 @@ function BikeRuntime.renewal_outcome(lease_until,before,r)
         return lease_until,renewal_refusals[v] or "wait",v
     end
     return lease_until,"wait","renewal returned malformed results"
+end
+
+-- An upper bound on the bytes reskate.json.encode makes of a value, or nil
+-- where Core gives none; Core's ledger size check then encodes the ledger as
+-- before. Under the 48000-byte limit the ledger fits, so a save skips that
+-- encode and the ledger is converted once, by storage.set (S1b in game: 641 us
+-- an encode, besides storage.set's own conversion). The bound follows the
+-- SDK's writer (lua_to_json, then RapidJSON): an integral number within 2^53
+-- is an integer of at most 17 bytes and any other finite number at most 26; a
+-- string is quoted, with only '"', '\' and control bytes escaped, at most 6
+-- bytes each; a list is keys 1 to n alone, and mixed keys are refused. A
+-- string with a byte above 127 gets no bound, as the writer validates UTF-8.
+-- A table frozen all through cannot change, so its bound is kept.
+local bound_cache=setmetatable({},{__mode="k"})
+local function json_bound(value,depth)
+    local kind=type(value)
+    if kind=="boolean" then return 5,true end
+    if kind=="number" then
+        if value~=value or math.abs(value)==math.huge then return nil end
+        return (value%1==0 and math.abs(value)<=9007199254740992) and 17 or 26,true
+    end
+    if kind=="string" then
+        if not string.find(value,'[%c"\\\128-\255]') then return #value+2,true end
+        if string.find(value,"[\128-\255]") then return nil end
+        local _,special=string.gsub(value,'[%c"\\]',"")
+        return #value+2+5*special,true
+    end
+    if kind~="table" or depth>32 or getmetatable(value)~=nil then return nil end
+    local known=bound_cache[value]
+    if known then return known,true end
+    local length,count,named,listed,frozen=#value,0,false,false,table.isfrozen(value)
+    local n=2
+    for k,v in pairs(value) do
+        count+=1
+        local inner,inner_frozen=json_bound(v,depth+1)
+        if not inner then return nil end
+        frozen=frozen and inner_frozen
+        if type(k)=="string" then
+            local key=json_bound(k,depth+1)
+            if not key then return nil end
+            named=true;n+=key+1+inner
+        elseif type(k)=="number" and k%1==0 and k>=1 and k<=length then listed=true;n+=inner
+        else return nil end
+        n+=1 -- A comma; one more than the writer makes.
+    end
+    if listed and (named or count~=length) then return nil end
+    if frozen then bound_cache[value]=n end
+    return n,frozen
+end
+function BikeRuntime.ledger_bound(value)
+    local ok,n=pcall(json_bound,value,0)
+    return ok and n or nil
 end
 
 local pad_axes={"left_x","left_y","right_x","right_y","left_trigger","right_trigger"}
@@ -366,15 +432,6 @@ local function lookup(path)
     for i=1,#parts do value=type(value)=="table" and value[parts[i]] or nil end
     return type(value)=="function" and value or nil
 end
--- The calls that only read what an owner check reads: the clock, the six
--- readiness facts, the Follow receipt and Source's three lease reads (and the
--- authorize call that makes them). Every other recorded call counts in
--- effects, so a check can tell whether anything that could change those facts,
--- that Follow or that lease has run since an earlier check read them.
-local guard_reads={["time.now"]=true,["input.focus"]=true,["input.allowed"]=true,["menu.game"]=true,
-    ["skater.get"]=true,["skater.telemetry"]=true,["level.current"]=true,["follow.read"]=true,
-    ["input.lease_read"]=true,["input.lease_state"]=true,["input.lease_capture_state"]=true,["source.authorize"]=true}
-local effects=0
 -- plain's record of deep-frozen tables it may share (see frozen_shape).
 local shapes=setmetatable({},{__mode="k"})
 local row_shapes={}
@@ -401,7 +458,6 @@ local function event(name, result)
     local n=#calls
     if n==64 then table.remove(calls,1);T.omitted_calls+=1;n=63 end
     calls[n+1]=row
-    if not guard_reads[name] then effects+=1 end
 end
 local function call(name, fn, ...)
     local result=table.pack(pcall(fn,...))
@@ -638,17 +694,31 @@ snapshot=function()
         geometry_scope="Original actor+3m/+0.5m spawn; COM attachment and anchor remain unqualified",
         evidence_scope="Host storage cache acceptance only; no disk durability, native consumption or mounted success inferred"})
 end
+-- Tick-end saves are throttled: every 200 ms, and every second while
+-- following (S1b in game: a save and its encode took 1.6 ms, five times a
+-- second). Forced saves (each phase change, publication, stop and terminal
+-- receipt) are never throttled.
+local SAVE_MS,FOLLOW_SAVE_MS,LEDGER_LIMIT=200,1000,48000
 local function persist(force)
     if not T.ledger_owned or T.saving or T.storage_fault then return false end
-    if not force and T.saved_at and T.now and T.now-T.saved_at<200 then
+    local throttle=T.phase=="following" and not T.stop_latched and FOLLOW_SAVE_MS or SAVE_MS
+    if not force and T.saved_at and T.now and T.now-T.saved_at<throttle then
         -- A quiescent tick makes no later tick-end save; it flushes this once.
         T.persist_dirty=true;return true
     end
     T.saving=true
     local ok,record=pcall(snapshot)
-    local encoded=ok and call("json.encode",lookup("json.encode"),record) or nil
+    local fits=false
+    if ok then
+        local bound=BikeRuntime.ledger_bound(record)
+        fits=bound~=nil and bound<=LEDGER_LIMIT
+        if not fits then
+            local encoded=call("json.encode",lookup("json.encode"),record)
+            fits=encoded[1] and encoded.n==2 and type(encoded[2])=="string" and #encoded[2]<=LEDGER_LIMIT
+        end
+    end
     local accepted=false
-    if encoded and encoded[1] and encoded.n==2 and type(encoded[2])=="string" and #encoded[2]<=48000 then
+    if fits then
         local stored=call("storage.set",lookup("storage.set"),KEY,record)
         accepted=stored[1]==true and stored.n==1 -- Actual API returns zero values; this is not a durability proof.
     end
@@ -972,12 +1042,20 @@ local function renewal_available()
     T.lease_renew_last="fixed lease: "..short(why)
     return false
 end
--- Once a following tick, after the body read and with that read's epoch, the
--- newest sample this VM holds. Never after a stop, never twice in one tick.
--- Returns false only when the tick must not go on (stopped or cancelled).
+-- At most once a following tick, after the body read and with that read's
+-- epoch, the newest sample this VM holds. Never after a stop, never twice in
+-- one tick. The first following tick renews once, so the Host's answer (a
+-- refusal, or a lease that cannot be renewed) is known while the 3 s base lease
+-- still covers the ride; after that only when less than RENEW_BELOW_MS of
+-- Core's lease is left, measured by the clock read just after the body read.
+-- A refused or wait answer is handled as before; a wait leaves the lease below
+-- the threshold, so the next tick asks again. Returns false only when the tick
+-- must not go on (stopped or cancelled).
 local function renew_follow_once(sample,generation)
     if not T.lease_renewable or T.lease_renew_off then return true end
     if not current(generation) then return false end
+    if (T.lease_renew_calls or 0)>0 and wall(T.now) and wall(T.lease_until)
+        and T.lease_until-T.now>=RENEW_BELOW_MS then return true end
     local renew=lookup(RENEW_FOLLOW)
     if not renew or not T.follow or T.ack_attempted or not BikeRuntime.renew_admitted(T.renewals_tick or 0) then return true end
     if typeof(sample.epoch)~="userdata" then T.lease_renew_last="body read carried no epoch";return true end
@@ -1029,19 +1107,20 @@ drain_ride=function()
     if not r[1] or r.n~=2 or not remember_ride(r[2]) then T.ride_unknown=true end
 end
 -- An owner check runs before and after each contact batch and the submit
--- (B9). The readiness facts and Source authorization that a passing check
--- read are what the next check would read again, as long as only the reads in
--- guard_reads have run since: those change none of them. Then the next check
--- reuses them instead of making the same nine SDK reads. Only a contact
--- batch's check may do that: in a following tick it is the check before the
--- rider tripwire, which comes straight after the wheel batch's post-call
--- check. The check before a force publication always reads afresh (see
--- create_ride): Contact, the kernel and the packet run between it and the last
--- passing check, and focus, the menu or the lease can change in that time.
--- Every Lua-side test, both clock reads and the Follow read still run in every
--- check.
-local guard_memo,guard_pending
-local function current_ride_owner(binding,epoch,read)
+-- (B9). A following tick reads the six readiness facts and Source's three
+-- lease reads twice. The first time is at its start: the tick's own facts, and
+-- Source's step, which reads the lease and capture state after its renewal.
+-- Every check that publishes nothing shares those reads: the checks around a
+-- contact batch, which only reads the world. The check immediately before the
+-- force submit reads all nine afresh (fresh=true), because Contact, the kernel
+-- and the packet ran since the tick began, and focus, the menu or the lease can
+-- change in that time. The check after the submit shares those fresh reads. A
+-- change between the tick's start and the submit is therefore seen at the
+-- submit's check, before any force is published. Every Lua-side test, both
+-- clock reads and the Follow read still run in every check (S1b in game: the
+-- nine reads, six times a tick, were about 0.56 ms of a 3.7 ms tick).
+local tick_facts,tick_authorization
+local function current_ride_owner(binding,epoch,read,fresh)
     local owner=binding.owner
     if not current(owner.generation) or ride_binding~=binding or not binding.observing
         or not T.active or T.body~=owner.body or T.follow~=owner.follow or T.input_current~=true
@@ -1049,10 +1128,9 @@ local function current_ride_owner(binding,epoch,read)
         or not binding.sample or epoch~=binding.sample.epoch then return false end
     local now=clock()
     if not now or not current(owner.generation) or not lease_live(now) then return false end
-    local memo=guard_memo
-    if not (memo and memo.binding==binding and memo.frame==selected_source_frame and memo.effects==effects) then memo=nil end
-    local read_from=effects
-    local f=memo and memo.facts or facts();T.facts=f
+    local f=not fresh and tick_facts or facts();T.facts=f
+    -- The latest facts this tick read; later checks that publish nothing use them.
+    tick_facts=f
     if not current(owner.generation) or not closed_ready(f,false) then return false end
     -- A post-call owner check (read=false) keeps every Lua-side check but reuses
     -- this tick's receipt, so each guarded SDK call costs one Follow read (B9).
@@ -1060,16 +1138,21 @@ local function current_ride_owner(binding,epoch,read)
     local receipt=T.receipt
     if not receipt or receipt.phase~="following" or receipt.claim_known~=true or receipt.orphaned
         or receipt.terminal or receipt.park_observed then return false end
-    -- Source owns this fresh read-only lease/capture check. It does not publish
+    -- Source owns this read-only lease/capture check. It does not publish
     -- another model input or native body sample. All earlier guard callbacks
     -- run first; a post-effect failure still retains the accepted sequence.
+    -- Afresh it makes the three lease reads; otherwise Source answers from the
+    -- rows its step read this tick, with no SDK call, or the latest answer this
+    -- tick for the same binding and frame is used.
     local authorization
-    if memo and memo.effects==effects then authorization=memo.authorization
-    else authorization=call("source.authorize",source.authorize,source,selected_source_frame) end
-    -- Kept only when nothing but reads ran from the facts to here; owner_check
-    -- adopts it only when this check passes.
-    guard_pending=effects==read_from and {binding=binding,frame=selected_source_frame,facts=f,
-        authorization=authorization,effects=effects} or nil
+    local held=tick_authorization
+    if not fresh and held and held.binding==binding and held.frame==selected_source_frame then
+        authorization=held.result
+    else
+        authorization=fresh and call("source.authorize",source.authorize,source,selected_source_frame)
+            or call("source.authorize_step",source.authorize,source,selected_source_frame,true)
+        tick_authorization={binding=binding,frame=selected_source_frame,result=authorization}
+    end
     now=clock() -- Include authorization time in the ride window and lease bound.
     return now~=nil and current(owner.generation) and T.body==owner.body and T.follow==owner.follow
         and T.input_current==true and same_selected(selected_source_frame,owner.source)
@@ -1078,13 +1161,6 @@ local function current_ride_owner(binding,epoch,read)
 end
 local transport_labels={submit="ride.submit",receipt="ride.receipt",acknowledge="ride.acknowledge"}
 local transport_paths={submit="world.physics.submit",receipt="world.physics.receipt",acknowledge="world.physics.acknowledge"}
-local function owner_check(binding,epoch,read)
-    guard_pending=nil
-    local held=current_ride_owner(binding,epoch,read)
-    guard_memo=held and guard_pending or nil
-    guard_pending=nil
-    return held
-end
 local function create_ride(frame)
     if not RIDE_COMPOSITION_QUALIFIED or ride or T.ride_construct_attempted then return end
     T.ride_construct_attempted=true
@@ -1096,29 +1172,30 @@ local function create_ride(frame)
     local binding={owner=owner}
     ride_binding=binding -- Reserve before constructors/callbacks can reenter.
     local api={}
-    local function guard(epoch)
-        if binding.inflight or binding.unknown or not owner_check(binding,epoch) then
+    local function guard(epoch,fresh)
+        if binding.inflight or binding.unknown or not current_ride_owner(binding,epoch,nil,fresh) then
             stop_all("current Core Source/Follow/body/epoch force guard refused")
             return false
         end
         return true
     end
+    local function after_call(epoch) return current_ride_owner(binding,epoch,false) end
     api.probe_batch=BikeRuntime.probe_batch_adapter(Identity,guard,
         function() return binding.sample.serial end,
         function(epoch,rays,query_options)
             return call("ride.probe_batch",lookup("world.physics.probe_batch"),owner.body,epoch,rays,query_options)
         end,
-        function(epoch) return owner_check(binding,epoch,false) end,stop_all,ride_models.contact.CATEGORY_WHEEL_LANE_QUALIFIED)
-    -- The check before a force publication always reads afresh: only a probe
-    -- batch's check may adopt the reads of the passing check just before it.
-    local function submit_guard(epoch) guard_memo=nil;return guard(epoch) end
+        after_call,stop_all,ride_models.contact.CATEGORY_WHEEL_LANE_QUALIFIED)
+    -- The check before a force publication always reads afresh (B9); a contact
+    -- batch's checks share the tick's reads.
+    local function submit_guard(epoch) return guard(epoch,true) end
     local transport=BikeRuntime.force_transaction_adapter(Identity,binding,submit_guard,
         function() return binding.sample and binding.sample.serial end,
         function(operation,body,...)
             return call(transport_labels[operation] or "ride."..operation,
                 lookup(transport_paths[operation] or "world.physics."..operation),body,...)
         end,
-        function(epoch) return owner_check(binding,epoch,false) end,stop_all,
+        after_call,stop_all,
         function() T.ride_unknown=true end)
     api.submit=transport.submit;api.receipt=transport.receipt;api.acknowledge=transport.acknowledge
     table.freeze(api)
@@ -1434,7 +1511,7 @@ local function tick(dt)
     -- Core's per-tick Follow counters reset with each Core step, which is not
     -- an SDK tick credential: the SDK's own quota stays authoritative.
     T.follow_reads_tick=0;T.lease_reads_tick=0;T.renewals_tick=0
-    selected_source_frame=nil;guard_memo=nil
+    selected_source_frame=nil;tick_facts=nil;tick_authorization=nil
     if T.unloaded or T.phase=="blocked" then return end
     if not T.used and not T.gear_requested or T.phase=="done" and not T.gear_requested then
         -- No tick-end save runs from here, so a throttled snapshot would
@@ -1447,13 +1524,13 @@ local function tick(dt)
     local stock_open=T.gear_purpose=="stock" and T.gear_requested==true and not T.gear_cancelled
     local published_now=false
     local now=clock()
-    if not finite(dt) or dt<=0 or dt>250 or now and T.last_step_at and now<=T.last_step_at then
+    if not finite(dt) or dt<=0 or dt>MAX_TICK_MS or now and T.last_step_at and now<=T.last_step_at then
         stop_all("invalid, stalled or reversed wall tick")
     end
     if now then T.last_step_at=now end
     if T.gear_requested and not T.gear_cancelled then equipment_tick() end
     if T.active and now and not T.stop_latched then
-        local f=facts();T.facts=f
+        local f=facts();T.facts=f;tick_facts=f
         if not base_ready(f,T.gear_requested and T.gear_purpose=="mount") then
             stop_all("fresh sampled upright/focus/context/fall readiness lost")
         elseif T.gear_requested then

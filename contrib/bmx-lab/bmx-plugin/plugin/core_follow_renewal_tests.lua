@@ -331,17 +331,42 @@ function Tests.run()
             check(out.stop_reason==nil and state.lease_until==13200,"a later well-formed renewal is still accepted")
         end)
     end
-    case("once per following tick",function()
+    case("renewal only below the threshold, at most once a following tick",function()
+        local limits=Trial.ride_limits
+        check(limits.renew_below_ms==limits.lease_margin_ms+limits.max_tick_ms+75 and limits.renew_below_ms==475
+            and limits.renew_below_ms<limits.renewal_window_ms and Core.ride_limits.renew_below_ms==475,
+            "the threshold is the margin, the longest tick gap Core accepts and 75 ms, below a renewal's 500 ms")
         local f=fixture(Trial)
         f.tick()
-        local out
-        for tick=1,20 do
-            local n
+        local out,n=f.tick(10016)
+        check(n.renew==1 and out.renewals_this_tick==1 and out.stop_reason==nil,
+            "the first following tick renews once, while the base lease still covers the ride")
+        for tick=2,20 do
             out,n=f.tick(10000+tick*16)
-            check(n.renew==1 and out.renewals_this_tick==1 and out.stop_reason==nil,"exactly one renewal on following tick "..tick)
+            check(n.renew==0 and out.renewals_this_tick==0 and out.stop_reason==nil,
+                "no renewal while 475 ms or more of the lease is left: following tick "..tick)
         end
-        check(f.renews==20 and out.lease_renew_calls==20 and out.call_counts["follow.renew"]==20
-            and out.lease_renew_last=="renewed","no tick asks twice, so the SDK quota never refuses")
+        check(f.renews==1 and out.lease_renew_calls==1 and out.call_counts["follow.renew"]==1,
+            "one renewal in 320 ms, where every tick renewed before")
+        -- Late in the seed, at 62.5 Hz: each tick renews exactly when less than
+        -- 475 ms is left at its body read, so a 500 ms renewal lasts two ticks.
+        local late,_late_core,state=fixture(Trial,{reserve_delay=2400})
+        f=late
+        f.tick()
+        local renewed,least=0,math.huge
+        for tick=1,29 do
+            local at=12400+tick*16
+            local left=state.lease_until-at
+            out,n=f.tick(at)
+            local due=tick==1 or left<limits.renew_below_ms
+            check(out.stop_reason==nil and n.renew==(due and 1 or 0),
+                "following tick "..tick.." renews only below the threshold: "..left.." ms left, "..n.renew.." renewals")
+            renewed+=n.renew
+            least=math.min(least,state.lease_until-at)
+        end
+        check(f.renews==renewed and out.lease_renew_accepted==renewed and renewed==12,
+            "the first tick, then every second tick from 12528 ms: 12 renewals in 29 ticks, not 29: "..renewed)
+        check(least>=limits.renew_below_ms-16,"the lease never fell more than one tick below the threshold: "..least)
     end)
     case("renewal never follows a stop",function()
         local f=fixture(Trial)

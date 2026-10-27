@@ -342,7 +342,11 @@ end
 -- This observation checks current selected-stream permission, not model input.
 -- It neither renews nor adopts a newer report. The exact step result is a private
 -- publication token; copying its public fields cannot create another token.
-function Source:authorize(selected)
+-- With from_step, the same checks run on the rows that step read (its sample,
+-- and the lease and capture states it read after renewing), and no SDK call is
+-- made: Core uses that for checks that publish nothing, and reads afresh
+-- before it publishes a force.
+function Source:authorize(selected, from_step)
     local s = states[self]
     local function current()
         return states[self] == s and s.authorization_frame == selected and s.input_ok == true
@@ -355,23 +359,34 @@ function Source:authorize(selected)
     if s.busy or type(selected) ~= "table" or not current() then
         return false, "selected Source publication is not current"
     end
+    local stepped = from_step == true
+    if stepped and selected.lease_state ~= s.lease_state then
+        return false, "selected Source publication is not current"
+    end
     s.busy = true
     local function refuse(why)
         s.busy = false
         return false, why
     end
-    local called, raw = invoke(s, "lease_read", s.handle)
-    local sample = called and current() and sample_copy(s, raw, true) or nil
+    local sample, lease, capture
+    if stepped then sample = s.sample else
+        local called, raw = invoke(s, "lease_read", s.handle)
+        sample = called and current() and sample_copy(s, raw, true) or nil
+    end
     if not sample then return refuse("fresh selected input unavailable") end
-    local state_called, lease_row = invoke(s, "lease_state", s.handle)
-    local lease = state_called and current() and lease_copy(s, lease_row, true) or nil
+    if stepped then lease = s.lease_state else
+        local state_called, lease_row = invoke(s, "lease_state", s.handle)
+        lease = state_called and current() and lease_copy(s, lease_row, true) or nil
+    end
     if not lease or lease.status ~= "active" or lease.orphaned or lease.source_released
         or not lease.capture_reserved or Identity.compare(lease.last_observation, sample.observation_serial) < 0
         or Identity.compare(lease.observed_ms, sample.observed_ms) < 0 then
         return refuse("fresh selected lease authority unavailable")
     end
-    local capture_called, capture_row = invoke(s, "lease_capture_state", s.handle)
-    local capture = capture_called and current() and capture_copy(s, capture_row, true) or nil
+    if stepped then capture = s.capture_state else
+        local capture_called, capture_row = invoke(s, "lease_capture_state", s.handle)
+        capture = capture_called and current() and capture_copy(s, capture_row, true) or nil
+    end
     -- Publications may increase within this capture. A new generation means
     -- revoke/reopen, even if the same retained lease key is still readable.
     if not capture or capture.phase ~= "capturing" or capture.quarantined or not capture.report_debt

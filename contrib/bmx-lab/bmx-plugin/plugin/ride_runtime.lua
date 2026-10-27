@@ -10,6 +10,8 @@ local Ride, Object = {}, {}
 local states = setmetatable({}, {__mode="k"})
 local MAX_SAFE = 9007199254740991
 local MAX_PENDING = 3
+-- The rider tripwire's cadence in measured epochs: every second one.
+local TRIPWIRE_EVERY = 2
 local METRIC_SAMPLE_LIMIT, METRIC_TRANSITION_LIMIT = 24, 16
 local METRIC_STOP_REASON_LIMIT, METRIC_STOP_KEY_BYTES = 8, 1024
 
@@ -724,9 +726,20 @@ local function observe(s,source_frame,raw,context)
     local contact,issue=wheel_contacts(s,frame,contacted[2],centers,s.geometry)
     if not contact then stop(s,issue);return end
     if category_lane then
-        local clear,tripwire_issue=rider_tripwire(s,frame,query_options)
-        if not clear then stop(s,tripwire_issue);return end
-        contact.support.actor_tripwire="authored_rider_crossings_clear_v1"
+        -- The tripwire is cast on the first wheel batch and then every
+        -- TRIPWIRE_EVERY measured epochs (S1b in game: 0.34 ms a batch). A
+        -- refusal still stops Ride before any model or command; in between it
+        -- lags by one epoch (16.7 ms at 60 Hz, 5 cm at the S1 3 m/s cap), and
+        -- the support record says so.
+        local since=s.tripwire_serial and Identity.bounded_delta(sample.serial,s.tripwire_serial,TRIPWIRE_EVERY-1)
+        if since and since>0 then
+            contact.support.actor_tripwire="authored_rider_crossings_clear_previous_epoch_v1"
+        else
+            local clear,tripwire_issue=rider_tripwire(s,frame,query_options)
+            if not clear then stop(s,tripwire_issue);return end
+            s.tripwire_serial=sample.serial
+            contact.support.actor_tripwire="authored_rider_crossings_clear_v1"
+        end
     end
     -- Contact diagnostics exist only after the complete wheel binding and,
     -- where required, the independent rider tripwire have passed.

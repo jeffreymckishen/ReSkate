@@ -438,6 +438,39 @@ function Tests.run()
         check(f.count("lease_release")>0,"late returned handle is retained for native-shaped release")
         check(not f.source:arm(2,f.now),"late admission cleanup cannot be bypassed")
     end
+    do
+        -- authorize afresh makes the three lease reads; from the step it judges the rows that
+        -- step read, the same way, and makes no SDK call. Core uses the step's rows only for
+        -- checks that publish nothing and reads afresh before it publishes a force.
+        cases += 1
+        local f=fixture();local frame=f.start()
+        check(frame.input_ok,"constructed capturing source before authorization")
+        local before=#f.calls
+        local ok,why=f.source:authorize(frame)
+        local reads={}
+        for i=before+1,#f.calls do reads[#reads+1]=f.calls[i].name end
+        check(ok==true and why==nil and table.concat(reads," ")=="lease_read lease_state lease_capture_state",
+            "afresh: the sample, the lease and the capture are read, in that order")
+        before=#f.calls
+        ok,why=f.source:authorize(frame,true)
+        check(ok==true and why==nil and #f.calls==before,"from the step: the same answer with no SDK call")
+        local later=f.step()
+        check(later.input_ok,"a later step")
+        before=#f.calls
+        for _,from_step in ipairs({true,false}) do
+            ok,why=f.source:authorize(frame,from_step)
+            check(ok==false and why=="selected Source publication is not current" and #f.calls==before,
+                "an earlier step's frame is refused before any read, either way")
+        end
+        ok,why=f.source:authorize(later,true)
+        check(ok==true and #f.calls==before,"the latest step's rows authorize without a read")
+        -- The native lease ends after the step: only a fresh read can see it.
+        f.passive.status,f.passive.reason,f.passive.terminal="revoked","focus_lost",true
+        ok,why=f.source:authorize(later,true)
+        check(ok==true and #f.calls==before,"the step's rows still hold, unread: why Core reads afresh before a force")
+        ok,why=f.source:authorize(later)
+        check(ok==false and why=="fresh selected input unavailable","afresh, the revoked lease refuses at its first read: "..tostring(why))
+    end
     return {cases=cases,assertions=assertions,constructed=true,native_authority=false,gameplay=false}
 end
 return Tests

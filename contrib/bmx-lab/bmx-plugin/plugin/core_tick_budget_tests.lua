@@ -83,27 +83,48 @@ function Tests.run()
     local function check(ok,why) assertions+=1;assert(ok,why) end
     local function case(name,run) cases+=1;run(name) end
 
-    case("a following tick makes a fixed set of SDK calls and encodes the ledger at most every 200 ms",function()
+    case("a following tick makes a fixed set of SDK calls and saves the ledger at most once a second",function()
         local f,_,state=following_fixture()
         local out=f.tick()
         check(out.phase=="following","the constructed owner publishes")
-        local encodes,ticks=0,0
-        for i=1,24 do
+        local encodes,saves,ticks=0,0,0
+        for i=1,30 do
             local status,calls,encoded=f.tick(state.publish_at+16*i)
             check(status.phase=="following","still following at +"..(16*i).." ms")
             -- Five clock reads (the tick, the window, after the receipt, after the
             -- body read and after the visual), one receipt read and one body read;
-            -- a tick that saves the ledger adds its encode and its storage.set. No
-            -- readiness facts here: this owner is not armed (active).
-            check(encoded<=1,"at most one ledger encode in a tick")
-            check(calls==7+2*encoded and f.calls["time.now"]==5 and f.calls["world.physics.read_follow"]==1
-                and f.calls["world.physics.read"]==1 and (f.calls["storage.set"] or 0)==encoded,
-                "seven SDK calls a following tick and two more to save: "..calls)
-            encodes+=encoded;ticks+=1
+            -- a tick that saves the ledger adds its storage.set. No readiness facts
+            -- here: this owner is not armed (active).
+            local saved=f.calls["storage.set"] or 0
+            check(encoded==0,"no ledger encode for the size check: the bound shows it fits")
+            check(calls==7+saved and f.calls["time.now"]==5 and f.calls["world.physics.read_follow"]==1
+                and f.calls["world.physics.read"]==1,"seven SDK calls a following tick and one more to save: "..calls)
+            encodes+=encoded;saves+=saved;ticks+=1
         end
-        -- 24 ticks over 384 ms: the 200 ms throttle allows two encodes, where
-        -- one a tick would be 24.
-        check(encodes<=2,"the whole ledger is encoded at most every 200 ms: "..encodes.." in "..ticks.." ticks")
+        -- 30 ticks over 480 ms of following: the 1 s throttle allows none after
+        -- the publication's own save, where the 200 ms one made two and one a
+        -- tick would be 30.
+        check(saves==0 and encodes==0,"no tick-end save in 480 ms of following: "..saves.." in "..ticks.." ticks")
+        -- The window ends: the stop is a state change, saved at once, unthrottled.
+        local status,_,encoded=f.tick(state.publish_at+500)
+        check(status.stop_reason=="ride window or Follow lease ended" and (f.calls["storage.set"] or 0)>=1 and encoded==0,
+            "the stop is saved in its own tick, without an encode")
+    end)
+    case("the ledger bound covers the ledger it lets through and refuses what it cannot bound",function()
+        local f,core,state=following_fixture()
+        f.tick()
+        for i=1,6 do f.tick(state.publish_at+16*i) end
+        local ledger=core:status()
+        local bound=Core.ledger_bound(ledger)
+        check(type(bound)=="number" and bound>0 and bound<=48000,"a following ledger has a bound under the limit: "..tostring(bound))
+        check(Core.ledger_bound(ledger)==bound,"the same ledger, the same bound (shared frozen rows keep theirs)")
+        check(Core.ledger_bound({1,2,x=3})==nil and Core.ledger_bound({[2]=1})==nil and Core.ledger_bound({1/0})==nil
+            and Core.ledger_bound("caf\195\169")==nil and Core.ledger_bound(newproxy())==nil
+            and Core.ledger_bound(setmetatable({},{}))==nil,"mixed keys, holes, infinity, non-ASCII, userdata and metatables get none")
+        local deep={}
+        local at=deep
+        for _=1,40 do at.next={};at=at.next end
+        check(Core.ledger_bound(deep)==nil,"nesting past the writer's 32 levels gets none")
     end)
 
     case("a status shares the frozen call rows, receipts and readiness instead of copying them",function()

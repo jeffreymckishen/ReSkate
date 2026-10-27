@@ -129,6 +129,25 @@ this VM starts. One attempt per VM is not an eight-retry entitlement, and VM
 unload does not reset native capacity. These are development bounds, not a
 playable session policy.
 
+A private mount now prepares native physics within its original 60-second intent,
+before the equipment pulse, selected-input Source, floor query or body creation.
+Construction and `prepare_backend` remain inert dependency binding. On closed-menu
+Host ticks, Core calls the existing `world.physics.prepare()` once, then returns
+before acquisition. Only the SDK's exact setup-pending and fresh-60-Hz-step
+responses permit another call on a later tick. Other refusals, missing capability,
+permission errors or malformed results close the attempt. Stop, unload and lost
+admission cancel it; a late successful return cannot revive that owner.
+
+Deferred native setup can stall a Host tick. Only the pending phase with no
+acquired equipment, Source, body or Follow may wait through a finite long tick;
+it performs no preparation or acquisition on that tick and does not extend the
+deadline. The normal 250 ms limit still applies after preparation. A ready result
+is sampled readiness, not a reservation: later ticks repeat the readiness checks,
+and a later create can still refuse. Preparation never replays a consumed floor
+query or retries uncertain allocation. The `native_preparation` status records
+attempts and the sampled result. The regression suites use constructed SDK-shaped
+services; they do not establish native/game acceptance.
+
 The promoted `bike_spawn.lua` is the reviewed FirstFollow extension: it transfers
 future body-release ownership before Follow reserve, keeps that transfer
 permanent after failed/partial reserve, and updates visuals only from supplied

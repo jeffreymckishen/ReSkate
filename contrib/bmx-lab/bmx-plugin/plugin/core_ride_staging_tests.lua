@@ -174,6 +174,7 @@ local function services()
     function s.entities.set() note("entities.set");return true end
     function s.entities.status() note("entities.status");return "ready" end
     function s.entities.remove() note("entities.remove") end -- The SDK returns no values.
+    function s.world.physics.prepare() note("world.physics.prepare");return true end
     function s.world.physics.create(definition)
         note("world.physics.create")
         if f.body then return nil,"busy" end

@@ -1,0 +1,226 @@
+{
+  "schema": 1,
+  "source_commit": "430b98c5",
+  "source_directory": "contrib/bmx-lab/bmx-plugin",
+  "source_pins_sha256": "529ED8E62B3791A4FF5811E85E3F156B970FFC830E7DD2C4F7AD79B58E68CA44",
+  "canonical_module_count": 59,
+  "default_mode": "Verify",
+  "default_admission": false,
+  "default_phase": "P0",
+  "phases": [
+    "P0",
+    "H1"
+  ],
+  "module_namespace": "BMX_Hop_Trial_<runid>",
+  "private_modules": [
+    "main.lua",
+    "hop_config.lua",
+    "hop_context.lua",
+    "hop_force_stage.lua",
+    "hop_services.lua",
+    "hop_guard.lua",
+    "hop_recorder.lua"
+  ],
+  "optional_tests": [
+    "hop_guard_tests.lua",
+    "hop_recorder_tests.lua",
+    "hop_composition_tests.lua"
+  ],
+  "transforms": [
+    {
+      "id": "core-composition",
+      "path": "plugin/bike_runtime_core.lua",
+      "before": "local RIDE_COMPOSITION_QUALIFIED=false",
+      "after": "local RIDE_COMPOSITION_QUALIFIED=true",
+      "declaration": "local RIDE_COMPOSITION_QUALIFIED=",
+      "count": 1
+    },
+    {
+      "id": "core-follow-offset",
+      "path": "plugin/bike_runtime_core.lua",
+      "before": "local M1_PROVISIONAL_FOLLOW_OFFSET=false",
+      "after": "local M1_PROVISIONAL_FOLLOW_OFFSET=true",
+      "declaration": "local M1_PROVISIONAL_FOLLOW_OFFSET=",
+      "count": 1
+    },
+    {
+      "id": "core-window",
+      "path": "plugin/bike_runtime_core.lua",
+      "before": "local RIDE_WINDOW_MS=500",
+      "after": "local RIDE_WINDOW_MS=1500",
+      "declaration": "local RIDE_WINDOW_MS=",
+      "count": 1
+    },
+    {
+      "id": "core-force-binding",
+      "path": "plugin/bike_runtime_core.lua",
+      "before": "local ForceStage=require(\"./force_stage\")",
+      "after": "local ForceStage=require(\"./hop_force_stage\")",
+      "declaration": "local ForceStage=require(",
+      "count": 1
+    },
+    {
+      "id": "facade-force-staging",
+      "path": "plugin/bike_runtime.lua",
+      "before": "\"./force_stage\",\"./catalog\"",
+      "after": "\"./force_stage\",\"./hop_force_stage\",\"./catalog\"",
+      "declaration": "\"./force_stage\"",
+      "count": 1
+    },
+    {
+      "id": "ride-activation",
+      "path": "plugin/ride_runtime.lua",
+      "before": "local ACTIVATION_QUALIFIED = false",
+      "after": "local ACTIVATION_QUALIFIED = true",
+      "declaration": "local ACTIVATION_QUALIFIED =",
+      "count": 1
+    },
+    {
+      "id": "ride-cached-context",
+      "path": "plugin/ride_runtime.lua",
+      "before": "local Mapping = require(\"./ride_input_mapping\")",
+      "after": "local TrialContext=require(\"./hop_context\")\nlocal Mapping = require(\"./ride_input_mapping\")",
+      "declaration": "local Mapping = require(",
+      "count": 1
+    },
+    {
+      "id": "ride-before-force",
+      "path": "plugin/ride_runtime.lua",
+      "before": "    local force_controls=copy(controls.force_controls)",
+      "after": "    local trial_ok,trial_why=TrialContext.before_force(s.body,sample,controls,body,frame,contact)\n    if not trial_ok then stop(s,trial_why);return end\n    local force_controls=copy(controls.force_controls)",
+      "declaration": "local force_controls=copy(controls.force_controls)",
+      "count": 1
+    },
+    {
+      "id": "mounted-pose",
+      "path": "plugin/mounted_pose.lua",
+      "before": "local MOUNTED_POSE_QUALIFIED = false",
+      "after": "local MOUNTED_POSE_QUALIFIED = true",
+      "declaration": "local MOUNTED_POSE_QUALIFIED =",
+      "count": 1
+    },
+    {
+      "id": "category-lane",
+      "path": "plugin/contact_runtime.lua",
+      "before": "local CATEGORY_WHEEL_LANE_QUALIFIED=false",
+      "after": "local CATEGORY_WHEEL_LANE_QUALIFIED=true",
+      "declaration": "local CATEGORY_WHEEL_LANE_QUALIFIED=",
+      "count": 1
+    },
+    {
+      "id": "floor-spawn",
+      "path": "plugin/bike_spawn.lua",
+      "before": "local FLOOR_SPAWN_QUALIFIED=false",
+      "after": "local FLOOR_SPAWN_QUALIFIED=true",
+      "declaration": "local FLOOR_SPAWN_QUALIFIED=",
+      "count": 1
+    },
+    {
+      "id": "force-stage",
+      "path": "plugin/force_stage.lua",
+      "before": "local STAGE = \"zero_force\"",
+      "after": "local STAGE = \"hop\"",
+      "declaration": "local STAGE =",
+      "count": 1
+    },
+    {
+      "id": "force-caps",
+      "path": "plugin/force_stage.lua",
+      "before": "local AUTHORED_CAPS = nil",
+      "after": "local AUTHORED_CAPS = {force=6000,speed=3,torque=2000,vertical_speed=3}",
+      "declaration": "local AUTHORED_CAPS =",
+      "count": 1
+    }
+  ],
+  "unchanged_assertions": [
+    {
+      "path": "plugin/bike_runtime_core.lua",
+      "text": "local FOLLOW_RENEWAL_QUALIFIED=false",
+      "declaration": "local FOLLOW_RENEWAL_QUALIFIED="
+    },
+    {
+      "path": "plugin/bike_runtime_core.lua",
+      "text": "local FOLLOW_LEAD_QUALIFIED=false",
+      "declaration": "local FOLLOW_LEAD_QUALIFIED="
+    },
+    {
+      "path": "plugin/bike_runtime_core.lua",
+      "text": "local BASE_LEASE_MS=3000",
+      "declaration": "local BASE_LEASE_MS="
+    },
+    {
+      "path": "plugin/bike_runtime_core.lua",
+      "text": "local LEASE_MARGIN_MS=150",
+      "declaration": "local LEASE_MARGIN_MS="
+    },
+    {
+      "path": "plugin/ride_runtime.lua",
+      "text": "local RIDE_TRICKS_QUALIFIED = false",
+      "declaration": "local RIDE_TRICKS_QUALIFIED ="
+    },
+    {
+      "path": "plugin/trick_runtime.lua",
+      "text": "local RIDE_SUPPORT_QUALIFIED = false",
+      "declaration": "local RIDE_SUPPORT_QUALIFIED ="
+    }
+  ],
+  "private_transforms": [
+    {
+      "id": "reviewed-admission",
+      "path": "plugin/hop_config.lua",
+      "before": "admission_enabled=false",
+      "after": "admission_enabled=true",
+      "admitted_only": true
+    },
+    {
+      "id": "reviewed-phase",
+      "path": "plugin/hop_config.lua",
+      "before": "phase=\"P0\"",
+      "after": "phase=\"<P0-or-H1>\"",
+      "admitted_only": true
+    },
+    {
+      "id": "reviewed-run",
+      "path": "plugin/hop_config.lua",
+      "before": "run_id=\"unreviewed\"",
+      "after": "run_id=\"<safe-runid>\"",
+      "admitted_only": true
+    },
+    {
+      "id": "reviewed-package-name",
+      "path": "manifest.json",
+      "before": "BMX_Hop_Trial_unreviewed",
+      "after": "BMX_Hop_Trial_<safe-runid>",
+      "admitted_only": true
+    }
+  ],
+  "artifacts": [
+    "source-pins.json",
+    "stage-plan.json",
+    "transform-report.json",
+    "artifact-inventory.json"
+  ],
+  "inventory_self_exclusion": "artifact-inventory.json is excluded from its own digest rows; Verify regenerates and compares its exact bytes.",
+  "policy": "Only explicit ReviewedAdmission with safe review/run IDs applies listed transforms. Closed output preserves all canonical bytes and closed P0 config. Stage creates a new directory only; Verify never writes. No launch, import, network, Git or deployment. Optional tests are copied only into this isolated artifact; nothing runs.",
+  "run_id_pattern": "^[a-z0-9][a-z0-9_-]{0,31}$",
+  "review_id_pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+  "private_immutable_pins": [
+    {
+      "path": "reskate-plugin.json",
+      "sha256": "62D1B0BC58B1530BC191A74698A77B3ABCF1536F2DC991CE8B1E7FF6ED336AA4"
+    },
+    {
+      "path": "manifest.json",
+      "sha256": "159F7E9152A50E658828442719A85E41F20AF50616CEA8A1CCCA472F68BADAF3"
+    }
+  ],
+  "test_fixture": {
+    "id": "test-only-actual-entry",
+    "path": "plugin/hop_entry_fixture.lua",
+    "source": "plugin/main.lua",
+    "prefix": "return function(reskate, require)\n",
+    "suffix": "\nend\n",
+    "include_tests_only": true,
+    "body_policy": "Concatenate the exact private main.lua bytes without decoding, editing or re-encoding them."
+  }
+}

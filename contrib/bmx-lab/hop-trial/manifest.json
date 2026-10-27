@@ -1,0 +1,7 @@
+{
+  "name": "BMX_Hop_Trial_unreviewed",
+  "version_number": "0.1.0",
+  "website_url": "",
+  "description": "Private P0/H1 source trial; admission defaults to disabled. No native qualification or public riding claim.",
+  "dependencies": []
+}

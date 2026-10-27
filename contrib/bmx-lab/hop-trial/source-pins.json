@@ -1,0 +1,303 @@
+{
+  "schema": 1,
+  "source_commit": "430b98c5",
+  "source_directory": "contrib/bmx-lab/bmx-plugin",
+  "selection": "All top-level plugin/*.lua except main.lua, *_tests.lua and names containing fixture",
+  "files": [
+    {
+      "path": "plugin/bail_guard.lua",
+      "sha256": "82C726BA2A1D573722A1F1363AA111B08E6535502E9D7F8B54A94BE80ECB32EB",
+      "bytes": 29752
+    },
+    {
+      "path": "plugin/bail_policy.lua",
+      "sha256": "419BE49BDE2F679B127BC52406C9C103BF13BA8EC6A457B6521F7FCDD16ABE64",
+      "bytes": 15661
+    },
+    {
+      "path": "plugin/bike_admission.lua",
+      "sha256": "1CBD095058D32E4D9B35276516A1D8B3CAC128D8C61A1CCD509FDD40A9EB8C0C",
+      "bytes": 8297
+    },
+    {
+      "path": "plugin/bike_geometry.lua",
+      "sha256": "EA5516324173AB539BE6A0A2F0765555C88CB0BC151EB9B9A577F3CACD0ED5ED",
+      "bytes": 1971
+    },
+    {
+      "path": "plugin/bike_runtime_core.lua",
+      "sha256": "E6A26DF781F5468BAFADB568B193BF19C0E55E962F6DE428A52DAE46AEA75D46",
+      "bytes": 138178
+    },
+    {
+      "path": "plugin/bike_runtime.lua",
+      "sha256": "0E5CCDB9516930FCB066104FD0A472653A2D9D5CF96070BC3F93E041926431D9",
+      "bytes": 15840
+    },
+    {
+      "path": "plugin/bike_spawn.lua",
+      "sha256": "90893ED01D3A8E0FDA3B9B0075B0C95D1090EE398F201CED1A6D0871C7BA31FB",
+      "bytes": 22846
+    },
+    {
+      "path": "plugin/bike_visual.lua",
+      "sha256": "7DAF2BA57A6F267AE41EB82B996EBD723163CA9B5CA0D579FAB89549E5BB80D2",
+      "bytes": 6614
+    },
+    {
+      "path": "plugin/board_drop.lua",
+      "sha256": "7FC9E7AB1E731909FC8FD08151F5E113A5764DD80EB395AB95D4B6CF66A2FCE6",
+      "bytes": 16730
+    },
+    {
+      "path": "plugin/bones.lua",
+      "sha256": "D74127FEDC7531F172A6B3E454CB17705C2C484735124BA7F4808CE55E7EB268",
+      "bytes": 890
+    },
+    {
+      "path": "plugin/brake.lua",
+      "sha256": "7FD69C5BB67909E7358A885D1D089E150B6CEFA3A205B2B1BCFFA74AE6E913A2",
+      "bytes": 13198
+    },
+    {
+      "path": "plugin/camera_policy.lua",
+      "sha256": "BD354588ACB9CEF91182E829F91D123BA878A5DDAD855B2BE247A45CF91A5E3D",
+      "bytes": 22306
+    },
+    {
+      "path": "plugin/catalog.lua",
+      "sha256": "36CC0E16B8714ED5DE56F353339633DEF6A7D59F2F132D9A0AC29530590CBE22",
+      "bytes": 2314
+    },
+    {
+      "path": "plugin/contact_runtime.lua",
+      "sha256": "00D169B1FBF938E45C956E4F150BF8B3FA87EC994388C5A931488A32F74E8ECA",
+      "bytes": 12189
+    },
+    {
+      "path": "plugin/equipment_runtime.lua",
+      "sha256": "0E380B05F785C92B549B04423041BE099C725A36DF076616CF53B52481A0557A",
+      "bytes": 16939
+    },
+    {
+      "path": "plugin/equipment_transition.lua",
+      "sha256": "516F9292B8F9E57677C08F4D9AA9B0D91C93AB4BC186C483A7903E205A955945",
+      "bytes": 21526
+    },
+    {
+      "path": "plugin/equipment.lua",
+      "sha256": "1AF7DEA37471CB3BF391C65FF5A4D5501939FBBD990553C6C11FE3AC9346B593",
+      "bytes": 5776
+    },
+    {
+      "path": "plugin/force_math.lua",
+      "sha256": "7A88EB031A8B7584662D285846A217485D50B709E13D668C1A24417163D8F5EA",
+      "bytes": 4685
+    },
+    {
+      "path": "plugin/force_solver.lua",
+      "sha256": "923D1F4E5C6199DEB3CB50E677CD1FD0E639365505BCCA12F65FF3386BC16694",
+      "bytes": 12120
+    },
+    {
+      "path": "plugin/force_stage.lua",
+      "sha256": "DAA1FE1ACB107EB301BCA61D4099142BC522AD9269275C4AC50B4D5EF387ED75",
+      "bytes": 11614
+    },
+    {
+      "path": "plugin/forces.lua",
+      "sha256": "3BB16CB48F0A3304F651346FBD97A97D8CF4FE023E12B0E7FC7073429DD9C5E5",
+      "bytes": 37599
+    },
+    {
+      "path": "plugin/frame_identity.lua",
+      "sha256": "1852A64C29AE3C857FCC044D6CF97062785E2094235F51DEA9BD99A563A5F2BD",
+      "bytes": 12102
+    },
+    {
+      "path": "plugin/grind_contact.lua",
+      "sha256": "7B8A0A6B7382F1D84C1368BF85C3E2BE9BE00B6B2FE16FE511C8DE9B617FAC50",
+      "bytes": 7370
+    },
+    {
+      "path": "plugin/grind_policy.lua",
+      "sha256": "EAA478719A3C8FF269BD01C5328591B8C1462D26C37425FDB9F2E19BA35A858B",
+      "bytes": 28635
+    },
+    {
+      "path": "plugin/input_presets.lua",
+      "sha256": "DFB9E2C694C6762DCB443304D57F1259F65D6DA98FC436D4A781C5C6DAFA8134",
+      "bytes": 12416
+    },
+    {
+      "path": "plugin/input.lua",
+      "sha256": "AB86EE8D209DFDE5B10CB51989AC79EBCD69CCA55CDEF2F14CD2242BDC2989E7",
+      "bytes": 11702
+    },
+    {
+      "path": "plugin/lease_identity.lua",
+      "sha256": "FD25C1230EB5D9C52CF23CD8521DCDE007D749B39E2C36426ADDD67EC93B3F8C",
+      "bytes": 2751
+    },
+    {
+      "path": "plugin/lease_source.lua",
+      "sha256": "0AAF5DDEE5FF6FF5361DFFBFBCCB0F44E34EDE776D619632B0468127049FAF8A",
+      "bytes": 29114
+    },
+    {
+      "path": "plugin/manual_balance.lua",
+      "sha256": "E76544C8B270D8D11B16BC79F7DE1217E08D441DAB3F27070A4015C650862C9E",
+      "bytes": 21281
+    },
+    {
+      "path": "plugin/motions.lua",
+      "sha256": "66BF53245B00A5FCDFAFFEE3CD70EB58FA93FB5ECA670FAD04944EF986BAC5D1",
+      "bytes": 14063
+    },
+    {
+      "path": "plugin/mounted_pose.lua",
+      "sha256": "EF496CB80405A8CF040656082647037CDF5C227D0A5A433A7307A9DFB08084AB",
+      "bytes": 74331
+    },
+    {
+      "path": "plugin/peg_geometry.lua",
+      "sha256": "6279B279BDB3E1C75D6C44C9DF54511EB12CEDF43C131DAF0BE772BFE53ADCE8",
+      "bytes": 3882
+    },
+    {
+      "path": "plugin/pose_targets.lua",
+      "sha256": "B954382691C5CA45141A7F9213B20DABAFB8393124CECE048B5FAC812BB6AF1E",
+      "bytes": 7350
+    },
+    {
+      "path": "plugin/pump.lua",
+      "sha256": "3DD32046BCEC595F42E6AE52E8AF5C22C8F28DB70ED3FF7FB793BD854C273C54",
+      "bytes": 3250
+    },
+    {
+      "path": "plugin/rail_probe.lua",
+      "sha256": "5E3E3FB8E2460013CDDB73EE5DB6C3F76075A82163534312DEBD6F8845E51155",
+      "bytes": 23981
+    },
+    {
+      "path": "plugin/recovery_runtime.lua",
+      "sha256": "0A2AA9D20F32BA5C2571CD7BA010470D102021E0DCBBAE561E3BBC4188CBE816",
+      "bytes": 17940
+    },
+    {
+      "path": "plugin/recovery.lua",
+      "sha256": "E901892EA52DAC6A297BB63C5E47FD718319CD1B1427157FBBE8EEC7F6DA70E6",
+      "bytes": 14225
+    },
+    {
+      "path": "plugin/ride_composer.lua",
+      "sha256": "7C79D19D09810105530BB8D0EC509DE7FA0837DB11107EFA43FD1F43B058E043",
+      "bytes": 81221
+    },
+    {
+      "path": "plugin/ride_inflight.lua",
+      "sha256": "CA888F88BC2185FA27827BBEE9514BFB3FCF5C0228704D3B26F7A10A130030C1",
+      "bytes": 10396
+    },
+    {
+      "path": "plugin/ride_input_mapping.lua",
+      "sha256": "A896131B9B2AB74EF3DC39541867AFE9063000436A4963ABC12CBB320809AE80",
+      "bytes": 18037
+    },
+    {
+      "path": "plugin/ride_input.lua",
+      "sha256": "DBCE2FAC5C3B524F49F0FE6281FC560B54E40F013B8E42B3054301364E0E5AAE",
+      "bytes": 34452
+    },
+    {
+      "path": "plugin/ride_runtime.lua",
+      "sha256": "0E69A6328654D10DE3339FBB1D0DC13832D05551BBD51EB10299C33C26C66B66",
+      "bytes": 77209
+    },
+    {
+      "path": "plugin/rider_alignment.lua",
+      "sha256": "5EFB592A3B517022DBC4AD0794B2B2701BF6261995B715717605AA16A0B2AF0A",
+      "bytes": 22460
+    },
+    {
+      "path": "plugin/rider_presentation.lua",
+      "sha256": "953073EABD25F5CCF0BD66761E457FF4CE2C63BF73DF1508A55ED7015714DED8",
+      "bytes": 26890
+    },
+    {
+      "path": "plugin/rubric_metrics.lua",
+      "sha256": "CF7608E8EDCFCCFA09FC0ED8EAAD3186676A607D892D51ED59093194F4372ED4",
+      "bytes": 49369
+    },
+    {
+      "path": "plugin/score_catalog.lua",
+      "sha256": "0A591B07D67DFC3EF6C33020FC6154D438ABED6F42CBCBC1C21A9B65BB8648B9",
+      "bytes": 2171
+    },
+    {
+      "path": "plugin/score_feed.lua",
+      "sha256": "F54E4DEBA2CCBE627E0EF445710BA9989DD07601AA434E619888FEFE2FC0F8A6",
+      "bytes": 12540
+    },
+    {
+      "path": "plugin/score_hud.lua",
+      "sha256": "B21E8DA291A87FBA8B1E0C305B2E25505B973205CD6409EBAB051878AF20B3A4",
+      "bytes": 10102
+    },
+    {
+      "path": "plugin/score_line.lua",
+      "sha256": "3942EA33EE82F516235A9FC78885327281BF1E9FB627A23A53EE66D306643D4A",
+      "bytes": 18311
+    },
+    {
+      "path": "plugin/score_rules.lua",
+      "sha256": "947D9702913887EF8C7B2F2FB09F178A66F230754BA8879ABAFA3CF9E049AF3E",
+      "bytes": 2879
+    },
+    {
+      "path": "plugin/score_runtime.lua",
+      "sha256": "FF59800504A71E2304AB62E102171E3F7457B73E8BB8822938ECCAE54590EF37",
+      "bytes": 15703
+    },
+    {
+      "path": "plugin/sim_scenarios.lua",
+      "sha256": "69D76B2914203E064F9A325D5479EB562544054CEA29562B77B5247CA4922561",
+      "bytes": 26673
+    },
+    {
+      "path": "plugin/sim_world.lua",
+      "sha256": "E9AE7A9460FB3BDE9C3575A349764EE9779A34E6788A823D8DF6F0BA07A35806",
+      "bytes": 17555
+    },
+    {
+      "path": "plugin/tests.lua",
+      "sha256": "66D4B81F6833B91694004959E18F102D8C59373A4F03CA69C5F408CC88447623",
+      "bytes": 15221
+    },
+    {
+      "path": "plugin/tire.lua",
+      "sha256": "C5525C831D04C6C8F50ACE9FE547781949084EB24669C2E9C8D5E9C60FC5AA5D",
+      "bytes": 5068
+    },
+    {
+      "path": "plugin/trick_names.lua",
+      "sha256": "B0B9130BB4C5021BDA94F4A7AAC622A5890F917C4F098E3CE93E49200701C31A",
+      "bytes": 6491
+    },
+    {
+      "path": "plugin/trick_presentation.lua",
+      "sha256": "297F3114CE4844F59373EACA9D5422C044BBB8997D695BA24D4DD4481DF6E97E",
+      "bytes": 10588
+    },
+    {
+      "path": "plugin/trick_runtime.lua",
+      "sha256": "8892BF05036C4C6576CC11F7A20E875DCB2E6AB0FADA508EE910F6EF39A9E5F2",
+      "bytes": 33474
+    },
+    {
+      "path": "plugin/tricks.lua",
+      "sha256": "D61DA3555DC3DAAD41AC7E3E59234E787B0792F58EE97812EA9D33798AF7A10D",
+      "bytes": 29673
+    }
+  ]
+}

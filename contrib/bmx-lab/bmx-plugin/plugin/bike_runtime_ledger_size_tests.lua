@@ -271,7 +271,7 @@ function Tests.run(runner)
             outcome=applied and "applied" or "queued",force_attempted=applied,torque_attempted=applied,
             retained=false,quarantined=false,successor=successor,cleanup_disposition="none"}
     end
-    local peak_bytes,peak_fields,saved_steps,peak_pending=0,0,0,0
+    local peak_bytes,peak_fields,saved_steps,peak_pending,bound_worst=0,0,0,0,0
     local function shape(record)
         local fields=0
         local function visit(value,depth)
@@ -428,8 +428,13 @@ function Tests.run(runner)
         check(saved.record.schema==1 and saved.record.kind=="bike-lifecycle-v1"
             and saved.record.phase~="retained_unknown" and saved.bytes==#encode(saved.record)
             and saved.bytes<48000,"every accepted startup/window/terminal record uses full schema and actual bounded bytes")
+        -- Core skips its size-check encode only under this bound; it must cover the actual writer.
+        local bound=Core.ledger_bound(saved.record)
+        check(bound==nil or bound>=saved.bytes,"the ledger bound covers the actual bytes: "..tostring(bound).." "..saved.bytes)
+        bound_worst=math.max(bound_worst,bound and bound/saved.bytes or 0)
         peak_bytes=math.max(peak_bytes,saved.bytes)
     end
+    check(bound_worst>=1 and bound_worst<1.5,"bounds are found and within half again of the bytes: "..bound_worst)
     cases+=1
     -- Positive size checks above cannot pass via a constant fake encoder: add
     -- bounded strings, below copier limits, that push the actual bytes overcap.

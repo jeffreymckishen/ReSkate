@@ -72,6 +72,29 @@ function Tests.run(runner)
         check(encode(value)=='{"a":1}' and invoked==0,"SDK raw iteration ignores metatable behavior")
         check(not pcall(function() runner.json_encode=nil end),"test helper is read-only")
     end)
+    case(function()
+        -- Core's ledger bound against the actual writer: never below it, and nil where it cannot say.
+        local Core=require("./bike_runtime_core")
+        local control=""
+        for byte=0,31 do control..=string.char(byte) end
+        local values={true,false,0,-0,1,-1,9007199254740992,-9007199254740992,9007199254740993,.5,-.5,1/3,-2/3,
+            1e-7,-1.2345678901234567e-308,1.7976931348623157e308,-1e21,123456.789,0.000001234567890123,
+            "","plain",'quote " and \\ backslash',control,string.rep('"',100),string.rep("\\",64),"tab\tnew\nline\127del",
+            {},{1,2,3},{x={y={z={}}}},{a="b",c={1,{d=false}}},{list={1,2,{3,4}},n=-12.5},
+            table.freeze({row=table.freeze({call="time.now",at_ms=1234.5,called=true,returns=1,first_type="number"})})}
+        local cyclic={};cyclic.self=cyclic
+        for index,value in ipairs(values) do
+            local bound=Core.ledger_bound(value)
+            local text=encode(value)
+            check(type(bound)=="number" and bound>=#text,"value "..index.." bound "..tostring(bound).." covers "..#text.." bytes")
+        end
+        local frozen=values[#values]
+        check(Core.ledger_bound(frozen)==Core.ledger_bound(frozen),"a frozen table keeps its bound")
+        for _,value in ipairs({"caf\195\169",{1,x=2},{[3]=1},{0/0},{-1/0},setmetatable({a=1},{}),cyclic,newproxy(),
+            vector.create(1,2,3),function() end}) do
+            check(Core.ledger_bound(value)==nil,"no bound for "..typeof(value))
+        end
+    end)
     return {cases=cases,assertions=assertions,native_actions=0}
 end
 return Tests

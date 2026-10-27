@@ -99,7 +99,8 @@ three-second lease from reservation and one process-wide receipt slot; its
 opt-in renewable lease (`renew_follow`, permission `world.physics.follow.renew`)
 is used only by a reviewed trial copy of `bike_runtime_core.lua` with
 `FOLLOW_RENEWAL_QUALIFIED=true` and that permission in its manifest, which
-renews once per following tick with that tick's body sample (LUA-12). The
+renews on its first following tick and then only while less than 475 ms of its
+lease is left, each time with that tick's body sample (LUA-12). The
 tracked source and manifest do neither. The SDK retains at most eight native body allocation slots for the
 process lifetime, including failed/partial attempts. Native destruction remains
 unproven and slots are not recycled; capacity may already be exhausted before

@@ -147,6 +147,42 @@ function Tests.run()
         check(f.model_frame.contact.decoded.force_ready==false and f.model_frame.support.native_collision_contact==false,
             "a successful refusal-only check is not SDK physical authority")
     end
+    case() do
+        -- The tripwire is cast on the first wheel batch and every second measured epoch after it;
+        -- the epoch between says its clear check is the previous epoch's.
+        local hit_at=nil
+        local f;f=fixture({trip=function(batch)
+            if hit_at and #f.probes==hit_at then return hit(batch,f) end
+            return batch
+        end})
+        local lanes,counts={},{}
+        for step=1,5 do
+            if step>1 then f.advance() end
+            local before=#f.probes
+            local out=f.observe()
+            check(not out.stop_requested,"epoch "..step.." rides: "..tostring(out.issue))
+            counts[step]=#f.probes-before
+            lanes[step]=f.model_frame.support.actor_tripwire
+        end
+        check(counts[1]==2 and counts[2]==1 and counts[3]==2 and counts[4]==1 and counts[5]==2,
+            "wheels every epoch, the tripwire on epochs 1, 3 and 5: "..table.concat(counts," "))
+        check(lanes[1]=="authored_rider_crossings_clear_v1" and lanes[2]=="authored_rider_crossings_clear_previous_epoch_v1"
+            and lanes[3]=="authored_rider_crossings_clear_v1" and lanes[4]=="authored_rider_crossings_clear_previous_epoch_v1",
+            "the support record names which epoch's tripwire was clear")
+        for i=1,#f.probes do
+            local trip=#f.probes[i].rays==3
+            check(not trip or #f.probes[i-1].rays==2 and f.probes[i].epoch==f.probes[i-1].epoch,
+                "a tripwire uses its wheel batch's epoch")
+        end
+        -- A crossing hit on the next cast tripwire still stops before any model or command.
+        f.advance();f.observe()
+        local submitted=f.ride:status().submitted
+        hit_at=#f.probes+2
+        f.advance()
+        local out=f.observe()
+        check(out.stop_requested and out.issue=="rider tripwire hit" and f.ride:status().submitted==submitted,
+            "a hit on the next cast tripwire stops at once, before that epoch's command: "..tostring(out.issue))
+    end
     return {cases=cases,assertions=assertions,native_actions=0}
 end
 return Tests

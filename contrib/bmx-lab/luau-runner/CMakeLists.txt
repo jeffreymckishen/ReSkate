@@ -86,7 +86,7 @@ foreach(suite IN LISTS luau_runner_suites)
     get_filename_component(module "${suite}" NAME_WLE)
     file(READ "${suite}" suite_text)
     # Requiring the fixture, or a suite that requires it, means running against the copy.
-    string(REGEX MATCH "ride_runtime_qualified_fixture|contact_runtime_category_qualified_fixture|mounted_pose_qualified_fixture|force_stage_[a-z_]+_fixture|bike_spawn_floor_qualified_fixture|bike_runtime_core_provisional_follow_fixture|bike_runtime_core_follow_renewal_fixture|bike_runtime_core_follow_lead_fixture|bike_runtime_core_ride_guard_fixture|bike_runtime_core_mounted_pose_fixture|\\./ride_runtime_tests|\\./ride_runtime_join_tests|\\./ride_runtime_metrics_tests"
+    string(REGEX MATCH "ride_runtime_qualified_fixture|main_score_entry_fixture|contact_runtime_category_qualified_fixture|mounted_pose_qualified_fixture|force_stage_[a-z_]+_fixture|bike_spawn_floor_qualified_fixture|bike_runtime_core_provisional_follow_fixture|bike_runtime_core_follow_renewal_fixture|bike_runtime_core_follow_lead_fixture|bike_runtime_core_ride_guard_fixture|bike_runtime_core_mounted_pose_fixture|\\./ride_runtime_tests|\\./ride_runtime_join_tests|\\./ride_runtime_metrics_tests"
         needs_qualified "${suite_text}")
     if(needs_qualified)
         add_test(NAME bmx_lua.${module} COMMAND bmx_luau_tests "${luau_runner_qualified}" "${module}")
@@ -116,7 +116,7 @@ set_tests_properties(bmx_lua_runner.self_test bmx_lua_runner.refuses_path_name
     bmx_lua_runner.refuses_module_without_run bmx_lua_runner.refuses_missing_suite PROPERTIES TIMEOUT 60 LABELS bmx_lua_runner)
 
 # Staging's refusals and manifest. Each case fills a scratch folder of its own, which it must find
-# absent, with a two-module stand-in plugin and its destinations, so the real plugin is neither read
+# absent, with a three-module stand-in plugin and its destinations, so the real plugin is neither read
 # nor written and a case never removes a file it did not make. The setup test clears the case
 # folders first. They are siblings, not one parent, so cases running in parallel never race to make
 # a shared folder.

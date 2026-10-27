@@ -137,6 +137,10 @@ function BikeRuntime.new(services,options)
         running=false
         return accepted==true,accepted and nil or T.detail
     end
+    function object:score_feed(after_n)
+        if core then return core:score_feed(after_n) end
+        return {generation=0,n=0,rows={},gap=after_n~=nil and after_n~=0}
+    end
     function object:status() return status() end
     function object:request_mount(slot)
         if not valid_slot(slot) then return false,"Choose an XInput slot from0 to3" end

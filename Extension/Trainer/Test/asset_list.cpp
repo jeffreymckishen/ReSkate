@@ -307,17 +307,25 @@ bool mesh_metadata_name(std::string_view left, std::string_view right) {
 }
 
 void mesh_metadata_rows(MeshMetadataOutput& out, const dingosdk::frostbite::MeshLodMetadata& mesh) {
-    out.record("LOD\tlayout=", mesh.skinned ? "skinned" : "static", "\tcount=", mesh.lod_count,
-               "\tindex=", mesh.lod_index, "\tresource_offset=", mesh.lod_offset, "\tkind_raw=", mesh.lod_kind,
-               "\tindex_format_raw=", mesh.index_format, "\tindex_width=", mesh.index_format == 33 ? "2" : "unknown",
-               "\tvertex_bytes=", mesh.geometry.vertex_bytes, "\tindex_bytes=", mesh.geometry.index_bytes,
-               "\tchunk_guid=", mesh.geometry.chunk.string(), "\tsection_count=", mesh.section_count,
-               "\tsection_table_offset=", mesh.section_table, "\tstride_ambiguous=", mesh.ambiguous ? 1 : 0,
-               "\tparser_complete=", mesh.complete ? 1 : 0);
+    if (mesh.lod_kind_supported) {
+        out.record("LOD\tlayout=", mesh.skinned ? "skinned" : "static", "\tcount=", mesh.lod_count,
+                   "\tindex=", mesh.lod_index, "\tresource_offset=", mesh.lod_offset, "\tkind_raw=", mesh.lod_kind,
+                   "\tkind_supported=1\tindex_format_raw=", mesh.index_format, "\tindex_width=", mesh.index_format == 33 ? "2" : "unknown",
+                   "\tvertex_bytes=", mesh.geometry.vertex_bytes, "\tindex_bytes=", mesh.geometry.index_bytes,
+                   "\tchunk_guid=", mesh.geometry.chunk.string(), "\tsection_count=", mesh.section_count,
+                   "\tsection_table_offset=", mesh.section_table, "\tstride_ambiguous=", mesh.ambiguous ? 1 : 0,
+                   "\tparser_complete=", mesh.complete ? 1 : 0);
+    } else {
+        // Later fields have not been interpreted for this LOD kind; zero-initialized members are not observations.
+        out.record("LOD\tlayout=", mesh.skinned ? "skinned" : "static", "\tcount=", mesh.lod_count,
+                   "\tindex=", mesh.lod_index, "\tresource_offset=", mesh.lod_offset, "\tkind_raw=", mesh.lod_kind,
+                   "\tkind_supported=0\tparser_complete=0\tinterpretation=unsupported_lod_kind");
+    }
     for (const auto& diagnostic : mesh.diagnostics) {
         if (!out.open()) break;
         out.record("DIAGNOSTIC\tscope=lod\tmessage=", out.text(diagnostic));
     }
+    if (!mesh.lod_kind_supported) return;
     for (std::size_t candidate_index = 0; candidate_index < mesh.candidates.size() && out.open(); ++candidate_index) {
         const auto& candidate = mesh.candidates[candidate_index];
         if (candidate.diagnostic_count > candidate.diagnostics.size()) out.mark_truncated();
@@ -429,6 +437,7 @@ int mesh_metadata_command(int argc, char** argv) {
         stage = "mesh_metadata";
         const auto mesh = read_mesh_lod_metadata(bytes, lod);
         mesh_metadata_rows(out, mesh);
+        if (!mesh.lod_kind_supported) return out.finish(false);
         std::size_t chunk_matches{}, chunk_index{};
         for (std::size_t i = 0; i < bundle.manifest.chunks.size(); ++i)
             if (bundle.manifest.chunks[i].guid == mesh.geometry.chunk) { ++chunk_matches; chunk_index = i; }

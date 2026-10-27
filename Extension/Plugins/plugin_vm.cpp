@@ -440,9 +440,12 @@ void Plugin::tick(double dt_ms) {
         window_start_ = now;
         window_spent_ = 0;
         window_ticks_ = 0;
+        // The reason names the setting, where there is one: a player whose plugin needs more than the
+        // default can then give it more, rather than lose the plugin.
         if (over_windows_ >= limits_.over_windows && state_ == State::running)
-            stop(std::format("it took {:.2f} ms a tick for {} s, over its {} ms", last_window_ms_, limits_.over_windows,
-                limits_.tick_ms));
+            stop(std::format("it took {:.2f} ms a tick for {} s, over the plugin time budget of {} ms{}", last_window_ms_,
+                limits_.over_windows, limits_.tick_ms,
+                limits_.tick_setting.empty() ? std::string{} : " (change it in " + limits_.tick_setting + ")"));
     }
 }
 

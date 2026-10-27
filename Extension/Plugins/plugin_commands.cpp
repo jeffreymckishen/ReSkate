@@ -17,7 +17,7 @@ void write_lines(const Output& out, const std::string& text) {
 Argument plugin_id() { return argument("id"); }
 }
 void register_plugin_commands(Commands& registry) {
-    auto list = action("plugin list", "List the plugins: running, stopped and why, memory and time a tick", Group::console);
+    auto list = action("plugin list", "List the plugins: running, stopped and why, memory, and time a tick against the plugin time budget", Group::console);
     list.run = [](const Model&, const Values&, const Output& out) { write_lines(out, plugins::describe()); };
     registry.add(std::move(list));
 

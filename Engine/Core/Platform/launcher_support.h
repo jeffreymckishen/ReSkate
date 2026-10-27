@@ -5,6 +5,7 @@
 #endif
 
 #include "Engine/Game/Build/supported_build.h"
+#include "Engine/Core/Platform/plugin_time_budget.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -52,6 +53,9 @@ struct LaunchOptions {
     // --console-key); passed to the game as RESKATE_MENU_KEY / RESKATE_CONSOLE_KEY.
     unsigned menu_key{0x2D};     // VK_INSERT
     unsigned console_key{0xC0};  // VK_OEM_3, the key left of 1
+    // --plugin-tick-ms=<ms>: the plugin time budget (plugin_time_budget.h), one of its choices;
+    // passed to the game as RESKATE_PLUGIN_TICK_MS.
+    int plugin_tick_ms{plugin_time_budget::default_ms};
     std::string log_level{"info"};
     // -map <name>: the map the game loads once it is up, named as the console's "load" names
     // one (a map's name, short name or asset path, or the start of one). Empty: none.
@@ -131,6 +135,10 @@ struct OverlayKeys { unsigned menu{default_menu_key}, console{default_console_ke
 // The keys the launcher chose (RESKATE_MENU_KEY / RESKATE_CONSOLE_KEY), or
 // the defaults. Read once per process.
 OverlayKeys overlay_keys() noexcept;
+// The plugin time budget the launcher chose (RESKATE_PLUGIN_TICK_MS, plugin_time_budget.h), or the
+// default. `off_list`, when given, says whether the variable held something that is not a choice,
+// which only a hand-set variable can, so the caller can say why the budget is the default.
+int plugin_tick_ms(bool* off_list = nullptr) noexcept;
 // Whether a virtual key can open the menu or console: not a mouse button,
 // modifier, Escape, Enter, Tab, Space or Backspace.
 bool bindable_key(unsigned key) noexcept;
@@ -158,6 +166,10 @@ inline constexpr unsigned default_menu_key = 0x2D;
 inline constexpr unsigned default_console_key = 0xC0;
 struct OverlayKeys { unsigned menu{default_menu_key}, console{default_console_key}; };
 inline OverlayKeys overlay_keys() noexcept { return {}; }
+inline int plugin_tick_ms(bool* off_list = nullptr) noexcept {
+    if (off_list) *off_list = false;
+    return plugin_time_budget::default_ms;
+}
 inline bool bindable_key(unsigned) noexcept { return false; }
 inline std::string key_name(unsigned key) { return "Key " + std::to_string(key); }
 inline std::string key_cap(unsigned key) { return key_name(key); }

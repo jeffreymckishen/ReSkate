@@ -6,6 +6,8 @@
 #include "plugin_game_runtime.h"
 #include "plugin_wire.h"
 #include "Engine/Core/Log/logging.h"
+#include "Engine/Core/Platform/launcher_support.h"
+#include "Engine/Core/Platform/plugin_time_budget.h"
 #include "Engine/Game/Multiplayer/session_tools.h"
 #include "Extension/Multiplayer/Session/session.h"
 #include "Extension/UI/NativeMenu/ui_sound.h"
@@ -282,6 +284,18 @@ void watch() {
     }
 }
 
+// The plugin time budget the launcher started the game with (plugin_time_budget.h). One it would not
+// pass, set by hand, is said and left at the default.
+int tick_budget_ms() {
+    bool off_list = false;
+    const int ms = launcher::plugin_tick_ms(&off_list);
+    if (off_list)
+        logging::log(logging::Level::warning, logging::Channel::plugins,
+            "Plugins: RESKATE_PLUGIN_TICK_MS is not one of 2, 3, 4, 5 or 6 (ms), so the budget is the default {} ms a tick.",
+            plugin_time_budget::default_ms);
+    return ms;
+}
+
 std::filesystem::path local_storage() {
     PWSTR raw{};
     std::filesystem::path result;
@@ -305,10 +319,14 @@ bool start(std::uintptr_t image_base) noexcept {
         if (storage.empty()) storage = data_root / L"ReSkate.Plugins";
         server_environment = new GameEnvironment(storage / L"server", true);
         environment = new GameEnvironment(std::move(storage), false);
-        host = new Host(*environment, Side::client);
-        server_host = new Host(*server_environment, Side::server, {}, "@server");
+        // The player's copies and a lobby's server copies run on this game's tick, so both get its budget.
+        const auto limits = game_limits(tick_budget_ms());
+        host = new Host(*environment, Side::client, limits);
+        server_host = new Host(*server_environment, Side::server, limits, "@server");
         std::thread(watch).detach();
-        logging::write(logging::Level::info, logging::Channel::plugins, "Plugins: looking in Mods for reskate-plugin.json every 2 s.");
+        logging::log(logging::Level::info, logging::Channel::plugins,
+            "Plugins: looking in Mods for reskate-plugin.json every 2 s; each may take {} ms a tick ({}).", limits.tick_ms,
+            plugin_time_budget::setting);
         return true;
     } catch (const std::exception& error) {
         logging::log(logging::Level::error, logging::Channel::plugins, "Plugins could not start: {}", error.what());
@@ -444,13 +462,15 @@ std::string describe() {
             plugins.push_back(std::move(status));
         }
     if (plugins.empty()) return "No plugins. A plugin is a mod in Mods with a reskate-plugin.json.";
-    std::string text;
+    // The budget first, and each plugin's time against it, so a player sees how near one is to being stopped.
+    std::string text = std::format("Plugin time budget: {} ms a tick each (change it in {}).", host->tick_budget_ms(),
+        plugin_time_budget::setting);
     for (const auto& plugin : plugins) {
-        if (!text.empty()) text += '\n';
+        text += '\n';
         text += std::format("{}: {}", plugin.id, plugin.state);
         if (plugin.state == "running")
-            text += std::format(", {:.1f} MB, {:.3f} ms a tick, {} command{}", plugin.memory / 1048576.0, plugin.tick_ms,
-                plugin.commands.size(), plugin.commands.size() == 1 ? "" : "s");
+            text += std::format(", {:.1f} MB, {:.3f} of {} ms a tick, {} command{}", plugin.memory / 1048576.0, plugin.tick_ms,
+                plugin.tick_budget_ms, plugin.commands.size(), plugin.commands.size() == 1 ? "" : "s");
         else if (!plugin.reason.empty()) text += " (" + plugin.reason + ")";
     }
     return text;

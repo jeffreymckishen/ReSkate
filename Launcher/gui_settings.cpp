@@ -364,6 +364,36 @@ bool start_map_choice(Settings& settings, const launcher_app::Session& session, 
     return changed;
 }
 
+// Settings > GAME: the plugin time budget (plugin_time_budget.h). Returns true when it changed, so
+// the caller can save straight away; the game takes it at its next launch.
+bool plugin_budget_choice(Settings& settings) {
+    bool changed = false;
+    const int chosen = plugin_time_budget::or_default(settings.plugin_tick_ms);
+    const auto label = [](int ms) {
+        return ms == plugin_time_budget::default_ms ? std::format("{} ms a tick (default)", ms) : std::format("{} ms a tick", ms);
+    };
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Plugin time budget");
+    ImGui::SameLine(S(200));
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::BeginCombo("##plugin_tick_ms", label(chosen).c_str())) {
+        for (const int ms : plugin_time_budget::choices_ms) {
+            const bool selected = ms == chosen;
+            if (ImGui::Selectable(label(ms).c_str(), selected) && !selected) {
+                settings.plugin_tick_ms = ms;
+                changed = true;
+            }
+            if (selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    setting_note("How long each plugin mod may take of a game tick, on average over a second, before ReSkate stops it "
+                 "so the game stays smooth. Raise it when a plugin you trust is stopped for going over the plugin time "
+                 "budget: plugins that drive physics can need 4 ms. plugin list in the console shows what each one "
+                 "takes. Applies from the next launch.");
+    return changed;
+}
+
 } // namespace
 
 void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, HWND window) {
@@ -438,6 +468,9 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
         setting_check("Discord status", "Show on your Discord profile where you are skating: the map, the server or lobby "
                       "and how many are in it. Off, the game does not talk to Discord at all.", settings.discord_status);
         if (start_map_choice(settings, launcher.session(), ui)) launcher.save();
+        ImGui::Spacing();
+        section_caption(fonts, "PLUGINS");
+        if (plugin_budget_choice(settings)) launcher.save();
         ImGui::Spacing();
         section_caption(fonts, "EXTRA GAME ARGUMENTS");
         std::array<char, 1024> arguments{};

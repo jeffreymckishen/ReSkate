@@ -29,8 +29,11 @@ struct Limits {
     std::size_t memory = 64u << 20;     // the VM's heap
     double call_ms = 50;                // one call into the plugin (load, a handler, a command)
     double unload_ms = 20;              // its unload handlers, together
-    double tick_ms = 2;                 // the average time a tick, over a window of 1 s...
+    double tick_ms = 2;                 // the average time a tick, over a window of 1 s (the plugin time budget)...
     int over_windows = 3;               // ...over it this many windows in a row stops it
+    // Where the player changes tick_ms, named in the reason a plugin over it stops for. Empty where
+    // nobody can (a dedicated server, the tests); the game's is game_limits' (plugin_host.h).
+    std::string tick_setting;
     int errors = 5;                     // more errors than this...
     double error_window_ms = 10'000;    // ...in this long stops it
     int log_lines_per_second = 50;
@@ -260,6 +263,8 @@ public:
     const std::string& reason() const noexcept { return reason_; }
     std::size_t memory() const noexcept { return memory_; }
     double tick_ms() const noexcept { return last_window_ms_; }
+    // The budget it was loaded with (Limits::tick_ms): its average a tick may not stay over.
+    double tick_budget_ms() const noexcept { return limits_.tick_ms; }
     // Its console commands and their help.
     // Its console commands, and the subcommands each declared ("prop random", run by "prop"'s
     // function): the name, its arguments as help shows them, and its help.

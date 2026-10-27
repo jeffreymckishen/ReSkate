@@ -443,7 +443,8 @@ local function status(s)
         pending_count=#s.pending,pending_commands=sequences,pending_limit=MAX_PENDING,
         backpressure=s.backpressure,backpressure_steps=s.backpressure_steps,last_backpressure_serial=s.last_backpressure_serial,
         continuity={pending=s.continuity_pending,skipped_steps=s.continuity_skipped_steps,
-            invalidations=s.continuity_invalidations,gap_wheels="torque_free_coast",native_wheel_state_known=false},
+            invalidations=s.continuity_invalidations,body_read_recoveries=s.body_read_recoveries,
+            gap_wheels="torque_free_coast",native_wheel_state_known=false},
         submitted=s.submitted,acknowledged=s.acknowledged,last_serial=s.last_sample and s.last_sample.serial,
         input_staged=s.input_staged,input_consumed=s.input_consumed,input_queued=#s.input_queue,
         observed_steps=s.observed_steps,model_steps=s.model_steps,receipt=s.last_receipt,
@@ -766,6 +767,12 @@ local function observe(s,source_frame,raw,context)
     -- Stage even on duplicate bodies and while a command receipt is pending.
     local sample,body=sample_copy(raw)
     if not sample then stop(s,"native body sample invalid");return end
+    if context.body_read_recovered==true then
+        -- Core recovered its one guarded read, not an unobserved model step.
+        -- Keep every pending receipt, accepted hop and predicted wheel state;
+        -- only derivative history is invalidated before the next preview.
+        s.continuity_pending=true;s.body_read_recoveries+=1
+    end
     if s.last_sample then
         local order=Identity.compare(sample.serial,s.last_sample.serial)
         if order==0 then
@@ -989,7 +996,7 @@ function Ride.new(force_api,models,options)
         wheels=Forces.proposed_wheels(),phase="inert",issue="native qualification required",generation=0,
         pose=freeze(NEUTRAL_POSE),trick_fallbacks=0,
         submitted=0,acknowledged=0,pending={},metrics=new_metrics(),backpressure_steps=0,
-        continuity_pending=false,continuity_skipped_steps=0,continuity_invalidations=0,
+        continuity_pending=false,continuity_skipped_steps=0,continuity_invalidations=0,body_read_recoveries=0,
         input_queue={},input_staged=0,input_consumed=0,observed_steps=0,model_steps=0}
     if ACTIVATION_QUALIFIED then
         -- Snapshot an immutable model capability once. Raw Forces has no hop

@@ -5876,7 +5876,7 @@ void bmx_lua_persistence_keeps_terminal_records_and_public_fault_gates() {
                 persisted, persisted_work = result.cases, result.work_units
                 assert(result.done == (persisted_work == 21))
                 if result.done then
-                    assert(result.cases == 17 and result.assertions == 185)
+                    assert(result.cases == 17 and result.assertions == 216)
                     reskate.log(string.format("BMX Lua persistence: %d cases, %d assertions, 0 native actions", result.cases, result.assertions))
                 end
                 return

@@ -300,6 +300,7 @@ void stage_qualified_ride(const std::filesystem::path& plugin_folder, const std:
     const fs::path follow_fixture = "bike_runtime_core_provisional_follow_fixture.lua";
     const fs::path renewal_fixture = "bike_runtime_core_follow_renewal_fixture.lua";
     const fs::path lead_fixture = "bike_runtime_core_follow_lead_fixture.lua";
+    const fs::path guard_fixture = "bike_runtime_core_ride_guard_fixture.lua";
     const fs::path manifest = ".bmx-qualified-ride-files-v1";
     constexpr std::string_view manifest_header = "bmx-qualified-ride-files-v1";
     for (const auto& planted : {fixture, category_fixture, pose_fixture, force_support_fixture, force_pedal_fixture,
@@ -308,7 +309,7 @@ void stage_qualified_ride(const std::filesystem::path& plugin_folder, const std:
              force_torque_zero_fixture, force_torque_negative_fixture, force_torque_infinite_fixture,
              force_torque_nan_fixture, force_torque_string_fixture, force_torque_boolean_fixture, force_torque_excess_fixture,
              force_hop_fixture, force_hop_uncapped_fixture, force_hop_invalid_vertical_fixture, force_hop_low_vertical_fixture,
-             floor_fixture, follow_fixture, renewal_fixture, lead_fixture})
+             floor_fixture, follow_fixture, renewal_fixture, lead_fixture, guard_fixture})
         if (fs::exists(source / planted))
             throw std::runtime_error(planted.string() + " belongs only in test copies, not in " + source.generic_string());
     const auto wanted = fs::weakly_canonical(copy_folder);
@@ -422,9 +423,9 @@ void stage_qualified_ride(const std::filesystem::path& plugin_folder, const std:
         files.emplace(floor_fixture, std::move(spawn));
     }
 
-    // Core keeps each independent trial in its own single-literal copy: the
-    // provisional offset, renewable lease and measured-motion lead. Validate all
-    // three before staging any files; the plugin never receives these copies.
+    // Follow trials change one literal each. The active-guard fixture also
+    // binds the separately qualified Ride copy, so both owners participate.
+    // Validate every substitution before staging; the plugin receives no fixture.
     const auto core_file = files.find("bike_runtime_core.lua");
     if (core_file != files.end()) {
         const auto flipped = [&](std::string_view inactive, std::string_view active) {
@@ -438,9 +439,16 @@ void stage_qualified_ride(const std::filesystem::path& plugin_folder, const std:
         auto follow = flipped("local M1_PROVISIONAL_FOLLOW_OFFSET=false", "local M1_PROVISIONAL_FOLLOW_OFFSET=true");
         auto renewal = flipped("local FOLLOW_RENEWAL_QUALIFIED=false", "local FOLLOW_RENEWAL_QUALIFIED=true");
         auto lead = flipped("local FOLLOW_LEAD_QUALIFIED=false", "local FOLLOW_LEAD_QUALIFIED=true");
+        auto guard = flipped("local RIDE_COMPOSITION_QUALIFIED=false", "local RIDE_COMPOSITION_QUALIFIED=true");
+        constexpr std::string_view ride_binding = "local Ride=require(\"./ride_runtime\")";
+        const auto ride_at = guard.find(ride_binding);
+        if (ride_at == std::string::npos || guard.find(ride_binding, ride_at + ride_binding.size()) != std::string::npos)
+            throw std::runtime_error("bike_runtime_core.lua must keep exactly one canonical Ride binding");
+        guard.replace(ride_at, ride_binding.size(), "local Ride=require(\"./ride_runtime_qualified_fixture\")");
         files.emplace(follow_fixture, std::move(follow));
         files.emplace(renewal_fixture, std::move(renewal));
         files.emplace(lead_fixture, std::move(lead));
+        files.emplace(guard_fixture, std::move(guard));
     }
 
     std::set<fs::path> owned;
@@ -802,13 +810,15 @@ void floor_manifest(const std::filesystem::path& scratch) {
     constexpr std::string_view qualified = "local FLOOR_SPAWN_QUALIFIED=true\r\nreturn FLOOR_SPAWN_QUALIFIED\r\n";
     write_file(source / "bike_spawn.lua", spawn);
     constexpr std::string_view core = "local M1_PROVISIONAL_FOLLOW_OFFSET=false\r\nlocal FOLLOW_RENEWAL_QUALIFIED=false\r\n"
-        "local FOLLOW_LEAD_QUALIFIED=false\r\nreturn M1_PROVISIONAL_FOLLOW_OFFSET\r\n";
+        "local FOLLOW_LEAD_QUALIFIED=false\r\nlocal RIDE_COMPOSITION_QUALIFIED=false\r\nlocal Ride=require(\"./ride_runtime\")\r\nreturn M1_PROVISIONAL_FOLLOW_OFFSET\r\n";
     constexpr std::string_view core_qualified = "local M1_PROVISIONAL_FOLLOW_OFFSET=true\r\nlocal FOLLOW_RENEWAL_QUALIFIED=false\r\n"
-        "local FOLLOW_LEAD_QUALIFIED=false\r\nreturn M1_PROVISIONAL_FOLLOW_OFFSET\r\n";
+        "local FOLLOW_LEAD_QUALIFIED=false\r\nlocal RIDE_COMPOSITION_QUALIFIED=false\r\nlocal Ride=require(\"./ride_runtime\")\r\nreturn M1_PROVISIONAL_FOLLOW_OFFSET\r\n";
     constexpr std::string_view core_renewal = "local M1_PROVISIONAL_FOLLOW_OFFSET=false\r\nlocal FOLLOW_RENEWAL_QUALIFIED=true\r\n"
-        "local FOLLOW_LEAD_QUALIFIED=false\r\nreturn M1_PROVISIONAL_FOLLOW_OFFSET\r\n";
+        "local FOLLOW_LEAD_QUALIFIED=false\r\nlocal RIDE_COMPOSITION_QUALIFIED=false\r\nlocal Ride=require(\"./ride_runtime\")\r\nreturn M1_PROVISIONAL_FOLLOW_OFFSET\r\n";
     constexpr std::string_view core_lead = "local M1_PROVISIONAL_FOLLOW_OFFSET=false\r\nlocal FOLLOW_RENEWAL_QUALIFIED=false\r\n"
-        "local FOLLOW_LEAD_QUALIFIED=true\r\nreturn M1_PROVISIONAL_FOLLOW_OFFSET\r\n";
+        "local FOLLOW_LEAD_QUALIFIED=true\r\nlocal RIDE_COMPOSITION_QUALIFIED=false\r\nlocal Ride=require(\"./ride_runtime\")\r\nreturn M1_PROVISIONAL_FOLLOW_OFFSET\r\n";
+    constexpr std::string_view core_guard = "local M1_PROVISIONAL_FOLLOW_OFFSET=false\r\nlocal FOLLOW_RENEWAL_QUALIFIED=false\r\n"
+        "local FOLLOW_LEAD_QUALIFIED=false\r\nlocal RIDE_COMPOSITION_QUALIFIED=true\r\nlocal Ride=require(\"./ride_runtime_qualified_fixture\")\r\nreturn M1_PROVISIONAL_FOLLOW_OFFSET\r\n";
     write_file(source / "bike_runtime_core.lua", core);
     const auto before = inventory(source);
     const auto destination = scratch / "copy";
@@ -819,11 +829,12 @@ void floor_manifest(const std::filesystem::path& scratch) {
     expect(staged.at("bike_runtime_core_provisional_follow_fixture.lua") == std::string(core_qualified), "provisional Follow fixture changed more than one literal");
     expect(staged.at("bike_runtime_core_follow_renewal_fixture.lua") == std::string(core_renewal), "Follow renewal fixture changed more than one literal");
     expect(staged.at("bike_runtime_core_follow_lead_fixture.lua") == std::string(core_lead), "Follow lead fixture changed more than one literal");
+    expect(staged.at("bike_runtime_core_ride_guard_fixture.lua") == std::string(core_guard), "active Core guard fixture changed more than its gate and Ride binding");
     expect(staged.at("bike_spawn_floor_qualified_fixture.lua") == std::string(qualified), "floor fixture changed more than one literal");
     expect(staged.at(".bmx-qualified-ride-files-v1") == std::string(
-        "bmx-qualified-ride-files-v1\nbike_runtime_core.lua\nbike_runtime_core_follow_lead_fixture.lua\nbike_runtime_core_follow_renewal_fixture.lua\nbike_runtime_core_provisional_follow_fixture.lua\nbike_spawn.lua\nbike_spawn_floor_qualified_fixture.lua\nforce_math.lua\nride_runtime.lua\nride_runtime_qualified_fixture.lua\n"),
+        "bmx-qualified-ride-files-v1\nbike_runtime_core.lua\nbike_runtime_core_follow_lead_fixture.lua\nbike_runtime_core_follow_renewal_fixture.lua\nbike_runtime_core_provisional_follow_fixture.lua\nbike_runtime_core_ride_guard_fixture.lua\nbike_spawn.lua\nbike_spawn_floor_qualified_fixture.lua\nforce_math.lua\nride_runtime.lua\nride_runtime_qualified_fixture.lua\n"),
         "floor fixture missing from exact ownership manifest");
-    expect(staged.size() == 10, "floor stage has unexpected entries");
+    expect(staged.size() == 11, "floor stage has unexpected entries");
     stage_qualified_ride(source, destination);
     expect(inventory(destination) == staged && inventory(source) == before, "floor rerun changed source or destination bytes");
     write_file(source / "bike_spawn.lua", qualified);
@@ -848,6 +859,26 @@ void floor_manifest(const std::filesystem::path& scratch) {
     missing_lead.erase(missing_lead.find(inactive_lead), inactive_lead.size());
     write_file(source / "bike_runtime_core.lua", missing_lead);
     expect_refused(source, destination, "must keep exactly one");
+    write_file(source / "bike_runtime_core.lua", core_guard);
+    expect_refused(source, destination, "must keep exactly one");
+    write_file(source / "bike_runtime_core.lua", std::string(core) + "local RIDE_COMPOSITION_QUALIFIED=false\r\n");
+    expect_refused(source, destination, "must keep exactly one");
+    auto missing_guard = std::string(core);
+    constexpr std::string_view inactive_guard = "local RIDE_COMPOSITION_QUALIFIED=false";
+    missing_guard.erase(missing_guard.find(inactive_guard), inactive_guard.size());
+    write_file(source / "bike_runtime_core.lua", missing_guard);
+    expect_refused(source, destination, "must keep exactly one");
+    constexpr std::string_view canonical_ride = "local Ride=require(\"./ride_runtime\")";
+    auto qualified_ride = std::string(core);
+    qualified_ride.replace(qualified_ride.find(canonical_ride), canonical_ride.size(), "local Ride=require(\"./ride_runtime_qualified_fixture\")");
+    write_file(source / "bike_runtime_core.lua", qualified_ride);
+    expect_refused(source, destination, "must keep exactly one canonical Ride binding");
+    write_file(source / "bike_runtime_core.lua", std::string(core) + std::string(canonical_ride));
+    expect_refused(source, destination, "must keep exactly one canonical Ride binding");
+    auto missing_ride = std::string(core);
+    missing_ride.erase(missing_ride.find(canonical_ride), canonical_ride.size());
+    write_file(source / "bike_runtime_core.lua", missing_ride);
+    expect_refused(source, destination, "must keep exactly one canonical Ride binding");
     write_file(source / "bike_runtime_core.lua", core);
     write_file(source / "bike_runtime_core_provisional_follow_fixture.lua", core_qualified);
     expect_refused(source, scratch / "core-planted-copy", "belongs only in test copies");
@@ -858,6 +889,9 @@ void floor_manifest(const std::filesystem::path& scratch) {
     write_file(source / "bike_runtime_core_follow_lead_fixture.lua", core_lead);
     expect_refused(source, scratch / "core-lead-planted-copy", "belongs only in test copies");
     expect(std::filesystem::remove(source / "bike_runtime_core_follow_lead_fixture.lua"), "could not remove the owned lead plant");
+    write_file(source / "bike_runtime_core_ride_guard_fixture.lua", core_guard);
+    expect_refused(source, scratch / "core-guard-planted-copy", "belongs only in test copies");
+    expect(std::filesystem::remove(source / "bike_runtime_core_ride_guard_fixture.lua"), "could not remove the owned guard plant");
     expect(inventory(destination) == staged, "refused Core literals changed the earlier copy");
     write_file(source / "bike_spawn_floor_qualified_fixture.lua", qualified);
     expect_refused(source, scratch / "planted-copy", "belongs only in test copies");

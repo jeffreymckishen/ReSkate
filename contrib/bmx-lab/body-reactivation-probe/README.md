@@ -1,11 +1,16 @@
-# Body-only reactivation harness draft
+# Body-only reactivation diagnostic package
 
-SOURCE ONLY / UNRUN, 2026-10-27. This folder is outside all checkouts and is not
-installed. MainRoot owns subsequent review, checkpoint, OFF/ON builds, tests and
-any isolated deployment. No generator, parser, import, test, build or game was
-run to author this draft. Source API basis: integrated `6fb77a09`, including the
-private diagnostic introduced by `3a51a7cc`. The final runtime build identity
-must be recorded separately; this statement is not a binary provenance receipt.
+This private diagnostic package is tracked at
+`contrib/bmx-lab/body-reactivation-probe`, initially committed as `5b7a643a`.
+Its first draft was authored outside the checkout without executing project code.
+Subsequent pure-Luau tests passed. OFF Host validation found one test expectation
+error; its correction awaits rerun, and ON execution remains pending. The dated
+evidence and remaining execution checks are listed below.
+MainRoot owns OFF/ON builds, tests and any isolated deployment.
+
+Source API basis: integrated `6fb77a09`, including the private diagnostic
+introduced by `3a51a7cc`. Record the final runtime build identity separately;
+a source checkpoint or pure test result is not a binary provenance receipt.
 
 ## Purpose and limits
 
@@ -153,10 +158,50 @@ logs, screen observations and hashes before unloading. Unload loses probe access
 unconfirmed cleanup requires Root to end the exact isolated process, never retry
 or assert native destruction. Collect process exit separately from park evidence.
 
-## Validation remaining
+## Validation evidence and remaining work
 
-All synthetic cases and parser/Host/runtime checks are UNRUN. Root must bind a
-runner to these exact files, run probe_tests independently, review real API/UI
-behavior and validate bounded serialization and timing. There is no package
-verification/launch script here and no native outcome claim. Never infer the
-user's 9.5 BMX Streets likeness target from this mechanism experiment.
+Evidence snapshot: 2026-10-27. Keep these separate qualification levels:
+
+- **Pure Luau: PASS, 21 cases / 7,788 assertions.** Root ran `probe_tests` with
+  the pinned vendored-Luau runner; exit code 0, `native_calls=0` and
+  `game_evidence=false`. Durable external receipts are
+  [body_harness.log](<E:/RESKATE DEV/codex-reports/root-extra-validation-20261027T1752Z/body_harness.log>)
+  and [results.json](<E:/RESKATE DEV/codex-reports/root-extra-validation-20261027T1752Z/results.json>).
+  The receipt records runner SHA256
+  `AC92AA044E439C3E00D90D5F5A9B4AF80E0C25416FEA28D38CBDF0523264B385`
+  and the exact module hashes. This executed constructed pure fixtures, without
+  the plugin Host, permissions, Host time limits or game. Although `main.lua` was
+  included in the hash inventory, this result does not validate its Host entry.
+- **Actual-main Host smoke: SOURCE GO.** Independent reviewer
+  `geometry_contract_review` reviewed the test committed as `1326a7af` in
+  `Extension/Plugins/Test/plugin_tests.cpp`, SHA256
+  `3F31E9EA765D7D48935542FE04A8B20D3E5018D142C555D9F0A839C99743FAB2`.
+  The test loads the tracked package unchanged, exercises explicit cold Prepare,
+  a constructed 38-ray survey, waiting without visual approval, Stop and stored
+  unload receipt. It checks zero attempted body/reactivation/Follow/input
+  authority. Its default-OFF branch requires unknown-permission rejection before
+  entry or provider dispatch. This source review did not execute those assertions;
+  the subsequent execution status follows.
+- **OFF at `23c3e903`: normal full build PASS; SDK 329 passed, 1 failed, 1 skipped.**
+  The plugin suite failed its new assertion after `host.apply({})`: it incorrectly
+  expected no cleanup bookkeeping for a manifest-rejected candidate. The
+  [full SDK log](<E:/RESKATE DEV/worktrees/port-validation-20261027/evidence/23c3e903f0fbce225e2927ec1369927af026724b-full/sdk-tests-20261027T1814328254849Z-8ba9e1fd.log>)
+  preserves that failure. `Host::unload` always releases the candidate name;
+  `FakeGame::release` records one released ID and one `entities clear` call even
+  when rejection prevented VM creation. Only that post-unload expectation was
+  corrected. Pre-dispatch checks, all authority guards and the no-storage-ledger
+  check remain unchanged. Independent reviewer `geometry_contract_review` gave
+  SOURCE GO for corrected `plugin_tests.cpp`, SHA256
+  `ED8F1EF5BD4590F70EB9C5C1F087FBE04ADC34E770E19E19AAD9B4240CAE7936`.
+  **The corrected OFF test has not been rerun; this is not a full-suite pass.**
+- **ON at `23c3e903`: pending.** Root's qualification build and 25 SDK tests were
+  still active at this snapshot. No passing result is inferred from active work
+  or an earlier SDK test run.
+- **Native/game trial: pending.** Exact runtime/package/profile/process pins,
+  operator visual approval, native timing and cleanup evidence remain required.
+  No test above establishes native reactivation or repeated mounting qualification.
+
+Root must retain fresh OFF/ON compilation and Host smoke results before any
+native trial, including real API/UI behavior and bounded serialization/timing.
+There is no package verification/launch script here and no native outcome claim.
+Never infer the user's 9.5 BMX Streets likeness target from this mechanism experiment.

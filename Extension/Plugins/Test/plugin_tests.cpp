@@ -7668,8 +7668,11 @@ void the_tracked_body_reactivation_harness_stays_inert_until_visual_approval() {
         environment.panels.empty() && game.calls.empty() && !std::filesystem::exists(storage),
         "default-OFF manifest refusal happens before actual entry, menu or provider dispatch");
     host.apply({}); no_actuation();
-    check(game.calls.empty() && game.released.empty() && !std::filesystem::exists(storage),
-        "default-OFF rejection owns no plugin effects or unload ledger");
+    // Host::unload releases the candidate name even when manifest rejection
+    // prevented a VM. FakeGame records that empty-owner cleanup, not dispatch.
+    check(game.calls == std::vector<std::string>{std::string("entities clear ") + id} &&
+        game.released == std::vector<std::string>{id} && !std::filesystem::exists(storage),
+        "default-OFF removal performs only empty-owner bookkeeping and creates no unload ledger");
     std::cout << "tracked reactivation main: default-OFF permission refusal before entry/provider dispatch\n";
 #endif
 }

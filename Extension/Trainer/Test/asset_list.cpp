@@ -3,7 +3,10 @@
 //   dingosdk_trainer_asset_list <Skate folder> --dump <asset name>   every plain value, by name
 #include "asset_chunk_locator.h"
 #include "asset_chunk_locator_tests.h"
+#include "asset_manhole_candidate.h"
 #include "asset_manhole_candidate_tests.h"
+#include "Engine/Core/Platform/path_text.h"
+#include "Engine/Resource/cas_codec.h"
 #include "Engine/Resource/ebx_document.h"
 #include "Engine/Resource/mesh_set.h"
 #include "Engine/Vfs/game_bundles.h"
@@ -241,6 +244,12 @@ int inspect_asset(const dingosdk::vfs::GameData &data, const dingosdk::vfs::Game
               << "\tsuccess_scope=ebx_decode\n";
     return selected != 0 && decoded == selected && untyped == 0 ? 0 : 1;
 }
+struct ManholeInspectionProgress {
+    bool resource_read_attempted{}, resource_read_complete{}, resource_decode_complete{};
+    bool geometry_read_attempted{}, geometry_read_complete{}, geometry_decode_complete{};
+    bool inspection_complete{}, indices_consistent{};
+};
+
 // Keep this diagnostic's output bounded independently of the legacy dump/list modes.
 class MeshMetadataOutput {
 public:
@@ -285,6 +294,23 @@ public:
                   << "\tbytes_before_summary=" << bytes_ << "\tsuccess_scope=resource_metadata_only"
                   << "\tgeometry_payload_read=0\tdependency_closure=unverified\n";
         return success && static_cast<bool>(std::cout) ? 0 : failure_code;
+    }
+    int finish_candidate(const ManholeInspectionProgress& progress, int failure_code = 1) {
+        const bool reported = progress.inspection_complete && !truncated_ && static_cast<bool>(std::cout);
+        std::cout << "SUMMARY\tmode=manhole-candidate\tcomplete=0\tinspection_complete=" << (reported ? 1 : 0)
+                  << "\toutput_truncated=" << (truncated_ ? 1 : 0) << "\trecords_before_summary=" << records_
+                  << "\tbytes_before_summary=" << bytes_
+                  << "\tresource_read_attempted=" << progress.resource_read_attempted
+                  << "\tresource_read_complete=" << progress.resource_read_complete
+                  << "\tresource_decode_complete=" << progress.resource_decode_complete
+                  << "\tgeometry_read_attempted=" << progress.geometry_read_attempted
+                  << "\tgeometry_read_complete=" << progress.geometry_read_complete
+                  << "\tgeometry_decode_complete=" << progress.geometry_decode_complete
+                  << "\tindex_range_consistent=" << progress.indices_consistent
+                  << "\tsuccess_scope=candidate_consistency_only\tsemantic_qualification=unverified"
+                  << "\tcontent_identity_authenticated=0\tdependency_closure=unverified\n";
+        // Even a consistent inspection does not qualify the unsupported layout or native geometry.
+        return failure_code;
     }
 private:
     std::size_t bytes_{}, records_{};
@@ -474,6 +500,136 @@ void mesh_chunk_location_rows(MeshMetadataOutput& out, const dingosdk::frostbite
     }
 }
 
+void bounded_archive_rows(MeshMetadataOutput& out, std::string_view role,
+                          const dingosdk::frostbite::BundleFileInfo& payload,
+                          const dingosdk::vfs::BoundedArchiveRead& read) {
+    out.record("BOUNDED_ARCHIVE_READ\trole=", role, "\tpath=", out.text(dingosdk::path_utf8(read.path)),
+               "\tpatch=", payload.location.patch ? 1 : 0, "\tinstall_chunk=", payload.location.installChunk,
+               "\tarchive=", payload.location.archive, "\toffset=", payload.offset,
+               "\tcompressed_bytes=", read.encoded.size(), "\tarchive_bytes=", read.archive_size,
+               "\tvolume_serial=", read.volume_serial, "\tfile_index=", read.file_index,
+               "\tlast_write_time_raw=", read.last_write_time,
+               "\tdirectory_binding=unique_explicit\tphysical_range_checked=1\tsame_file_rechecked=1"
+               "\tcontent_identity_authenticated=0");
+}
+
+int manhole_candidate_command(int argc, char** argv) {
+    using namespace dingosdk::frostbite;
+    using namespace dingosdk::trainer::asset_tools;
+    MeshMetadataOutput out;
+    ManholeInspectionProgress progress;
+    if (argc != 3 || std::string_view(argv[1]).empty() || std::string_view(argv[1]).size() > 4096) {
+        out.record("ERROR\tstage=arguments\tmessage=expected one game folder and --inspect-manhole-candidate");
+        return out.finish_candidate(progress, 2);
+    }
+    std::string_view stage = "context";
+    try {
+        const auto* toc_environment = std::getenv("ASSET_TOC");
+        const auto* bundle_environment = std::getenv("ASSET_BUNDLE");
+        if ((toc_environment && std::string_view(toc_environment) != manhole_toc_name) ||
+            (bundle_environment && std::string_view(bundle_environment) != manhole_bundle_name)) {
+            out.record("ERROR\tstage=arguments\tmessage=this inspection requires its pinned TOC and bundle");
+            return out.finish_candidate(progress, 2);
+        }
+        out.record("CONTEXT\tmode=manhole-candidate\ttoc=", manhole_toc_name, "\tbundle=", manhole_bundle_name,
+                   "\texact_res_name=", manhole_resource_name, "\tlod=0\tcontract=manhole03_dc8d_capture",
+                   "\tmaximum_encoded_bytes=", manhole_encoded_limit, "\tmaximum_decoded_bytes=", manhole_decoded_size,
+                   "\tmaximum_resource_decoded_bytes=", manhole_resource_decoded_size,
+                   "\tmaximum_oodle_destination_bytes=", manhole_oodle_buffer_limit,
+                   "\tlimits_provenance=authored\tmetadata_loading_policy=existing_GameData"
+                   "\tlibrary_workspace_limit=not_claimed\ttotal_heap_limit=not_claimed"
+                   "\tstore_classification=unknown\tsemantic_qualification=unverified");
+        const std::filesystem::path game_root(argv[1]);
+        const dingosdk::vfs::GameData data(game_root);
+        stage = "bundle_read";
+        const auto toc = data.read_toc(manhole_toc_name);
+        const auto found = data.read_bundle(toc, manhole_bundle_name);
+        if (!found) throw std::runtime_error("pinned bundle was not found");
+        const auto& bundle = *found;
+        std::size_t matches{}, resource_index{};
+        for (std::size_t i = 0; i < bundle.manifest.resources.size(); ++i)
+            if (bundle.manifest.resources[i].name == manhole_resource_name) { ++matches; resource_index = i; }
+        if (matches != 1) throw std::runtime_error("pinned resource is absent or ambiguous");
+        const auto& resource = bundle.manifest.resources[resource_index];
+        const auto resource_admission = manhole_resource_gate(resource);
+        if (!resource_admission.accepted) throw std::runtime_error(resource_admission.refusal);
+        const auto* resource_payload = bundle.payload(AssetKind::resource, resource_index);
+        // The resource's compressed length is also an observation from the same sealed capture.
+        if (!resource_payload || resource_payload->size != 796 || resource_payload->location.patch)
+            throw std::runtime_error("resource_location_metadata_changed");
+        out.record("RESOURCE_BINDING\tresource_id=", resource.resourceId, "\tmanifest_sha1=", metadata_hex(resource.sha1.bytes),
+                   "\tmanifest_hash_matched=1\tpayload_hash_verified=0\tcompressed_bytes=", resource_payload->size);
+        if (!out.open()) return out.finish_candidate(progress);
+        stage = "resource_read";
+        progress.resource_read_attempted = true;
+        const auto encoded_resource = data.read_encoded_bounded(*resource_payload, manhole_encoded_limit);
+        progress.resource_read_complete = true;
+        bounded_archive_rows(out, "mesh_resource", *resource_payload, encoded_resource);
+        stage = "resource_decode";
+        const auto resource_bytes = decode_cas(encoded_resource.encoded,
+            {game_root, manhole_resource_decoded_size, manhole_oodle_buffer_limit});
+        progress.resource_decode_complete = true;
+        if (resource_bytes.size() != manhole_resource_decoded_size) throw std::runtime_error("resource_decoded_size_changed");
+        stage = "candidate_admission";
+        const auto mesh = read_mesh_lod_metadata(resource_bytes, 0);
+        if (!mesh.static_common_offsets) throw std::runtime_error("static_common_observations_unavailable");
+        Guid candidate;
+        candidate.bytes = mesh.static_common_offsets->geometry_identity_raw;
+        const auto lookup = locate_chunk_candidate(candidate, bundle, toc);
+        const auto admission = manhole_candidate_gate(mesh, lookup);
+        out.record("CANDIDATE_ADMISSION\taccepted_for_inspection=", admission.accepted ? 1 : 0,
+                   "\trefusal=", admission.refusal, "\traw_identity_hex=", metadata_hex(candidate.bytes),
+                   "\tbundle_matches=", lookup.bundle_matches, "\ttoc_matches=", lookup.toc_matches,
+                   "\tremoved_matches=", lookup.removed_matches, "\tduplicate_identity=", lookup.duplicate ? 1 : 0,
+                   "\tconflicting_locations=", lookup.conflict ? 1 : 0,
+                   "\tlod_kind_supported=", mesh.lod_kind_supported ? 1 : 0,
+                   "\tidentity_interpretation=unverified");
+        if (!admission.accepted || !out.open()) return out.finish_candidate(progress);
+        const auto& geometry_payload = lookup.observations[0].payload;
+        stage = "geometry_read";
+        progress.geometry_read_attempted = true;
+        const auto encoded_geometry = data.read_encoded_bounded(geometry_payload, manhole_encoded_limit);
+        progress.geometry_read_complete = true;
+        bounded_archive_rows(out, "geometry_candidate", geometry_payload, encoded_geometry);
+        stage = "geometry_decode";
+        const auto decoded = decode_cas(encoded_geometry.encoded,
+            {game_root, manhole_decoded_size, manhole_oodle_buffer_limit});
+        progress.geometry_decode_complete = true;
+        out.record("CANDIDATE_DECODE\tdecoded_bytes=", decoded.size(), "\tauthored_expected_bytes=", manhole_decoded_size,
+                   "\tvertex_fields_interpreted=0\tsemantic_qualification=unverified");
+        stage = "candidate_indices";
+        const auto inspection = inspect_manhole_candidate_indices(decoded);
+        progress.inspection_complete = inspection.inspected;
+        progress.indices_consistent = inspection.consistent;
+        out.record("INDEX_INSPECTION\tinspected=", inspection.inspected ? 1 : 0,
+                   "\tconsistent=", inspection.consistent ? 1 : 0, "\trefusal=", inspection.refusal,
+                   "\tvalues_checked=", inspection.total_count, "\toutside_count=", inspection.outside_count,
+                   "\tbad_records_retained=", inspection.retained, "\tbad_records_omitted=", inspection.omitted,
+                   "\tinterpretation=unverified_uint16_le_triangle_indices");
+        if (inspection.inspected) {
+            for (const auto& window : manhole_windows)
+                out.record("AUTHORED_WINDOW\tname=", window.name, "\tbegin=", window.begin, "\tend_exclusive=", window.end,
+                           "\twidth=", window.end - window.begin, "\tbasis=captured_declaration_hypothesis");
+            for (std::size_t i = 0; i < inspection.sections.size(); ++i) {
+                const auto& section = inspection.sections[i];
+                out.record("INDEX_SECTION\tsection=", i, "\tvalues_checked=", section.count,
+                           "\tminimum=", section.minimum, "\tmaximum=", section.maximum,
+                           "\tvertex_limit=", i == 0 ? 252 : 109, "\toutside_count=", section.outside_count);
+            }
+            if (inspection.omitted) out.mark_truncated();
+            for (std::size_t i = 0; i < inspection.retained && out.open(); ++i) {
+                const auto& invalid = inspection.bad_indices[i];
+                out.record("INDEX_OUTSIDE_CANDIDATE\tsection=", invalid.section, "\tindex=", invalid.index,
+                           "\tbyte_offset=", invalid.byte_offset, "\tvalue=", invalid.value);
+            }
+        }
+        return out.finish_candidate(progress);
+    } catch (const std::exception& error) {
+        out.record("ERROR\tstage=", stage, "\tmessage=", out.text(error.what()));
+        return out.finish_candidate(progress);
+    }
+}
+
 int mesh_metadata_command(int argc, char** argv) {
     using namespace dingosdk::frostbite;
     MeshMetadataOutput out;
@@ -581,6 +737,7 @@ int mesh_metadata_command(int argc, char** argv) {
 } // namespace
 
 int main(int argc, char **argv) {
+    if (argc >= 3 && std::string_view(argv[2]) == "--inspect-manhole-candidate") return manhole_candidate_command(argc, argv);
     if (argc >= 2 && std::string_view(argv[1]) == "--self-test-manhole-candidate") {
         if (argc != 2) return 2;
         return dingosdk::trainer::asset_tools::manhole_candidate_self_test();
@@ -591,7 +748,7 @@ int main(int argc, char **argv) {
     }
     if (argc >= 3 && std::string_view(argv[2]) == "--mesh-metadata") return mesh_metadata_command(argc, argv);
     if (argc < 3) {
-        std::cerr << "usage: dingosdk_trainer_asset_list <Skate folder> <word>... | --dump <asset name> | --types <word>... | --metadata [word]... | --inspect <exact EBX name> | --mesh-metadata <exact RES name> <LOD index>\n";
+        std::cerr << "usage: dingosdk_trainer_asset_list <Skate folder> <word>... | --dump <asset name> | --types <word>... | --metadata [word]... | --inspect <exact EBX name> | --mesh-metadata <exact RES name> <LOD index> | --inspect-manhole-candidate\n";
         return 2;
     }
     try {

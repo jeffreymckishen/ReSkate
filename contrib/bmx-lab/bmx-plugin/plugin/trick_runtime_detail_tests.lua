@@ -110,7 +110,12 @@ function Tests.run()
         check(tick(r, f, true).valid and tick(r, f, false).model_events.took_off, "constructed adapter primes and takes off")
         tick(r, f, false, {handlebar = "left", bar_neutral = false})
         for _ = 1, 52 do tick(r, f, false) end
-        f.v = {0, -4.32, -3}; tick(r, f, false)
+        -- Fixture.pack builds a float vector sample and a scalar body table;
+        -- both must carry the same measured components for exact frame identity.
+        local approach = vector.create(0, -4.32, -3)
+        local closing = -approach.y
+        f.v = {approach.x, approach.y, approach.z}
+        check(tick(r, f, false).valid, "quantized pre-impact frame is admitted before contact")
         f.v = {0, 0, -3}; local contact = tick(r, f, true)
         check(contact.valid and contact.model_state.landing_pending, "adapter retains original landing settle")
         local landed
@@ -118,9 +123,9 @@ function Tests.run()
         local e = landed.model_events
         check(landed.valid and e.combo_landed and #e.sequence == 1 and e.fakie_takeoff, "actual adapter projects the completed flight")
         check(near(e.air_seconds, .54) and near(e.landing.heading_cos, -1) and near(e.landing.body_up, 1)
-            and near(e.landing.closing, 4.32), "adapter detail retains pre-impact closing speed and signed heading")
+            and near(e.landing.closing, closing), "adapter detail retains pre-impact closing speed and signed heading")
         local saved = r:status(); e.sequence[1].id = 77; e.landing.closing = 999
-        check(saved.model_events.sequence[1].id == 34 and near(r:status().model_events.landing.closing, 4.32),
+        check(saved.model_events.sequence[1].id == 34 and near(r:status().model_events.landing.closing, closing),
             "caller mutations cannot alter retained adapter result")
         local next_ground = tick(r, f, true)
         check(next_ground.model_events.sequence == nil and not next_ground.model_events.landed, "next ground sample cannot repeat detail award")

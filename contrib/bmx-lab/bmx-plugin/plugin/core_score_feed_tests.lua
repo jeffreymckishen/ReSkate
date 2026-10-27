@@ -7,8 +7,11 @@ function Tests.run()
     local function case(run) cases+=1;run() end
     case(function()
         local calls=0
-        local services=setmetatable({}, {__index=function() calls+=1;error("SDK lookup during empty feed",0) end})
+        local services={}
         local core=Core.new(services)
+        -- Core captures optional service namespaces while constructing its
+        -- adapters. Guard subsequent reads, which are the accessor's boundary.
+        setmetatable(services,{__index=function() calls+=1;error("SDK lookup during empty feed",0) end})
         local empty=core:score_feed()
         check(empty.generation==0 and empty.n==0 and #empty.rows==0 and not empty.gap,
             "Core without a Ride reports the reserved empty-feed generation")
@@ -21,8 +24,9 @@ function Tests.run()
     end)
     case(function()
         local calls=0
-        local services=setmetatable({}, {__index=function() calls+=1;error("public Core touched SDK",0) end})
+        local services={}
         local core=Core.new(services)
+        setmetatable(services,{__index=function() calls+=1;error("public Core touched SDK",0) end})
         local accepted=core:request_mount(0)
         check(accepted==false,"score-feed plumbing does not open the production mount gate")
         core:request_stop("nothing mounted");core:unload()

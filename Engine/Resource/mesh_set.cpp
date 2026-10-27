@@ -387,10 +387,15 @@ MeshLodMetadata read_mesh_lod_metadata(std::span<const std::byte> resource, std:
     require(lod < result.lod_count, "metadata has no such level of detail");
     require(lod_table <= resource.size() && result.lod_count <= (resource.size() - lod_table) / 8,
             "metadata LOD pointer table is truncated");
-    result.lod_offset = metadata_pointer(r, lod_table + lod * 8, geometry_chunk + sizeof(Guid));
+    result.lod_offset = metadata_pointer(r, lod_table + lod * 8, sizeof(std::uint32_t));
     const auto at = result.lod_offset;
     result.lod_kind = r.at<std::uint32_t>(at + lod_kind);
-    require(result.lod_kind == known_lod_kind, "metadata LOD kind is unsupported");
+    if (result.lod_kind != known_lod_kind) {
+        result.diagnostics.push_back("LOD kind is unsupported; later fields are undecoded");
+        return result;
+    }
+    require(metadata_span(r, at, geometry_chunk + sizeof(Guid)), "metadata LOD fields are truncated");
+    result.lod_kind_supported = true;
     result.index_format = r.at<std::uint32_t>(at + index_format);
     result.geometry.index_bytes = r.at<std::uint32_t>(at + index_bytes);
     result.geometry.vertex_bytes = r.at<std::uint32_t>(at + vertex_bytes);

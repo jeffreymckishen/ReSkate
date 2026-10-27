@@ -137,7 +137,7 @@ void metadata_throws(const std::vector<std::byte>& resource, std::size_t lod, co
 
 void metadata_reports_resource_fields_without_geometry() {
     const auto metadata = read_mesh_lod_metadata(made_mesh().resource, 0);
-    check(metadata.complete && metadata.skinned && !metadata.ambiguous, "known synthetic skinned metadata is complete");
+    check(metadata.lod_kind_supported && metadata.complete && metadata.skinned && !metadata.ambiguous, "known synthetic skinned metadata is complete");
     check(metadata.header == std::array<std::uint32_t, 4>{208, 188, 384, 0}, "all four header words preserved");
     check(metadata.lod_count == 1 && metadata.lod_index == 0 && metadata.lod_offset == 256 && metadata.lod_kind == 1,
         "LOD identity and raw kind preserved");
@@ -170,7 +170,7 @@ void metadata_preserves_static_stride_ambiguity() {
 void metadata_distinguishes_synthetic_static_tables() {
     for (const std::size_t stride : {std::size_t{384}, std::size_t{416}}) {
         const auto metadata = read_mesh_lod_metadata(made_static_metadata(stride, 2), 0);
-        check(metadata.complete && !metadata.ambiguous && metadata.candidates.size() == 2,
+        check(metadata.lod_kind_supported && metadata.complete && !metadata.ambiguous && metadata.candidates.size() == 2,
             "one supported synthetic table is reported completely");
         std::size_t valid{};
         for (const auto& candidate : metadata.candidates) {
@@ -194,9 +194,7 @@ void metadata_refuses_core_bounds_and_unknown_headers() {
     auto broken = source;
     put<std::uint32_t>(broken, 12, 1);
     metadata_throws(broken, 0, "fourth header word is required");
-    broken = source;
-    put<std::uint32_t>(broken, 256, 2);
-    metadata_throws(broken, 0, "unknown LOD kind is not interpreted as the known layout");
+
     broken = source;
     put<std::uint64_t>(broken, 48, std::numeric_limits<std::uint64_t>::max());
     metadata_throws(broken, 0, "LOD pointer cannot wrap");
@@ -213,6 +211,53 @@ void metadata_refuses_core_bounds_and_unknown_headers() {
     metadata_throws(broken, 0, "section pointer cannot wrap");
 }
 
+void metadata_preserves_unsupported_lod_facts() {
+    for (const bool skinned : {false, true}) {
+        for (const auto kind : std::array<std::uint32_t, 3>{0, 2, std::numeric_limits<std::uint32_t>::max()}) {
+            auto resource = skinned ? made_mesh().resource : made_static_metadata(416);
+            put(resource, 256, kind);
+            // These later fields are deliberately invalid: an unknown kind must not interpret them.
+            put<std::uint32_t>(resource, 264, std::numeric_limits<std::uint32_t>::max());
+            put<std::uint64_t>(resource, 268, std::numeric_limits<std::uint64_t>::max());
+            put<std::uint32_t>(resource, 340, 34);
+            const auto metadata = read_mesh_lod_metadata(resource, 0);
+            check(metadata.skinned == skinned && metadata.header[0] == (skinned ? 208u : 192u) &&
+                metadata.header[1] == (skinned ? 188u : 176u) && metadata.header[2] == 384 && metadata.header[3] == 0,
+                "unsupported kind preserves all recognized resource header facts");
+            check(metadata.lod_count == 1 && metadata.lod_index == 0 && metadata.lod_offset == 256 &&
+                metadata.lod_kind == kind, "unsupported raw kind and LOD identity survive refusal");
+            check(!metadata.lod_kind_supported && !metadata.complete && !metadata.ambiguous &&
+                metadata.candidates.empty() && metadata.diagnostics.size() == 1,
+                "unsupported kind is incomplete with a diagnostic and no guessed candidates");
+            check(metadata.index_format == 0 && metadata.section_count == 0 && metadata.section_table == 0 &&
+                metadata.geometry.chunk == Guid{} && metadata.geometry.vertex_bytes == 0 && metadata.geometry.index_bytes == 0,
+                "unsupported kind leaves all later fields undecoded");
+
+            resource.resize(260); // Exactly the selected LOD's four-byte raw kind remains.
+            const auto short_metadata = read_mesh_lod_metadata(resource, 0);
+            check(short_metadata.lod_kind == kind && short_metadata.lod_offset == 256 &&
+                !short_metadata.lod_kind_supported && !short_metadata.complete && short_metadata.candidates.empty(),
+                "raw unsupported kind needs no assumed full LOD layout");
+            resource.resize(259);
+            metadata_throws(resource, 0, "even a raw unsupported kind requires all four bytes");
+        }
+    }
+    auto second_lod = made_static_metadata(416);
+    put<std::uint16_t>(second_lod, 180, 2);
+    pointer(second_lod, 56, 400);
+    put<std::uint32_t>(second_lod, 400, 2);
+    second_lod.resize(404);
+    const auto metadata = read_mesh_lod_metadata(second_lod, 1);
+    check(metadata.lod_count == 2 && metadata.lod_index == 1 && metadata.lod_offset == 400 &&
+        metadata.lod_kind == 2 && !metadata.lod_kind_supported && !metadata.complete,
+        "unsupported facts describe the requested nonzero LOD rather than the first pointer");
+    put<std::uint16_t>(second_lod, 180, std::numeric_limits<std::uint16_t>::max());
+    metadata_throws(second_lod, 1, "unsupported kind does not bypass the full pointer-table bounds check");
+
+    auto known_kind = made_static_metadata(416);
+    known_kind.resize(260);
+    metadata_throws(known_kind, 0, "known kind still requires its full previously checked LOD span");
+}
 void metadata_returns_candidate_bounds_failures() {
     auto short_table = made_static_metadata(384);
     short_table.resize(short_table.size() - 1);
@@ -308,6 +353,7 @@ int main() {
         metadata_preserves_static_stride_ambiguity();
         metadata_distinguishes_synthetic_static_tables();
         metadata_refuses_core_bounds_and_unknown_headers();
+        metadata_preserves_unsupported_lod_facts();
         metadata_returns_candidate_bounds_failures();
         metadata_reports_unknown_declarations_without_guessing();
         metadata_bounds_diagnostic_storage();

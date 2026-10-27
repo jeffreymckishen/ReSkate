@@ -137,7 +137,7 @@ void metadata_throws(const std::vector<std::byte>& resource, std::size_t lod, co
 
 void metadata_reports_resource_fields_without_geometry() {
     const auto metadata = read_mesh_lod_metadata(made_mesh().resource, 0);
-    check(metadata.lod_kind_supported && metadata.complete && metadata.skinned && !metadata.ambiguous && !metadata.static_common_offsets, "known synthetic skinned metadata is complete without fallback observations");
+    check(metadata.lod_kind_supported && metadata.complete && metadata.skinned && !metadata.ambiguous && !metadata.static_common_offsets && metadata.static_section_candidates.empty(), "known synthetic skinned metadata is complete without fallback observations");
     check(metadata.header == std::array<std::uint32_t, 4>{208, 188, 384, 0}, "all four header words preserved");
     check(metadata.lod_count == 1 && metadata.lod_index == 0 && metadata.lod_offset == 256 && metadata.lod_kind == 1,
         "LOD identity and raw kind preserved");
@@ -170,7 +170,7 @@ void metadata_preserves_static_stride_ambiguity() {
 void metadata_distinguishes_synthetic_static_tables() {
     for (const std::size_t stride : {std::size_t{384}, std::size_t{416}}) {
         const auto metadata = read_mesh_lod_metadata(made_static_metadata(stride, 2), 0);
-        check(metadata.lod_kind_supported && metadata.complete && !metadata.ambiguous && metadata.candidates.size() == 2 && !metadata.static_common_offsets,
+        check(metadata.lod_kind_supported && metadata.complete && !metadata.ambiguous && metadata.candidates.size() == 2 && !metadata.static_common_offsets && metadata.static_section_candidates.empty(),
             "one supported synthetic table is reported completely");
         std::size_t valid{};
         for (const auto& candidate : metadata.candidates) {
@@ -332,6 +332,149 @@ void metadata_observes_static_common_offsets() {
             raw.geometry_identity_raw == identity, "all six observation offsets are relative to the selected LOD");
     }
 }
+std::vector<std::byte> made_static_section_observation(std::size_t stride, std::uint32_t sections = 2) {
+    auto resource = made_static_metadata(stride, sections);
+    const auto table_bytes = stride * sections;
+    resource.resize(736 + table_bytes);
+    std::memmove(resource.data() + 736, resource.data() + 512, table_bytes);
+    pointer(resource, 268, 736); // Synthetic raw pointer 720 uses the existing resource base of 16.
+    put<std::uint32_t>(resource, 256, 0);
+    return resource;
+}
+
+void metadata_observes_both_static_section_layouts() {
+    auto resource = made_static_section_observation(416);
+    put<std::uint8_t>(resource, 736 + 31, 255);
+    for (const std::size_t offset : {32u, 36u, 40u, 44u})
+        put<std::uint32_t>(resource, 736 + offset, std::numeric_limits<std::uint32_t>::max());
+    put<std::uint8_t>(resource, 736 + 112, 250);
+    put<std::uint8_t>(resource, 736 + 113, 251);
+    put<std::uint8_t>(resource, 736 + 114, 252);
+    put<std::uint8_t>(resource, 736 + 115, 253);
+    put<std::uint8_t>(resource, 736 + 176, 0);
+    put<std::uint8_t>(resource, 736 + 177, 255);
+    const auto metadata = read_mesh_lod_metadata(resource, 0);
+    check(metadata.static_section_candidates.size() == 2 && !metadata.complete && !metadata.lod_kind_supported &&
+        metadata.candidates.empty() && metadata.section_table == 0 && metadata.geometry.chunk == Guid{},
+        "two raw candidates never select or populate an interpreted layout");
+    for (std::size_t i = 0; i < 2; ++i) {
+        const auto& candidate = metadata.static_section_candidates[i];
+        const auto stride = i == 0 ? 384u : 416u;
+        check(candidate.stride == stride && candidate.table_pointer_resolved && candidate.table_offset == 736 &&
+            candidate.table_span_valid && candidate.span_bytes == stride * 2 && candidate.sections.size() == 2,
+            "both full candidate spans are retained with the checked pointer base");
+        const auto& section = candidate.sections[0];
+        check(section.resource_offset == 736 && section.primitive_raw == 255 &&
+            section.triangle_count_raw == std::numeric_limits<std::uint32_t>::max() &&
+            section.first_index_raw == std::numeric_limits<std::uint32_t>::max() &&
+            section.vertex_start_raw == std::numeric_limits<std::uint32_t>::max() &&
+            section.vertex_count_raw == std::numeric_limits<std::uint32_t>::max(), "draw words remain raw even when nonsensical");
+        check(section.declarations_observed && section.elements.size() == 1 && section.streams.size() == 1 &&
+            section.elements[0].usage_raw == 250 && section.elements[0].format_raw == 251 &&
+            section.elements[0].offset_raw == 252 && section.elements[0].stream_raw == 253 &&
+            section.streams[0].stride_raw == 0 && section.streams[0].classification_raw == 255,
+            "unknown declaration codes and zero strides are observed without semantic checks");
+        check(candidate.sections[1].resource_offset == 736 + stride, "each candidate uses its own stride for later records");
+    }
+    check(!metadata.static_section_candidates[0].observation_complete && metadata.static_section_candidates[1].observation_complete,
+        "a malformed competing declaration does not remove either full-span candidate");
+
+    auto short_layout = made_static_section_observation(384);
+    const auto one_span = read_mesh_lod_metadata(short_layout, 0);
+    check(one_span.static_section_candidates.size() == 2 && one_span.static_section_candidates[0].table_span_valid &&
+        !one_span.static_section_candidates[1].table_span_valid && one_span.static_section_candidates[1].sections.empty() &&
+        !one_span.complete, "exact 384-byte table retains the unavailable 416-byte candidate");
+    short_layout.resize(short_layout.size() - 1);
+    const auto no_span = read_mesh_lod_metadata(short_layout, 0);
+    check(no_span.static_section_candidates.size() == 2 && !no_span.static_section_candidates[0].table_span_valid &&
+        !no_span.static_section_candidates[1].table_span_valid && no_span.static_common_offsets,
+        "truncated candidate tables preserve common facts and both failed candidates");
+}
+
+void metadata_bounds_static_section_observations() {
+    const auto source = made_static_section_observation(416);
+    for (const auto raw_pointer : std::array<std::uint64_t, 3>{0, std::numeric_limits<std::uint64_t>::max(), source.size() - 15}) {
+        auto resource = source;
+        put(resource, 268, raw_pointer);
+        const auto metadata = read_mesh_lod_metadata(resource, 0);
+        check(metadata.static_section_candidates.size() == 2 && metadata.static_common_offsets->section_pointer_raw == raw_pointer,
+            "invalid pointer word remains visible beside both refused candidate records");
+        for (const auto& candidate : metadata.static_section_candidates)
+            check(!candidate.table_pointer_resolved && !candidate.table_span_valid && candidate.sections.empty() &&
+                !candidate.observation_complete && candidate.diagnostic_count != 0, "pointer rejected before addition or allocation");
+    }
+    auto at_end = source;
+    put<std::uint64_t>(at_end, 268, source.size() - 16);
+    const auto end_metadata = read_mesh_lod_metadata(at_end, 0);
+    check(end_metadata.static_section_candidates.size() == 2, "end pointer retains both raw candidate records");
+    for (const auto& candidate : end_metadata.static_section_candidates)
+        check(candidate.table_pointer_resolved && candidate.table_offset == source.size() && !candidate.table_span_valid &&
+            candidate.sections.empty(), "valid pointer to resource end cannot admit a nonempty table");
+    for (const std::uint32_t count : {0u, 65u, std::numeric_limits<std::uint32_t>::max()}) {
+        auto resource = source;
+        put(resource, 264, count);
+        const auto metadata = read_mesh_lod_metadata(resource, 0);
+        check(metadata.static_section_candidates.size() == 2 && !metadata.complete, "raw count refusals retain both candidates");
+        for (const auto& candidate : metadata.static_section_candidates)
+            check(candidate.sections.empty() && !candidate.observation_complete && candidate.diagnostic_count != 0,
+                "zero or excessive raw count does not allocate sections");
+    }
+    const auto within_budget = read_mesh_lod_metadata(made_static_section_observation(416, 40), 0);
+    const auto over_budget = read_mesh_lod_metadata(made_static_section_observation(416, 41), 0);
+    for (std::size_t i = 0; i < 2; ++i) {
+        check(within_budget.static_section_candidates[i].table_span_valid && within_budget.static_section_candidates[i].sections.size() == 40,
+            "32000 aggregate candidate bytes remain inside the observation budget");
+        check(over_budget.static_section_candidates[i].sections.empty() && !over_budget.static_section_candidates[i].table_span_valid &&
+            over_budget.static_section_candidates[i].diagnostic_count != 0, "32800 aggregate candidate bytes are refused despite fitting the resource");
+    }
+}
+
+void metadata_bounds_static_declaration_observations() {
+    auto resource = made_static_section_observation(416);
+    put<std::uint8_t>(resource, 736 + 208, 16);
+    put<std::uint8_t>(resource, 736 + 209, 16);
+    for (std::size_t i = 0; i < 16; ++i) {
+        put<std::uint8_t>(resource, 736 + 112 + 4 * i, static_cast<std::uint8_t>(100 + i));
+        put<std::uint8_t>(resource, 736 + 113 + 4 * i, static_cast<std::uint8_t>(200 + i));
+        put<std::uint8_t>(resource, 736 + 114 + 4 * i, static_cast<std::uint8_t>(240 + i));
+        put<std::uint8_t>(resource, 736 + 115 + 4 * i, static_cast<std::uint8_t>(255 - i));
+        put<std::uint8_t>(resource, 736 + 176 + 2 * i, static_cast<std::uint8_t>(i));
+        put<std::uint8_t>(resource, 736 + 177 + 2 * i, static_cast<std::uint8_t>(255 - i));
+    }
+    const auto full = read_mesh_lod_metadata(resource, 0);
+    const auto& section = full.static_section_candidates[1].sections[0];
+    check(section.declarations_observed && section.elements.size() == 16 && section.streams.size() == 16 &&
+        section.elements[15].usage_raw == 115 && section.elements[15].format_raw == 215 &&
+        section.elements[15].offset_raw == 255 && section.elements[15].stream_raw == 240 &&
+        section.streams[15].stride_raw == 15 && section.streams[15].classification_raw == 240,
+        "all sixteen raw declaration slots are bounded and observable");
+    for (const std::size_t offset : {208u, 209u}) {
+        auto invalid = resource;
+        put<std::uint8_t>(invalid, 736 + offset, 17);
+        const auto metadata = read_mesh_lod_metadata(invalid, 0);
+        const auto& candidate = metadata.static_section_candidates[1];
+        const auto& first = candidate.sections[0];
+        check(candidate.sections.size() == 2 && !first.declarations_observed && first.elements.empty() && first.streams.empty() &&
+            first.vertex_count_raw == 3 && first.element_count_raw == (offset == 208 ? 17 : 16) &&
+            first.stream_count_raw == (offset == 209 ? 17 : 16) &&
+            candidate.sections[1].declarations_observed && !candidate.observation_complete,
+            "either excessive declaration count skips arrays but preserves scalars and later sections");
+    }
+    put<std::uint8_t>(resource, 736 + 208, 0);
+    put<std::uint8_t>(resource, 736 + 209, 0);
+    const auto empty = read_mesh_lod_metadata(resource, 0);
+    check(empty.static_section_candidates[1].sections[0].declarations_observed &&
+        empty.static_section_candidates[1].sections[0].elements.empty() && empty.static_section_candidates[1].sections[0].streams.empty(),
+        "zero declaration counts are raw observations without inferred position requirements");
+    auto many_bad = made_static_section_observation(416, 40);
+    for (std::size_t i = 0; i < 40; ++i) put<std::uint8_t>(many_bad, 736 + 416 * i + 208, 17);
+    put<std::uint32_t>(many_bad, 736 + 416 * 39 + 44, 1234);
+    const auto capped = read_mesh_lod_metadata(many_bad, 0);
+    const auto& candidate = capped.static_section_candidates[1];
+    check(candidate.sections.size() == 40 && candidate.diagnostic_count == 40 && candidate.diagnostics.size() == 16 &&
+        candidate.sections.back().vertex_count_raw == 1234 && !candidate.observation_complete && !capped.complete,
+        "diagnostic retention is capped without dropping total count or later raw section records");
+}
 void metadata_returns_candidate_bounds_failures() {
     auto short_table = made_static_metadata(384);
     short_table.resize(short_table.size() - 1);
@@ -429,6 +572,9 @@ int main() {
         metadata_refuses_core_bounds_and_unknown_headers();
         metadata_preserves_unsupported_lod_facts();
         metadata_observes_static_common_offsets();
+        metadata_observes_both_static_section_layouts();
+        metadata_bounds_static_section_observations();
+        metadata_bounds_static_declaration_observations();
         metadata_returns_candidate_bounds_failures();
         metadata_reports_unknown_declarations_without_guessing();
         metadata_bounds_diagnostic_storage();

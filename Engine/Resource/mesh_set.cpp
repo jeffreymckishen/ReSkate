@@ -259,6 +259,82 @@ std::size_t metadata_pointer(const Reader& r, std::size_t slot, std::size_t requ
     require(metadata_span(r, at, required), "a metadata pointer target is truncated");
     return at;
 }
+constexpr std::array<std::size_t, 2> observation_strides{section_size, 416};
+constexpr std::size_t observation_section_limit = 64, observation_span_limit = 32768;
+constexpr std::size_t observation_slot_limit = 16, observation_diagnostic_limit = 16;
+
+void observation_problem(MeshSectionCandidateObservation& candidate, std::string text) {
+    candidate.observation_complete = false;
+    ++candidate.diagnostic_count;
+    if (candidate.diagnostics.size() < observation_diagnostic_limit) candidate.diagnostics.push_back(std::move(text));
+}
+MeshSectionCandidateObservation observe_section_candidate(const Reader& r,
+    const MeshLodCommonOffsetObservation& common, std::size_t stride) {
+    MeshSectionCandidateObservation result;
+    result.stride = stride;
+    const auto count = common.section_count_raw;
+    if (count == 0) {
+        observation_problem(result, "raw section count is zero; no section table was observed");
+        return result;
+    }
+    if (count > observation_section_limit) {
+        observation_problem(result, "raw section count exceeds observation limit 64");
+        return result;
+    }
+    // Charge both possible tables before allocating sections, even when one later fails bounds.
+    if (count > observation_span_limit / (observation_strides[0] + observation_strides[1])) {
+        observation_problem(result, "combined raw candidate table spans exceed observation limit 32768");
+        return result;
+    }
+    const auto relative = common.section_pointer_raw;
+    if (r.data.size() < pointer_base || relative == 0 || relative > r.data.size() - pointer_base) {
+        observation_problem(result, "raw section pointer cannot be resolved within the resource");
+        return result;
+    }
+    result.table_offset = static_cast<std::size_t>(relative) + pointer_base;
+    result.table_pointer_resolved = true;
+    if (count > (r.data.size() - result.table_offset) / stride) {
+        observation_problem(result, "raw candidate table span is outside the resource");
+        return result;
+    }
+    result.span_bytes = static_cast<std::size_t>(count) * stride;
+    result.table_span_valid = true;
+    result.observation_complete = true;
+    result.sections.reserve(count);
+    for (std::size_t index = 0; index < count; ++index) {
+        const auto at = result.table_offset + index * stride;
+        MeshSectionObservation section;
+        section.resource_offset = at;
+        section.primitive_raw = r.at<std::uint8_t>(at + primitive);
+        section.triangle_count_raw = r.at<std::uint32_t>(at + triangle_count);
+        section.first_index_raw = r.at<std::uint32_t>(at + first_index);
+        section.vertex_start_raw = r.at<std::uint32_t>(at + vertex_start);
+        section.vertex_count_raw = r.at<std::uint32_t>(at + vertex_count);
+        const auto d = at + declaration;
+        section.element_count_raw = r.at<std::uint8_t>(d + element_total);
+        section.stream_count_raw = r.at<std::uint8_t>(d + stream_total);
+        if (section.element_count_raw > observation_slot_limit || section.stream_count_raw > observation_slot_limit) {
+            observation_problem(result, "section " + std::to_string(index) +
+                ": raw declaration count exceeds 16; both declaration arrays were skipped");
+            result.sections.push_back(std::move(section));
+            continue;
+        }
+        section.elements.reserve(section.element_count_raw);
+        for (std::size_t element = 0; element < section.element_count_raw; ++element) {
+            const auto e = d + element * 4;
+            section.elements.push_back({r.at<std::uint8_t>(e), r.at<std::uint8_t>(e + 1),
+                r.at<std::uint8_t>(e + 2), r.at<std::uint8_t>(e + 3)});
+        }
+        section.streams.reserve(section.stream_count_raw);
+        for (std::size_t stream = 0; stream < section.stream_count_raw; ++stream) {
+            const auto s = d + stream_table + stream * 2;
+            section.streams.push_back({r.at<std::uint8_t>(s), r.at<std::uint8_t>(s + 1)});
+        }
+        section.declarations_observed = true;
+        result.sections.push_back(std::move(section));
+    }
+    return result;
+}
 void metadata_problem(MeshSectionLayoutMetadata& candidate, std::string text, bool structural) {
     if (structural) candidate.structurally_valid = false;
     candidate.declarations_supported = false;
@@ -394,7 +470,7 @@ MeshLodMetadata read_mesh_lod_metadata(std::span<const std::byte> resource, std:
         result.diagnostics.push_back("LOD kind is unsupported; no LOD layout interpretation was performed");
         if (result.header == static_header) {
             if (metadata_span(r, at, geometry_chunk + 16)) {
-                // Copy only these common offsets. Their values do not authorize later decoding.
+                // Raw offset observations do not establish a layout or authorize geometry decoding.
                 MeshLodCommonOffsetObservation observed;
                 observed.section_count_raw = r.at<std::uint32_t>(at + section_count);
                 observed.section_pointer_raw = r.at<std::uint64_t>(at + section_table);
@@ -403,6 +479,8 @@ MeshLodMetadata read_mesh_lod_metadata(std::span<const std::byte> resource, std:
                 observed.vertex_bytes_raw = r.at<std::uint32_t>(at + vertex_bytes);
                 observed.geometry_identity_raw = r.at<std::array<std::byte, 16>>(at + geometry_chunk);
                 result.static_common_offsets = observed;
+                for (const auto stride : observation_strides)
+                    result.static_section_candidates.push_back(observe_section_candidate(r, observed, stride));
             } else {
                 result.diagnostics.push_back("static common-offset observation unavailable: full 132-byte span is missing");
             }

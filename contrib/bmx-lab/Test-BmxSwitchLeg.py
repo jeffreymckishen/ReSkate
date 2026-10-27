@@ -47,6 +47,14 @@ class Guard:
     def close(self): self.closed += 1
 
 
+def nonlead_gate(h, scenario):
+    # Skip filesystem setup only when the base wait is patched; retain gate validation.
+    gate = object.__new__(h.StartGate)
+    gate.scenario, gate.lead_ms = scenario, None
+    gate._lead_configuration = gate._ready_configuration = None
+    return gate
+
+
 class SwitchLegTests(unittest.TestCase):
     def setUp(self): self.h = w.load_driver()
 
@@ -111,7 +119,7 @@ class SwitchLegTests(unittest.TestCase):
         with patch.object(original_gate, "wait", original_wait):
             w.configure(h)
             # Skip only filesystem construction; call the actual derived wait.
-            gate = object.__new__(h.StartGate)
+            gate = nonlead_gate(h, w.SCENARIO)
             result, backend, _, sink = self.fake_run(clock=clock, gate=gate)
         self.assertTrue(result["completed"])
         preflight = next(r for r in sink.rows if r["event"] == "controller_switch_neutral_preflight")
@@ -134,7 +142,7 @@ class SwitchLegTests(unittest.TestCase):
             guard.check()
         with patch.object(original_gate, "wait", original_wait):
             w.configure(h)
-            result, backend, _, _ = self.fake_run(gate=object.__new__(h.StartGate))
+            result, backend, _, _ = self.fake_run(gate=nonlead_gate(h, w.SCENARIO))
         self.assertFalse(result["completed"])
         self.assertIn("total deadline", result["issue"])
         self.assertEqual(result["driver_report_count"], 0)
@@ -176,7 +184,7 @@ class SwitchLegTests(unittest.TestCase):
         original_gate = h.StartGate
         with patch.object(original_gate, "wait", side_effect=AssertionError("ready before neutral preflight")):
             w.configure(h)
-            result, backend, _, _ = self.fake_run(abort_at=1, gate=object.__new__(h.StartGate))
+            result, backend, _, _ = self.fake_run(abort_at=1, gate=nonlead_gate(h, w.SCENARIO))
         self.assertFalse(result["completed"])
         self.assertEqual(result["driver_report_count"], 0)
         self.assertTrue(result["neutral_release_succeeded"] and result["disconnect_succeeded"])

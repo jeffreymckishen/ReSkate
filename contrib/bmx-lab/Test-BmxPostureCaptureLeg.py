@@ -189,7 +189,7 @@ class PostureCaptureTests(unittest.TestCase):
         with patch.object(h.StartGate.__bases__[0], "wait",
                           side_effect=AssertionError("READY after guard loss")):
             result, backend, guard, sink = self.fake_run(
-                clock=clock, guard=guard, gate=object.__new__(h.StartGate))
+                clock=clock, guard=guard, gate=f.nonlead_gate(h, w.DEFAULT_SCENARIO))
         self.assertFalse(result["completed"])
         self.assertEqual(result["driver_report_count"], 0)
         self.assertFalse(any(r["event"] == "controller_start_gate_ready" for r in sink.rows))

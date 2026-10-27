@@ -14,6 +14,37 @@ local MAX_PENDING = 3
 local TRIPWIRE_EVERY = 2
 local METRIC_SAMPLE_LIMIT, METRIC_TRANSITION_LIMIT = 24, 16
 local METRIC_STOP_REASON_LIMIT, METRIC_STOP_KEY_BYTES = 8, 1024
+-- Ride stops on a measured body past either bound, before any query or
+-- command: Core's readiness and the Follow lease see only actor state, so
+-- nothing else stops a tipping bike. 15 deg from world up is S1's tilt stop
+-- (S1's verdict wants under 10 on every row; S1c rode at most 3.0). It counts
+-- pitch too, and the kernel leans up to 27 deg in a turn (lean_limit), so it
+-- also ends a manual past 15 deg and a hard turn at speed: in the offline sim
+-- (sim_world) one full-lock turn at 4.5 to 7.5 m/s passes 15 deg 0.9 to 1.1 s
+-- after the steer starts. 1 rad/s of roll about the bike's own forward axis
+-- is above every lean the kernel makes inside S1's 3 m/s speed cap: S1c
+-- measured at most 0.24 rad/s in game, and in the sim full-lock steer
+-- reversals at 2.5 to 2.9 m/s, held there by pedaling, reach at most 0.51
+-- rad/s and 11 deg. Coasting from 3 m/s, where the reversals carry the bike
+-- past the cap, one reversal a second reaches 0.75 rad/s by 4.9 m/s, still
+-- under 15 deg. It is also above what gravity alone gives the authored body
+-- (106 kg, its COM 0.9 m over the tyre line, 10 kg m^2 of roll inertia)
+-- falling from upright by the time it reaches the 15 deg stop, 0.82 rad/s. So
+-- inside the cap a faster roll is the body being thrown, by a knock, a
+-- contact or a command, which the tilt stop would see only later: the command
+-- this sample would make acts over the next two steps, 1.9 deg more of roll
+-- at 1 rad/s. Above the cap it is not: full pedal with a full-lock reversal
+-- every 1/3 to 1/2 s from 3 m/s reaches 1.09 to 1.57 rad/s by 6.4 to 6.6 m/s,
+-- under 5 deg of tilt, so a stage that lifts the cap past 3 m/s must revisit
+-- this bound.
+local TILT_STOP_DEG = 15
+local ROLL_STOP_RATE = 1
+-- Authored display gearing for the drawn cranks: ride_composer's
+-- Composer.crank_ratio (a 25/9 BMX drive), written here so Ride does not load
+-- the composer; ride_runtime_presentation_tests pins the two together. Only
+-- the presentation pose reads it.
+local CRANK_RATIO = 25 / 9
+local TAU = 2 * math.pi
 
 local function copy(value)
     if type(value) ~= "table" then return value end
@@ -64,6 +95,49 @@ local function detached(value)
     return result
 end
 local function detail(value) return string.sub(tostring(value or "unavailable"), 1, 180) end
+local function wrap(angle)
+    angle %= TAU
+    if angle > math.pi then angle -= TAU end
+    return angle
+end
+-- The bike's own articulation, as bike_visual draws it. Ride has no trick
+-- presentation, so the trick terms stay zero.
+local NEUTRAL_POSE = table.freeze({steer=0,front_wheel_phase=0,rear_wheel_phase=0,crank_phase=0,
+    barspin=0,tailwhip=0,movement_bike_pitch=0,movement_bike_roll=0})
+-- The presentation pose after an accepted step: the front steer angle the
+-- kernel commanded, each wheel turned by its accepted angular speed over the
+-- step, and the cranks turned by the rear wheel through CRANK_RATIO only while
+-- the kernel's pedal latch says the rider pedals (forces.lua pedal_cadence),
+-- so a coast or a held pedal at top speed leaves them still. These are
+-- accepted Lua predictions drawn on the measured body, never native wheel
+-- state. ForceStage's zero stage commands nothing and reports no steer or
+-- cadence: the bars and cranks hold. One new table a step, which status
+-- shares; nil for a model that reports either malformed.
+local function presentation(previous,model,wheels,h)
+    local steer,pedaling=model.front_steer_angle,model.pedaling
+    if steer==nil then steer=previous.steer
+    elseif not M.finite(steer) or math.abs(steer)>1 then return nil end
+    if pedaling==nil then pedaling=false elseif type(pedaling)~="boolean" then return nil end
+    local rear=wheels[2].angular_speed*h
+    return {steer=steer,front_wheel_phase=wrap(previous.front_wheel_phase+wheels[1].angular_speed*h),
+        rear_wheel_phase=wrap(previous.rear_wheel_phase+rear),
+        crank_phase=pedaling and wrap(previous.crank_phase+rear/CRANK_RATIO) or previous.crank_phase,
+        barspin=0,tailwhip=0,movement_bike_pitch=0,movement_bike_roll=0}
+end
+-- The measured tilt of the body's up axis from world up, in degrees, and its
+-- roll rate about its own forward axis, in rad/s; nil when either is unknown.
+local function attitude(body,gravity)
+    local down=M.unit(gravity)
+    if not down then return nil end
+    local q=M.normalized(body.orientation)
+    local u1,u2,u3=M.turn3(q[1],q[2],q[3],q[4],0,1,0)
+    local f1,f2,f3=M.turn3(q[1],q[2],q[3],q[4],0,0,1)
+    local w=body.angular_velocity
+    local tilt=math.deg(math.acos(math.clamp(-(u1*down[1]+u2*down[2]+u3*down[3]),-1,1)))
+    local roll=w[1]*f1+w[2]*f2+w[3]*f3
+    if not M.finite(tilt) or not M.finite(roll) then return nil end
+    return tilt,roll
+end
 local function array(value)
     if typeof(value) ~= "vector" then return nil end
     local result = {value.x, value.y, value.z}
@@ -374,7 +448,9 @@ local function status(s)
         input_staged=s.input_staged,input_consumed=s.input_consumed,input_queued=#s.input_queue,
         observed_steps=s.observed_steps,model_steps=s.model_steps,receipt=s.last_receipt,
         model_history=s.model_history,hop_disposition=s.hop_disposition,metrics=s.metrics,
-        model={trick_status=s.trick_status,alignment_status=s.alignment_status,recovery_status=s.recovery_status}})
+        presentation_pose=s.pose,
+        model={trick_status=s.trick_status,trick_fallbacks=s.trick_fallbacks,
+            alignment_status=s.alignment_status,recovery_status=s.recovery_status}})
 end
 local function receipt_valid(row,p)
     if type(row)~="table" or row.sequence~=p.sequence or row.requested_serial~=p.serial
@@ -504,9 +580,18 @@ local function companion_result(s,frame,contact,actions)
     local out = {rotation_reserved=false,requests={},events={}}
     if s.tricks then
         local result = invoke(s,s.tricks.step,s.tricks,frame,contact,actions)
-        if not result[1] or result.n ~= 2 or not result.current or type(result[2]) ~= "table" then return nil,"trick adapter unavailable" end
-        local value = result[2]
-        if value.valid then
+        -- A trick is presentation and its air rotation reservation only. An
+        -- adapter that refuses or is unavailable leaves this step without a
+        -- trick, decided by the kernel and the recovery below as if Ride had
+        -- none. A stop during the call, or a trick bound to another frame or
+        -- asking for an unknown effect, still stops. A missing step callback
+        -- has no current flag (nothing was called), so only a call that ran
+        -- into a stop counts as one.
+        if result.current==false then return nil,"stopped during trick adapter" end
+        local value = result[1] and result.n == 2 and type(result[2]) == "table" and result[2] or nil
+        if not value then
+            out.trick_fallback = "trick adapter unavailable"
+        elseif value.valid then
             local bound=value.binding
             if type(bound)~="table" or bound.body_handle~=frame.body_handle or bound.physics_epoch~=frame.physics_epoch
                 or bound.lease_handle~=frame.source.lease_handle or bound.serial~=frame.serial or bound.time~=frame.time
@@ -522,7 +607,7 @@ local function companion_result(s,frame,contact,actions)
             -- stamp an unbound bare authored target as a measured native pose.
             out.visual_targets=value.visual_targets and copy(value) or nil
             out.trick=copy(value)
-        else return nil,"trick adapter refused: " .. detail(value.issue) end
+        else out.trick_fallback = "trick adapter refused: " .. detail(value.issue) end
     end
     if s.recovery then
         local result = invoke(s,s.recovery.update,s.recovery,frame)
@@ -698,6 +783,16 @@ local function observe(s,source_frame,raw,context)
         end
     end
     s.last_sample=sample -- Consume before callbacks. This native serial cannot submit twice.
+    -- A tipping or rolling body stops here, on its consumed sample, before any
+    -- query or command (TILT_STOP_DEG, ROLL_STOP_RATE).
+    local tilt,roll=attitude(body,s.force.tuning.gravity)
+    if not tilt then stop(s,"measured tilt unavailable");return end
+    if tilt>TILT_STOP_DEG then
+        stop(s,string.format("measured tilt %.1f deg over the %d deg Ride stop",tilt,TILT_STOP_DEG));return
+    end
+    if math.abs(roll)>ROLL_STOP_RATE then
+        stop(s,string.format("measured roll rate %.2f rad/s over the %d rad/s Ride stop",math.abs(roll),ROLL_STOP_RATE));return
+    end
     s.observed_steps+=1
     s.metrics_step={serial=sample.serial,report=false}
     -- One exact queued observation per body step preserves non-hop selection /
@@ -810,7 +905,8 @@ local function observe(s,source_frame,raw,context)
     if not companions then stop(s,companion_issue);return end
     if s.stopped then return end
     s.model_steps+=1
-    s.trick_status=companions.trick and companions.trick.issue or nil
+    s.trick_status=companions.trick and companions.trick.issue or companions.trick_fallback
+    if companions.trick_fallback then s.trick_fallbacks+=1 end
     s.alignment_status=companions.alignment and companions.alignment.status or nil
     s.recovery_status=companions.recovery and companions.recovery.phase or nil
     -- Every coherent observed model step happens before the command gate.
@@ -841,6 +937,8 @@ local function observe(s,source_frame,raw,context)
     if not command then stop(s,"bounded force packet unavailable");return end
     local wheels=wheel_copy(model.wheels,s.wheels)
     if not wheels then stop(s,"bounded wheel model unavailable");return end
+    local pose=presentation(s.pose,model,wheels,sample.seconds)
+    if not pose then stop(s,"bounded presentation model unavailable");return end
     local p={serial=sample.serial,time=sample.time,seconds=sample.seconds,submitted_at=s.now,
         hop_id=model.hop_applied and model.hop_event_id or nil,wheels=wheels}
     -- Core's closures enforce exact live ownership before AND after effects.
@@ -864,6 +962,9 @@ local function observe(s,source_frame,raw,context)
             p.history_unknown=true;s.unknown=true;stop(s,"accepted force history adoption unavailable");return
         end
         s.wheels=wheels
+        -- The pose follows the accepted prediction, with the wheels it adopts;
+        -- model_history names that step.
+        s.pose=freeze(pose)
         s.model_history=freeze({kind="predictive_accepted",serial=p.serial,sequence=sequence,
             reason="exact_force_admission",native_wheel_state_known=false})
         if not submitted.current or not adopted.current or s.stopped then stop(s,"stopped during force admission") end
@@ -886,6 +987,7 @@ function Ride.new(force_api,models,options)
         contact=models.contact,tricks=models.tricks,recovery=models.recovery,alignment=models.alignment,
         alignment_options=detached(options.alignment),geometry=detached(options.geometry or Geometry),
         wheels=Forces.proposed_wheels(),phase="inert",issue="native qualification required",generation=0,
+        pose=freeze(NEUTRAL_POSE),trick_fallbacks=0,
         submitted=0,acknowledged=0,pending={},metrics=new_metrics(),backpressure_steps=0,
         continuity_pending=false,continuity_skipped_steps=0,continuity_invalidations=0,
         input_queue={},input_staged=0,input_consumed=0,observed_steps=0,model_steps=0}

@@ -153,28 +153,25 @@ function Tests.run()
             "the shared rows hold the same fields as before")
     end)
 
-    case("the measured follow builds its posed points once and its matrices are the same numbers",function()
-        local around=M.around
-        local turns=0
-        M.around=function(...) turns+=1;return around(...) end
+    -- The posed points used to be built from tables (M.around, M.turn), 32 a
+    -- sample, which is why the neutral pose cached them. bike_visual now poses
+    -- every point in scalars, a ride's pose as cheaply as the neutral one;
+    -- bike_visual_pose_tests checks those numbers against the table forms.
+    case("the measured follow poses its points without tables and its matrices are the same numbers",function()
         local sample={position=vector.create(3.25,101.5,-7.125),rotation={.1,.7,-.2,math.sqrt(1-.01-.49-.04)}}
+        local q=M.normalized(sample.rotation)
+        local root=M.sub({3.25,101.5,-7.125},M.turn(q,require("./bike_geometry").com))
+        local around,turn=M.around,M.turn
+        local arounds,turns=0,0
+        M.around=function(...) arounds+=1;return around(...) end
+        M.turn=function(...) turns+=1;return turn(...) end
         local ok,first=pcall(Visual.from_sample,sample)
-        local after_first=turns
         local second_ok,second=pcall(Visual.from_sample,sample)
-        local after_second=turns
-        local reference_ok,reference
-        do
-            -- The explicit neutral pose takes the per-point path: every posed point
-            -- is computed again, as every sample did before.
-            local q=M.normalized(sample.rotation)
-            local root=M.sub({3.25,101.5,-7.125},M.turn(q,require("./bike_geometry").com))
-            reference_ok,reference=pcall(Visual.matrices,root,q,Visual.neutral())
-        end
-        local reference_turns=turns-after_second
-        M.around=around
+        local reference_ok,reference=pcall(Visual.matrices,root,q,Visual.neutral())
+        M.around,M.turn=around,turn
         check(ok and second_ok and reference_ok and first and second and reference,"all three build")
-        check(after_first<=32 and after_second==after_first,"no posed point is computed for a later sample: "..after_first.." then "..(after_second-after_first))
-        check(reference_turns==32,"the explicit-pose path computes all 32 posed points: "..reference_turns)
+        -- from_sample turns only the COM, once a sample, to find the root.
+        check(arounds==0 and turns==2,"no posed point is a table: "..arounds.." M.around, "..turns.." M.turn")
         for part=1,8 do for k=1,16 do
             check(same_number(first[part][k],reference[part][k]) and same_number(second[part][k],reference[part][k]),
                 "matrix "..part.."["..k.."] is the same number")

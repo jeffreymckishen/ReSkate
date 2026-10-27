@@ -35,16 +35,33 @@ local function same(a,b)
     for i=1,4 do if not equal_number(a.rotation[i],b.rotation[i]) then return false end end
     return true
 end
--- The sample's part matrices, or nil when it is not a valid measured body. A
--- caller that also places the parts uses these, rather than building all
--- eight matrices a second time from the same sample.
-local function valid_matrices(sample)
+-- The sample's part matrices in pose (neutral when nil), or nil and why when it
+-- is not a valid measured body or pose. A caller that also places the parts
+-- uses these, rather than building all eight matrices a second time from the
+-- same sample.
+local function valid_matrices(sample,pose)
     if type(sample)~="table" or typeof(sample.epoch)~="userdata" or not canonical(sample.serial)
         or not M.finite(sample.time) or sample.time<0 or not M.finite(sample.seconds)
         or math.abs(sample.seconds-1/60)>1e-7 or not M.finite(sample.mass) or math.abs(sample.mass-G.mass)>.001
-        or not vec(sample.position) or not vec(sample.velocity) or not vec(sample.angular_velocity) or not vec(sample.inertia) then return nil end
-    for i,axis in {"x","y","z"} do if math.abs(sample.inertia[axis]-G.inertia[i])>.001 then return nil end end
-    return (Visual.from_sample(sample))
+        or not vec(sample.position) or not vec(sample.velocity) or not vec(sample.angular_velocity) or not vec(sample.inertia) then
+        return nil,"Invalid measured bike body for follow visuals"
+    end
+    for i,axis in {"x","y","z"} do
+        if math.abs(sample.inertia[axis]-G.inertia[i])>.001 then return nil,"Invalid measured bike body for follow visuals" end
+    end
+    if pose~=nil and not Visual.valid_pose(pose) then return nil,"Invalid presentation pose for follow visuals" end
+    local matrices=Visual.from_sample(sample,pose)
+    if not matrices then return nil,"Invalid measured bike body for follow visuals" end
+    return matrices
+end
+-- Whether two presentation poses draw the same, nil being neutral.
+local NEUTRAL=table.freeze(Visual.neutral())
+local function same_pose(a,b)
+    if a==b then return true end
+    for key,value in NEUTRAL do
+        if (a and a[key] or value)~=(b and b[key] or value) then return false end
+    end
+    return true
 end
 local function valid(sample) return valid_matrices(sample)~=nil end
 local function floor_root(api,root,actor_y)
@@ -79,7 +96,7 @@ end
 function S.new(api)
     return setmetatable({api=api or reskate,phase="idle",detail="No Lua bike spawned.",used=false,
         wall=0,phase_wall=0,read_wall=0,updates=0,body_release_attempted=false,
-        visual_remove_requested=false,body_release_accepted=false,cleanup_unknown=false,
+        visual_remove_requested=false,body_release_accepted=false,cleanup_unknown=false,posed_updates=0,
         creation_attempts=0,creation_unknown=false,clock_retried=false,asset_part=1},Runtime)
 end
 function Runtime:status()
@@ -95,7 +112,7 @@ function Runtime:status()
         follow_handed_off=self.follow_handed_off==true,
         body_release_owner=self.follow_handed_off and "external_follow_trial" or "spawn",
         body_release_scope="Spawn release acceptance only; external handoff cleanup and park are not observed here",
-        follow_visual_error=self.follow_visual_error,
+        follow_visual_error=self.follow_visual_error,posed_updates=self.posed_updates,
         visual_remove_requested=self.visual_remove_requested,cleanup_unknown=self.cleanup_unknown,
         creation_attempts=self.creation_attempts,creation_unknown=self.creation_unknown,
         clock_retry_available=self.phase=="clock_prepared" and not self.clock_retried,
@@ -153,14 +170,16 @@ function Runtime:handoff_follow()
     self.detail="Body handed to external follow trial; spawn stop now removes visuals only."
     return body,sample,nil
 end
-function Runtime:_follow_visual(sample,now_ms)
+-- pose is the external trial's presentation pose for the bike's own parts
+-- (Ride's steer, wheel and crank phases), or nil for the neutral pose.
+function Runtime:_follow_visual(sample,now_ms,pose)
     if not self.follow_handed_off or self.phase~="follow_owned" or self.visual_remove_requested then
         return false,"Follow visual ownership is unavailable or already stopped"
     end
     if not M.finite(now_ms) or now_ms<0 or now_ms>9007199254740991
         or self.follow_wall and now_ms<self.follow_wall then return false,"Invalid or reversed follow visual wall clock" end
-    local measured=valid_matrices(sample)
-    if not measured then return false,"Invalid measured bike body for follow visuals" end
+    local measured,invalid=valid_matrices(sample,pose)
+    if not measured then return false,invalid end
     local order=compare(sample.serial,self.sample.serial)
     if order<0 or sample.time<self.sample.time or (order>0 and sample.time<=self.sample.time)
         or (order==0 and not same(sample,self.sample)) then
@@ -173,18 +192,20 @@ function Runtime:_follow_visual(sample,now_ms)
         local observed=self.follow_observed_at or now_ms
         if now_ms-observed>100 then return false,"Body native clock stopped advancing for follow visuals" end
         self.follow_wall,self.follow_observed_at=now_ms,observed
-        return true
+        -- The same body is drawn again only in a newer pose: Ride can accept
+        -- its first step on the sample the handoff drew.
+        if same_pose(pose,self.pose) then return true end
     end
-    local matrices,why=measured,nil
-    if not matrices then return false,why end
-    local placed,reason=self:_place(matrices)
+    local placed,reason=self:_place(measured)
     if not placed then return false,reason end
-    self.sample=sample self.follow_wall=now_ms self.follow_observed_at=now_ms self.updates+=1
+    if order>0 then self.sample=sample self.follow_observed_at=now_ms end
+    self.pose=pose self.follow_wall=now_ms self.updates+=1
+    if pose~=nil then self.posed_updates+=1 end
     self.detail="Bike visuals follow supplied measured chassis; mounted alignment remains unproved."
     return true
 end
-function Runtime:follow_visual(sample,now_ms)
-    local result=table.pack(pcall(self._follow_visual,self,sample,now_ms))
+function Runtime:follow_visual(sample,now_ms,pose)
+    local result=table.pack(pcall(self._follow_visual,self,sample,now_ms,pose))
     if result[1] and result[2]==true then return true end
     local why=result[1] and result[3] or "Follow visual exception: "..tostring(result[2])
     self.follow_visual_error=tostring(why or "Follow visual update refused")

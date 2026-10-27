@@ -49,6 +49,14 @@ function Tests.run()
     end)
     case("an accepted hop and its original receipt survive the recovery",function()
         local f=Fixtures.fixture();observe_invalidations(f);f.observe()
+        -- The accepted support force is not visible in the N+1 sample yet.
+        -- Keep the gravity-only sample coherent for its recovered duplicate.
+        local sample=f.sample
+        function f.sample()
+            local row=sample()
+            row.velocity=vector.create(0,f.force.tuning.gravity[2]*row.seconds,0)
+            return row
+        end
         f.pad.buttons.right_stick=true;f.advance();f.mode="applied"
         local s=f.observe();local hop=f.command.impulse_id;local sequence=f.sequence
         check(type(hop)=="number" and hop>0 and f.force:consumed_hop_event_id()==hop,"real accepted packet consumed its hop")

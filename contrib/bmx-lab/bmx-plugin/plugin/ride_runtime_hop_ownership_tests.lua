@@ -145,7 +145,7 @@ function Tests.run()
         for _=1,3 do
             f.advance();f.successor=f.sample();local held=f.observe()
             check(not held.stop_requested and f.mapping:status().pending_hop==nil and #f.impulse_packets==1,
-                "holding the second press through and after ACK cannot replay its impulse")
+                "holding the second press through and after ACK cannot replay its impulse: "..tostring(held.issue))
         end
         check(f.mapping:status().hop_counter==original.id and f.claims==1,
             "held input cannot claim a new command or consume an event ID")

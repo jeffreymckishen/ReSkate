@@ -3,6 +3,7 @@ local Ride=require("./ride_runtime")
 local Qualified=require("./ride_runtime_qualified_fixture")
 local Mapping=require("./ride_input_mapping")
 local Forces=require("./forces")
+local Geometry=require("./bike_geometry")
 local Contact=require("./contact_runtime")
 local Tests={}
 local function copy(v)
@@ -356,11 +357,20 @@ function Tests.run(case_done)
         for i=1,2 do
             local sample,hit=f.preview_samples[i],f.batch.rays[i]
             local contact=sample.contact
-            local measured_gap=f.plan[i].from.y-hit.position.y-Forces.wheel_radius
-            check(contact.status=="hit" and math.abs(sample.separation-(measured_gap-9.8*h*h))<1e-6
-                and sample.verified_plane==false and sample.balance_normal_available==false,"forecast separation retains unqualified measured geometry "..i)
-            check(math.abs(contact.point[1]-(hit.position.x+f.read.velocity.x*h))<1e-12 and contact.point[2]==hit.position.y
-                and math.abs(contact.point[3]-(hit.position.z+f.read.velocity.z*h))<1e-12,"forecast slides the contact point without changing its measured plane "..i)
+            -- This fixture has identity rotation and zero angular velocity. Its
+            -- rigid hub follows the authored axle, not the float-rounded SDK hit.
+            local axle=i==1 and Geometry.front_axle or Geometry.rear_axle
+            local hub={f.read.position.x+(axle[1]-Geometry.com[1])+f.read.velocity.x*h,
+                f.read.position.y+(axle[2]-Geometry.com[2])-9.8*h*h,
+                f.read.position.z+(axle[3]-Geometry.com[3])+f.read.velocity.z*h}
+            local plane_y=hit.position.y+hit.surface_velocity.y*h
+            check(contact.status=="hit" and math.abs(sample.separation-(hub[2]-plane_y-Forces.wheel_radius))<1e-12
+                and sample.wheel_radius==Forces.wheel_radius and sample.forecast_geometry_unavailable==false
+                and math.abs(sample.wheel_center[1]-hub[1])<1e-12 and math.abs(sample.wheel_center[2]-hub[2])<1e-12
+                and math.abs(sample.wheel_center[3]-hub[3])<1e-12 and sample.verified_plane==false
+                and sample.balance_normal_available==false,"rigid forecast retains the authored hub and unqualified measured plane "..i)
+            check(math.abs(contact.point[1]-hub[1])<1e-12 and math.abs(contact.point[2]-plane_y)<1e-12
+                and math.abs(contact.point[3]-hub[3])<1e-12,"forecast ray intersects the measured plane below the authored hub "..i)
             check(contact.normal[1]==0 and contact.normal[2]==1 and contact.normal[3]==0
                 and contact.forward[1]==0 and contact.forward[2]==0 and contact.forward[3]==1,"wheel row keeps level normal and projected heading "..i)
             check(contact.surface_velocity[1]==.75 and contact.surface_velocity[2]==0

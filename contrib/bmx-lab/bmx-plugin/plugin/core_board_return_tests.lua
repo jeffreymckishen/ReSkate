@@ -114,7 +114,9 @@ local function fixture(mode)
     function s.world.physics.release(body) event("body_release");return release(body) end
     function s.world.physics.reserve_follow(body,attachment)
         table.insert(f.reserves,{body=body,attachment=attachment})
-        f.follow=newproxy();f.follow_phase,f.follow_reason="reserved","none";event("follow_reserve");return f.follow
+        f.follow=newproxy();f.follow_phase,f.follow_reason="reserved","none";event("follow_reserve")
+        -- Successful reserve_follow returns both the handle and an explicit nil reason.
+        return f.follow,nil
     end
     function s.world.physics.publish_follow(handle)
         assert(handle==f.follow,"publish uses the reserved Follow")

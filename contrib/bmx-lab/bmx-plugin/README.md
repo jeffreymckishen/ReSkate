@@ -90,6 +90,27 @@ switch phase and result distinguish input-report cleanup from the observed
 stock state. No physical LB+Y shortcut is bound and no automatic board return
 occurs. Nothing invokes the old BMX console, C++ controller or private mode.
 
+**Return to skateboard** is a separate explicit action for a selected slot. It
+uses the same owner through `BikeRuntime:request_board(slot)`: stop the bike, drain
+force/Follow/body/input/equipment duties, then check fresh stock state. Board100
+completes without an input report. Grounded, upright feet504 can start exactly
+one 504-to-100 transaction through the existing stock adapter, after menus close
+and the selected controller is neutral. Return success requires that transaction's
+matching acknowledgement and a currently qualified board100 target, not an old
+receipt or a report acknowledgement alone. Accepted visual removals do not prove
+that the bike has disappeared on screen.
+
+One request keeps its original 60-second admission deadline through startup and
+cleanup; another click cannot restart it. Stop cancels the queued return. Fall,
+focus/context loss, unload, invalid timing or unresolved cleanup also cancels or
+refuses it; later readiness never revives that request. Opening the menu may have
+already stopped the bike, and an explicit return can still request its cleanup
+and stock handoff. Return status distinguishes draining, stock switching,
+completion and cancellation/refusal. This path does not remount, rearm the
+one-shot bike owner, clear a retained marker or recycle a native body. Board return
+remains a source candidate without native switching acceptance; public mounting
+stays disabled and the package is not a repeatable bike/board release.
+
 The extracted lifecycle also contains a separate private qualification mode for
 reviewed Host/native development. Public main never passes that option. It is
 one zero-force Follow attempt per VM, bounded to500ms, with no automatic retry,

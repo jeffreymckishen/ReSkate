@@ -165,10 +165,10 @@ def lead_scenarios(lead: int) -> dict[str, tuple[Event, ...]]:
         "ride-s01-30s": (Event(0, NEUTRAL), Event(lead, State(A)), Event(lead + 6000, NEUTRAL),
                          Event(lead + 9000, State(B)), Event(lead + 15000, NEUTRAL),
                          Event(lead + 15500, State(A)), Event(lead + 17500, NEUTRAL), Event(30000, NEUTRAL)),
-        # Brake against slope drift, then give a mapper first observed during braking three
-        # neutral reports before A. The calibrated lead still needs to cover publication.
+        # A mapper first observed during B ignores that opening hold. Give it twelve
+        # neutral reports before A, longer than the scheduler's 120ms lateness limit.
         # Later 240ms gaps release each control before the next phase.
-        "ride-steer-brake": (Event(0, NEUTRAL), Event(240, State(B)), Event(lead - 60, NEUTRAL),
+        "ride-steer-brake": (Event(0, NEUTRAL), Event(240, State(B)), Event(lead - 240, NEUTRAL),
                              Event(lead, State(A)),
                              Event(lead + 1500, NEUTRAL), Event(lead + 1740, State(left_x=-0.8)),
                              Event(lead + 3740, NEUTRAL), Event(lead + 3980, State(left_x=0.8)),
@@ -271,9 +271,15 @@ class StartGate:
     into this newly created directory. A valid trigger is an operator assertion,
     not proof that the console closed or a native observer armed.
     """
-    def __init__(self, path: Path, nonce: str, owner: Owner, scenario: str, source_sha256: str):
+    def __init__(self, path: Path, nonce: str, owner: Owner, scenario: str, source_sha256: str,
+                 *, lead_ms: int | None = None):
         if not isinstance(nonce, str) or not re.fullmatch(r"[0-9a-fA-F]{32}", nonce):
             raise Refused("Start nonce must contain exactly32 hexadecimal characters")
+        if lead_ms is not None and scenario not in LEAD_SCENARIO_NAMES:
+            raise Refused("Start-gate pedal lead requires a lead-dependent scenario")
+        self.lead_ms = pedal_lead_ms(lead_ms) if scenario in LEAD_SCENARIO_NAMES else None
+        self._lead_configuration = (scenario, self.lead_ms) if self.lead_ms is not None else None
+        self._ready_configuration = None
         self.path = inside_build(path)
         if self.path.exists():
             raise Refused("Start-gate directory must be fresh and nonexistent")
@@ -284,6 +290,22 @@ class StartGate:
         self.nonce, self.owner, self.scenario, self.source_sha256 = nonce, owner, scenario, source_sha256
         self.ready, self.go = self.path / "ready.json", self.path / "go.json"
         self.check_directory()
+
+    def validate_run(self, events, lead_ms):
+        # Legacy gates may accompany a custom short timeline. Lead gates must
+        # describe the exact scheduled timeline, including a resolved default.
+        if self._lead_configuration is None:
+            if (self.lead_ms is not None or self.scenario in LEAD_SCENARIO_NAMES or
+                    self._ready_configuration is not None or lead_ms is not None or
+                    any(events == timeline for name, timeline in tool_scenarios().items()
+                        if name in LEAD_SCENARIO_NAMES)):
+                raise Refused("A pedal timeline requires its matching lead-dependent start gate")
+            return
+        scenario, bound_lead = self._lead_configuration
+        if ((self.scenario, self.lead_ms) != self._lead_configuration or
+                pedal_lead_ms(lead_ms) != bound_lead or events != scenario_timeline(scenario, bound_lead) or
+                self._ready_configuration is not None and self._ready_configuration != self._lead_configuration):
+            raise Refused("Start-gate pedal lead or timeline differs from the bound readiness configuration")
 
     def check_directory(self):
         inside_build(self.path, existing=True)
@@ -334,11 +356,20 @@ class StartGate:
         self.check_directory()
         if self.ready.exists() or self.go.exists():
             raise Refused("Preexisting ready/go file refused before start-gate publication")
+        if self._lead_configuration is not None:
+            scenario, bound_lead = self._lead_configuration
+            self.validate_run(scenario_timeline(scenario, bound_lead), bound_lead)
+        elif (self.lead_ms is not None or self.scenario in LEAD_SCENARIO_NAMES or
+                self._ready_configuration is not None):
+            raise Refused("Non-pedal start gate has stale pedal readiness configuration")
         payload = dict(schema=1, event="bmx_virtual_gamepad_ready", process_id=self.owner.process_id,
                        process_creation_filetime=str(self.owner.process_creation_filetime), game_exe=self.owner.game_exe,
                        runtime_sha256=self.owner.runtime_sha256, nonce=self.nonce, scenario=self.scenario,
                        utc=datetime.now(timezone.utc).isoformat(), source_sha256=self.source_sha256,
                        neutral_bootstrap_completed=True, wait_limit_ms=START_GATE_LIMIT_MS)
+        if self.lead_ms is not None:
+            payload["pedal_lead_ms"] = self.lead_ms
+            self._ready_configuration = (self.scenario, self.lead_ms)
         with self.ready.open("x", encoding="utf-8", newline="\n") as stream:
             stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
             stream.flush()
@@ -806,6 +837,8 @@ def run(events, guard, backend_factory, ledger, *, execute=False, clock=None, st
     validate_timeline(events, lead_ms=lead_ms)
     if start_gate is not None and not execute:
         raise Refused("Start gate is available only with explicit execution")
+    if isinstance(start_gate, StartGate):
+        start_gate.validate_run(events, lead_ms)
     clock = clock or Clock()
     backend, issue, reports = None, None, 0
     factory_started = False
@@ -820,6 +853,8 @@ def run(events, guard, backend_factory, ledger, *, execute=False, clock=None, st
             bootstrap(backend, guard, ledger, clock)
         if start_gate is not None:
             start_gate.wait(guard, ledger, clock)
+            if isinstance(start_gate, StartGate):
+                start_gate.validate_run(events, lead_ms)
         start, current, index = clock.now(), events[0].state, 0
         if not math.isfinite(start):
             raise Refused("Scheduler clock is not finite")
@@ -913,7 +948,10 @@ def main(argv=None):
             parser.error("--pedal-lead-ms requires a lead-dependent scenario")
     # Before any owner, ledger, game or device step: a lead-dependent scenario refuses here
     # while PEDAL_LEAD_MS is unset and no trial override was supplied.
-    events = scenario_timeline(args.scenario, args.pedal_lead_ms)
+    # Resolve once: timeline, ledger and ready evidence must not disagree if a
+    # configured default changes during a later callback or the gate wait.
+    lead_ms = pedal_lead_ms(args.pedal_lead_ms) if args.scenario in LEAD_SCENARIO_NAMES else None
+    events = scenario_timeline(args.scenario, lead_ms)
     # Then, still before any owner, ledger, game or device step: a live run of a new scenario
     # needs the gate.
     if args.execute and args.scenario in GATED_SCENARIO_NAMES and args.start_gate is None:
@@ -925,18 +963,19 @@ def main(argv=None):
                                (datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex + ".jsonl"))
     ledger_path.parent.mkdir(parents=True, exist_ok=True)
     ledger = (NeutralWindowLedger(ledger_path, events) if args.scenario == "neutral-window-20s" else
-              LongTimelineLedger(ledger_path, events, lead_ms=args.pedal_lead_ms)
+              LongTimelineLedger(ledger_path, events, lead_ms=lead_ms)
               if args.scenario in LONG_SCENARIO_NAMES else Ledger(ledger_path))
     guard = None
     try:
         ledger.write("controller_session_start", schema=1, scenario=args.scenario, execute=args.execute,
                      timing_simulated=not args.execute, owner=asdict(owner) if owner else None,
                      timeline=[asdict(e) for e in events], source_sha256=sha256(Path(__file__)),
-                     **({"pedal_lead_ms": args.pedal_lead_ms} if args.pedal_lead_ms is not None else {}),
+                     **({"pedal_lead_ms": lead_ms} if lead_ms is not None else {}),
                      boundary="Virtual controller reports only; no proof of device selection, consumption, animation or native quality; no capture or posting")
         try:
             guard = WindowsGuard(owner) if args.execute else DryGuard()
-            start_gate = StartGate(args.start_gate, args.start_nonce, owner, args.scenario, sha256(Path(__file__))) if args.start_gate else None
+            start_gate = StartGate(args.start_gate, args.start_nonce, owner, args.scenario, sha256(Path(__file__)),
+                                   lead_ms=lead_ms) if args.start_gate else None
         except BaseException as error:
             # No backend factory has been reached on this refusal path.
             try:
@@ -947,7 +986,7 @@ def main(argv=None):
             raise
         result = run(events, guard, (lambda: make_vgamepad(args.dependency_receipt)) if args.execute else DryBackend, ledger,
                      execute=args.execute, clock=Clock() if args.execute else PreviewClock(), start_gate=start_gate,
-                     lead_ms=args.pedal_lead_ms)
+                     lead_ms=lead_ms)
         print(json.dumps(dict(ledger=str(ledger_path), **result)))
         return 0 if result["completed"] else 2
     finally:

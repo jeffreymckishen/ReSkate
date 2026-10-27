@@ -15,10 +15,11 @@ limit.
 
 `Bmx-CoupledVirtualTest.py` imports the exact approved
 `contrib/bmx-lab/Bmx-VirtualGamepad.py`, requiring SHA256
-`3F756CE24AB3E6BFB274C5F109B85911B8A781A6915DBADDF46363D8A933632B`.
-That is the driver at `5975efd8`. No tracked driver has matched it since
-`ec0b8ea8`, so the script refuses today's driver until it is re-pinned with
-TOOL-1(b) (see the machine state in [RUNBOOK.md](RUNBOOK.md#machine-state)).
+`60357A747B180A5F50FC8C116C161AF662E0DFDBD1956F2C5113EE0627B40F59`.
+This source-only pin follows the gamepad neutral-gap and ready-evidence changes.
+Python tests for this revision remain unrun while execution is held; the earlier
+harness results above are historical. The dated machine-state hashes in
+[RUNBOOK.md](RUNBOOK.md#machine-state) remain unchanged and do not qualify this pin.
 Its scenarios remain unchanged. A denied read of the GO payload now waits
 neutral within the original deadline; a later successful read still passes all
 file, owner and nonce checks before any scheduled input. Its native owner,

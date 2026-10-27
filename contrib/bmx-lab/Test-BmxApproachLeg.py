@@ -109,7 +109,7 @@ class ApproachTests(unittest.TestCase):
             ready.append(clock.now())
         with patch.object(base_gate, "wait", original_wait):
             result, _, _, sink = self.fake_run(w.DEFAULT_SCENARIO,
-                                             gate=object.__new__(h.StartGate))
+                                             gate=f.nonlead_gate(h, w.DEFAULT_SCENARIO))
         self.assertTrue(result["completed"])
         self.assertEqual(len(ready), 1)
         self.assertGreaterEqual(ready[0], 2)
@@ -117,7 +117,7 @@ class ApproachTests(unittest.TestCase):
                              for r in sink.rows), 1)
         with patch.object(base_gate, "wait", side_effect=AssertionError("ready after guard loss")):
             result, backend, _, sink = self.fake_run(w.DEFAULT_SCENARIO,
-                abort_at=1.0, gate=object.__new__(h.StartGate))
+                abort_at=1.0, gate=f.nonlead_gate(h, w.DEFAULT_SCENARIO))
         self.assertFalse(result["completed"])
         self.assertEqual(result["driver_report_count"], 0)
         self.assertTrue(result["neutral_release_succeeded"] and result["disconnect_succeeded"])

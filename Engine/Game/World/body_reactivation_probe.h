@@ -38,6 +38,9 @@ struct Observation {
 struct Record {
     Stage stage{Stage::initial_park};
     bool passed{};
+    // Copied pre-admission Follow park floor, never a new probe park command.
+    // Only initial_park may carry this flag, with no attached observation.
+    bool historical_park_basis{};
     owned_body::Epoch epoch{};
     Observation observation{};
 };

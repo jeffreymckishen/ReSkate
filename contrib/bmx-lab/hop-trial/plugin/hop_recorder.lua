@@ -79,6 +79,9 @@ local event_schemas={
     receipt=receipt, ack=schema("reason",nil,"acknowledged"), pose=pose, follow=follow, lease=lease,
 }
 for name, shape in pairs(event_schemas) do event_schemas[name]=merge(common,shape) end
+-- Preparation has no body, command or Follow identity to record.
+event_schemas.prepare=schema("call reason phase","arity arguments","call_ok result")
+local preparation=schema("phase reason scope","attempts ready_ms")
 
 local lease_state=fields("sequence source_epoch context_generation requested_ms expires_ms observed_ms last_observation renewals","id",
     schema("phase status reason", "user", "terminal source_released capture_reserved orphaned capturing report_debt"))
@@ -88,11 +91,12 @@ event_schemas.lease=merge(event_schemas.lease,merge(lease_state,capture))
 local source_state=merge(schema("phase reason","generation","input_ok new_observation lease_handle_present cleanup_pending cleanup_unknown"),
     {sample=source,lease_state=lease_state,capture_state=capture})
 local subordinate=schema("phase outcome reason detail",nil,"retained cleanup_pending cleanup_unknown unknown acknowledged unloaded qualified_transition")
-local terminal_schema=schema("phase detail stop_reason equipment_purpose", "wall_ms stop_ms selected_slot",
+local terminal_schema=schema("phase detail stop_reason equipment_purpose", "wall_ms stop_ms selected_slot mount_deadline_ms",
     "stop_latched unloaded bike_authority cleanup_pending cleanup_unknown bike_cleanup_complete stock_toggle_blocked "..
     "force_cleanup_clear force_cleanup_unknown handoff_unknown reserve_unknown marker_unknown retained_reload_marker "..
     "stock_requested acknowledge_attempted acknowledged completed_acknowledged ordinary_release_attempted ordinary_release_accepted "..
     "visual_cleanup_deferred storage_fault clock_unknown")
+terminal_schema.native_preparation=preparation
 terminal_schema.source=source_state;terminal_schema.last_source_step=source_state
 terminal_schema.ride=merge(force_pending,{receipt=receipt})
 terminal_schema.receipt=follow;terminal_schema.terminal_receipt=follow

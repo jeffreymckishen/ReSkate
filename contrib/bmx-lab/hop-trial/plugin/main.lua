@@ -12,7 +12,7 @@ local function finite(v) return type(v)=="number" and v==v and math.abs(v)<math.
 local function config_valid(c)
     return type(c)=="table" and c.schema==1 and type(c.admission_enabled)=="boolean"
         and (c.phase=="P0" or c.phase=="H1") and type(c.run_id)=="string" and #c.run_id>0 and #c.run_id<=32 and c.run_id:match("^[A-Za-z0-9_-]+$")~=nil
-        and c.source_commit=="430b98c5" and c.slot==0 and c.ride_window_ms==1500
+        and c.source_commit=="062db162248d6b21c686f588924e0abc5954e99c" and c.slot==0 and c.ride_window_ms==1500
         and c.hop_strength==.25 and c.mass==106 and c.max_hop_attempts==1
         and type(c.caps)=="table" and c.caps.force==6000 and c.caps.speed==3
         and c.caps.torque==2000 and c.caps.vertical_speed==3

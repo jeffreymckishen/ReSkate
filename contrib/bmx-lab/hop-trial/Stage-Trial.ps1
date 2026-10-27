@@ -15,8 +15,8 @@ $ErrorActionPreference = 'Stop'
 $utf8 = [Text.UTF8Encoding]::new($false, $true)
 $comparison = [StringComparison]::Ordinal
 $pathComparison = [StringComparison]::OrdinalIgnoreCase
-$planSha256 = 'EE88B7BB749AD581C4B3AB419C576196B641A3E8006CB681741DA92348830CF2'
-$pinsSha256 = '529ED8E62B3791A4FF5811E85E3F156B970FFC830E7DD2C4F7AD79B58E68CA44'
+$planSha256 = '643FAE696DB0C2B583C1BC2234630E9AE2E3EB13303EDD7A01EA800F9FE5A35F'
+$pinsSha256 = '3E7FF0DE0DBCEF178B8CCF3B0D8237A71E364F0F35F20C6397DE01F34C92E7E1'
 
 function Assert-NoHold {
     foreach ($hold in @('C:\Users\Jeffr\Desktop\reskate\build\bmx\HID-HOLD',
@@ -184,7 +184,7 @@ if ((Digest $pinsBytes) -cne $pinsSha256 -or $plan.source_pins_sha256 -cne $pins
     throw 'Frozen canonical source pins changed'
 }
 $pins = $utf8.GetString($pinsBytes) | ConvertFrom-Json
-if ($pins.schema -ne 1 -or $pins.source_commit -cne '430b98c5' -or
+if ($pins.schema -ne 1 -or $pins.source_commit -cne '062db162248d6b21c686f588924e0abc5954e99c' -or
     $pins.source_directory -cne 'contrib/bmx-lab/bmx-plugin' -or @($pins.files).Count -ne 59) {
     throw 'Unexpected canonical pin contract'
 }
@@ -266,7 +266,7 @@ if ($IncludeTests) {
 }
 $config = $utf8.GetString($expected['plugin/hop_config.lua'])
 foreach ($literal in @('schema=1','admission_enabled=false','phase="P0"','run_id="unreviewed"',
-    'source_commit="430b98c5"','slot=0','ride_window_ms=1500',
+    'source_commit="062db162248d6b21c686f588924e0abc5954e99c"','slot=0','ride_window_ms=1500',
     'caps=table.freeze({force=6000,speed=3,torque=2000,vertical_speed=3})','hop_strength=.25','mass=106','max_hop_attempts=1')) {
     $declaration = $literal.Substring(0,$literal.IndexOf('=')+1)
     Exact-Declaration $config $literal $declaration "private config $declaration"
@@ -298,7 +298,7 @@ foreach ($transform in @($plan.private_transforms)) {
 }
 Add-File 'source-pins.json' $pinsBytes
 Add-File 'stage-plan.json' $planBytes
-$report = [ordered]@{schema=1;source_commit='430b98c5';source_root=$root;private_root=$private;
+$report = [ordered]@{schema=1;source_commit='062db162248d6b21c686f588924e0abc5954e99c';source_root=$root;private_root=$private;
     source_pins_sha256=$pinsSha256;stage_plan_sha256=$planSha256;reviewed_admission=[bool]$ReviewedAdmission;
     review_id=$ReviewId;run_id=$RunId;phase=$Phase;include_tests=[bool]$IncludeTests;
     qualification='No execution, native qualification, deployment or repeat-use authority is granted.';

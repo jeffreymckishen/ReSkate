@@ -5,7 +5,7 @@ return table.freeze({
     admission_enabled=false,
     phase="P0",
     run_id="unreviewed",
-    source_commit="430b98c5",
+    source_commit="062db162248d6b21c686f588924e0abc5954e99c",
     slot=0,
     ride_window_ms=1500,
     caps=table.freeze({force=6000,speed=3,torque=2000,vertical_speed=3}),

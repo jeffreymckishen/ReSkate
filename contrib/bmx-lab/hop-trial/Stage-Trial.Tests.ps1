@@ -26,7 +26,8 @@ foreach ($pin in @($pins.files)) {
 foreach ($name in @('Stage-Trial.ps1','stage-plan.json','source-pins.json','manifest.json','reskate-plugin.json',
     'plugin/main.lua','plugin/hop_config.lua','plugin/hop_context.lua','plugin/hop_force_stage.lua',
     'plugin/hop_services.lua','plugin/hop_guard.lua','plugin/hop_recorder.lua',
-    'plugin/hop_guard_tests.lua','plugin/hop_recorder_tests.lua','plugin/hop_composition_tests.lua')) {
+    'plugin/hop_guard_tests.lua','plugin/hop_recorder_tests.lua','plugin/hop_composition_tests.lua',
+    'plugin/hop_prepare_evidence_tests.lua','plugin/hop_prepare_cancel_tests.lua')) {
     [IO.File]::WriteAllBytes((Join-Path $tool $name),[IO.File]::ReadAllBytes((Join-Path $PSScriptRoot $name)))
 }
 $script=Join-Path $tool 'Stage-Trial.ps1'
@@ -84,10 +85,15 @@ Case 'explicit admitted P0 exact changes and unchanged gates' {
     Check ($ride.Contains('local RIDE_TRICKS_QUALIFIED = false') -and $ride.Contains('TrialContext.before_force(s.body,sample,controls,body,frame,contact)')) 'Ride guard/trick contract'
     $report=Get-Content -LiteralPath (Join-Path $admitted 'transform-report.json') -Raw | ConvertFrom-Json
     Check (@($report.transforms).Count -eq 17) 'Declared transform report count'
+    Check ($report.source_commit -ceq '062db162248d6b21c686f588924e0abc5954e99c') 'Canonical revision changed'
+    Check ($core.Contains('local function prepare_native(generation,before)') -and
+        $core.Contains('T.mount_deadline_at') -and $core.Contains('native_preparation=')) 'Production preparation phase absent'
+    $admission=Get-Content -LiteralPath (Join-Path $admitted 'plugin/bike_admission.lua') -Raw
+    Check ($admission.Contains('"world.physics.prepare"')) 'Preparation admission dependency absent'
 }
 Case 'H1 explicit identity and isolated optional test inventory' {
     $result=& $script -Mode Stage -SourceRoot $clone -OutputDirectory $h1 -ReviewedAdmission -Phase H1 -RunId h1test -ReviewId review2 -IncludeTests
-    Check ($result.files -eq 76) 'Optional tests and exact-entry fixture inventory'
+    Check ($result.files -eq 78) 'Optional tests and exact-entry fixture inventory'
     $null=& $script -SourceRoot $clone -OutputDirectory $h1 -ReviewedAdmission -Phase H1 -RunId h1test -ReviewId review2 -IncludeTests
     $config=Get-Content -LiteralPath (Join-Path $h1 'plugin/hop_config.lua') -Raw
     Check ($config.Contains('admission_enabled=true') -and $config.Contains('phase="H1"') -and $config.Contains('run_id="h1test"')) 'H1 config'
@@ -109,6 +115,20 @@ Case 'canonical mutations including duplicate and alternate declarations refuse 
             $n++
         }
     } finally { [IO.File]::WriteAllBytes($path,$saved) }
+}
+Case 'Admission and fixed forces bytes remain independently pinned' {
+    foreach ($name in @('bike_admission.lua','forces.lua')) {
+        $path=Join-Path $canonical $name
+        $saved=[IO.File]::ReadAllBytes($path)
+        try {
+            [IO.File]::AppendAllText($path,[string][char]10,$utf8)
+            $out=Out ('changed-'+$name.Replace('.','-'))
+            Refuses { & $script -Mode Stage -SourceRoot $clone -OutputDirectory $out } $out
+        } finally { [IO.File]::WriteAllBytes($path,$saved) }
+    }
+    $forcePin=@($pins.files | Where-Object { $_.path -ceq 'plugin/forces.lua' })
+    Check ($forcePin.Count -eq 1 -and $forcePin[0].bytes -eq 37599 -and
+        $forcePin[0].sha256 -ceq '3BB16CB48F0A3304F651346FBD97A97D8CF4FE023E12B0E7FC7073429DD9C5E5') 'Fixed canonical forces pin changed'
 }
 Case 'extra selected source module refuses before creation' {
     $extra=Join-Path $canonical 'extra_production.lua'
@@ -267,6 +287,6 @@ Case 'actual-entry fixture is exact and absent without IncludeTests' {
         Check ((Snapshot $h1) -ceq $before) 'Verify repaired modified fixture'
     } finally { [IO.File]::WriteAllBytes($path,$actual) }
 }
-Check ($cases -eq 16) 'Unexpected regression case count'
+Check ($cases -eq 17) 'Unexpected regression case count'
 # Preserve this isolated evidence folder. No recursive deletion or deployment follows.
 [pscustomobject]@{cases=$cases;artifact_root=$testRoot;native_execution=$false}

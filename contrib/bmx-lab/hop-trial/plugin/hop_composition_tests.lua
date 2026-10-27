@@ -67,13 +67,13 @@ local function context_fixture()
     return f
 end
 local function ready_services()
-    local f={now=1000,calls=0,native=0,storage_reads=0,storage_writes=0}
+    local f={now=1000,calls=0,native=0,storage_reads=0,storage_writes=0,prepares=0,menu_open=true}
     local s={time={},input={},skater={},level={},storage={},json={},menu={},entities={},world={physics={}}}
     local function touch() f.calls+=1 end
     function s.time.now() touch();return f.now end
-    function s.input.focus() touch();return {focused=true,interface_open=true,gameplay=true} end
+    function s.input.focus() touch();return {focused=true,interface_open=f.menu_open,gameplay=true} end
     function s.input.allowed() touch();return true end
-    function s.menu.game() touch();return {open=true} end
+    function s.menu.game() touch();return {open=f.menu_open} end
     function s.skater.get() touch();return {airborne=false,position=vector.create(0,0,0),heading=0} end
     function s.skater.telemetry()
         touch();return {skater=true,airborne=false,teleport_pending=false,
@@ -91,6 +91,12 @@ local function ready_services()
     for _,name in ipairs({"create","read","release","reserve_follow","publish_follow","read_follow",
         "stop_follow","acknowledge_follow","probe_batch","submit","receipt","acknowledge"}) do
         s.world.physics[name]=forbidden
+    end
+    function s.world.physics.prepare(...)
+        touch();f.prepares+=1
+        assert(select("#",...)==0,"preparation preserves zero-argument SDK contract")
+        if f.on_prepare then return f.on_prepare() end
+        return true
     end
     f.services=s
     return f
@@ -116,7 +122,7 @@ local function entry_fixture(options)
     function s.on(name,callback) assert(f.events[name]==nil,"entry registered an event twice");f.events[name]=callback end
     function s.menu.page(_,callback) assert(f.page==nil,"entry registered its menu twice");f.page=callback end
     local config=table.freeze({schema=1,admission_enabled=options.admitted==true,
-        phase=options.phase or (options.admitted and "H1" or "P0"),run_id="entry_fixture",source_commit="430b98c5",
+        phase=options.phase or (options.admitted and "H1" or "P0"),run_id="entry_fixture",source_commit="062db162248d6b21c686f588924e0abc5954e99c",
         slot=0,ride_window_ms=1500,hop_strength=.25,mass=106,max_hop_attempts=1,
         caps=table.freeze({force=6000,speed=3,torque=2000,vertical_speed=3})})
     local recorder={}
@@ -754,8 +760,42 @@ function Tests.run()
         end
         check(constructed~=nil and prepared~=nil and handoff~=nil and state.phase=="armed",
             "the actual facade and Core reach armed state while menus keep acquisition closed")
-        check(f.native==0 and f.storage_reads==1 and f.storage_writes>0,
-            "startup preserves nil marker/void storage contracts and performs no native action")
+        check(f.native==0 and f.prepares==0 and f.storage_reads==1 and f.storage_writes>0,
+            "startup preserves nil marker/void storage contracts and makes no preparation or acquisition call")
+        local original_deadline=state.mount_deadline_ms
+        f.on_prepare=function()
+            if f.prepares==1 then return false,"native body producer setup pending; call prepare again explicitly" end
+            return true
+        end
+        f.menu_open=false;f.now+=16;state=owner:step(16)
+        check(state.native_preparation.phase=="pending" and f.prepares==1 and f.native==0
+            and not state.call_counts["source.arm"],"actual wrapped Core waits without Source, floor or body acquisition")
+        f.now+=400;state=owner:step(400)
+        check(not state.stop_latched and f.prepares==1 and f.native==0 and state.mount_deadline_ms==original_deadline,
+            "deferred setup gap makes no extra preparation call and cannot reset the original deadline")
+        f.now+=16;state=owner:step(16)
+        local ready_at=state.native_preparation.ready_ms
+        check(state.native_preparation.phase=="ready" and f.prepares==2 and f.native==0
+            and not state.call_counts["source.arm"],"observed preparation yields before any selected Source acquisition")
+        local preparation_rows=0
+        for _,row in ipairs(watch.seen) do
+            if row.path=="world.physics.prepare" then preparation_rows+=1 end
+        end
+        check(preparation_rows==2,"the actual SDK proxy observes both calls without an extra readiness poll")
+        f.lease_calls=0
+        function f.services.input.lease()
+            f.calls+=1;f.lease_calls+=1;f.first_lease_prepares=f.prepares;f.first_lease_at=f.now
+            return nil,"constructed lease unavailable"
+        end
+        for _=1,60 do
+            if f.lease_calls>0 then break end
+            f.now+=16;state=owner:step(16)
+        end
+        check(f.lease_calls==1 and f.first_lease_prepares==2 and f.first_lease_at>=ready_at+600
+            and state.call_counts["source.arm"]==1 and f.native==0,
+            "the real Source starts only after preparation and its later readiness dwell; refused lease acquires no body")
+        check(state.mount_deadline_ms==original_deadline and f.prepares==2,
+            "Source admission does not replay preparation or restart the original mount deadline")
         local other=Runtime.new(s,{qualification_only=true});local calls=f.calls
         check(other:request_mount(0)==false and f.calls==calls,"a second owner cannot reset the consumed VM attempt")
         check(owner:request_stop("constructed scheduling complete"),"the original owner accepts cleanup stop")
@@ -764,4 +804,6 @@ function Tests.run()
     end)
     return {cases=cases,assertions=assertions,native_actions=0,game_evidence=false}
 end
+-- Shared constructed services only; each consuming suite owns a fresh VM.
+Tests.ready_services=ready_services
 return Tests

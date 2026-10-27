@@ -41,7 +41,7 @@ function(dingosdk_add_bmx_tests source_root)
         add_test(NAME bmx_grip_world_markers_selection
             COMMAND "${DINGOSDK_BMX_PWSH}" -NoProfile -File "${source_root}/contrib/bmx-lab/Test-GripWorldMarkersSelection.ps1")
         add_test(NAME bmx_owned_trial_watchdog
-            COMMAND "${DINGOSDK_BMX_PWSH}" -NoProfile -File "${source_root}/contrib/bmx-lab/Test-Watch-BmxOwnedTrial.ps1")
+            COMMAND "${DINGOSDK_BMX_PWSH}" -NoProfile -File "${source_root}/contrib/bmx-lab/Test-Watch-BmxOwnedTrial.ps1" -FixtureParent "${CMAKE_CURRENT_BINARY_DIR}")
         add_test(NAME bmx_forearm_repair_selection
             COMMAND "${DINGOSDK_BMX_PWSH}" -NoProfile -File "${source_root}/contrib/bmx-lab/Test-ForearmRepairSelection.ps1")
         add_test(NAME bmx_long_ride_trace_selection

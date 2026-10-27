@@ -1,6 +1,7 @@
 #requires -Version 7.5
 # Fake process/clock/files only. Compiles interop declarations without invoking
 # any native API, opening a process, terminating a process or sending input.
+param([Parameter(Mandatory)][string]$FixtureParent)
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'Watch-BmxOwnedTrial.ps1')
@@ -107,10 +108,32 @@ Check ($closeFailure.result.absence_verified -and -not $closeFailure.result.guar
 Reject {Invoke-BmxWatchdogCore -LimitSeconds 59} 'range|greater|less|60'
 Reject {Invoke-BmxWatchdogCore -LimitSeconds 601} 'range|greater|less|600'
 
-$base=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\build\bmx'))
+# Keep the production guardian's exact installation guard unchanged. File tests
+# use one disposable helper copy with only its evidence-root literal adapted.
+if(-not [IO.Path]::IsPathFullyQualified($FixtureParent)){throw 'An absolute binary fixture parent is required.'}
+$base=[IO.Path]::TrimEndingDirectorySeparator([IO.Path]::GetFullPath($FixtureParent))
+if($base -ieq [IO.Path]::GetPathRoot($base) -or $base -ieq 'C:\Users\Jeffr\Desktop' -or $base.StartsWith('C:\Users\Jeffr\Desktop\',[StringComparison]::OrdinalIgnoreCase)){throw 'Fixture parent must be outside drive roots and the Desktop.'}
+$parent=Get-Item -LiteralPath $base -ErrorAction Stop
+if($parent -isnot [IO.DirectoryInfo]){throw 'Fixture parent must be an existing directory.'}
+for($cursor=$parent;$null -ne $cursor;$cursor=$cursor.Parent){
+    if($cursor.Attributes -band [IO.FileAttributes]::ReparsePoint){throw 'Fixture parent refuses reparse ancestors.'}
+}
+$guardian=Join-Path $PSScriptRoot 'Watch-BmxOwnedTrial.ps1'
+$guardianHash=(Get-FileHash -LiteralPath $guardian -Algorithm SHA256).Hash
+$guardianText=[IO.File]::ReadAllText($guardian)
+$rootLiteral='$root=''C:\Users\Jeffr\Desktop\reskate\build\bmx'''
+Check ([regex]::Matches($guardianText,[regex]::Escape($rootLiteral)).Count -eq 1) 'Expected exactly one production evidence-root binding'
 $fixture=Join-Path $base ('watchdog-fixtures-'+[Guid]::NewGuid().ToString('N'))
+if(Test-Path -LiteralPath $fixture){throw 'Fresh watchdog fixture already exists.'}
 [IO.Directory]::CreateDirectory($fixture)|Out-Null
 try {
+    Reject {Assert-BmxWatchdogPath $fixture -Directory} 'beneath'
+    $fixtureGuardian=Join-Path $fixture 'Watch-BmxOwnedTrial.ps1'
+    $fixtureText=$guardianText.Replace($rootLiteral,('$root='''+$base.Replace("'","''")+''''))
+    [IO.File]::WriteAllText($fixtureGuardian,$fixtureText,[Text.UTF8Encoding]::new($false))
+    . $fixtureGuardian
+    Check ((Assert-BmxWatchdogPath $fixture -Directory) -ceq $fixture) 'Adapted real path guard rejected its disposable fixture'
+    Reject {Assert-BmxWatchdogPath (Join-Path ($base+'-sibling') 'owner.json')} 'beneath'
     $created=[DateTime]::Parse('2026-10-22T12:00:00.1234567Z',[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::RoundtripKind)
     $receipt=[ordered]@{schema=1;event='bmx_owned_trial_watchdog_owner';process_id=1234;
         process_creation_filetime=[string]$created.ToFileTimeUtc();owned_created_utc=$created.ToString('o');
@@ -138,7 +161,7 @@ try {
     $before=[IO.File]::ReadAllText($resultPath)
     $json=ConvertFrom-Json $before
     Check ($json.outcome -ceq 'refused' -and -not $json.absence_verified -and -not $json.controller_input_sent) 'Fresh refusal result was not preserved'
-    Check ($json.guardian_source_sha256 -ceq (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot 'Watch-BmxOwnedTrial.ps1') -Algorithm SHA256).Hash) 'Result pinned the caller instead of the guardian helper source'
+    Check ($json.guardian_source_sha256 -ceq (Get-FileHash -LiteralPath $fixtureGuardian -Algorithm SHA256).Hash) 'Result did not pin the actual disposable guardian source'
     Reject {Invoke-BmxOwnedTrialWatchdog $path $fixture 60} 'already exists|exists'
     Check ([IO.File]::ReadAllText($resultPath) -ceq $before) 'Repeated guardian overwrote prior evidence'
     $second=Join-Path $fixture 'existing-ready';[IO.Directory]::CreateDirectory($second)|Out-Null
@@ -146,8 +169,12 @@ try {
     Reject {Invoke-BmxOwnedTrialWatchdog $path $second 60} 'already exists'
     Check (-not(Test-Path -LiteralPath (Join-Path $second 'owned-trial-watchdog.result.json'))) 'Existing ready receipt still reserved a new result'
 } finally {
+    # Restore the original definitions before any later declaration-only checks.
+    . $guardian
+    Check ((Get-FileHash -LiteralPath $guardian -Algorithm SHA256).Hash -ceq $guardianHash) 'Production guardian bytes changed'
+    Reject {Assert-BmxWatchdogPath $fixture -Directory} 'beneath'
     $cleanup=[IO.Path]::GetFullPath($fixture)
-    if(-not $cleanup.StartsWith($base+'\',[StringComparison]::OrdinalIgnoreCase)){throw 'Fixture cleanup escaped intended build/bmx.'}
+    if(-not $cleanup.StartsWith($base+'\',[StringComparison]::OrdinalIgnoreCase)){throw 'Fixture cleanup escaped its binary parent.'}
     Remove-Item -LiteralPath $cleanup -Recurse -Force
 }
 

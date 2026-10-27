@@ -5,6 +5,8 @@
 #include "asset_chunk_locator_tests.h"
 #include "asset_manhole_candidate.h"
 #include "asset_manhole_candidate_tests.h"
+#include "asset_mesh_output.h"
+#include "asset_mesh_output_tests.h"
 #include "Engine/Core/Platform/path_text.h"
 #include "Engine/Resource/cas_codec.h"
 #include "Engine/Resource/ebx_document.h"
@@ -29,6 +31,9 @@
 #pragma warning(disable : 4996) // std::getenv in a command line tool
 namespace ebx = dingosdk::frostbite::ebx;
 namespace {
+using dingosdk::trainer::asset_tools::ManholeInspectionProgress;
+using dingosdk::trainer::asset_tools::MeshMetadataOutput;
+
 std::string lower(std::string_view text) {
     std::string result(text);
     std::transform(result.begin(), result.end(), result.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -244,79 +249,6 @@ int inspect_asset(const dingosdk::vfs::GameData &data, const dingosdk::vfs::Game
               << "\tsuccess_scope=ebx_decode\n";
     return selected != 0 && decoded == selected && untyped == 0 ? 0 : 1;
 }
-struct ManholeInspectionProgress {
-    bool resource_read_attempted{}, resource_read_complete{}, resource_decode_complete{};
-    bool geometry_read_attempted{}, geometry_read_complete{}, geometry_decode_complete{};
-    bool inspection_complete{}, indices_consistent{};
-};
-
-// Keep this diagnostic's output bounded independently of the legacy dump/list modes.
-class MeshMetadataOutput {
-public:
-    static constexpr std::size_t maximum_bytes = 1024 * 1024, maximum_records = 8192;
-    static constexpr std::size_t maximum_text = 512, summary_reserve = 1024;
-
-    std::string text(std::string_view source) {
-        constexpr char digits[] = "0123456789abcdef";
-        std::string result;
-        result.reserve(maximum_text);
-        for (const unsigned char byte : source) {
-            const bool plain = byte >= 0x20 && byte <= 0x7e && byte != '\\';
-            const std::size_t width = plain ? 1 : byte == '\\' ? 2 : 4;
-            if (width > maximum_text - result.size()) { truncated_ = true; break; }
-            if (plain) result += static_cast<char>(byte);
-            else if (byte == '\\') result += "\\\\";
-            else { result += "\\x"; result += digits[byte >> 4]; result += digits[byte & 15]; }
-        }
-        return result;
-    }
-    template <class... Values> bool record(const Values&... values) {
-        if (stopped_) return false;
-        std::ostringstream line;
-        (line << ... << values);
-        const auto value = line.str();
-        if (records_ >= maximum_records - 1 || value.size() >= maximum_bytes - summary_reserve - bytes_) {
-            truncated_ = stopped_ = true;
-            return false;
-        }
-        std::cout << value << '\n';
-        bytes_ += value.size() + 1;
-        ++records_;
-        return true;
-    }
-    void mark_truncated() noexcept { truncated_ = true; }
-    bool open() const noexcept { return !stopped_; }
-    int finish(bool complete, int failure_code = 1) {
-        const bool success = complete && !truncated_ && static_cast<bool>(std::cout);
-        // This fixed-size summary fits the reserved record and bytes, even after truncation.
-        std::cout << "SUMMARY\tmode=mesh-metadata\tcomplete=" << (success ? 1 : 0)
-                  << "\toutput_truncated=" << (truncated_ ? 1 : 0) << "\trecords_before_summary=" << records_
-                  << "\tbytes_before_summary=" << bytes_ << "\tsuccess_scope=resource_metadata_only"
-                  << "\tgeometry_payload_read=0\tdependency_closure=unverified\n";
-        return success && static_cast<bool>(std::cout) ? 0 : failure_code;
-    }
-    int finish_candidate(const ManholeInspectionProgress& progress, int failure_code = 1) {
-        const bool reported = progress.inspection_complete && !truncated_ && static_cast<bool>(std::cout);
-        std::cout << "SUMMARY\tmode=manhole-candidate\tcomplete=0\tinspection_complete=" << (reported ? 1 : 0)
-                  << "\toutput_truncated=" << (truncated_ ? 1 : 0) << "\trecords_before_summary=" << records_
-                  << "\tbytes_before_summary=" << bytes_
-                  << "\tresource_read_attempted=" << progress.resource_read_attempted
-                  << "\tresource_read_complete=" << progress.resource_read_complete
-                  << "\tresource_decode_complete=" << progress.resource_decode_complete
-                  << "\tgeometry_read_attempted=" << progress.geometry_read_attempted
-                  << "\tgeometry_read_complete=" << progress.geometry_read_complete
-                  << "\tgeometry_decode_complete=" << progress.geometry_decode_complete
-                  << "\tindex_range_consistent=" << progress.indices_consistent
-                  << "\tsuccess_scope=candidate_consistency_only\tsemantic_qualification=unverified"
-                  << "\tcontent_identity_authenticated=0\tdependency_closure=unverified\n";
-        // Even a consistent inspection does not qualify the unsupported layout or native geometry.
-        return failure_code;
-    }
-private:
-    std::size_t bytes_{}, records_{};
-    bool truncated_{}, stopped_{};
-};
-
 bool mesh_metadata_lod(std::string_view text, std::size_t& value) {
     if (text.empty()) return false;
     value = 0;
@@ -737,6 +669,10 @@ int mesh_metadata_command(int argc, char** argv) {
 } // namespace
 
 int main(int argc, char **argv) {
+    if (argc >= 2 && std::string_view(argv[1]) == "--self-test-mesh-output") {
+        if (argc != 2) return 2;
+        return dingosdk::trainer::asset_tools::mesh_output_self_test();
+    }
     if (argc >= 3 && std::string_view(argv[2]) == "--inspect-manhole-candidate") return manhole_candidate_command(argc, argv);
     if (argc >= 2 && std::string_view(argv[1]) == "--self-test-manhole-candidate") {
         if (argc != 2) return 2;

@@ -319,6 +319,11 @@ bool start(std::uintptr_t image_base) noexcept {
         if (storage.empty()) storage = data_root / L"ReSkate.Plugins";
         server_environment = new GameEnvironment(storage / L"server", true);
         environment = new GameEnvironment(std::move(storage), false);
+#if defined(DINGOSDK_BODY_REACTIVATION_QUALIFICATION) && DINGOSDK_BODY_REACTIVATION_QUALIFICATION
+        // Freeze the launch arm before any plugin entry can run. Construction
+        // only captures configuration; it does not admit or mutate a body.
+        (void)environment->game();
+#endif
         // The player's copies and a lobby's server copies run on this game's tick, so both get its budget.
         const auto limits = game_limits(tick_budget_ms());
         host = new Host(*environment, Side::client, limits);

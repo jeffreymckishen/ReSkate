@@ -5,6 +5,9 @@
 #include "Engine/Game/World/body_query.h"
 #include "Engine/Game/World/sync_probe.h"
 #include "Engine/Game/World/motion_refresh_probe.h"
+#if defined(DINGOSDK_BODY_REACTIVATION_QUALIFICATION) && DINGOSDK_BODY_REACTIVATION_QUALIFICATION
+#include "Engine/Game/World/body_reactivation_probe.h"
+#endif
 #include "Engine/Game/Skater/native_action.h"
 #include "Engine/Game/Skater/body_follow_api.h"
 #include "Engine/Game/Skater/native_recovery.h"
@@ -282,6 +285,14 @@ public:
     virtual std::string body_read(std::uint64_t, const owned_body::Handle&, owned_body::Sample&) { return unavailable; }
     virtual std::string body_begin_sync_probe(std::uint64_t, const owned_body::Handle&, std::uint64_t&) { return unavailable; }
     virtual std::string body_poll_sync_probe(std::uint64_t, const owned_body::Handle&, std::uint64_t, body_sync_probe::Result&) { return unavailable; }
+#if defined(DINGOSDK_BODY_REACTIVATION_QUALIFICATION) && DINGOSDK_BODY_REACTIVATION_QUALIFICATION
+    // The facade supplies the VM's trusted id/directory, never Lua arguments.
+    // These diagnostics return no new body or native lifetime authority.
+    virtual std::string begin_body_reactivation_probe(std::uint64_t, std::string_view, const std::filesystem::path&,
+        const owned_body::Handle&, std::uint64_t&) { return unavailable; }
+    virtual std::string poll_body_reactivation_probe(std::uint64_t, const owned_body::Handle&, std::uint64_t,
+        body_reactivation_probe::Result&) { return unavailable; }
+#endif
     virtual body_query::Result body_probe_batch(std::uint64_t, const owned_body::Handle&, const body_query::Request&, unsigned) { return {}; }
     virtual std::string body_submit(std::uint64_t, const owned_body::Handle&, const owned_body::Command&, std::uint64_t&) { return unavailable; }
     virtual std::string body_receipt(std::uint64_t, const owned_body::Handle&, std::uint64_t, owned_body::Receipt&) { return unavailable; }

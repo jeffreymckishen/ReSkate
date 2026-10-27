@@ -7,6 +7,9 @@ if(MSVC)
 endif()
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
+# An isolated, explicitly armed diagnostic; ordinary builds expose no probe API.
+option(DINGOSDK_BODY_REACTIVATION_QUALIFICATION "Build the private body-only reactivation qualification probe" OFF)
+
 # Windows version information (Explorer's Details tab) for the shipped binaries. The release
 # script passes its version; local builds say 0.0.0.
 set(DINGOSDK_VERSION "0.0.0" CACHE STRING "Release version stamped into the shipped binaries")

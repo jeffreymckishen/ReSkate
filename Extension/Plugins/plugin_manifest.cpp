@@ -46,6 +46,10 @@ constexpr std::array<std::string_view, 59> permissions{
 }
 
 bool known_permission(std::string_view name) noexcept {
+#if defined(DINGOSDK_BODY_REACTIVATION_QUALIFICATION) && DINGOSDK_BODY_REACTIVATION_QUALIFICATION
+    // This permission alone cannot arm the isolated, single-attempt diagnostic.
+    if (name == "world.physics.qualify_body_reactivation") return true;
+#endif
     for (const auto known : permissions) if (known == name) return true;
     return false;
 }

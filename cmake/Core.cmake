@@ -167,6 +167,10 @@ add_library(dingosdk_plugins STATIC
     Extension/Skater/pose_place.cpp
     Extension/Plugins/plugin_wave.cpp)
 target_link_libraries(dingosdk_plugins PUBLIC dingosdk_json dingosdk_console_core PRIVATE dingosdk_luau)
+if(DINGOSDK_BODY_REACTIVATION_QUALIFICATION)
+    # Game has conditional virtual methods; every consumer must share its layout.
+    target_compile_definitions(dingosdk_plugins PUBLIC DINGOSDK_BODY_REACTIVATION_QUALIFICATION=1)
+endif()
 if(WIN32)
     target_sources(dingosdk_plugins PRIVATE Extension/Plugins/plugin_discovery.cpp)
     target_link_libraries(dingosdk_plugins PUBLIC dingosdk_mod_list)

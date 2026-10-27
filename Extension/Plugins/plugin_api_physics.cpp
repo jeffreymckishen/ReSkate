@@ -23,6 +23,10 @@ struct EpochValue { std::uint64_t owner{}; Handle handle{}; Sample sample{}; };
 struct SyncProbeValue { std::uint64_t owner{}; Handle handle{}; std::uint64_t sequence{}; };
 // An actor-scoped diagnostic request, never an SDK body or a submit epoch.
 struct MotionRefreshProbeValue { std::uint64_t owner{}, sequence{}; };
+#if defined(DINGOSDK_BODY_REACTIVATION_QUALIFICATION) && DINGOSDK_BODY_REACTIVATION_QUALIFICATION
+constexpr char body_reactivation_probe_type[] = "reskate.world.physics.body_reactivation_probe";
+struct BodyReactivationProbeValue { std::uint64_t owner{}; Handle handle{}; std::uint64_t sequence{}; };
+#endif
 // The body is copied at reserve, so a renewal's epoch can be bound to the
 // followed body here, before the backend. It grants nothing on its own.
 struct FollowValue { std::uint64_t owner{}; body_follow_api::Handle handle{}; Handle body{}; };
@@ -159,6 +163,221 @@ template<std::size_t N> void push_values(lua_State* L, const std::array<float, N
     lua_createtable(L, static_cast<int>(N), 0);
     for (std::size_t i = 0; i < N; ++i) { lua_pushnumber(L, values[i]); lua_rawseti(L, -2, static_cast<int>(i + 1)); }
 }
+#if defined(DINGOSDK_BODY_REACTIVATION_QUALIFICATION) && DINGOSDK_BODY_REACTIVATION_QUALIFICATION
+namespace rp = body_reactivation_probe;
+const char* reactivation_status(rp::Status value) noexcept {
+    switch (value) {
+    case rp::Status::pending: return "pending";
+    case rp::Status::observed: return "observed";
+    case rp::Status::expired: return "expired";
+    case rp::Status::invalidated: return "invalidated";
+    }
+    return nullptr;
+}
+const char* reactivation_phase(rp::Phase value) noexcept {
+    switch (value) {
+    case rp::Phase::initial_park: return "initial_park";
+    case rp::Phase::await_initial_park: return "await_initial_park";
+    case rp::Phase::activation: return "activation";
+    case rp::Phase::await_dynamic: return "await_dynamic";
+    case rp::Phase::repark: return "repark";
+    case rp::Phase::await_repark: return "await_repark";
+    case rp::Phase::terminal: return "terminal";
+    }
+    return nullptr;
+}
+const char* reactivation_cleanup(rp::Cleanup value) noexcept {
+    switch (value) {
+    case rp::Cleanup::pending: return "pending";
+    case rp::Cleanup::confirmed: return "confirmed";
+    case rp::Cleanup::unconfirmed: return "unconfirmed";
+    }
+    return nullptr;
+}
+const char* reactivation_check(rp::Check value) noexcept {
+    switch (value) {
+    case rp::Check::none: return "none";
+    case rp::Check::qualification: return "qualification";
+    case rp::Check::client_phase: return "client_phase";
+    case rp::Check::world_lock: return "world_lock";
+    case rp::Check::identity: return "identity";
+    case rp::Check::allocation: return "allocation";
+    case rp::Check::dependency: return "dependency";
+    case rp::Check::mailbox: return "mailbox";
+    case rp::Check::clock: return "clock";
+    case rp::Check::run_deadline: return "run_deadline";
+    case rp::Check::cleanup_deadline: return "cleanup_deadline";
+    case rp::Check::owner_closed: return "owner_closed";
+    case rp::Check::initial_park: return "initial_park";
+    case rp::Check::transform: return "transform";
+    case rp::Check::categories: return "categories";
+    case rp::Check::collisions: return "collisions";
+    case rp::Check::motion: return "motion";
+    case rp::Check::wake: return "wake";
+    case rp::Check::observation: return "observation";
+    case rp::Check::repark: return "repark";
+    case rp::Check::cancelled: return "cancelled";
+    }
+    return nullptr;
+}
+const char* reactivation_stage(rp::Stage value) noexcept {
+    switch (value) {
+    case rp::Stage::initial_park: return "initial_park";
+    case rp::Stage::initial_park_observed: return "initial_park_observed";
+    case rp::Stage::transform: return "transform";
+    case rp::Stage::categories: return "categories";
+    case rp::Stage::collisions: return "collisions";
+    case rp::Stage::motion: return "motion";
+    case rp::Stage::wake: return "wake";
+    case rp::Stage::dynamic_observed: return "dynamic_observed";
+    case rp::Stage::repark: return "repark";
+    case rp::Stage::repark_observed: return "repark_observed";
+    }
+    return nullptr;
+}
+bool reactivation_rotation(const Quaternion& value) noexcept {
+    if (!finite_values(value)) return false;
+    double norm{};
+    for (const float lane : value) norm += static_cast<double>(lane) * lane;
+    return norm >= .9 && norm <= 1.1;
+}
+bool reactivation_observation(const rp::Observation& value, const Epoch& epoch) noexcept {
+    const auto& sample = value.sample;
+    if (!value.available) {
+        return !value.dynamic && !value.shape_count && sample.epoch == Epoch{} && sample.position == Vec{} &&
+            sample.velocity == Vec{} && sample.angular_velocity == Vec{} && sample.inertia == Vec{} &&
+            sample.rotation == Quaternion{} && !sample.mass && value.force == std::array<float, 4>{} &&
+            value.torque == std::array<float, 4>{} && !value.angular_fourth &&
+            value.categories == decltype(value.categories){} && value.collisions == decltype(value.collisions){};
+    }
+    if (!value.shape_count || value.shape_count > maximum_capsules || !sync_epoch(epoch) || sample.epoch != epoch ||
+        !finite_values(sample.position) || !finite_values(sample.velocity) || !finite_values(sample.angular_velocity) ||
+        !finite_values(sample.inertia) || !reactivation_rotation(sample.rotation) ||
+        !std::isfinite(sample.mass) || sample.mass <= 0 || !finite_values(value.force) || !finite_values(value.torque) ||
+        !std::isfinite(value.angular_fourth)) return false;
+    for (const float lane : sample.inertia) if (lane <= 0) return false;
+    return true;
+}
+bool reactivation_stage_observation(rp::Stage stage, const rp::Observation& value) noexcept {
+    if (!value.available) return true;
+    const bool dynamic = stage == rp::Stage::motion || stage == rp::Stage::wake || stage == rp::Stage::dynamic_observed;
+    const bool collisions = dynamic || stage == rp::Stage::collisions;
+    if (value.dynamic != dynamic) return false;
+    for (std::size_t i = 0; i < value.shape_count; ++i)
+        if (value.categories[i] != rp::qualified_categories ||
+            value.collisions[i] != (collisions ? rp::qualified_collisions : 0U)) return false;
+    return true;
+}
+bool reactivation_result(const rp::Result& out) noexcept {
+    if (!reactivation_status(out.status) || !reactivation_phase(out.phase) || !reactivation_cleanup(out.cleanup) ||
+        !reactivation_check(out.first_failure) || !reactivation_phase(out.failure_phase) || out.native_retirement_known ||
+        out.cycle_count > rp::maximum_cycles || !finite(out.target_position, 100000) ||
+        !reactivation_rotation(out.target_rotation) || !std::isfinite(out.elapsed_ms) || out.elapsed_ms < 0 ||
+        out.record_count > out.records.size() ||
+        (out.failure_shape_known ? out.failure_shape >= maximum_capsules : out.failure_shape != 0)) return false;
+    const bool terminal = out.phase == rp::Phase::terminal;
+    if (terminal != (out.status != rp::Status::pending) ||
+        (out.cleanup == rp::Cleanup::confirmed ? out.cleanup_owed : !out.cleanup_owed) ||
+        (out.cleanup != rp::Cleanup::pending && !terminal) ||
+        (terminal && out.cleanup == rp::Cleanup::pending)) return false;
+    if (out.failure_shape_known && out.first_failure == rp::Check::none) return false;
+    const bool observed = out.status == rp::Status::observed;
+    if (observed && (out.cleanup != rp::Cleanup::confirmed || out.cycle_count != rp::maximum_cycles ||
+        out.first_failure != rp::Check::none ||
+        out.record_count != static_cast<std::uint32_t>(rp::Stage::repark_observed) + 1)) return false;
+    if (terminal && !observed && out.first_failure == rp::Check::none) return false;
+    Epoch previous{};
+    for (std::size_t i = 0; i < out.record_count; ++i) {
+        const auto& record = out.records[i];
+        if (!reactivation_stage(record.stage) || (i && record.stage <= out.records[i - 1].stage) ||
+            (!sync_epoch(record.epoch) && (record.passed || record.epoch != Epoch{})) ||
+            !reactivation_observation(record.observation, record.epoch) ||
+            (!record.passed && out.first_failure == rp::Check::none)) return false;
+        if (sync_epoch(record.epoch)) {
+            if (previous.serial && (record.epoch.world != previous.world || record.epoch.body != previous.body ||
+                record.epoch.serial < previous.serial || record.epoch.time < previous.time ||
+                (record.epoch.serial == previous.serial && record.epoch.time != previous.time))) return false;
+            previous = record.epoch;
+        }
+        if (record.passed && !reactivation_stage_observation(record.stage, record.observation)) return false;
+        if (observed) {
+            if (!record.passed || static_cast<std::size_t>(record.stage) != i) return false;
+            if (record.stage != rp::Stage::initial_park && record.stage != rp::Stage::repark && !record.observation.available) return false;
+            // Setter return is not a later physics observation. Each observed
+            // phase must carry a genuinely newer epoch than its write floor.
+            const Epoch* floor{};
+            if (record.stage == rp::Stage::initial_park_observed)
+                floor = &out.records[static_cast<std::size_t>(rp::Stage::initial_park)].epoch;
+            else if (record.stage == rp::Stage::dynamic_observed)
+                floor = &out.records[static_cast<std::size_t>(rp::Stage::wake)].epoch;
+            else if (record.stage == rp::Stage::repark_observed)
+                floor = &out.records[static_cast<std::size_t>(rp::Stage::repark)].epoch;
+            if (floor && (record.epoch.serial <= floor->serial || record.epoch.time <= floor->time)) return false;
+        }
+    }
+    return true;
+}
+void push_reactivation_sample(lua_State* L, const Sample& sample) {
+    lua_createtable(L, 0, 8);
+    // Copied diagnostic epoch, never the userdata accepted by submit/Follow.
+    push_sync_epoch(L, sample.epoch); lua_setfield(L, -2, "epoch");
+    push_position(L, sample.position); lua_setfield(L, -2, "position");
+    push_position(L, sample.velocity); lua_setfield(L, -2, "velocity");
+    push_position(L, sample.angular_velocity); lua_setfield(L, -2, "angular_velocity");
+    push_position(L, sample.inertia); lua_setfield(L, -2, "inertia");
+    push_values(L, sample.rotation); lua_setfield(L, -2, "rotation");
+    lua_pushnumber(L, sample.mass); lua_setfield(L, -2, "mass");
+}
+void push_reactivation_observation(lua_State* L, const rp::Observation& value) {
+    lua_createtable(L, 0, value.available ? 9 : 1);
+    lua_pushboolean(L, value.available); lua_setfield(L, -2, "available");
+    if (!value.available) return;
+    lua_pushboolean(L, value.dynamic); lua_setfield(L, -2, "dynamic");
+    lua_pushnumber(L, value.shape_count); lua_setfield(L, -2, "shape_count");
+    push_reactivation_sample(L, value.sample); lua_setfield(L, -2, "sample");
+    for (const bool categories : {true, false}) {
+        lua_createtable(L, value.shape_count, 0);
+        const auto& masks = categories ? value.categories : value.collisions;
+        for (std::size_t i = 0; i < value.shape_count; ++i) {
+            lua_pushnumber(L, masks[i]); lua_rawseti(L, -2, static_cast<int>(i + 1));
+        }
+        lua_setfield(L, -2, categories ? "categories" : "collisions");
+    }
+    push_values(L, value.force); lua_setfield(L, -2, "force");
+    push_values(L, value.torque); lua_setfield(L, -2, "torque");
+    lua_pushnumber(L, value.angular_fourth); lua_setfield(L, -2, "angular_fourth");
+}
+void push_reactivation_result(lua_State* L, const rp::Result& out) {
+    lua_createtable(L, 0, 16);
+    lua_pushstring(L, reactivation_status(out.status)); lua_setfield(L, -2, "status");
+    lua_pushstring(L, reactivation_phase(out.phase)); lua_setfield(L, -2, "phase");
+    lua_pushstring(L, reactivation_cleanup(out.cleanup)); lua_setfield(L, -2, "cleanup");
+    lua_pushstring(L, reactivation_check(out.first_failure)); lua_setfield(L, -2, "first_failure");
+    lua_pushstring(L, reactivation_phase(out.failure_phase)); lua_setfield(L, -2, "failure_phase");
+    lua_pushboolean(L, out.failure_shape_known); lua_setfield(L, -2, "failure_shape_known");
+    if (out.failure_shape_known) { lua_pushnumber(L, out.failure_shape); lua_setfield(L, -2, "failure_shape"); }
+    lua_pushboolean(L, out.phase == rp::Phase::terminal); lua_setfield(L, -2, "terminal");
+    lua_pushboolean(L, out.cleanup_owed); lua_setfield(L, -2, "cleanup_owed");
+    lua_pushboolean(L, false); lua_setfield(L, -2, "native_retirement_known");
+    lua_pushnumber(L, out.cycle_count); lua_setfield(L, -2, "cycle_count");
+    push_position(L, out.target_position); lua_setfield(L, -2, "target_position");
+    push_values(L, out.target_rotation); lua_setfield(L, -2, "target_rotation");
+    lua_pushnumber(L, out.elapsed_ms); lua_setfield(L, -2, "elapsed_ms");
+    lua_pushnumber(L, out.record_count); lua_setfield(L, -2, "record_count");
+    lua_createtable(L, static_cast<int>(out.record_count), 0);
+    for (std::size_t i = 0; i < out.record_count; ++i) {
+        const auto& record = out.records[i];
+        lua_createtable(L, 0, 4);
+        lua_pushstring(L, reactivation_stage(record.stage)); lua_setfield(L, -2, "stage");
+        lua_pushboolean(L, record.passed); lua_setfield(L, -2, "passed");
+        push_sync_epoch(L, record.epoch); lua_setfield(L, -2, "epoch");
+        push_reactivation_observation(L, record.observation); lua_setfield(L, -2, "observation");
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    lua_setfield(L, -2, "records");
+}
+#endif
+
 const char* motion_refresh_status(motion_refresh_probe::Status status) noexcept {
     switch (status) {
     case motion_refresh_probe::Status::pending: return "pending";
@@ -672,6 +891,40 @@ struct PhysicsApi {
         if (!motion_refresh_result(out)) return fail(L, "motion refresh probe returned invalid observations");
         push_motion_refresh_result(L, out); return 1;
     }
+#if defined(DINGOSDK_BODY_REACTIVATION_QUALIFICATION) && DINGOSDK_BODY_REACTIVATION_QUALIFICATION
+    static Plugin& reactivation_plugin(lua_State* L) {
+        auto& p = plugin(L);
+        need(L, p, "world.physics.qualify_body_reactivation", "reskate.world.physics body reactivation qualification");
+        return p;
+    }
+    static int begin_body_reactivation_probe(lua_State* L) {
+        auto& p = reactivation_plugin(L);
+        if (lua_gettop(L) != 1) luaL_error(L, "begin_body_reactivation_probe takes one owned body");
+        const auto b = body(L, p, 1);
+        if (p.sync_probe_starts_ >= 1) return fail(L, "asked to begin probes more than once in one tick");
+        ++p.sync_probe_starts_;
+        auto* probe = new (lua_newuserdata(L, sizeof(BodyReactivationProbeValue)))
+            BodyReactivationProbeValue{p.instance(), b.handle, 0};
+        luaL_getmetatable(L, body_reactivation_probe_type); lua_setmetatable(L, -2);
+        const auto why = p.services_.game().begin_body_reactivation_probe(p.instance(), p.id(), p.directory(), b.handle, probe->sequence);
+        if (!why.empty()) { lua_pop(L, 1); return fail(L, why); }
+        if (!probe->sequence) { lua_pop(L, 1); return fail(L, "body reactivation probe did not return an owned request"); }
+        return 1;
+    }
+    static int poll_body_reactivation_probe(lua_State* L) {
+        auto& p = reactivation_plugin(L);
+        if (lua_gettop(L) != 1) luaL_error(L, "poll_body_reactivation_probe takes one opaque probe");
+        const auto probe = *static_cast<const BodyReactivationProbeValue*>(luaL_checkudata(L, 1, body_reactivation_probe_type));
+        if (probe.owner != p.instance()) luaL_error(L, "body reactivation probe belongs to another plugin instance");
+        if (p.sync_probe_polls_ >= 8) return fail(L, "asked to poll probes more than 8 times in one tick");
+        ++p.sync_probe_polls_;
+        body_reactivation_probe::Result out;
+        const auto why = p.services_.game().poll_body_reactivation_probe(p.instance(), probe.handle, probe.sequence, out);
+        if (!why.empty()) return fail(L, why);
+        if (!reactivation_result(out)) return fail(L, "body reactivation probe returned invalid observations");
+        push_reactivation_result(L, out); return 1;
+    }
+#endif
     static int submit(lua_State* L) {
         auto& p = plugin(L); const auto b = body(L, p, 1);
         const auto& epoch = *static_cast<const EpochValue*>(luaL_checkudata(L, 2, epoch_type));
@@ -868,6 +1121,9 @@ struct PhysicsApi {
 void install_physics_api(Plugin&, lua_State* L) {
     metatable(L, handle_type); metatable(L, epoch_type); metatable(L, sync_probe_type);
     metatable(L, motion_refresh_probe_type);
+#if defined(DINGOSDK_BODY_REACTIVATION_QUALIFICATION) && DINGOSDK_BODY_REACTIVATION_QUALIFICATION
+    metatable(L, body_reactivation_probe_type);
+#endif
     metatable(L, follow_type);
     luaL_newmetatable(L, hit_body_type); lua_pushstring(L, "locked"); lua_setfield(L, -2, "__metatable");
     lua_pushcfunction(L, hit_body_equal, "hit body equality"); lua_setfield(L, -2, "__eq"); lua_setreadonly(L, -1, true); lua_pop(L, 1);
@@ -878,6 +1134,10 @@ void install_physics_api(Plugin&, lua_State* L) {
         {"receipt", PhysicsApi::receipt}, {"acknowledge", PhysicsApi::acknowledge}, {"release", PhysicsApi::release}, {"probe_batch", PhysicsApi::probe_batch},
         {"begin_sync_probe", PhysicsApi::begin_sync_probe}, {"poll_sync_probe", PhysicsApi::poll_sync_probe},
         {"begin_motion_refresh_probe", PhysicsApi::begin_motion_refresh_probe}, {"poll_motion_refresh_probe", PhysicsApi::poll_motion_refresh_probe},
+#if defined(DINGOSDK_BODY_REACTIVATION_QUALIFICATION) && DINGOSDK_BODY_REACTIVATION_QUALIFICATION
+        {"begin_body_reactivation_probe", PhysicsApi::begin_body_reactivation_probe},
+        {"poll_body_reactivation_probe", PhysicsApi::poll_body_reactivation_probe},
+#endif
         {"reserve_follow", PhysicsApi::reserve_follow}, {"publish_follow", PhysicsApi::publish_follow},
         {"read_follow", PhysicsApi::read_follow}, {"stop_follow", PhysicsApi::stop_follow}, {"acknowledge_follow", PhysicsApi::acknowledge_follow},
         {"renew_follow", PhysicsApi::renew_follow}, {"read_follow_lease", PhysicsApi::read_follow_lease}});

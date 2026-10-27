@@ -2,6 +2,7 @@
 #include "Engine/Game/World/body_query.h"
 #include "Engine/Game/World/sync_probe.h"
 #include "Engine/Game/World/motion_refresh_probe.h"
+#include "Engine/Game/World/body_reactivation_probe.h"
 #include <cstdint>
 #include <string>
 
@@ -39,6 +40,16 @@ std::string poll_motion_refresh_probe(std::uint64_t owner, std::uint64_t sequenc
 // Idempotent owner close, including owners with no body slots. Removes pending
 // and terminal results; late callbacks cannot publish into another generation.
 void cancel_motion_refresh_probes(std::uint64_t owner) noexcept;
+
+#if defined(DINGOSDK_BODY_REACTIVATION_QUALIFICATION) && DINGOSDK_BODY_REACTIVATION_QUALIFICATION
+// Trusted armed runtime only. The verifier has static process lifetime and must
+// not call World or native services. Poll only copies; revocation never drops cleanup.
+std::string begin_body_reactivation_probe(std::uint64_t owner, const owned_body::Handle&,
+    std::uint64_t& sequence, body_reactivation_probe::QualificationCheck);
+std::string poll_body_reactivation_probe(std::uint64_t owner, const owned_body::Handle&,
+    std::uint64_t sequence, body_reactivation_probe::Result&);
+void revoke_body_reactivation_probe(std::uint64_t owner) noexcept;
+#endif
 
 // Private native-service bridge. These values never cross the Lua API.
 // The source owns a copy of the original measured sample, not a live pose.

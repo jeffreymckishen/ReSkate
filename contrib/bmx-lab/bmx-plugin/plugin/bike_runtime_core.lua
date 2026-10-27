@@ -723,6 +723,7 @@ snapshot=function()
         capture_attempted=T.capture_attempted==true,source=source_record(s,true),last_source_step=T.source_record,
         spawn=b,equipment=e,
         ride_composition_qualified=RIDE_COMPOSITION_QUALIFIED,ride=T.ride_status,mounted_pose=T.pose_status,
+        board_drop=T.board_drop_status,
         force_cleanup_clear=force_clear(),force_cleanup_unknown=T.ride_unknown==true,
         handoff_attempted=T.handoff_attempted==true,body_transferred=T.transferred==true,
         handoff_unknown=T.handoff_unknown==true,reserve_attempted=T.reserve_attempted==true,
@@ -747,7 +748,7 @@ snapshot=function()
             ride_modules_bound=T.ride_modules_bound==true,ride_trick_adapter=T.ride_trick_adapter==true,
             core_instances=T.core_instances or 0,equipment_instances=T.equipment_instances or 0,
             source_instances=T.source_instances or 0,spawn_instances=T.spawn_instances or 0,
-            pose_instances=T.pose_instances or 0},
+            pose_instances=T.pose_instances or 0,board_instances=T.board_instances or 0},
         geometry_scope="Original actor+3m/+0.5m spawn; COM attachment and anchor remain unqualified",
         evidence_scope="Host storage cache acceptance only; no disk durability, native consumption or mounted success inferred"})
 end
@@ -787,7 +788,7 @@ local function persist(force)
 end
 -- Mounted presentation shares Core's accepted body read and call ledger. A
 -- presentation refusal never changes native body, input or receipt authority.
-local MountedPose,poser
+local MountedPose,poser,board_dropper
 local pose_stop
 local pose_api={skater={pose=function(...)
     local first=...
@@ -803,6 +804,88 @@ local pose_api={skater={pose=function(...)
     if not r[1] then error(r[2],0) end
     return table.unpack(r,2,r.n)
 end}}
+-- Board presentation has one private owner beside the Poser. Neither its state
+-- nor a refused/unknown visual call changes body, Follow or input authority.
+local function board_current()
+    return T.pose_busy==true and not T.pose_stop_requested and not T.pose_dead and not T.pose_stopped
+        and not T.board_restore_pending and not T.board_restore_tried and current(T.board_generation)
+end
+local board_calls={}
+for _,name in ipairs({"bones","toss","clear"}) do
+    local label="board."..name
+    board_calls[name]=function(...)
+        local fn=lookup(label)
+        if name=="clear" then
+            if not T.board_restore_busy then error("Board cleanup is not active",0) end
+        elseif not board_current() then
+            return false,"Mounted board owner stopped"
+        end
+        -- Keep real attempts in Core's existing bounded ledger. In particular,
+        -- a late accepted toss must survive a reentrant stop until it is cleared.
+        if name=="toss" then T.board_drop_ms=T.now end
+        if name=="clear" then T.board_restore_ms=T.now end
+        local r=call(label,fn,...)
+        if not r[1] then error(r[2],0) end
+        if name=="clear" and r.n~=1 then error("board.clear returned a malformed non-void result",0) end
+        return table.unpack(r,2,r.n)
+    end
+end
+local board_api={board=setmetatable({},{__index=function(_,name)
+    local wrapped=board_calls[name]
+    if wrapped and lookup("board."..name) then return wrapped end
+    return nil
+end})}
+local function board_status()
+    if not board_dropper then return end
+    local ok,row=pcall(function()
+        local st=board_dropper:status()
+        if st.reason~=nil then st.reason=short(st.reason) end
+        if st.bones_result~=nil then st.bones_result=short(st.bones_result) end
+        st.drop_ms,st.restore_ms=T.board_drop_ms,T.board_restore_ms
+        st.issue,st.restore_pending=T.board_issue,T.board_restore_pending==true
+        st.drop_inflight,st.restore_inflight=T.board_busy==true,T.board_restore_busy==true
+        return freeze_tree(copied(st))
+    end)
+    if ok then T.board_drop_status=row
+    else
+        T.board_issue=short("Board diagnostic unavailable: "..tostring(row))
+        T.board_drop_status=freeze_tree({state="unknown",issue=T.board_issue,
+            restore_pending=T.board_restore_pending==true,drop_inflight=T.board_busy==true,restore_inflight=T.board_restore_busy==true})
+    end
+end
+local function board_restore()
+    if not board_dropper or T.board_restore_tried then return end
+    T.board_restore_pending=true
+    -- A stop inside bones/toss cannot clear the Dropper while it still looks
+    -- idle: the accepted/unknown result is recorded before this deferred drain.
+    if T.pose_busy or T.board_busy then board_status();return end
+    T.board_restore_tried=true;T.board_restore_pending=false;T.board_restore_busy=true
+    board_status()
+    local ok,why=pcall(board_dropper.restore,board_dropper)
+    T.board_restore_busy=false
+    if not ok then T.board_issue=T.board_issue or short("Board restore raised: "..tostring(why)) end
+    board_status()
+end
+local function board_drop(mounted,generation)
+    if not board_dropper or T.board_drop_tried then return end
+    if not mounted then T.board_issue="Mounted pose was refused; board stays in hand";board_status();return end
+    T.board_generation=generation
+    if not board_current() then return end
+    T.board_drop_tried=true;T.board_busy=true
+    board_status()
+    local ok,why=pcall(function()
+        -- This is Spawn's accepted floor ray, read from its local cache. A nil
+        -- height refuses the drop instead of inventing a placement or new ray.
+        local got,floor=false,nil
+        if spawn and type(spawn.floor_height)=="function" then got,floor=pcall(spawn.floor_height,spawn) end
+        if not board_current() then T.board_restore_pending=true;return end
+        board_dropper:drop(got and floor or nil)
+    end)
+    T.board_busy=false
+    if not ok then T.board_issue=T.board_issue or short("Board drop raised: "..tostring(why)) end
+    if not current(generation) or T.pose_stop_requested then T.board_restore_pending=true end
+    board_status()
+end
 local function pose_xyz(p) return {p[1],p[2],p[3]} end
 local function pose_status(plan)
     local st=poser:status()
@@ -824,6 +907,8 @@ local function pose_step(sample,pose,now,generation)
         T.pose_mount_ms=now
         local m=poser:mount(now/1000)
         if m.ok~=true then T.pose_issue=T.pose_issue or short("mount: "..tostring(m.reason)) end
+        if not current(generation) or T.pose_stop_requested then return end
+        board_drop(m.ok==true,generation)
     end
     -- A capability probe can reenter Stop or unload. Do not send the first
     -- actual posture after that callback revoked the owner.
@@ -836,15 +921,16 @@ local function pose_step(sample,pose,now,generation)
     pose_status(r.sent==true and r.plan or nil)
 end
 pose_stop=function()
-    if not poser or T.pose_stopped then return end
+    if not poser or T.pose_stopped then board_restore();return end
     T.pose_stop_requested=true
     -- A send can return accepted after a reentrant Stop. Let the Poser record
     -- that late acceptance, then release it once when its call has unwound.
-    if T.pose_busy then return end
+    if T.pose_busy then board_restore();return end
     T.pose_stopped=true
     local ok,why=pcall(poser.stop,poser)
     if not ok then T.pose_issue=T.pose_issue or short("pose stop raised: "..tostring(why)) end
     pcall(pose_status,nil)
+    board_restore()
 end
 local function pose_tick(sample,pose,now)
     if not poser or T.pose_dead or T.pose_stopped or T.stop_latched or T.unloaded then return end
@@ -853,7 +939,8 @@ local function pose_tick(sample,pose,now)
     local ok,why=pcall(pose_step,sample,pose,now,generation)
     T.pose_busy=false
     if not ok then T.pose_dead=true;T.pose_issue=T.pose_issue or short("pose step raised: "..tostring(why)) end
-    if not ok or T.pose_stop_requested or not current(generation) then pose_stop() end
+    if not ok or T.pose_stop_requested or not current(generation) then pose_stop()
+    elseif T.board_restore_pending or poser.state=="refused" then board_restore() end
 end
 local function follow_stop_once()
     if not T.follow or T.follow_stop_attempted then return end
@@ -1708,6 +1795,9 @@ function object:prepare_backend()
     -- MountedPose still refuses native presentation; constructing it is inert.
     MountedPose=require("./mounted_pose");poser=MountedPose.new(pose_api)
     T.pose_instances=(T.pose_instances or 0)+1
+    local BoardDrop=require("./board_drop");board_dropper=BoardDrop.new(board_api)
+    T.board_instances=(T.board_instances or 0)+1
+    board_status()
     source=Source.new(input_proxy,{setup_ms=15000,capture_ms=4000,cleanup_ms=4000})
     T.source_instances=(T.source_instances or 0)+1
     if BikeSpawn.floor_spawn_qualified()==true and lookup("world.raycast") then

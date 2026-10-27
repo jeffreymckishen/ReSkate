@@ -230,6 +230,19 @@ inline int mesh_output_self_test() {
         check(capture.result == 1 && capture.field("complete") == "0" && capture.field("inspection_complete") == "0" &&
               capture.field("output_truncated") == "1", "truncated candidate output suppresses inspection completion");
     });
+    run("position hypothesis summary stays bounded and unqualified", [&] {
+        Fixture fixture;
+        const auto capture = fixture.capture([&](MeshMetadataOutput& output) {
+            check(output.record(std::string(record_budget - newline_bytes, 'x')), "position output can fill the record allowance");
+            return output.finish_candidate(completed_progress(), 1, ManholeCandidateMode::position_hypothesis);
+        });
+        verify_summary(capture, "manhole-position-candidate", 1);
+        check(capture.summary_offset() == record_budget, "the position summary uses only the reserved space");
+        check(capture.result == 1 && capture.field("complete") == "0" && capture.field("inspection_complete") == "1",
+              "a fully reported position hypothesis still exits one without qualification");
+        check(capture.field("success_scope") == "position_hypothesis_only" && capture.field("vertex_format_qualified") == "0" &&
+              capture.field("fourth_lane_interpretation") == "unverified", "the summary preserves the hypothesis and unknown fourth-lane boundary");
+    });
     run("record count reserves one terminal summary", [&] {
         Fixture fixture;
         const auto capture = fixture.capture([&](MeshMetadataOutput& output) {

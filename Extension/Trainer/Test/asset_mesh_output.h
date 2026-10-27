@@ -8,6 +8,7 @@
 #include <string_view>
 
 namespace dingosdk::trainer::asset_tools {
+enum class ManholeCandidateMode { indices, position_hypothesis };
 struct ManholeInspectionProgress {
     bool resource_read_attempted{}, resource_read_complete{}, resource_decode_complete{};
     bool geometry_read_attempted{}, geometry_read_complete{}, geometry_decode_complete{};
@@ -65,10 +66,13 @@ public:
             "SUMMARY\tmode=mesh-metadata\tcomplete=0\toutput_truncated=1\terror=summary_budget_exceeded");
         return success && reported ? 0 : failure_code;
     }
-    int finish_candidate(const ManholeInspectionProgress& progress, int failure_code = 1) {
+    int finish_candidate(const ManholeInspectionProgress& progress, int failure_code = 1,
+                         ManholeCandidateMode mode = ManholeCandidateMode::indices) {
+        const bool positions = mode == ManholeCandidateMode::position_hypothesis;
         const bool reported = progress.inspection_complete && !truncated_ && static_cast<bool>(output_);
         std::ostringstream line;
-        line << "SUMMARY\tmode=manhole-candidate\tcomplete=0\tinspection_complete=" << (reported ? 1 : 0)
+        line << "SUMMARY\tmode=" << (positions ? "manhole-position-candidate" : "manhole-candidate")
+             << "\tcomplete=0\tinspection_complete=" << (reported ? 1 : 0)
              << "\toutput_truncated=" << (truncated_ ? 1 : 0) << "\trecords_before_summary=" << records_
              << "\tbytes_before_summary=" << bytes_
              << "\tresource_read_attempted=" << progress.resource_read_attempted
@@ -78,11 +82,16 @@ public:
              << "\tgeometry_read_complete=" << progress.geometry_read_complete
              << "\tgeometry_decode_complete=" << progress.geometry_decode_complete
              << "\tindex_range_consistent=" << progress.indices_consistent
-             << "\tsuccess_scope=candidate_consistency_only\tsemantic_qualification=unverified"
+             << "\tsuccess_scope=" << (positions ? "position_hypothesis_only" : "candidate_consistency_only")
+             << "\tsemantic_qualification=unverified"
              << "\tcontent_identity_authenticated=0\tdependency_closure=unverified";
+        if (positions) line << "\tvertex_format_qualified=0\tfourth_lane_interpretation=unverified";
         summary(line.str(),
-            "SUMMARY\tmode=manhole-candidate\tcomplete=0\tinspection_complete=0\toutput_truncated=1"
-            "\tsemantic_qualification=unverified\terror=summary_budget_exceeded");
+            positions ?
+                "SUMMARY\tmode=manhole-position-candidate\tcomplete=0\tinspection_complete=0\toutput_truncated=1"
+                "\tsemantic_qualification=unverified\terror=summary_budget_exceeded" :
+                "SUMMARY\tmode=manhole-candidate\tcomplete=0\tinspection_complete=0\toutput_truncated=1"
+                "\tsemantic_qualification=unverified\terror=summary_budget_exceeded");
         // Even a consistent inspection does not qualify the unsupported layout or native geometry.
         return failure_code;
     }

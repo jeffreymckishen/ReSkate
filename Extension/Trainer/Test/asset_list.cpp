@@ -5,6 +5,8 @@
 #include "asset_chunk_locator_tests.h"
 #include "asset_manhole_candidate.h"
 #include "asset_manhole_candidate_tests.h"
+#include "asset_manhole_position.h"
+#include "asset_manhole_position_tests.h"
 #include "asset_mesh_output.h"
 #include "asset_mesh_output_tests.h"
 #include "Engine/Core/Platform/path_text.h"
@@ -21,6 +23,7 @@
 #include <cstring>
 #include <filesystem>
 #include <iostream>
+#include <iomanip>
 #include <optional>
 #include <stdexcept>
 #include <memory>
@@ -445,14 +448,112 @@ void bounded_archive_rows(MeshMetadataOutput& out, std::string_view role,
                "\tcontent_identity_authenticated=0");
 }
 
-int manhole_candidate_command(int argc, char** argv) {
+void position_half_lane_row(MeshMetadataOutput& out, std::string_view role, std::string_view section,
+                            std::string_view component, const dingosdk::trainer::asset_tools::HalfLaneSummary& lane) {
+    out.record("HALF_LANES\trole=", role, "\tsection=", section, "\tcomponent=", component,
+               "\ttotal=", lane.total, "\tfinite=", lane.finite, "\trefused_nonfinite=", lane.refused,
+               "\tpositive_zero=", lane.positive_zero, "\tnegative_zero=", lane.negative_zero,
+               "\tsubnormal=", lane.subnormal, "\tnormal=", lane.normal,
+               "\tpositive_infinity=", lane.positive_infinity, "\tnegative_infinity=", lane.negative_infinity,
+               "\tnan=", lane.nan, "\tclassification_basis=raw_binary16_hypothesis");
+}
+
+void manhole_position_rows(MeshMetadataOutput& out,
+                           const dingosdk::trainer::asset_tools::ManholePositionInspection& inspection) {
+    const auto& indices = inspection.indices;
+    out.record("INDEX_INSPECTION\tinspected=", indices.inspected ? 1 : 0, "\tconsistent=", indices.consistent ? 1 : 0,
+               "\trefusal=", indices.refusal, "\tvalues_checked=", indices.total_count,
+               "\toutside_count=", indices.outside_count, "\tinterpretation=unverified_uint16_le_triangle_indices");
+    out.record("POSITION_INSPECTION\tinspected=", inspection.inspected ? 1 : 0, "\trefusal=", inspection.refusal,
+               "\tgeometry_qualification=unverified\tfourth_lane_interpretation=unverified");
+    if (!inspection.inspected) return;
+    position_half_lane_row(out, "xyz", "all", "all", inspection.xyz_lanes);
+    position_half_lane_row(out, "fourth_uninterpreted", "all", "3", inspection.fourth_lanes);
+    for (std::size_t i = 0; i < inspection.sections.size(); ++i) {
+        const auto& section = inspection.sections[i];
+        for (std::size_t component = 0; component < section.components.size(); ++component) {
+            const auto& lane = section.components[component];
+            position_half_lane_row(out, component == 3 ? "fourth_uninterpreted" : "xyz", std::to_string(i),
+                                   std::to_string(component), lane);
+            // Numeric fourth-lane values never contribute to geometry or acquire a meaning in the report.
+            if (component < 3 && lane.extrema_available)
+                out.record(std::setprecision(std::numeric_limits<double>::max_digits10),
+                           "HALF_FINITE_RANGE\tsection=", i, "\tcomponent=", component,
+                           "\ttotal=", lane.total, "\teligible_finite=", lane.finite, "\trefused_nonfinite=", lane.refused,
+                           "\tcoverage_complete=", lane.refused == 0 ? 1 : 0,
+                           "\tminimum=", lane.minimum, "\tmaximum=", lane.maximum, "\tbasis=binary16_hypothesis_only");
+        }
+        const auto& vertices = section.vertices;
+        out.record("POSITION_VERTICES\tsection=", i, "\ttotal=", vertices.total, "\teligible_finite_xyz=", vertices.eligible,
+                   "\trefused_nonfinite_xyz=", vertices.refused, "\tcoverage_complete=", vertices.complete() ? 1 : 0,
+                   "\taabb_available=", section.aabb.available ? 1 : 0);
+        if (section.aabb.available)
+            out.record(std::setprecision(std::numeric_limits<double>::max_digits10),
+                       "POSITION_AABB\tsection=", i, "\ttotal=", vertices.total, "\teligible_finite_xyz=", vertices.eligible,
+                       "\trefused_nonfinite_xyz=", vertices.refused, "\tcoverage_complete=", vertices.complete() ? 1 : 0,
+                       "\tminimum_x=", section.aabb.minimum[0], "\tminimum_y=", section.aabb.minimum[1],
+                       "\tminimum_z=", section.aabb.minimum[2], "\tmaximum_x=", section.aabb.maximum[0],
+                       "\tmaximum_y=", section.aabb.maximum[1], "\tmaximum_z=", section.aabb.maximum[2],
+                       "\tunits_and_axes=unverified");
+        const auto& triangles = section.triangles;
+        const auto& coverage = triangles.coverage;
+        out.record("POSITION_TRIANGLES\tsection=", i, "\ttotal=", coverage.total,
+                   "\teligible_finite_xyz=", coverage.eligible, "\trefused_nonfinite_xyz=", coverage.refused,
+                   "\tcoverage_complete=", coverage.complete() ? 1 : 0,
+                   "\tnumerical_range_available=", triangles.extrema_available ? 1 : 0);
+        if (triangles.extrema_available)
+            out.record(std::setprecision(std::numeric_limits<double>::max_digits10),
+                       "POSITION_TRIANGLE_NUMERICS\tsection=", i, "\ttotal=", coverage.total,
+                       "\teligible_finite_xyz=", coverage.eligible, "\trefused_nonfinite_xyz=", coverage.refused,
+                       "\tcoverage_complete=", coverage.complete() ? 1 : 0,
+                       "\teligible_numerical_zero_cross_count=", triangles.numerical_zero_count,
+                       "\teligible_cross_length_squared_minimum=", triangles.minimum_cross_squared,
+                       "\teligible_cross_length_squared_maximum=", triangles.maximum_cross_squared,
+                       "\tzero_rule=all_three_double_cross_components_equal_zero\tepsilon=none");
+    }
+    const auto& xyz = inspection.xyz_overlap;
+    out.record("XYZ_OVERLAP_COVERAGE\tavailable=", xyz.available ? 1 : 0,
+               "\tsection0_total=", xyz.coverage[0].total, "\tsection0_eligible=", xyz.coverage[0].eligible,
+               "\tsection0_refused=", xyz.coverage[0].refused, "\tsection1_total=", xyz.coverage[1].total,
+               "\tsection1_eligible=", xyz.coverage[1].eligible, "\tsection1_refused=", xyz.coverage[1].refused,
+               "\tkey=raw_unsigned_u16_le_xyz\tsigned_zero_keys=distinct\tfourth_lane_in_key=0");
+    if (xyz.available)
+        out.record("XYZ_OVERLAP_MATCHES\tsection0_total=", xyz.coverage[0].total,
+                   "\tsection0_eligible=", xyz.coverage[0].eligible, "\tsection0_refused=", xyz.coverage[0].refused,
+                   "\tsection1_total=", xyz.coverage[1].total, "\tsection1_eligible=", xyz.coverage[1].eligible,
+                   "\tsection1_refused=", xyz.coverage[1].refused,
+                   "\tsection0_records_present_in_section1=", xyz.directional_matches[0],
+                   "\tsection1_records_present_in_section0=", xyz.directional_matches[1],
+                   "\tmultiset_intersection=", xyz.multiset_matches, "\tsemantic_interpretation=unverified");
+    const auto& triangles = inspection.triangle_overlap;
+    out.record("TRIANGLE_OVERLAP_COVERAGE\tavailable=", triangles.available ? 1 : 0,
+               "\tsection0_total=", triangles.coverage[0].total, "\tsection0_eligible=", triangles.coverage[0].eligible,
+               "\tsection0_refused=", triangles.coverage[0].refused, "\tsection1_total=", triangles.coverage[1].total,
+               "\tsection1_eligible=", triangles.coverage[1].eligible, "\tsection1_refused=", triangles.coverage[1].refused,
+               "\tkey=minimum_cyclic_rotation_of_raw_xyz_keys\treversed_winding_merged=0"
+               "\tdegenerates_included=1\tdegenerate_winding=uninformative\tsigned_zero_keys=distinct");
+    if (triangles.available)
+        out.record("TRIANGLE_OVERLAP_MATCHES\tsection0_total=", triangles.coverage[0].total,
+                   "\tsection0_eligible=", triangles.coverage[0].eligible, "\tsection0_refused=", triangles.coverage[0].refused,
+                   "\tsection1_total=", triangles.coverage[1].total, "\tsection1_eligible=", triangles.coverage[1].eligible,
+                   "\tsection1_refused=", triangles.coverage[1].refused,
+                   "\tmultiset_intersection=", triangles.multiset_matches,
+                   "\tsection0_unmatched=", triangles.coverage[0].eligible - triangles.multiset_matches,
+                   "\tsection1_unmatched=", triangles.coverage[1].eligible - triangles.multiset_matches,
+                   "\tsemantic_interpretation=unverified");
+}
+
+int manhole_candidate_command(int argc, char** argv, bool position_hypothesis = false) {
     using namespace dingosdk::frostbite;
     using namespace dingosdk::trainer::asset_tools;
     MeshMetadataOutput out;
     ManholeInspectionProgress progress;
+    const auto mode = position_hypothesis ? ManholeCandidateMode::position_hypothesis : ManholeCandidateMode::indices;
+    const auto finish = [&](int failure_code = 1) { return out.finish_candidate(progress, failure_code, mode); };
     if (argc != 3 || std::string_view(argv[1]).empty() || std::string_view(argv[1]).size() > 4096) {
-        out.record("ERROR\tstage=arguments\tmessage=expected one game folder and --inspect-manhole-candidate");
-        return out.finish_candidate(progress, 2);
+        out.record("ERROR\tstage=arguments\tmessage=expected one game folder and ",
+                   position_hypothesis ? "--inspect-manhole-position-candidate" : "--inspect-manhole-candidate");
+        return finish(2);
     }
     std::string_view stage = "context";
     try {
@@ -461,9 +562,10 @@ int manhole_candidate_command(int argc, char** argv) {
         if ((toc_environment && std::string_view(toc_environment) != manhole_toc_name) ||
             (bundle_environment && std::string_view(bundle_environment) != manhole_bundle_name)) {
             out.record("ERROR\tstage=arguments\tmessage=this inspection requires its pinned TOC and bundle");
-            return out.finish_candidate(progress, 2);
+            return finish(2);
         }
-        out.record("CONTEXT\tmode=manhole-candidate\ttoc=", manhole_toc_name, "\tbundle=", manhole_bundle_name,
+        out.record("CONTEXT\tmode=", position_hypothesis ? "manhole-position-candidate" : "manhole-candidate",
+                   "\ttoc=", manhole_toc_name, "\tbundle=", manhole_bundle_name,
                    "\texact_res_name=", manhole_resource_name, "\tlod=0\tcontract=manhole03_dc8d_capture",
                    "\tmaximum_encoded_bytes=", manhole_encoded_limit, "\tmaximum_decoded_bytes=", manhole_decoded_size,
                    "\tmaximum_resource_decoded_bytes=", manhole_resource_decoded_size,
@@ -471,6 +573,17 @@ int manhole_candidate_command(int argc, char** argv) {
                    "\tlimits_provenance=authored\tmetadata_loading_policy=existing_GameData"
                    "\tlibrary_workspace_limit=not_claimed\ttotal_heap_limit=not_claimed"
                    "\tstore_classification=unknown\tsemantic_qualification=unverified");
+        if (position_hypothesis) {
+            // Reference declarations and consumers describe this immutable release, not this game's profile binding.
+            // https://github.com/CadeEvs/FrostyToolsuite/tree/e400dcb283ad743071263ea7b34ff86780ffe910
+            out.record("POSITION_HYPOTHESIS_REFERENCE\treference_release=v1.0.6.3"
+                       "\treference_commit=e400dcb283ad743071263ea7b34ff86780ffe910"
+                       "\tdeclarations=FrostySdk/Utils.cs\tserialized_reader=Plugins/MeshSetPlugin/Resources/MeshSet.cs"
+                       "\tconsumer=Plugins/MeshSetPlugin/FrostyMeshSetEditor.cs\tbasis_reference=Shaders/UnpackNormals.hlsl"
+                       "\tgame_enum_and_profile_binding=unverified\tstorage_hypothesis=little_endian_binary16_xyz_in_stride8"
+                       "\tfourth_lane_interpretation=unverified\tuv_and_basis_inspected=0"
+                       "\toutput_bytes_limit=", MeshMetadataOutput::maximum_bytes, "\toutput_limit_includes_summary=1");
+        }
         const std::filesystem::path game_root(argv[1]);
         const dingosdk::vfs::GameData data(game_root);
         stage = "bundle_read";
@@ -491,7 +604,7 @@ int manhole_candidate_command(int argc, char** argv) {
             throw std::runtime_error("resource_location_metadata_changed");
         out.record("RESOURCE_BINDING\tresource_id=", resource.resourceId, "\tmanifest_sha1=", metadata_hex(resource.sha1.bytes),
                    "\tmanifest_hash_matched=1\tpayload_hash_verified=0\tcompressed_bytes=", resource_payload->size);
-        if (!out.open()) return out.finish_candidate(progress);
+        if (!out.open()) return finish();
         stage = "resource_read";
         progress.resource_read_attempted = true;
         const auto encoded_resource = data.read_encoded_bounded(*resource_payload, manhole_encoded_limit);
@@ -516,7 +629,7 @@ int manhole_candidate_command(int argc, char** argv) {
                    "\tconflicting_locations=", lookup.conflict ? 1 : 0,
                    "\tlod_kind_supported=", mesh.lod_kind_supported ? 1 : 0,
                    "\tidentity_interpretation=unverified");
-        if (!admission.accepted || !out.open()) return out.finish_candidate(progress);
+        if (!admission.accepted || !out.open()) return finish();
         const auto& geometry_payload = lookup.observations[0].payload;
         stage = "geometry_read";
         progress.geometry_read_attempted = true;
@@ -527,6 +640,16 @@ int manhole_candidate_command(int argc, char** argv) {
         const auto decoded = decode_cas(encoded_geometry.encoded,
             {game_root, manhole_decoded_size, manhole_oodle_buffer_limit});
         progress.geometry_decode_complete = true;
+        if (position_hypothesis) {
+            out.record("POSITION_CANDIDATE_DECODE\tdecoded_bytes=", decoded.size(), "\tauthored_expected_bytes=", manhole_decoded_size,
+                       "\tvertex_format_qualified=0\tsemantic_qualification=unverified");
+            stage = "candidate_position_hypothesis";
+            const auto inspection = inspect_manhole_position_candidate(decoded);
+            progress.inspection_complete = inspection.inspected;
+            progress.indices_consistent = inspection.indices.consistent;
+            manhole_position_rows(out, inspection);
+            return finish();
+        }
         out.record("CANDIDATE_DECODE\tdecoded_bytes=", decoded.size(), "\tauthored_expected_bytes=", manhole_decoded_size,
                    "\tvertex_fields_interpreted=0\tsemantic_qualification=unverified");
         stage = "candidate_indices";
@@ -555,10 +678,10 @@ int manhole_candidate_command(int argc, char** argv) {
                            "\tbyte_offset=", invalid.byte_offset, "\tvalue=", invalid.value);
             }
         }
-        return out.finish_candidate(progress);
+        return finish();
     } catch (const std::exception& error) {
         out.record("ERROR\tstage=", stage, "\tmessage=", out.text(error.what()));
-        return out.finish_candidate(progress);
+        return finish();
     }
 }
 
@@ -669,10 +792,15 @@ int mesh_metadata_command(int argc, char** argv) {
 } // namespace
 
 int main(int argc, char **argv) {
+    if (argc >= 2 && std::string_view(argv[1]) == "--self-test-manhole-position") {
+        if (argc != 2) return 2;
+        return dingosdk::trainer::asset_tools::manhole_position_self_test();
+    }
     if (argc >= 2 && std::string_view(argv[1]) == "--self-test-mesh-output") {
         if (argc != 2) return 2;
         return dingosdk::trainer::asset_tools::mesh_output_self_test();
     }
+    if (argc >= 3 && std::string_view(argv[2]) == "--inspect-manhole-position-candidate") return manhole_candidate_command(argc, argv, true);
     if (argc >= 3 && std::string_view(argv[2]) == "--inspect-manhole-candidate") return manhole_candidate_command(argc, argv);
     if (argc >= 2 && std::string_view(argv[1]) == "--self-test-manhole-candidate") {
         if (argc != 2) return 2;
@@ -684,7 +812,7 @@ int main(int argc, char **argv) {
     }
     if (argc >= 3 && std::string_view(argv[2]) == "--mesh-metadata") return mesh_metadata_command(argc, argv);
     if (argc < 3) {
-        std::cerr << "usage: dingosdk_trainer_asset_list <Skate folder> <word>... | --dump <asset name> | --types <word>... | --metadata [word]... | --inspect <exact EBX name> | --mesh-metadata <exact RES name> <LOD index> | --inspect-manhole-candidate\n";
+        std::cerr << "usage: dingosdk_trainer_asset_list <Skate folder> <word>... | --dump <asset name> | --types <word>... | --metadata [word]... | --inspect <exact EBX name> | --mesh-metadata <exact RES name> <LOD index> | --inspect-manhole-candidate | --inspect-manhole-position-candidate\n";
         return 2;
     }
     try {

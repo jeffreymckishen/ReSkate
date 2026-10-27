@@ -66,11 +66,13 @@ local RENEWALS_PER_TICK=1
 local SDK_FOLLOW_READS_PER_TICK=8
 local SDK_LEASE_READS_PER_TICK=8
 local FOLLOW_READS_PER_TICK=6
+local FOLLOW_RECOVERY_READS_PER_TICK=FOLLOW_READS_PER_TICK+1
 local LEASE_READS_PER_TICK=1
+local BODY_READ_RETRY_REASON="body snapshot or native epoch changed; no sample published"
 local FOLLOW_POLL_MS=50
 local CLEANUP_WATCHDOG_MS=20000
 local CLEANUP_READS=400
-assert(2+PROBE_BATCHES_PER_SERIAL<=FOLLOW_READS_PER_TICK and FOLLOW_READS_PER_TICK+1<=SDK_FOLLOW_READS_PER_TICK
+assert(2+PROBE_BATCHES_PER_SERIAL<=FOLLOW_READS_PER_TICK and FOLLOW_RECOVERY_READS_PER_TICK+1<=SDK_FOLLOW_READS_PER_TICK
     and LEASE_READS_PER_TICK<=SDK_LEASE_READS_PER_TICK and CLEANUP_READS*FOLLOW_POLL_MS>=CLEANUP_WATCHDOG_MS
     and RENEWALS_PER_TICK<=SDK_RENEWALS_PER_TICK,
     "Follow read budget exceeds the SDK's per-tick quota or the cleanup watchdog")
@@ -80,17 +82,19 @@ BikeRuntime.ride_limits=table.freeze({ride_window_ms=RIDE_WINDOW_MS,base_lease_m
     max_tick_ms=MAX_TICK_MS,renew_below_ms=RENEW_BELOW_MS,
     renewals_per_tick=RENEWALS_PER_TICK,sdk_renewals_per_tick=SDK_RENEWALS_PER_TICK,
     follow_renewal_qualified=FOLLOW_RENEWAL_QUALIFIED,
-    follow_reads_per_tick=FOLLOW_READS_PER_TICK,lease_reads_per_tick=LEASE_READS_PER_TICK,
+    follow_reads_per_tick=FOLLOW_READS_PER_TICK,follow_recovery_reads_per_tick=FOLLOW_RECOVERY_READS_PER_TICK,
+    lease_reads_per_tick=LEASE_READS_PER_TICK,
     sdk_follow_reads_per_tick=SDK_FOLLOW_READS_PER_TICK,sdk_lease_reads_per_tick=SDK_LEASE_READS_PER_TICK,
     follow_poll_ms=FOLLOW_POLL_MS,cleanup_watchdog_ms=CLEANUP_WATCHDOG_MS,cleanup_reads=CLEANUP_READS})
 local function wall(v) return type(v)=="number" and v==v and v>=0 and v<=MAX end
 
 -- Pure read budget. Before the stop, receipt reads count per tick; after it,
 -- against the cleanup total. A read at the cap is refused before the SDK call.
-function BikeRuntime.follow_read_admitted(tick_reads,cleanup_reads,stopping)
+function BikeRuntime.follow_read_admitted(tick_reads,cleanup_reads,stopping,recovering)
     local function count(v,most) return type(v)=="number" and v%1==0 and v>=0 and v<=most end
     if stopping==true then return count(cleanup_reads,CLEANUP_READS) and cleanup_reads<CLEANUP_READS end
-    return stopping==false and count(tick_reads,FOLLOW_READS_PER_TICK) and tick_reads<FOLLOW_READS_PER_TICK
+    local limit=recovering==true and FOLLOW_RECOVERY_READS_PER_TICK or FOLLOW_READS_PER_TICK
+    return stopping==false and count(tick_reads,limit) and tick_reads<limit
 end
 function BikeRuntime.lease_read_admitted(tick_reads)
     return type(tick_reads)=="number" and tick_reads%1==0 and tick_reads>=0 and tick_reads<LEASE_READS_PER_TICK
@@ -702,6 +706,9 @@ snapshot=function()
         equipment_storage_prefix="",ledger_limit_bytes=48000,call_history_limit=64,
         follow_history_limit=16,follow_reads_per_tick=FOLLOW_READS_PER_TICK,lease_reads_per_tick=LEASE_READS_PER_TICK,
         follow_reads_this_tick=T.follow_reads_tick or 0,lease_reads_this_tick=T.lease_reads_tick or 0,
+        follow_recovery_reads_per_tick=FOLLOW_RECOVERY_READS_PER_TICK,
+        body_read_retry_this_tick=T.body_read_retry_tick==true,body_read_retries=T.body_read_retries or 0,
+        body_read_recoveries=T.body_read_recoveries or 0,
         follow_cleanup_reads=CLEANUP_READS,follow_cleanup_reads_used=T.cleanup_reads or 0,
         startup={pending=T.startup_pending==true,loaded=T.startup_loaded or 0,last_module=T.startup_last,
             core_ready=T.core_ready==true,backend_ready=T.backend_ready==true,
@@ -997,7 +1004,7 @@ local function read_follow(force)
     if not T.follow or T.ack_attempted then return false end
     if not force and T.follow_read_at and T.now and T.now-T.follow_read_at<FOLLOW_POLL_MS then return false end
     local stopping=T.stop_latched==true
-    if not BikeRuntime.follow_read_admitted(T.follow_reads_tick or 0,T.cleanup_reads or 0,stopping) then
+    if not BikeRuntime.follow_read_admitted(T.follow_reads_tick or 0,T.cleanup_reads or 0,stopping,T.body_read_retry_tick) then
         -- Core's own cap stops the ride before the SDK's quota would refuse.
         if not stopping then stop_all("Follow receipt reads for this tick exhausted") end
         return false
@@ -1228,7 +1235,7 @@ local function create_ride(frame)
     end
     if not current(owner.generation) then stop_ride("cancelled during subordinate construction") end
 end
-observe_ride=function(frame,sample,now)
+observe_ride=function(frame,sample,now,body_read_recovered)
     if not RIDE_COMPOSITION_QUALIFIED then return end
     if not ride then create_ride(frame) end
     if not ride or not ride_binding or T.stop_latched then return end
@@ -1243,11 +1250,58 @@ observe_ride=function(frame,sample,now)
     local binding=ride_binding
     binding.sample=sample;binding.observing=true
     local r=call("ride.observe",ride.observe,ride,frame,sample,
-        {now_ms=now,focused=T.facts.focused,menu_open=not T.facts.interface_closed or not T.facts.game_menu_closed,loaded=true})
+        {now_ms=now,focused=T.facts.focused,menu_open=not T.facts.interface_closed or not T.facts.game_menu_closed,loaded=true,
+            body_read_recovered=body_read_recovered==true})
     binding.observing=false;binding.sample=nil
     if not r[1] or r.n~=2 or not remember_ride(r[2]) then
         T.ride_unknown=true;stop_all("subordinate observation outcome unknown")
     elseif r[2].stop_requested then stop_all("subordinate requested stop") end
+end
+
+-- Only this exact public-read refusal is retryable. It says no sample was
+-- published, not that the body slept or that native ownership was replaced.
+-- A new read may recover the same allocation; it cannot revive a stopped
+-- Follow. Every guard is fresh on this exceptional path, before the one retry.
+local function reread_body(r,generation,body,follow,frame)
+    if not (r[1] and r.n==3 and r[2]==nil and r[3]==BODY_READ_RETRY_REASON) then return r,false end
+    local function held()
+        return current(generation) and T.active and T.phase=="following" and T.published_seen
+            and T.body==body and T.follow==follow and body~=nil and follow~=nil
+            and not T.ack_attempted and not T.release_attempted and T.input_current==true
+            and selected_source_frame==frame and type(frame)=="table" and frame.input_ok==true
+            and not frame.cleanup_pending and not frame.cleanup_unknown
+    end
+    local function live()
+        local now=clock()
+        return now~=nil and held() and lease_live(now)
+    end
+    if not held() or not live() then stop_all("body re-read lost current ownership or lease");return r,false end
+    local f=facts();T.facts=f;tick_facts=f;tick_authorization=nil
+    if not held() or not closed_ready(f,false) or not live() then
+        stop_all("body re-read lost fresh readiness");return r,false
+    end
+    -- One extra receipt read is reserved only here, for this tick. Even four
+    -- probe batches and a submit then cost at most seven, plus one cleanup,
+    -- within the SDK's eight. The normal six-read cap is unchanged.
+    T.body_read_retry_tick=true
+    if not read_follow(true) or not held() or not live() then
+        stop_all("body re-read lost live Follow");return r,false
+    end
+    local receipt=T.receipt
+    if not receipt or receipt.phase~="following" or receipt.claim_known~=true or receipt.orphaned
+        or receipt.terminal or receipt.park_observed then
+        stop_all("body re-read requires a live Follow claim");return r,false
+    end
+    local authorized=call("source.authorize",source.authorize,source,frame)
+    if not yes(authorized) or not held() or not live() then
+        stop_all("body re-read lost fresh Source authority");return r,false
+    end
+    T.body_read_retries=(T.body_read_retries or 0)+1
+    local retry=call("body.read_retry",lookup("world.physics.read"),body)
+    if not held() or not live() then stop_all("body re-read changed ownership or lease");return retry,false end
+    local recovered=retry[1] and retry.n==2 and type(retry[2])=="table"
+    if recovered then T.body_read_recoveries=(T.body_read_recoveries or 0)+1 end
+    return retry,recovered
 end
 
 local function handoff_and_follow()
@@ -1529,7 +1583,7 @@ end
 local function tick(dt)
     -- Core's per-tick Follow counters reset with each Core step, which is not
     -- an SDK tick credential: the SDK's own quota stays authoritative.
-    T.follow_reads_tick=0;T.lease_reads_tick=0;T.renewals_tick=0
+    T.follow_reads_tick=0;T.lease_reads_tick=0;T.renewals_tick=0;T.body_read_retry_tick=false
     selected_source_frame=nil;tick_facts=nil;tick_authorization=nil
     if T.unloaded or T.phase=="blocked" then return end
     if not T.used and not T.gear_requested or T.phase=="done" and not T.gear_requested then
@@ -1621,8 +1675,10 @@ local function tick(dt)
                 now=clock()
                 if not lease_live(now) then stop_all("ride window or Follow lease ended during receipt or lease read")
                 elseif current(generation) then
-                    local measured_body=T.body
+                    local measured_body,measured_follow,measured_frame=T.body,T.follow,selected_source_frame
                     local r=call("body.read",lookup("world.physics.read"),measured_body)
+                    local recovered
+                    r,recovered=reread_body(r,generation,measured_body,measured_follow,measured_frame)
                     now=clock()
                     if not lease_live(now) then stop_all("ride window or Follow lease ended during body read")
                     elseif not r[1] or r.n~=2 or type(r[2])~="table" then stop_all("following body observation unavailable")
@@ -1630,7 +1686,7 @@ local function tick(dt)
                         stop_all("body owner changed during same-read subordinate observation")
                     elseif current(generation) and renew_follow_once(r[2],generation) then
                         now=T.now -- The renewal's own clock reads, if it made any.
-                        observe_ride(selected_source_frame,r[2],now)
+                        observe_ride(selected_source_frame,r[2],now,recovered)
                         -- The same read, drawn in the pose of Ride's step on it (or its last accepted one).
                         local pose=BikeRuntime.follow_pose(ride and T.ride_status)
                         local v=current(generation) and call("spawn.follow_visual",spawn.follow_visual,spawn,r[2],now,pose) or {false,n=1}

@@ -24,6 +24,18 @@ Ride's four force capabilities are closed over one exact original body/Core inca
 
 SDK `applied` receipts describe their existing setter/receipt protocol. They do not establish physical consumption. Applied cleanup still requires a real coherent later native successor; stop cannot manufacture one. Cleanup can validate a real later successor outside the stricter drive gap without advancing skipped model steps. Partial writes and their uncertainty remain retained. ACK is attempted at most once and positive ACK clears only the exact force transaction, never Core's independent body/Follow/park duty.
 
+## Transient body-read recovery
+
+Core retries only the exact SDK snapshot/epoch refusal, once immediately, after fresh
+Source, Follow, readiness and ownership checks. A coherent reread keeps the existing
+live Follow and invalidates force-history continuity before the next preview. Pending
+receipts, accepted hop IDs and uncertain outcomes remain intact. Duplicate samples do
+not advance models; changed, regressed or skipped native steps still stop. Healthy ticks
+keep the six-read Follow cap; only this recovery tick may use seven plus one cleanup
+read within the SDK's eight. See [Epoch retry](EPOCH_RETRY.md) for verified SDK facts,
+diagnostics and the coordinator's game check. Native sleep is not established by this
+error, and a stopped Follow cannot be revived.
+
 ## Stop and retained cleanup
 
 Stop latches Core generation and Ride's pure terminal stop, stops Follow immediately, then permits Source/capture release through the existing proxy. It does not defer Follow stop to wait for a force successor. Both local force ledgers must clear together with all existing independent Core duties before ordinary body release, visual removal, aggregate done, stock handoff or rearm. Follow completion, retained allocation flags and a future rig witness cannot erase force debt.

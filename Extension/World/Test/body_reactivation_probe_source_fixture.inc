@@ -158,9 +158,9 @@ void reactivation_begin_retires_without_a_follow_hold() {
     const auto out=f.poll();check(out.status==br::Status::pending && out.phase==br::Phase::await_initial_park && out.cleanup_owed &&
         !out.native_retirement_known && out.target_position==s.definition.position && out.target_rotation==s.definition.rotation,
         "initial opaque diagnostic lost its immutable target or cleanup duty");
-    const auto calls=f.calls.size();const auto checks=f.qualification_calls;const auto first=f.poll();const auto second=f.poll();
+    const auto calls=f.calls.size();const auto qualification_checks=f.qualification_calls;const auto first=f.poll();const auto second=f.poll();
     check(first.phase==second.phase && first.record_count==second.record_count && first.elapsed_ms==second.elapsed_ms &&
-        f.calls.size()==calls && f.qualification_calls==checks,"poll advanced or renewed the diagnostic");
+        f.calls.size()==calls && f.qualification_calls==qualification_checks,"poll advanced or renewed the diagnostic");
     f.no_extra_authority();
 }
 void reactivation_one_cycle_explicitly_reparks_retained_identity() {

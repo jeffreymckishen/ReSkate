@@ -3,7 +3,9 @@
 // anything Windows lists as a game controller (a radio in its USB Joystick mode, a flight stick, a
 // gamepad). Read through DirectInput, which gives all eight axes a radio sends (winmm gave six):
 // axes 1..8 are X, Y, Z, Rx, Ry, Rz and the two sliders, each -1..1, 0 for one the controller
-// does not have. Windows only.
+// does not have. Windows only. Saved axis numbers from the former X, Y, Z, R, U, V layout must
+// be configured again; the new ordering is not silently remapped to the old one.
+// Devices that cannot apply the requested axis range and zero dead zone are not published.
 //
 // A thread of its own finds the controllers and reads them: looking at the device list can take
 // far longer than a plugin's tick may (empty winmm slots took over 50 ms on some PCs, and a plugin

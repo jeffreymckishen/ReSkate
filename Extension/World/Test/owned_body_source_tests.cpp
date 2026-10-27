@@ -1551,6 +1551,7 @@ void motion_record_arrives_during_client_poll() {
 #include "body_prepare_source_fixture.inc"
 #include "owned_body_cleanup_source_fixture.inc"
 #include "body_reactivation_probe_source_fixture.inc"
+#include "body_post_follow_reactivation_source_fixture.inc"
 
 template<class F> void run(const char* name, F function, unsigned expected_links=0) {
     function();
@@ -1565,6 +1566,18 @@ int main() {
     using namespace dingosdk::owned_bodies::source_test;
     try {
 #if defined(DINGOSDK_BODY_REACTIVATION_QUALIFICATION) && DINGOSDK_BODY_REACTIVATION_QUALIFICATION
+        run("post_follow_reactivation_retained_identity_single_cycle",post_follow_reactivation_keeps_retained_identity_and_reparks_once);
+        run("post_follow_reactivation_never_held_history_kind",post_follow_reactivation_preserves_never_held_history_kind);
+        run("post_follow_reactivation_exact_completed_history",post_follow_reactivation_requires_exact_completed_history);
+        run("post_follow_reactivation_separate_body_receipt_ack",post_follow_reactivation_keeps_body_receipt_ack_separate);
+        run("post_follow_reactivation_owner_allocation_sticky_faults",post_follow_reactivation_refuses_owner_allocation_and_sticky_faults);
+        run("post_follow_reactivation_fresh_parked_native_facts",post_follow_reactivation_requires_fresh_coherent_parked_native_state);
+        run("post_follow_reactivation_completion_clock_advances",post_follow_reactivation_rejects_nonadvancing_completion_clock);
+        run("post_follow_reactivation_concurrent_probes",post_follow_reactivation_refuses_concurrent_probes);
+        run("post_follow_reactivation_closing_handoff_identity",post_follow_reactivation_rechecks_closing_handoff_and_identity);
+        run("post_follow_reactivation_lost_handoff_cleanup",post_follow_reactivation_handoff_loss_stops_activation_but_keeps_cleanup);
+        run("post_follow_reactivation_dynamic_handoff_loss",post_follow_reactivation_lost_handoff_cannot_publish_dynamic_success);
+        run("post_follow_reactivation_cleanup_before_first_write",post_follow_reactivation_owns_cleanup_before_first_setter);
         run("reactivation_begin_actual_no_hold_retirement",reactivation_begin_retires_without_a_follow_hold);
         run("reactivation_one_cycle_explicit_retained_repark",reactivation_one_cycle_explicitly_reparks_retained_identity);
         run("reactivation_all_receipt_debt_preserved",reactivation_receipt_debt_and_pending_states_are_preserved);

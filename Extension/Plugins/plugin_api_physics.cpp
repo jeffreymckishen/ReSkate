@@ -290,6 +290,7 @@ bool reactivation_result(const rp::Result& out) noexcept {
     for (std::size_t i = 0; i < out.record_count; ++i) {
         const auto& record = out.records[i];
         if (!reactivation_stage(record.stage) || (i && record.stage <= out.records[i - 1].stage) ||
+            (record.historical_park_basis && (record.stage != rp::Stage::initial_park || !record.passed || record.observation.available)) ||
             (!sync_epoch(record.epoch) && (record.passed || record.epoch != Epoch{})) ||
             !reactivation_observation(record.observation, record.epoch) ||
             (!record.passed && out.first_failure == rp::Check::none)) return false;
@@ -367,9 +368,10 @@ void push_reactivation_result(lua_State* L, const rp::Result& out) {
     lua_createtable(L, static_cast<int>(out.record_count), 0);
     for (std::size_t i = 0; i < out.record_count; ++i) {
         const auto& record = out.records[i];
-        lua_createtable(L, 0, 4);
+        lua_createtable(L, 0, 5);
         lua_pushstring(L, reactivation_stage(record.stage)); lua_setfield(L, -2, "stage");
         lua_pushboolean(L, record.passed); lua_setfield(L, -2, "passed");
+        lua_pushboolean(L, record.historical_park_basis); lua_setfield(L, -2, "historical_park_basis");
         push_sync_epoch(L, record.epoch); lua_setfield(L, -2, "epoch");
         push_reactivation_observation(L, record.observation); lua_setfield(L, -2, "observation");
         lua_rawseti(L, -2, static_cast<int>(i + 1));

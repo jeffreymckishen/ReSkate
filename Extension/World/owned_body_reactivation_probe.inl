@@ -16,6 +16,10 @@ struct ReactivationProbe {
     Definition definition{};
     RetirementBasis basis{};
     RetainedParkReceipt initial_park{};
+    // Only the trusted Follow ACK can supply this immutable terminal history.
+    // A zero sequence retains the original never-held diagnostic path.
+    std::uint64_t completed_ack_sequence{};
+    RetainedParkReceipt completed_ack_park{};
     Epoch phase_epoch{};
     rp::QualificationCheck qualification{};
     rp::Stage next_stage{rp::Stage::transform};
@@ -56,6 +60,32 @@ bool reactivation_definition(const Definition& a, const Definition& b) noexcept 
         if (a.capsules[i].a != b.capsules[i].a || a.capsules[i].b != b.capsules[i].b || a.capsules[i].radius != b.capsules[i].radius) return false;
     return true;
 }
+bool reactivation_completed_history(const ReactivationProbe& p, const Slot& s) noexcept {
+    // This is optional SDK provenance, not a native retirement certificate.
+    // Pair both saved receipts with the exact basis; no fresh observation may
+    // replace the original completed handoff or restore a cleared latch.
+    return p.completed_ack_sequence && !s.never_held && s.release_requested && s.mailbox.failed &&
+        s.completed_ack_sequence == p.completed_ack_sequence &&
+        matches_retained_park_locked(p.owner, p.basis, p.completed_ack_park) &&
+        matches_retained_park_locked(p.owner, s.completed_ack_basis, p.completed_ack_park) &&
+        matches_retained_park_locked(p.owner, p.basis, s.completed_ack_park) &&
+        s.completed_ack_park.observed_epoch() == p.completed_ack_park.observed_epoch() &&
+        s.completed_ack_park.observed_ms() == p.completed_ack_park.observed_ms() &&
+        s.completed_ack_park.parked_ms() == p.completed_ack_park.parked_ms();
+}
+bool reactivation_other_probe_pending() noexcept {
+    if (service.probe.sequence && service.probe.result.status == body_sync_probe::Status::pending) return true;
+    // A busy observer is unknown, even if its last copied status was terminal.
+    if (!TryAcquireSRWLockShared(&motion_probe.lock)) return true;
+    const bool pending = motion_probe.requested || motion_probe.inflight ||
+        (motion_probe.sequence && motion_probe.result.status == mp::Status::pending);
+    ReleaseSRWLockShared(&motion_probe.lock);
+    return pending;
+}
+bool reactivation_dependency_current(const ReactivationProbe& p, const Slot& s) noexcept {
+    return p.completed_ack_sequence ? reactivation_allocation(s) && reactivation_completed_history(p, s) &&
+        !reactivation_other_probe_pending() : s.never_held;
+}
 Slot* reactivation_slot(const ReactivationProbe& p) noexcept {
     auto* s = lookup(p.owner, p.handle);
     if (!s || s->body != p.body || s->shapes != p.shapes || s->made != p.made ||
@@ -85,14 +115,17 @@ void reactivation_fail(rp::Check check, rp::Status status = rp::Status::invalida
     if (auto* s = reactivation_slot(p)) taint_reuse(*s);
     if (p.result.phase != rp::Phase::await_repark && p.result.phase != rp::Phase::terminal) p.result.phase = rp::Phase::repark;
 }
-bool reactivation_record(rp::Stage stage, bool passed, const Epoch& epoch = {}, const rp::Observation& observation = {}) noexcept {
+bool reactivation_record(rp::Stage stage, bool passed, const Epoch& epoch = {}, const rp::Observation& observation = {},
+    bool historical_park_basis = false) noexcept {
     auto& p = reactivation_probe;
     if (p.result.record_count >= p.result.records.size() || (p.result.record_count &&
-        stage <= p.result.records[p.result.record_count - 1].stage)) {
+        stage <= p.result.records[p.result.record_count - 1].stage) ||
+        (historical_park_basis && (stage != rp::Stage::initial_park || !passed || observation.available || !p.completed_ack_sequence))) {
         reactivation_fail(rp::Check::observation); return false;
     }
     auto& record = p.result.records[p.result.record_count++];
-    record.stage = stage; record.passed = passed; record.epoch = epoch; record.observation = observation;
+    record.stage = stage; record.passed = passed; record.historical_park_basis = historical_park_basis;
+    record.epoch = epoch; record.observation = observation;
     return true;
 }
 void reactivation_finish(bool confirmed, std::uint64_t now) noexcept {
@@ -167,7 +200,7 @@ bool reactivation_write_guard(Slot& s, bool cleanup, std::size_t shape = maximum
     if (expired()) return false;
     if (!eligible() || !reactivation_current(p, s) || !reactivation_bytes()) { reactivation_fail(rp::Check::identity, rp::Status::invalidated, shape); return false; }
     if (!cleanup && (p.revoked || reactivation_close_requested.load(std::memory_order_acquire) ||
-        !s.never_held || s.reuse_faulted || s.owner_closed || s.quarantined ||
+        !reactivation_dependency_current(p, s) || s.reuse_faulted || s.owner_closed || s.quarantined ||
         service.owner_close_uncertain.load(std::memory_order_acquire))) { reactivation_fail(rp::Check::qualification, rp::Status::invalidated, shape); return false; }
     Epoch before{}; before.world = p.world_generation; before.body = p.handle.generation;
     std::uint64_t observed{};
@@ -187,6 +220,10 @@ bool reactivation_write_guard(Slot& s, bool cleanup, std::size_t shape = maximum
     std::uint64_t observed_after{};
     if (!clock(s.anchor, closing, &observed_after) || closing != before || observed_after != observed) {
         reactivation_fail(rp::Check::clock); return false;
+    }
+    if (!cleanup && p.completed_ack_sequence && (s.reuse_faulted || s.owner_closed || s.quarantined ||
+        service.owner_close_uncertain.load(std::memory_order_acquire) || !reactivation_dependency_current(p, s))) {
+        reactivation_fail(rp::Check::dependency); return false;
     }
     const auto now = GetTickCount64();
     if (now < observed || now - observed >= command_lifetime_ms) { reactivation_fail(rp::Check::clock); return false; }
@@ -231,6 +268,11 @@ void reactivation_tick_advance() noexcept {
     if (!eligible()) { reactivation_fail(rp::Check::client_phase); return; }
     auto* s = reactivation_slot(p);
     if (!s || !reactivation_current(p, *s) || s->parked_ms != p.original_parked_ms) { reactivation_fail(rp::Check::identity); return; }
+    // Lost completion provenance invalidates the observation as well as every
+    // later activation write. Cleanup still owns the unchanged retained body.
+    if (p.completed_ack_sequence && (s->reuse_faulted || s->owner_closed || s->quarantined ||
+        service.owner_close_uncertain.load(std::memory_order_acquire) || !reactivation_dependency_current(p, *s)))
+        reactivation_fail(rp::Check::dependency);
     if (GetTickCount64() >= p.run_deadline && !p.cleanup_attempted) reactivation_fail(rp::Check::run_deadline, rp::Status::expired);
     if (p.result.phase == rp::Phase::await_initial_park) {
         if (!observed_initial) {
@@ -354,30 +396,63 @@ std::string begin_body_reactivation_probe(std::uint64_t owner, const Handle& han
             struct Unlock { ~Unlock() { ReleaseSRWLockExclusive(&service.lock); } } unlock;
             const auto* s = lookup(owner, handle);
             if (reactivation_probe.sequence || reactivation_probe.generation == UINT64_MAX) return "body reactivation attempt unavailable";
-            if (!s || !s->active || s->retained || s->quarantined || s->reuse_faulted || s->owner_closed || s->release_hold ||
-                !s->never_held || s->release_requested || service.owner_close_uncertain.load(std::memory_order_acquire) ||
+            if (!s || s->quarantined || s->reuse_faulted || s->owner_closed || s->release_hold ||
+                service.owner_close_uncertain.load(std::memory_order_acquire) ||
                 !reactivation_allocation(*s) || !reactivation_debt_free(*s) || !fresh(*s)) return "body reactivation owner, allocation or debt unavailable";
             if (service.probe.sequence && service.probe.owner == owner && service.probe.handle == handle &&
                 service.probe.result.status == body_sync_probe::Status::pending) return "another body observation is pending";
             value.owner = owner; value.handle = handle; value.base = service.base; value.world_generation = service.world_generation;
             value.anchor = s->anchor; value.body = s->body; value.shapes = s->shapes; value.made = s->made; value.definition = s->definition;
+            if (s->never_held) {
+                if (!s->active || s->retained || s->release_requested) return "body reactivation never-held authority unavailable";
+            } else {
+                value.completed_ack_sequence = s->completed_ack_sequence;
+                value.basis = s->completed_ack_basis; value.completed_ack_park = s->completed_ack_park;
+                value.original_parked_ms = s->parked_ms;
+                if (!reactivation_completed_history(value, *s) || reactivation_other_probe_pending())
+                    return "body reactivation completed Follow history unavailable";
+            }
         }
-        MeasuredSource source;
-        if (!capture_source(owner, handle, source) || !capture_retirement_basis(owner, source, value.basis) || !qualification(owner))
-            return "body reactivation source or retirement basis unavailable";
+        if (value.completed_ack_sequence) {
+            // A retained body cannot become a measured source again. Observe its
+            // parked state freshly using the original, non-restamped handoff.
+            if (!observe_retained_park(owner, value.basis, value.initial_park) ||
+                value.initial_park.observed_epoch().serial <= value.completed_ack_park.observed_epoch().serial ||
+                value.initial_park.observed_epoch().time <= value.completed_ack_park.observed_epoch().time ||
+                value.initial_park.observed_ms() <= value.completed_ack_park.observed_ms())
+                return "body reactivation fresh completed park unavailable";
+        } else {
+            MeasuredSource source;
+            if (!capture_source(owner, handle, source) || !capture_retirement_basis(owner, source, value.basis))
+                return "body reactivation source or retirement basis unavailable";
+        }
+        if (!qualification(owner)) return "body reactivation qualification was revoked";
         if (!TryAcquireSRWLockExclusive(&service.lock)) return "body reactivation World is busy";
         struct Unlock { ~Unlock() { ReleaseSRWLockExclusive(&service.lock); } } unlock;
         auto* s = reactivation_slot(value);
-        if (reactivation_probe.sequence || !s || !eligible() || !reactivation_bytes() || !s->active || s->retained || s->quarantined ||
-            s->reuse_faulted || s->owner_closed || !s->never_held || s->release_hold || s->release_requested ||
+        const bool completed_follow = value.completed_ack_sequence != 0;
+        if (reactivation_probe.sequence || !s || !eligible() || !reactivation_bytes() || s->quarantined ||
+            s->reuse_faulted || s->owner_closed || !reactivation_dependency_current(value, *s) || s->release_hold ||
+            (!completed_follow && s->release_requested) ||
             service.owner_close_uncertain.load(std::memory_order_acquire) || !reactivation_allocation(*s) ||
-            !reactivation_debt_free(*s) || !reactivation_current(value, *s, false)) return "body reactivation closing admission changed";
+            !reactivation_debt_free(*s) || !reactivation_current(value, *s, completed_follow)) return "body reactivation closing admission changed";
+        rp::Observation parked_observation;
+        if (completed_follow && (s->parked_ms != value.original_parked_ms ||
+            !reactivation_observe(value, *s, false, 0, parked_observation) ||
+            parked_observation.sample.epoch != value.initial_park.observed_epoch()))
+            return "body reactivation closing parked observation unavailable";
         Epoch epoch{}; epoch.world = service.world_generation; epoch.body = handle.generation;
         std::uint64_t observed{}, observed_after{}; Epoch closing{};
         closing.world = service.world_generation; closing.body = handle.generation;
-        if (!clock(s->anchor, epoch, &observed) || epoch != value.basis.epoch() || !observed ||
-            !reactivation_current(value, *s, false) || !clock(s->anchor, closing, &observed_after) || closing != epoch || observed_after != observed)
+        const auto& admitted_epoch = completed_follow ? value.initial_park.observed_epoch() : value.basis.epoch();
+        if (!clock(s->anchor, epoch, &observed) || epoch != admitted_epoch || !observed ||
+            (completed_follow && observed != value.initial_park.observed_ms()) ||
+            !reactivation_current(value, *s, completed_follow) || !reactivation_dependency_current(value, *s) ||
+            !clock(s->anchor, closing, &observed_after) || closing != epoch || observed_after != observed)
             return "body reactivation closing clock unavailable";
+        if (completed_follow && (reactivation_slot(value) != s || s->release_hold || s->reuse_faulted || s->owner_closed ||
+            s->quarantined || !reactivation_debt_free(*s) || service.owner_close_uncertain.load(std::memory_order_acquire) ||
+            !reactivation_dependency_current(value, *s))) return "body reactivation final completed history changed";
         const auto now = GetTickCount64();
         if (now < observed || now - observed >= command_lifetime_ms || now > UINT64_MAX - rp::cleanup_lifetime_ms)
             return "body reactivation closing clock unavailable";
@@ -388,6 +463,16 @@ std::string begin_body_reactivation_probe(std::uint64_t owner, const Handle& han
         reactivation_probe = value;
         reactivation_close_requested.store(false, std::memory_order_release);
         reactivation_live_owner.store(owner, std::memory_order_release);
+        if (completed_follow) {
+            // Cleanup is now owned, before any future activation setter. The
+            // first row is the prior completed park's write floor, not a new
+            // park command. The second is the freshly checked parked state.
+            // Neither ordinary authority nor the original park time changes.
+            (void)reactivation_record(rp::Stage::initial_park, true, value.basis.epoch(), {}, true);
+            (void)reactivation_record(rp::Stage::initial_park_observed, true, epoch, parked_observation);
+            reactivation_probe.result.phase = rp::Phase::activation;
+            sequence = reactivation_probe.sequence; return {};
+        }
         // Admission owns cleanup from this point. Even a failed park returns its
         // opaque diagnostic sequence with ordinary body authority already closed.
         s->active = false; s->retained = true; s->latest = {};

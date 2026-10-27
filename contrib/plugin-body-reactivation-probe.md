@@ -1,6 +1,6 @@
-# Private body-only reactivation probe
+# Private one-cycle body reactivation probe
 
-This diagnostic is an isolated mechanism experiment. It parks one existing owned
+This diagnostic is an isolated mechanism experiment. It qualifies one parked owned
 body, activates that same allocation once at its immutable creation pose, then
 explicitly parks it again. It does not return a reusable body, free an allocation,
 qualify a rider attachment, or establish native retirement.
@@ -25,13 +25,28 @@ remain passive and cannot authorize this diagnostic.
 
 Begin takes exactly one body userdata issued to the same VM. It takes no pose,
 repeat count, run identity, owner number, native address, or eligibility flag.
-The caller creates that body through the ordinary API before beginning. The
-body must never have held a dependent native service, and must have no pending,
-producing or unacknowledged body commands. A released dependency does not restore
-body-only eligibility. Missing completed-Follow history is not a substitute for
-that history check.
+The caller creates that body through the ordinary API before beginning. Admission
+has two internal paths, selected by retained SDK history rather than a Lua flag:
 
-The admitted begin makes the body retained and inactive before returning. Its
+- An active body that never held a dependent native service follows the original
+  body-only park/reactivate/repark experiment.
+- A retained body previously held by Follow requires its exact completed live-owner
+  ACK handoff. The trusted service records that optional handoff only after a real
+  published Follow has stopped, drained its invocations and final return, released
+  its body hold, observed a later park, retired its claim and sealed command cleanup.
+  Orphan cleanup does not issue it. The provider also requires a fresh parked
+  observation strictly later than the recorded handoff observation.
+
+Both paths require no pending, producing or unacknowledged body commands. Follow
+ACK does not ACK body receipts: their ring must be emptied separately by exact
+receipt ACKs. Released hold alone, a stopped claim or a fresh park alone cannot
+substitute for completed handoff history. Ordinary Follow ACK still succeeds when
+optional provenance is unavailable; the diagnostic refuses that missing history.
+The historical `never_held` flag, failed mailbox and lifetime fault latches are
+never reset. Pending sync or motion probes, including unknown/busy or in-flight
+motion observation, also refuse the post-Follow path.
+
+The admitted body is retained and inactive before begin returns. Its
 original body handle cannot be used for normal source reads, force commands or
 Follow admission during or after the experiment. An opaque probe is diagnostic
 access only; it is not an owned body or submit epoch. Tables, numbers, copied
@@ -83,6 +98,16 @@ for a genuinely later coherent observation. Setter return alone is insufficient.
 The native body may be dynamic privately while its SDK slot remains retained and
 inactive; normal APIs stay closed.
 
+On the post-Follow path, begin performs only fresh reads and takes cleanup
+responsibility before a later activation tick; it does not issue another initial
+park. The `initial_park` row sets `historical_park_basis=true` and copies the prior
+completed park's original write-floor epoch without an observation;
+`initial_park_observed` records the new parked observation. These two
+rows must not be counted as a new park command. The same unchanged allocation,
+shapes and original definition are used throughout. Missing or changed handoff
+history invalidates later activation and observations without dropping cleanup.
+The final explicit repark remains a new command followed by a later observation.
+
 The run deadline is fixed at 2,000 ms after admission and the cleanup deadline at
 3,000 ms after admission. Neither renews. Existing physics-clock freshness and
 identity checks remain in force. Metadata revocation and timeout accounting run
@@ -113,6 +138,12 @@ mask values and pending force/torque facts. Records expose no raw pointers or
 native handles. The binding validates enums, counts and finite-value/epoch
 relationships before copying a result to Lua.
 
+Every stage row explicitly reports `historical_park_basis`. It defaults to false;
+true is valid only for a passed `initial_park` row without an observation. A true
+row records prior completed Follow cleanup, not an initial native park command
+issued by this diagnostic. Count native actions accordingly; the flag does not
+turn historical evidence into a fresh observation or add another cycle.
+
 `observed` describes only the completed diagnostic mechanism and its verified
 cleanup. Mask/dynamic-bit readback does not establish contact or broadphase
 participation. No result is reuse eligibility, an acknowledgement of a dependent
@@ -124,6 +155,13 @@ This change is a source-only checkpoint until the execution owner runs both
 normal and qualification Release builds and the focused provider/Host tests.
 Source fixtures use constructed native data and counted stand-ins; they cannot
 establish actual game behavior.
+
+Post-Follow source fixtures construct the trusted service handoff precondition;
+they exercise the World provider, retained history and refusal paths with counted
+stand-ins. They do not execute the real Follow callback/drain/ACK chain. A native
+post-Follow experiment must separately retain evidence of that actual chain,
+unchanged allocation and shapes, fresh parked state, activation and final repark.
+The earlier never-held experiment supplies no post-Follow qualification.
 
 Even a successful one-cycle game experiment is only a prerequisite. Real contact
 behavior at changed poses, absence of old-pose contacts, more than eight cycles

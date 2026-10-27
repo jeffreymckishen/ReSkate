@@ -14,6 +14,12 @@ local MAX_PENDING = 3
 local TRIPWIRE_EVERY = 2
 local METRIC_SAMPLE_LIMIT, METRIC_TRANSITION_LIMIT = 24, 16
 local METRIC_STOP_REASON_LIMIT, METRIC_STOP_KEY_BYTES = 8, 1024
+-- Authored display gearing for the drawn cranks: ride_composer's
+-- Composer.crank_ratio (a 25/9 BMX drive), written here so Ride does not load
+-- the composer; ride_runtime_presentation_tests pins the two together. Only
+-- the presentation pose reads it.
+local CRANK_RATIO = 25 / 9
+local TAU = 2 * math.pi
 
 local function copy(value)
     if type(value) ~= "table" then return value end
@@ -64,6 +70,35 @@ local function detached(value)
     return result
 end
 local function detail(value) return string.sub(tostring(value or "unavailable"), 1, 180) end
+local function wrap(angle)
+    angle %= TAU
+    if angle > math.pi then angle -= TAU end
+    return angle
+end
+-- The bike's own articulation, as bike_visual draws it. Ride has no trick
+-- presentation, so the trick terms stay zero.
+local NEUTRAL_POSE = table.freeze({steer=0,front_wheel_phase=0,rear_wheel_phase=0,crank_phase=0,
+    barspin=0,tailwhip=0,movement_bike_pitch=0,movement_bike_roll=0})
+-- The presentation pose after an accepted step: the front steer angle the
+-- kernel commanded, each wheel turned by its accepted angular speed over the
+-- step, and the cranks turned by the rear wheel through CRANK_RATIO only while
+-- the kernel's pedal latch says the rider pedals (forces.lua pedal_cadence),
+-- so a coast or a held pedal at top speed leaves them still. These are
+-- accepted Lua predictions drawn on the measured body, never native wheel
+-- state. ForceStage's zero stage commands nothing and reports no steer or
+-- cadence: the bars and cranks hold. One new table a step, which status
+-- shares; nil for a model that reports either malformed.
+local function presentation(previous,model,wheels,h)
+    local steer,pedaling=model.front_steer_angle,model.pedaling
+    if steer==nil then steer=previous.steer
+    elseif not M.finite(steer) or math.abs(steer)>1 then return nil end
+    if pedaling==nil then pedaling=false elseif type(pedaling)~="boolean" then return nil end
+    local rear=wheels[2].angular_speed*h
+    return {steer=steer,front_wheel_phase=wrap(previous.front_wheel_phase+wheels[1].angular_speed*h),
+        rear_wheel_phase=wrap(previous.rear_wheel_phase+rear),
+        crank_phase=pedaling and wrap(previous.crank_phase+rear/CRANK_RATIO) or previous.crank_phase,
+        barspin=0,tailwhip=0,movement_bike_pitch=0,movement_bike_roll=0}
+end
 local function array(value)
     if typeof(value) ~= "vector" then return nil end
     local result = {value.x, value.y, value.z}
@@ -374,6 +409,7 @@ local function status(s)
         input_staged=s.input_staged,input_consumed=s.input_consumed,input_queued=#s.input_queue,
         observed_steps=s.observed_steps,model_steps=s.model_steps,receipt=s.last_receipt,
         model_history=s.model_history,hop_disposition=s.hop_disposition,metrics=s.metrics,
+        presentation_pose=s.pose,
         model={trick_status=s.trick_status,alignment_status=s.alignment_status,recovery_status=s.recovery_status}})
 end
 local function receipt_valid(row,p)
@@ -841,6 +877,8 @@ local function observe(s,source_frame,raw,context)
     if not command then stop(s,"bounded force packet unavailable");return end
     local wheels=wheel_copy(model.wheels,s.wheels)
     if not wheels then stop(s,"bounded wheel model unavailable");return end
+    local pose=presentation(s.pose,model,wheels,sample.seconds)
+    if not pose then stop(s,"bounded presentation model unavailable");return end
     local p={serial=sample.serial,time=sample.time,seconds=sample.seconds,submitted_at=s.now,
         hop_id=model.hop_applied and model.hop_event_id or nil,wheels=wheels}
     -- Core's closures enforce exact live ownership before AND after effects.
@@ -864,6 +902,9 @@ local function observe(s,source_frame,raw,context)
             p.history_unknown=true;s.unknown=true;stop(s,"accepted force history adoption unavailable");return
         end
         s.wheels=wheels
+        -- The pose follows the accepted prediction, with the wheels it adopts;
+        -- model_history names that step.
+        s.pose=freeze(pose)
         s.model_history=freeze({kind="predictive_accepted",serial=p.serial,sequence=sequence,
             reason="exact_force_admission",native_wheel_state_known=false})
         if not submitted.current or not adopted.current or s.stopped then stop(s,"stopped during force admission") end
@@ -886,6 +927,7 @@ function Ride.new(force_api,models,options)
         contact=models.contact,tricks=models.tricks,recovery=models.recovery,alignment=models.alignment,
         alignment_options=detached(options.alignment),geometry=detached(options.geometry or Geometry),
         wheels=Forces.proposed_wheels(),phase="inert",issue="native qualification required",generation=0,
+        pose=freeze(NEUTRAL_POSE),
         submitted=0,acknowledged=0,pending={},metrics=new_metrics(),backpressure_steps=0,
         continuity_pending=false,continuity_skipped_steps=0,continuity_invalidations=0,
         input_queue={},input_staged=0,input_consumed=0,observed_steps=0,model_steps=0}

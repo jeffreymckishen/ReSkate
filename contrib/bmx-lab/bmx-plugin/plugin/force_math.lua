@@ -40,6 +40,9 @@ end
 function M.turn(q,v)
     return {turn3(q[1],q[2],q[3],q[4],v[1],v[2],v[3])}
 end
+-- turn's arithmetic on scalars, for a caller that keeps its points in scalars:
+-- the same numbers, and no table at all.
+M.turn3=turn3
 function M.tensor(b,v,inverse)
     local o=b.orientation
     local n=0 for i=1,4 do n+=o[i]*o[i] end n=math.sqrt(n)

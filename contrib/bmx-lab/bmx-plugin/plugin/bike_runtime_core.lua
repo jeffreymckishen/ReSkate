@@ -264,6 +264,23 @@ function BikeRuntime.selected_pad_admitted(frame,slot,riding)
     if neutral==nil then return zero and not pressed end
     return neutral==true and not pressed
 end
+-- The pose the follow visual draws the bike's own parts in: Ride's presentation
+-- pose (its accepted steer, wheel and crank phases) from Ride's latest status,
+-- or nil, the neutral pose, while there is no Ride. Spawn checks it before
+-- drawing it, so a malformed pose is refused there with its own reason.
+function BikeRuntime.follow_pose(ride_status)
+    return type(ride_status)=="table" and ride_status.presentation_pose or nil
+end
+-- The stop text for a follow visual that did not draw. A refusal carries
+-- Spawn's own reason (a pose, the body, the envelope, its clock or a part
+-- request), which the plain text hid. A call that threw or was cancelled keeps
+-- the plain text, and a stop latched before it keeps its own first cause.
+function BikeRuntime.follow_visual_stop(label,r)
+    if type(r)=="table" and r[1]==true and r.n==3 and r[2]==false and type(r[3])=="string" and #r[3]>0 then
+        return label.." refused: "..r[3]
+    end
+    return label.." refused or cancelled"
+end
 
 -- Bind only callbacks, never an SDK object or activation option. Keeping this
 -- adapter inert lets constructed tests exercise the private query path while
@@ -1245,7 +1262,9 @@ local function handoff_and_follow()
     T.handoff_unknown=false
     local at=clock();if not at or not current(generation) then stop_all("cancelled during body handoff");return end
     local v=call("spawn.follow_visual",spawn.follow_visual,spawn,h[3],at)
-    if not yes(v) or not clock() or not current(generation) then stop_all("initial follow visual refused or cancelled");return end
+    if not yes(v) or not clock() or not current(generation) then
+        stop_all(BikeRuntime.follow_visual_stop("initial follow visual",v));return
+    end
     -- A renewable lease starts from the same three-second floor as the fixed one.
     T.lease_renewable=FOLLOW_RENEWAL_QUALIFIED and renewal_available()
     T.reserve_attempted=true;T.reserve_unknown=true;T.reserve_at=T.now
@@ -1612,10 +1631,12 @@ local function tick(dt)
                     elseif current(generation) and renew_follow_once(r[2],generation) then
                         now=T.now -- The renewal's own clock reads, if it made any.
                         observe_ride(selected_source_frame,r[2],now)
-                        local v=current(generation) and call("spawn.follow_visual",spawn.follow_visual,spawn,r[2],now) or {false,n=1}
+                        -- The same read, drawn in the pose of Ride's step on it (or its last accepted one).
+                        local pose=BikeRuntime.follow_pose(ride and T.ride_status)
+                        local v=current(generation) and call("spawn.follow_visual",spawn.follow_visual,spawn,r[2],now,pose) or {false,n=1}
                         now=clock()
                         if not yes(v) or not now or not current(generation) then
-                            stop_all("follow visual refused or cancelled")
+                            stop_all(BikeRuntime.follow_visual_stop("follow visual",v))
                         elseif not lease_live(now) then stop_all("ride window or Follow lease ended during visual update") end
                     end
                 end

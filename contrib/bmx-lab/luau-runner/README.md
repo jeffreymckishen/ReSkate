@@ -72,7 +72,7 @@ public Core mount/Source, without changing existing suite counts. Any suite that
 against that copy; the others run against the plugin folder itself. The production gates (`ACTIVATION_QUALIFIED`,
 `RIDE_COMPOSITION_QUALIFIED`) are never changed in the source.
 
-When `force_stage.lua` exists, that copy also holds six `force_stage_*_fixture.lua` modules.
+When `force_stage.lua` exists, that copy also holds private `force_stage_*_fixture.lua` modules.
 The source must keep exactly one `local STAGE = "zero_force"` and one
 `local AUTHORED_CAPS = nil`. It is copied unchanged; the fixtures replace only those literals:
 
@@ -85,9 +85,26 @@ The source must keep exactly one `local STAGE = "zero_force"` and one
 | `low_cap_fixture` | `support` | `{force=100,speed=10}` |
 | `invalid_fixture` | `invalid_stage` | `nil` |
 
-Each full name begins with `force_stage_`. All six names are refused in the plugin source.
+Each full name begins with `force_stage_`. Every fixture name is refused in the plugin source.
 Missing, repeated or nonbaseline stage/cap literals refuse before destination mutation.
 These are constructed policy values, not calibrated native force or speed limits.
+The ride-control suite additionally stages `ride_fixture` with
+`{force=6000,speed=3,torque=2000}`, `ride_uncapped_fixture` with `nil`,
+`ride_low_force_fixture` with `{force=100,speed=3,torque=2000}`, and
+`ride_low_torque_fixture` with `{force=6000,speed=3,torque=35}`. All select
+`ride` only inside the owned test copy. Exact-manifest regression checks cover
+these four names and refuse each if planted in the source package.
+
+When Core is present, the copy also includes `bike_runtime_core_mounted_pose_fixture.lua`.
+It replaces exactly one `MountedPose=require("./mounted_pose")` with
+`MountedPose=require("./mounted_pose_qualified_fixture")`; every Core literal, the Ride binding,
+and native gate remain unchanged. Staging requires the real `mounted_pose.lua` dependency,
+whose separately generated qualified fixture is already checked above. Missing or duplicate
+canonical bindings, an already qualified binding, and a planted Core pose fixture refuse before
+any destination change. `floor-manifest` checks the exact Core and dependency bytes, lexical
+owned-file manifest, identical rerun, binding refusals and missing-dependency refusals against
+both an absent destination and an existing owned copy. The suite's constructed presentation
+callbacks do not establish Host permission, rider alignment or native presentation qualification.
 
 ## What it is not
 

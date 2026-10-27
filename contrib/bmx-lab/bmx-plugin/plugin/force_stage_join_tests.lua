@@ -37,6 +37,7 @@ local function fixture(stage,options)
     -- This observer only records the real result. It does not supply controls,
     -- model values, candidates or history; all three operations delegate exactly.
     local observer={tuning=actual.tuning,hop_policy=actual.hop_policy}
+    function observer:admit_measured(body) return actual:admit_measured(body) end
     function observer:preview(...)
         local args=table.pack(...)
         local model,candidate=actual:preview(...)
@@ -63,7 +64,7 @@ local function fixture(stage,options)
             requested_query_preset="camera",rays={}}
         for i,ray in ipairs(rays) do
             if #rays==2 then
-                local fraction=G.wheel_radius/(G.wheel_radius+.15)
+                local fraction=(G.wheel_radius+(options.separation or 0))/(G.wheel_radius+.15)
                 out.rays[i]={status="hit",fraction=fraction,position=ray.from+(ray.to-ray.from)*fraction,
                     normal_available=true,normal=vector.create(0,1,0),surface_velocity_available=true,
                     surface_velocity=vector.create(0,0,0),motion="measured"}
@@ -158,23 +159,30 @@ function Tests.run()
     end)
     case("over-cap support stops instead of clamping",function()
         local f=fixture(LowCap);local out=f.observe()
-        check(out.stop_requested and out.issue=="bounded force packet unavailable","invalid wrapper model stops the real Ride")
+        check(out.stop_requested and string.find(out.issue,"bounded force packet unavailable: authored_force_limit",1,true)==1,
+            "invalid wrapper model stops the real Ride with its exact refusal category")
         check(out.submitted==0 and not out.force_pending and #f.commands==0 and f.adoptions==0,"over-cap packet creates no native debt or accepted history")
         check(#f.previews==1 and f.previews[1].model.valid==false,"cap refusal is reached after actual category decoding")
         local args=f.previews[1].args
         local raw=Forces.new():preview(args[1],args[2],args[3],args[4],Forces.controls())
         check(raw.valid and magnitude(raw.force)>100 and raw.contact_scale==1,"unclamped real support exceeds the synthetic 100 N authored cap")
+        check(string.find(out.issue,string.format(" |F| %.0f N |T| %.0f N*m",magnitude(raw.force),magnitude(raw.torque)),1,true)~=nil,
+            "stop diagnostics retain the refused model's unsent force and torque magnitudes")
         f.next();check(#f.previews==1 and #f.commands==0,"stopped graph never retries an over-cap force")
     end)
     for _,stage in ipairs({UncappedSupport,UncappedPedal}) do
         case("unselected authored caps cannot produce a packet",function()
             local f=fixture(stage);local out=f.observe()
-            check(out.stop_requested and out.issue=="bounded force packet unavailable","missing authored decision refuses the nonzero stage")
+            check(out.stop_requested and string.find(out.issue,"measured body refused: authored_caps_unavailable",1,true)==1,
+                "missing authored decision refuses measured admission with its exact reason")
             check(out.submitted==0 and #f.commands==0 and f.adoptions==0,"nil caps never silently use kernel or SDK ceilings")
         end)
     end
     case("real kernel clamp cannot pass as a bounded stage",function()
-        local f=fixture(Support,{velocity=vector.create(0,-8,0)});local out=f.observe()
+        -- Leave room for the falling body's forecast interval: the measured
+        -- hit is still within the ray, and the folded contact is within the
+        -- kernel's penetration domain, so this case reaches budget scaling.
+        local f=fixture(Support,{velocity=vector.create(0,-8,0),separation=.08});local out=f.observe()
         check(out.stop_requested and out.submitted==0 and #f.commands==0,"bounded incoming speed does not authorize a clamped solver result")
         check(#f.previews==1 and f.previews[1].model.valid==false,"nonzero wrapper refuses before packet construction")
         local args=f.previews[1].args

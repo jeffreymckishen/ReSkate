@@ -300,7 +300,7 @@ function Tests.run(case_done)
             end
             local real_preview=f.force.preview
             function f.force:preview(h,body,wheels,samples,controls,speculative)
-                f.preview_calls=(f.preview_calls or 0)+1;f.preview_samples=copy(samples)
+                f.preview_calls=(f.preview_calls or 0)+1;f.preview_samples=copy(samples);f.preview_body=copy(body)
                 local model,candidate=real_preview(self,h,body,wheels,samples,controls,speculative)
                 f.preview_result=copy(model)
                 return model,candidate
@@ -323,24 +323,30 @@ function Tests.run(case_done)
             return f
         end
         local f=measured_fixture();local s=f.observe();local model=f.preview_result
-        -- Native vector copies leave tiny positive gaps; zero-gap rest is not
-        -- this row's exact constraint. Solve two vertical normal constraints
+        -- Native vector copies leave tiny gaps; the one-step forecast then
+        -- advances gravity before preview. Solve its two vertical constraints
         -- and two free-rolling constraints independently of iterative Solver.
         local first,second=f.preview_samples[1],f.preview_samples[2]
         local h=f.read.seconds
-        local front_z,rear_z=first.contact.point[3]-f.read.position.z,second.contact.point[3]-f.read.position.z
-        local front_target,rear_target=-first.separation/h,-second.separation/h
+        local forecast=f.preview_body
+        local front_z,rear_z=first.contact.point[3]-forecast.center_of_mass[3],second.contact.point[3]-forecast.center_of_mass[3]
+        local function target(separation)
+            return math.min(.4,.15*math.max(0,-separation)/h)-math.max(0,separation)/h
+        end
+        local front_target,rear_target=target(first.separation),target(second.separation)
         local expected_spin=(rear_target-front_target)/(front_z-rear_z)
         local expected_vy=front_target+expected_spin*front_z
-        local expected_load=83*(9.8+expected_vy/h)
-        local hub_y_sum=first.contact.point[2]+second.contact.point[2]+2*(Forces.wheel_radius-f.read.position.y)
+        local expected_load=83*(9.8+(expected_vy-forecast.linear_velocity[2])/h)
+        local hub_y_sum=first.contact.point[2]+second.contact.point[2]+2*(Forces.wheel_radius-forecast.center_of_mass[2])
         local expected_vz=-expected_spin*hub_y_sum/(2+83*Forces.wheel_radius^2/.23)
         local expected_force_z,expected_pitch=83*expected_vz/h,26*expected_spin/h
         check(s.submitted==1 and not s.stop_requested and s.model_steps==1,"actual measured-hit decoder reaches one force submission")
         check(count(f,"probe")==1 and count(f,"decode")==0 and f.preview_calls==1,"one real decoder/force path, no substitute decoder")
         check(count(f,"trick")==0,"measured-hit force test grants no Trick support qualification")
         check(model.valid and model.grounded,"actual force kernel accepts both plan-derived measured-hit rows")
-        check(math.abs(f.command.force.y-expected_load)<=.002,"co-moving measured gaps carry analytic 83kg normal response")
+        check(math.abs(forecast.linear_velocity[2]+9.8*h)<1e-12 and f.read.velocity.y==0,
+            "forecast gravity advances a detached copy and leaves the measured velocity unchanged")
+        check(math.abs(f.command.force.y-expected_load)<=.002,"co-moving forecast gaps carry analytic 83kg normal response")
         check(math.abs(f.command.force.x)<=.0001 and math.abs(f.command.force.z-expected_force_z)<=.0001
             and math.abs(f.command.torque.x-expected_pitch)<=.0001 and math.abs(f.command.torque.y)<=.0001
             and math.abs(f.command.torque.z)<=.0001,"measured gap difference adds only analytic pitch and free-rolling response")
@@ -350,10 +356,11 @@ function Tests.run(case_done)
         for i=1,2 do
             local sample,hit=f.preview_samples[i],f.batch.rays[i]
             local contact=sample.contact
-            check(contact.status=="hit" and math.abs(sample.separation)<=.000001
-                and sample.verified_plane==false and sample.balance_normal_available==false,"wheel separation is authored geometry, not verified plane "..i)
-            check(contact.point[1]==hit.position.x and contact.point[2]==hit.position.y
-                and contact.point[3]==hit.position.z,"wheel row keeps actual decoded point "..i)
+            local measured_gap=f.plan[i].from.y-hit.position.y-Forces.wheel_radius
+            check(contact.status=="hit" and math.abs(sample.separation-(measured_gap-9.8*h*h))<1e-6
+                and sample.verified_plane==false and sample.balance_normal_available==false,"forecast separation retains unqualified measured geometry "..i)
+            check(math.abs(contact.point[1]-(hit.position.x+f.read.velocity.x*h))<1e-12 and contact.point[2]==hit.position.y
+                and math.abs(contact.point[3]-(hit.position.z+f.read.velocity.z*h))<1e-12,"forecast slides the contact point without changing its measured plane "..i)
             check(contact.normal[1]==0 and contact.normal[2]==1 and contact.normal[3]==0
                 and contact.forward[1]==0 and contact.forward[2]==0 and contact.forward[3]==1,"wheel row keeps level normal and projected heading "..i)
             check(contact.surface_velocity[1]==.75 and contact.surface_velocity[2]==0

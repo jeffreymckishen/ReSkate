@@ -37,6 +37,7 @@ local function fixture(stage,options)
     -- This observer only records the real result. It does not supply controls,
     -- model values, candidates or history; all three operations delegate exactly.
     local observer={tuning=actual.tuning,hop_policy=actual.hop_policy}
+    function observer:admit_measured(body) return actual:admit_measured(body) end
     function observer:preview(...)
         local args=table.pack(...)
         local model,candidate=actual:preview(...)

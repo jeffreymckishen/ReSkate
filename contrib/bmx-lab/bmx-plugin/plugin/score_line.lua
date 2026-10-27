@@ -32,7 +32,7 @@ local function empty(self)
     self._airborne, self._manual, self._grind = false, nil, nil
 end
 function Line.new(rules)
-    local self = setmetatable({ _rules=Rules.sanitize(rules), _seconds=nil }, Object)
+    local self = setmetatable({ _rules=Rules.sanitize(rules), _seconds=nil, _finished=false }, Object)
     empty(self)
     return self
 end
@@ -58,6 +58,19 @@ function Object:_close(outcome, why)
     end
     empty(self)
     return closed
+end
+-- Terminal control has no elapsed-time observation. Close only existing credits;
+-- ordinary step timestamp admission remains strict and does not use synthetic ticks.
+function Object:finish(why,outcome)
+    if reason(why,nil)==nil or (outcome~="banked" and outcome~="lost" and outcome~="interrupted") then
+        return {snapshot=self:_snapshot(),credits={},closed=nil,issue="invalid_terminal"}
+    end
+    if self._finished then
+        return {snapshot=self:_snapshot(),credits={},closed=nil,issue="finished"}
+    end
+    self._finished=true
+    local closed=self:_close(outcome,why)
+    return {snapshot=self:_snapshot(),credits={},closed=closed,issue="none"}
 end
 function Object:_repeat(key)
     return math.max(self._rules.repeat_floor, 1-self._rules.repeat_step*(self._repeats[key] or 0))
@@ -224,6 +237,7 @@ function Object:step(h,feed)
     local function result(issue)
         return {snapshot=self:_snapshot(),credits=credits,closed=closed,issue=issue or "none"}
     end
+    if self._finished then return result("finished") end
     if not number(h,0,10) or not plain(feed) or not number(feed.seconds,0,MAX)
         or not modes[feed.mode] or not number(feed.speed,-1000,1000)
         or not valid_event(feed.manual,"manual") or not valid_event(feed.grind,"grind")

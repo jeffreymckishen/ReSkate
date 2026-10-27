@@ -49,7 +49,14 @@ local function fixture(fault)
     end
     function f.api.receipt(sequence)
         f.read_ids[#f.read_ids+1]=sequence
-        return receipt(sequence)
+        local row=receipt(sequence)
+        -- This fixture supplies coherent receipts even after backpressure leaves
+        -- one transaction. Its N+1 produced sample is not an N+2 successor.
+        -- Shared single-command fixtures keep their intentional malformed rows.
+        if row.outcome=="applied" and row.successor and row.successor.serial==row.produced_serial then
+            row.successor=nil
+        end
+        return row
     end
     function f.api.acknowledge(sequence)
         f.ack_ids[#f.ack_ids+1]=sequence
@@ -142,10 +149,22 @@ function Tests.run()
             "the original ready receipt is acknowledged and retired as accepted")
         check(#f.retirements==1 and f.retirements[1].id==original.id and f.retirements[1].disposition=="accepted",
             "suppressed press never retires the accepted event as suppressed")
-        for _=1,3 do
+        local resumed_sequence=f.sequence
+        if ack_timing=="delayed" then
+            check(pressed.pending_count==1,"draining receipt capacity leaves one newly accepted command")
+        end
+        for held_step=1,3 do
             f.advance();f.successor=f.sample();local held=f.observe()
             check(not held.stop_requested and f.mapping:status().pending_hop==nil and #f.impulse_packets==1,
                 "holding the second press through and after ACK cannot replay its impulse: "..tostring(held.issue))
+            if ack_timing=="delayed" and held_step==1 then
+                check(held.acknowledged==pressed.acknowledged and held.pending_count==2
+                    and f.transactions[resumed_sequence]~=nil,
+                    "the lone resumed command keeps its exact debt at N+1 without a fabricated successor")
+            elseif ack_timing=="delayed" and held_step==2 then
+                check(held.acknowledged==pressed.acknowledged+1 and f.transactions[resumed_sequence]==nil,
+                    "only the actual N+2 successor retires the resumed command")
+            end
         end
         check(f.mapping:status().hop_counter==original.id and f.claims==1,
             "held input cannot claim a new command or consume an event ID")

@@ -3,6 +3,7 @@
 #include "Extension/Plugins/plugin_content.h"
 #include "Extension/Plugins/plugin_discovery.h"
 #include "Extension/Plugins/plugin_host.h"
+#include "Extension/Plugins/plugin_joystick_policy.h"
 #include "Extension/Plugins/plugin_manifest.h"
 #include "Extension/Plugins/plugin_session_feed.h"
 #include "Extension/Plugins/plugin_wire.h"
@@ -7019,6 +7020,39 @@ void game_menu_distinguishes_unknown_from_closed() {
           "The old button limit and call count remain unchanged\n" + environment.all());
 }
 
+void joystick_requests_survive_a_later_concurrent_timestamp() {
+    using joystick::detail::request_is_recent;
+    constexpr std::uint64_t timeout = 2000;
+    std::uint64_t clock = 10000;
+    const auto worker_now = clock;
+    // A snapshot publishes its request after the worker sampled its clock, but before it reads
+    // the request timestamp. This ordering must not clear the cache as though nobody asked.
+    const auto asked_at = ++clock;
+    check(request_is_recent(worker_now, asked_at, timeout), "a concurrent later request keeps joystick polling active");
+    check(request_is_recent(asked_at, asked_at, timeout), "a request at the current tick is recent");
+    check(request_is_recent(asked_at + timeout, asked_at, timeout), "the exact joystick request deadline is included");
+    check(!request_is_recent(asked_at + timeout + 1, asked_at, timeout), "a joystick request expires after its deadline");
+    check(!request_is_recent(10000, 7000, timeout), "a genuinely idle joystick reader still expires");
+    constexpr auto last_tick = (std::numeric_limits<std::uint64_t>::max)();
+    check(request_is_recent(last_tick, last_tick - timeout, timeout), "the deadline remains inclusive near the timestamp limit");
+    check(!request_is_recent(last_tick, last_tick - timeout - 1, timeout), "an old request near the timestamp limit expires");
+    check(request_is_recent(last_tick - 1, last_tick, timeout), "a later publication near the timestamp limit stays recent");
+    check(!request_is_recent(last_tick, 0, timeout), "a very old request does not become recent through arithmetic wrap");
+}
+
+void joystick_axis_configuration_requires_applied_properties() {
+    using joystick::detail::axis_configuration_applied;
+    check(axis_configuration_applied(0, 0), "both applied joystick properties allow normalized samples");
+    check(!axis_configuration_applied(-1, 0), "a failed range request refuses normalized samples");
+    check(!axis_configuration_applied(1, 0), "a no-effect range result does not prove the requested range");
+    check(!axis_configuration_applied(2, 0), "an unknown positive range result does not prove the requested range");
+    check(!axis_configuration_applied(0, -1), "a failed dead-zone request refuses the zero-dead-zone contract");
+    check(!axis_configuration_applied(0, 1), "a no-effect dead-zone result does not prove zero dead zone");
+    check(!axis_configuration_applied(0, 2), "an unknown positive dead-zone result does not prove zero dead zone");
+    check(!axis_configuration_applied(1, 1), "two no-effect results do not admit a joystick");
+    check(!axis_configuration_applied(-1, -1), "two failed property requests do not admit a joystick");
+}
+
 void the_wider_set_reaches_the_game() {
     TestEnvironment environment;
     auto& game = environment.fake;
@@ -9353,6 +9387,8 @@ int main() {
         run(plugins_call_and_hear_each_other);
         run(web_requests_go_only_to_listed_domains);
         run(game_menu_distinguishes_unknown_from_closed);
+        run(joystick_requests_survive_a_later_concurrent_timestamp);
+        run(joystick_axis_configuration_requires_applied_properties);
         run(the_wider_set_reaches_the_game);
         run(declared_board_colours_through_the_api);
         run(key_names_become_binds);

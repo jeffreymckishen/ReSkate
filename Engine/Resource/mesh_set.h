@@ -6,6 +6,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -36,20 +37,31 @@ struct MeshSectionLayoutMetadata {
     std::size_t diagnostic_count{}; // diagnostics holds at most 64 messages
     std::vector<std::string> diagnostics;
 };
+// Raw values at offsets shared by known readers, not a layout interpretation or a chunk GUID.
+struct MeshLodCommonOffsetObservation {
+    std::uint32_t section_count_raw{};
+    std::uint64_t section_pointer_raw{};
+    std::uint32_t index_format_raw{}, index_bytes_raw{}, vertex_bytes_raw{};
+    std::array<std::byte, 16> geometry_identity_raw{};
+};
 struct MeshLodMetadata {
     std::array<std::uint32_t, 4> header{};
     bool skinned{}, lod_kind_supported{};
     std::size_t lod_count{}, lod_index{}, lod_offset{}, section_table{};
     std::uint32_t lod_kind{}, index_format{}, section_count{};
     MeshLod geometry;
+    std::optional<MeshLodCommonOffsetObservation> static_common_offsets;
     std::vector<MeshSectionLayoutMetadata> candidates;
     std::vector<std::string> diagnostics;
     bool ambiguous{}, complete{};
 };
 // Throws for unknown headers or unreadable core resource/LOD fields. An unsupported LOD kind
 // returns complete false with a diagnostic. When lod_kind_supported is false, only header,
-// skinned, lod_count, lod_index, lod_offset, lod_kind and diagnostics are available; the other
-// fields remain defaults, not observations. Kind 1 still requires its full LOD span.
+// skinned, lod_count, lod_index, lod_offset, lod_kind and diagnostics are available. For the
+// exact static header, static_common_offsets may additionally hold six raw observations when
+// their full 132-byte span is present. No pointer is followed or identity interpreted for them.
+// The other fields remain defaults, not observations. Kind 1 still requires its full LOD span
+// and leaves static_common_offsets empty.
 // Parseable candidate errors and unknown declarations are returned explicitly. Static section
 // strides are never chosen by first fit: both plausible candidates make complete false.
 // complete means this reader reported one structurally sound, understood declaration layout;

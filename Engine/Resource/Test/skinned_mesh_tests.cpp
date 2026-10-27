@@ -137,7 +137,7 @@ void metadata_throws(const std::vector<std::byte>& resource, std::size_t lod, co
 
 void metadata_reports_resource_fields_without_geometry() {
     const auto metadata = read_mesh_lod_metadata(made_mesh().resource, 0);
-    check(metadata.lod_kind_supported && metadata.complete && metadata.skinned && !metadata.ambiguous, "known synthetic skinned metadata is complete");
+    check(metadata.lod_kind_supported && metadata.complete && metadata.skinned && !metadata.ambiguous && !metadata.static_common_offsets, "known synthetic skinned metadata is complete without fallback observations");
     check(metadata.header == std::array<std::uint32_t, 4>{208, 188, 384, 0}, "all four header words preserved");
     check(metadata.lod_count == 1 && metadata.lod_index == 0 && metadata.lod_offset == 256 && metadata.lod_kind == 1,
         "LOD identity and raw kind preserved");
@@ -170,7 +170,7 @@ void metadata_preserves_static_stride_ambiguity() {
 void metadata_distinguishes_synthetic_static_tables() {
     for (const std::size_t stride : {std::size_t{384}, std::size_t{416}}) {
         const auto metadata = read_mesh_lod_metadata(made_static_metadata(stride, 2), 0);
-        check(metadata.lod_kind_supported && metadata.complete && !metadata.ambiguous && metadata.candidates.size() == 2,
+        check(metadata.lod_kind_supported && metadata.complete && !metadata.ambiguous && metadata.candidates.size() == 2 && !metadata.static_common_offsets,
             "one supported synthetic table is reported completely");
         std::size_t valid{};
         for (const auto& candidate : metadata.candidates) {
@@ -231,12 +231,12 @@ void metadata_preserves_unsupported_lod_facts() {
                 "unsupported kind is incomplete with a diagnostic and no guessed candidates");
             check(metadata.index_format == 0 && metadata.section_count == 0 && metadata.section_table == 0 &&
                 metadata.geometry.chunk == Guid{} && metadata.geometry.vertex_bytes == 0 && metadata.geometry.index_bytes == 0,
-                "unsupported kind leaves all later fields undecoded");
+                "unsupported kind leaves interpreted fields unpopulated");
 
             resource.resize(260); // Exactly the selected LOD's four-byte raw kind remains.
             const auto short_metadata = read_mesh_lod_metadata(resource, 0);
             check(short_metadata.lod_kind == kind && short_metadata.lod_offset == 256 &&
-                !short_metadata.lod_kind_supported && !short_metadata.complete && short_metadata.candidates.empty(),
+                !short_metadata.lod_kind_supported && !short_metadata.complete && short_metadata.candidates.empty() && !short_metadata.static_common_offsets,
                 "raw unsupported kind needs no assumed full LOD layout");
             resource.resize(259);
             metadata_throws(resource, 0, "even a raw unsupported kind requires all four bytes");
@@ -257,6 +257,80 @@ void metadata_preserves_unsupported_lod_facts() {
     auto known_kind = made_static_metadata(416);
     known_kind.resize(260);
     metadata_throws(known_kind, 0, "known kind still requires its full previously checked LOD span");
+}
+void metadata_observes_static_common_offsets() {
+    std::array<std::byte, 16> identity{};
+    for (std::size_t i = 0; i < identity.size(); ++i) identity[i] = static_cast<std::byte>(0x80 + i);
+    for (const auto kind : std::array<std::uint32_t, 3>{0, 2, std::numeric_limits<std::uint32_t>::max()}) {
+        auto resource = made_static_metadata(416);
+        put(resource, 256, kind);
+        put<std::uint32_t>(resource, 264, std::numeric_limits<std::uint32_t>::max());
+        put<std::uint64_t>(resource, 268, std::numeric_limits<std::uint64_t>::max());
+        put<std::uint32_t>(resource, 340, 34);
+        put<std::uint32_t>(resource, 344, std::numeric_limits<std::uint32_t>::max());
+        put<std::uint32_t>(resource, 348, std::numeric_limits<std::uint32_t>::max() - 1);
+        put(resource, 372, identity);
+        resource.resize(388); // Exactly 132 bytes from the selected LOD; no section table exists.
+        const auto metadata = read_mesh_lod_metadata(resource, 0);
+        check(metadata.static_common_offsets.has_value(), "full static prefix exposes a separate raw observation");
+        if (metadata.static_common_offsets) {
+            const auto& raw = *metadata.static_common_offsets;
+            check(raw.section_count_raw == std::numeric_limits<std::uint32_t>::max() &&
+                raw.section_pointer_raw == std::numeric_limits<std::uint64_t>::max(),
+                "hostile count and pointer remain unchanged words without allocation or pointer arithmetic");
+            check(raw.index_format_raw == 34 && raw.index_bytes_raw == std::numeric_limits<std::uint32_t>::max() &&
+                raw.vertex_bytes_raw == std::numeric_limits<std::uint32_t>::max() - 1 && raw.geometry_identity_raw == identity,
+                "raw format, byte counts and identity bytes are copied without interpretation");
+        }
+        check(!metadata.lod_kind_supported && !metadata.complete && metadata.candidates.empty() &&
+            metadata.section_count == 0 && metadata.section_table == 0 && metadata.index_format == 0 &&
+            metadata.geometry.chunk == Guid{} && metadata.geometry.vertex_bytes == 0 && metadata.geometry.index_bytes == 0,
+            "static observation never populates interpreted geometry or admits an unsupported kind");
+        put<std::uint64_t>(resource, 268, 0);
+        const auto null_pointer = read_mesh_lod_metadata(resource, 0);
+        check(null_pointer.static_common_offsets && null_pointer.static_common_offsets->section_pointer_raw == 0 &&
+            !null_pointer.complete && null_pointer.candidates.empty(), "zero pointer is a raw word, not dereferenced or rejected");
+
+        auto wrong_header = resource;
+        put<std::uint32_t>(wrong_header, 12, 1);
+        metadata_throws(wrong_header, 0, "static observation requires all four exact header words");
+        auto skinned = resource;
+        put<std::uint32_t>(skinned, 0, 208);
+        put<std::uint32_t>(skinned, 4, 188);
+        const auto skinned_metadata = read_mesh_lod_metadata(skinned, 0);
+        check(!skinned_metadata.static_common_offsets && !skinned_metadata.lod_kind_supported &&
+            !skinned_metadata.complete && skinned_metadata.candidates.empty(),
+            "unsupported skinned kinds do not enter the static observation path");
+
+        resource.resize(387);
+        const auto truncated = read_mesh_lod_metadata(resource, 0);
+        check(!truncated.static_common_offsets && truncated.lod_kind == kind && truncated.lod_offset == 256 &&
+            !truncated.lod_kind_supported && !truncated.complete && truncated.diagnostics.size() == 2,
+            "131 bytes retain the raw-kind refusal and report missing observation span without partial fields");
+    }
+
+    auto later_lod = made_static_metadata(416);
+    put<std::uint16_t>(later_lod, 180, 3);
+    pointer(later_lod, 56, 400);
+    pointer(later_lod, 64, 512);
+    put<std::uint32_t>(later_lod, 512, 0);
+    put<std::uint32_t>(later_lod, 520, 7);
+    put<std::uint64_t>(later_lod, 524, 0x1122334455667788ull);
+    put<std::uint32_t>(later_lod, 596, 34);
+    put<std::uint32_t>(later_lod, 600, 13);
+    put<std::uint32_t>(later_lod, 604, 29);
+    put(later_lod, 628, identity);
+    later_lod.resize(644);
+    const auto metadata = read_mesh_lod_metadata(later_lod, 2);
+    check(metadata.lod_count == 3 && metadata.lod_index == 2 && metadata.lod_offset == 512 &&
+        metadata.lod_kind == 0 && metadata.static_common_offsets && !metadata.complete,
+        "observation follows the selected third LOD rather than a fixed index or resource offset");
+    if (metadata.static_common_offsets) {
+        const auto& raw = *metadata.static_common_offsets;
+        check(raw.section_count_raw == 7 && raw.section_pointer_raw == 0x1122334455667788ull &&
+            raw.index_format_raw == 34 && raw.index_bytes_raw == 13 && raw.vertex_bytes_raw == 29 &&
+            raw.geometry_identity_raw == identity, "all six observation offsets are relative to the selected LOD");
+    }
 }
 void metadata_returns_candidate_bounds_failures() {
     auto short_table = made_static_metadata(384);
@@ -354,6 +428,7 @@ int main() {
         metadata_distinguishes_synthetic_static_tables();
         metadata_refuses_core_bounds_and_unknown_headers();
         metadata_preserves_unsupported_lod_facts();
+        metadata_observes_static_common_offsets();
         metadata_returns_candidate_bounds_failures();
         metadata_reports_unknown_declarations_without_guessing();
         metadata_bounds_diagnostic_storage();

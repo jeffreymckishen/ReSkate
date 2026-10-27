@@ -51,8 +51,11 @@ struct Leaves {
     unsigned captures{}, reserve_bindings{}, publish_bindings{}, binding_stops{}, prepares{}, currents{}, originals{};
     unsigned proof_checks{}, holds{}, held_release_requests{}, hold_releases{}, body_releases{}, fences{}, parks{}, completions{};
     bool duties_busy{}, hold_refusal{}, publish_refusal{}, prepare_refusal{}, release_known{true};
-    bool measured_target{}, current_refusal{};
-    unsigned target_measurements{};
+    bool measured_target{}, current_refusal{}, seal_refusal{};
+    unsigned target_measurements{}, command_seals{}, successful_seals{}, ack_handoffs{};
+    dingosdk::owned_bodies::CompletedAckHandoff handoff_result{dingosdk::owned_bodies::CompletedAckHandoff::recorded};
+    std::uint64_t handoff_owner{}, handoff_sequence{};
+    bool handoff_after_seal{};
     dingosdk::owned_body::Sample dispatch_sample{};
     dingosdk::body_follow_native::Attachment prepared_attachment{};
     std::array<float, 16> original_value{};
@@ -234,7 +237,23 @@ bool completed_history_matches(const Binding& binding, const ParkFence& fence,
     const owned_bodies::RetainedParkReceipt& receipt) noexcept {
     return fence.available() && receipt.available() && fence.owner_ == binding.owner && fence.sequence_ == binding.sequence;
 }
-bool seal_command_cleanup(const Binding&, const ParkFence&, const owned_bodies::RetainedParkReceipt&) noexcept { return true; }
+bool seal_command_cleanup(const Binding&, const ParkFence&, const owned_bodies::RetainedParkReceipt&) noexcept {
+    auto& leaf = service_test::leaf;
+    ++leaf.command_seals;
+    if (leaf.seal_refusal) return false;
+    ++leaf.successful_seals;
+    return true;
+}
+owned_bodies::CompletedAckHandoff completed_ack_handoff(const Binding& binding, const ParkFence& fence,
+    const owned_bodies::RetainedParkReceipt& receipt) noexcept {
+    auto& leaf = service_test::leaf;
+    ++leaf.ack_handoffs;
+    leaf.handoff_owner = binding.owner; leaf.handoff_sequence = binding.sequence;
+    leaf.handoff_after_seal = leaf.successful_seals != 0;
+    service_test::check(binding.published && binding.stopped && !binding.reserved &&
+        completed_history_matches(binding, fence, receipt), "handoff carries exact completed Follow history");
+    return leaf.handoff_result;
+}
 bool complete_stop(Binding& binding, const ParkFence& fence, const owned_bodies::RetainedParkReceipt& receipt,
     Diagnostic&) noexcept {
     ++service_test::leaf.completions;
@@ -797,6 +816,88 @@ void revocation_first_only() {
         "an explicit stop after a lapse reads deadline");
 }
 
+void completed_ack_bookkeeping() {
+    using owned_bodies::CompletedAckHandoff;
+    constexpr std::array outcomes{CompletedAckHandoff::recorded, CompletedAckHandoff::closed_ineligible,
+        CompletedAckHandoff::unavailable};
+    for (const auto outcome : outcomes) {
+        reset("ack_reset");
+        const auto handle = follow_one(false);
+        check(!acknowledge_completed(owner, handle) && !leaf.ack_handoffs, "premature ACK makes no handoff");
+        check(dispatch_one(), "one final original returns before cleanup");
+        check(stop(owner, handle), "stop before completed handoff");
+        tick(clear_guard());
+        check(read_one(handle).phase == Phase::completed && service().command_cleanup_sealed && !leaf.ack_handoffs,
+            "completion and sealing alone do not record consumer ACK provenance");
+        check(!acknowledge_completed(owner + 1, handle) && !leaf.ack_handoffs, "foreign ACK makes no handoff");
+        leaf.handoff_result = outcome;
+        // Model unavailable native leaves after the body was retained. The
+        // provider's real retained/unreadable metadata cases live in World tests.
+        leaf.current_refusal = leaf.prepare_refusal = leaf.seal_refusal = true;
+        leaf.release_known = false;
+        const auto captures = leaf.captures, currents = leaf.currents, fences = leaf.fences, parks = leaf.parks;
+        const auto seals = leaf.command_seals;
+        bool acknowledged{};
+        if (outcome == CompletedAckHandoff::unavailable) {
+            // Cached cleanup permits the existing ACK off the client thread.
+            std::thread caller([&] { acknowledged = acknowledge_completed(owner, handle); });
+            caller.join();
+        } else acknowledged = acknowledge_completed(owner, handle);
+        check(acknowledged, "every advisory bookkeeping outcome preserves valid terminal ACK");
+        check(leaf.ack_handoffs == 1 && leaf.handoff_owner == owner && leaf.handoff_sequence == handle.sequence &&
+            leaf.handoff_after_seal, "one exact handoff occurs after command sealing and before receipt reset");
+        check(leaf.captures == captures && leaf.currents == currents && leaf.fences == fences && leaf.parks == parks &&
+            leaf.command_seals == seals, "ACK neither refreshes native evidence nor repeats cached command sealing");
+        Receipt receipt;
+        check(read_status(owner, handle, receipt) == ReadStatus::unavailable && !service().occupied,
+            "ACK consumes terminal Follow history for every bookkeeping outcome");
+        check(!acknowledge_completed(owner, handle) && leaf.ack_handoffs == 1, "duplicate ACK cannot record provenance");
+    }
+
+    reset("ack_reset");
+    auto handle = follow_one(false);
+    check(stop(owner, handle), "stop before an unavailable command seal");
+    leaf.seal_refusal = true;
+    tick(clear_guard());
+    check(read_one(handle).phase == Phase::completed && !service().command_cleanup_sealed,
+        "constructed completion can precede command sealing");
+    check(!acknowledge_completed(owner, handle) && !leaf.ack_handoffs && service().occupied,
+        "the existing command seal gate still refuses ACK without recording provenance");
+    leaf.seal_refusal = false;
+    check(acknowledge_completed(owner, handle) && leaf.ack_handoffs == 1 && leaf.handoff_after_seal,
+        "a later successful seal permits the same exact terminal ACK");
+
+    reset("ack_reset");
+    handle = reserve_one(false);
+    check(stop(owner, handle), "stop an unpublished binding");
+    tick(clear_guard());
+    check(!acknowledge_completed(owner, handle) && acknowledge_abandoned(owner, handle) && !leaf.ack_handoffs,
+        "abandoned ACK never records completed provenance");
+
+    reset("ack_reset");
+    handle = follow_one(false);
+    check(stop(owner, handle), "stop before orphaning completed history");
+    tick(clear_guard());
+    release_all(owner);
+    check(acknowledge_completed(owner, handle) && !leaf.ack_handoffs && !service().occupied,
+        "explicit ACK of orphaned completed history resets without live-owner provenance");
+
+    reset("ack_reset");
+    handle = follow_one(false);
+    release_all(owner);
+    tick(clear_guard());
+    Receipt receipt;
+    check(read_status(owner, handle, receipt) == ReadStatus::unavailable && !service().occupied && !leaf.ack_handoffs,
+        "completed orphan auto-cleanup resets without consumer ACK provenance");
+
+    reset("ack_reset");
+    handle = reserve_one(false);
+    release_all(owner);
+    tick(clear_guard());
+    check(read_status(owner, handle, receipt) == ReadStatus::unavailable && !service().occupied && !leaf.ack_handoffs,
+        "abandoned orphan auto-cleanup also records no completed provenance");
+}
+
 void ack_reset() {
     reset("ack_reset");
     using body_follow_lease::Refusal;
@@ -835,6 +936,7 @@ void ack_reset() {
     check(fixed.sequence > next.sequence && service().lease.deadline == start_ms + 53000 &&
         service().lease.ceiling == start_ms + 53000 && !service().lease.renewable,
         "a new fixed reserve reproduces reservation + 3000");
+    completed_ack_bookkeeping();
 }
 
 void read_busy() {

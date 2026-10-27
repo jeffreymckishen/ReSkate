@@ -438,6 +438,11 @@ bool seal_command_cleanup(const Binding& binding, const ParkFence& fence,
     return completed_history_matches(binding, fence, receipt) &&
         owned_bodies::seal_parked_command_cleanup(binding.owner, fence.basis_, receipt);
 }
+owned_bodies::CompletedAckHandoff completed_ack_handoff(const Binding& binding, const ParkFence& fence,
+    const owned_bodies::RetainedParkReceipt& receipt) noexcept {
+    if (!completed_history_matches(binding, fence, receipt)) return owned_bodies::CompletedAckHandoff::unavailable;
+    return owned_bodies::record_completed_follow_ack(binding.owner, binding.sequence, fence.basis_, receipt);
+}
 bool complete_stop(Binding& binding, const ParkFence& fence,
     const owned_bodies::RetainedParkReceipt& receipt) noexcept {
     Diagnostic diagnostic;

@@ -294,6 +294,7 @@ public:
         setup_pool();
         InitializeSRWLock(&service.lock); InitializeSRWLock(&clock_feed.lock);
         service.slots = {}; service.api = {}; service.thread = GetCurrentThreadId();
+        service.owner_close_uncertain.store(false, std::memory_order_relaxed); // isolate constructed process cases
         service.base = base; service.client = client; service.world = world; service.state = state;
         service.context = context; service.generation = handle.generation; service.world_generation = 23;
         service.eligible = true; service.tick_at = test_clock::now; service.hooked = true;
@@ -1536,6 +1537,14 @@ int main() {
         run("park_angular_xyz_closing_identity_clock_age",park_angular_xyz_zero_keeps_closing_identity_clock_and_age);
         run("command_cleanup_exact_history_no_native_reread",command_cleanup_uses_exact_immutable_history_without_native_reread);
         run("command_cleanup_identity_busy_hold_quarantine",command_cleanup_rejects_changed_identity_busy_hold_and_quarantine);
+        run("completed_ack_exact_history_and_body_debt",completed_ack_history_is_exact_idempotent_and_preserves_body_debt);
+        run("completed_ack_later_foreign_unpaired",completed_ack_history_rejects_later_foreign_and_unpaired_proofs);
+        run("completed_ack_busy_unclosed_nonmutating",completed_ack_history_busy_and_unclosed_are_nonmutating);
+        run("completed_ack_ineligible_terminal_body_ack",completed_ack_ineligible_history_keeps_terminal_body_ack);
+        run("completed_ack_owner_close_retained",completed_ack_owner_close_covers_already_retained_slots);
+        run("completed_ack_sticky_fault_after_park",completed_ack_fault_survives_later_successful_park);
+        run("completed_ack_new_hold_clears_provenance",completed_ack_new_hold_clears_only_old_provenance);
+        run("completed_ack_offthread_close_atomic_only",completed_ack_offthread_owner_close_is_atomic_metadata_only);
         run("park_diagnostic_valid_legacy_parity_signed_zero",park_diagnostic_valid_legacy_parity_and_signed_zero);
         run("park_diagnostic_owner_busy_occupied_output",park_diagnostic_owner_busy_and_occupied_output);
         run("park_diagnostic_identity_clock_dynamic",park_diagnostic_identity_clock_and_dynamic_guards);

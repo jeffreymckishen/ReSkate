@@ -1,5 +1,5 @@
-// Actual owned_bodies.cpp with constructed native arrays. No retail lifetime,
-// force setter, park mutator or actor service executes in this source fixture.
+// Actual owned_bodies.cpp with constructed native arrays. No retail native
+// lifetime, setter, allocator or actor service executes in this source fixture.
 struct ParkedCommandFixture {
     Fixture f;
     RetirementBasis basis;
@@ -456,5 +456,201 @@ void park_angular_xyz_zero_keeps_closing_identity_clock_and_age() {
         else park_at_shape(2,change,fired);
         park_refusal(p,expected_checks[fault],0,false,false,false);
         check(fired,"finite W-only regression did not reach the selected closing fence");
+    }
+}
+
+// Completed Follow history remains SDK bookkeeping, with separate body receipt
+// debt. Constructor completion below is a constructed input, not a native call.
+struct CompletedFollowAckFixture : ParkedCommandFixture {
+    static constexpr std::uint64_t follow_sequence=73;
+    CompletedFollowAckFixture() {
+        auto& s=f.slot();s.allocation.body_confirmed=true;
+        s.allocation.shapes_attempted=s.allocation.shapes_confirmed=s.made;
+        check(seal_parked_command_cleanup(owner,basis,parked),"completed ACK fixture could not seal body history");
+    }
+    CompletedAckHandoff record(std::uint64_t selected=follow_sequence) {
+        return record_completed_follow_ack(owner,selected,basis,parked);
+    }
+    void advance() { test_clock::now+=10;service.tick_at=test_clock::now;f.step(); }
+};
+void completed_ack_history_is_exact_idempotent_and_preserves_body_debt() {
+    CompletedFollowAckFixture p;auto& s=p.f.slot();
+    std::array<unsigned char,sizeof(s.mailbox)> debt{};std::memcpy(debt.data(),&s.mailbox,debt.size());
+    const auto oldest=s.mailbox.oldest();const ParkLeafCounts leaves;const auto models=test_facts::model_calls.load();
+    p.f.protect_position(PAGE_NOACCESS);SetLastError(0xA731);
+    check(p.record()==CompletedAckHandoff::recorded && GetLastError()==0xA731,
+        "exact completed ACK history was refused or changed LastError");
+    check(s.completed_ack_sequence==p.follow_sequence && s.completed_ack_basis.available() && s.completed_ack_park.available(),
+        "completed ACK did not retain its opaque basis and park history");
+    const ParkSlotSnapshot recorded(s);
+    check(p.record()==CompletedAckHandoff::recorded && recorded.same(s),"duplicate completed ACK changed immutable history");
+    check(p.record(p.follow_sequence+1)==CompletedAckHandoff::unavailable && recorded.same(s),
+        "another Follow sequence replaced existing completed history");
+    check(s.mailbox.count==1 && std::memcmp(debt.data(),&s.mailbox,debt.size())==0,
+        "completed Follow ACK silently acknowledged or changed terminal body receipt debt");
+    Receipt out;
+    check(receipt(owner,p.f.handle,p.sequence,out).empty() && out.outcome==oldest.outcome && out.sequence==oldest.sequence &&
+        out.requested==oldest.requested && out.produced==oldest.produced && out.force_attempted==oldest.force_attempted &&
+        out.torque_attempted==oldest.torque_attempted && out.cleanup_disposition==CleanupDisposition::parked_without_successor &&
+        !out.successor_available && out.retained && !out.quarantined,"body receipt lost its independent terminal history");
+    check(!acknowledge(owner,p.f.handle,p.sequence+1).empty() && s.mailbox.count==1,
+        "a different body sequence erased terminal debt");
+    check(acknowledge(owner,p.f.handle,p.sequence).empty() && s.mailbox.count==0 && s.mailbox.failed &&
+        !acknowledge(owner,p.f.handle,p.sequence).empty(),"terminal body debt did not require its own exact once-only ACK");
+    check(s.completed_ack_sequence==p.follow_sequence && s.retained && !s.active,
+        "body receipt ACK erased Follow history or reactivated the native allocation");
+    check(leaves.advanced(0,0,0,0) && test_facts::model_calls.load()==models && test_facts::mutations.load()==0,
+        "historical completed ACK or receipt access recaptured or wrote native state");
+    p.f.protect_position(PAGE_READWRITE);
+}
+void completed_ack_history_rejects_later_foreign_and_unpaired_proofs() {
+    CompletedFollowAckFixture p;auto& s=p.f.slot();
+    RetirementBasis absent;RetainedParkReceipt no_park;
+    check(record_completed_follow_ack(owner,p.follow_sequence,absent,no_park)==CompletedAckHandoff::unavailable &&
+        record_completed_follow_ack(owner+1,p.follow_sequence,p.basis,p.parked)==CompletedAckHandoff::unavailable &&
+        p.record(0)==CompletedAckHandoff::unavailable && !s.completed_ack_sequence,
+        "missing, foreign or zero-sequence proof manufactured completed history");
+    check(p.record()==CompletedAckHandoff::recorded,"immutable history setup failed");
+    p.advance();RetainedParkReceipt later;
+    check(observe_retained_park(owner,p.basis,later) && later.observed_epoch()!=p.parked.observed_epoch(),
+        "fixture did not establish a distinct later opaque park receipt");
+    const ParkSlotSnapshot before(s);const ParkLeafCounts leaves;
+    check(record_completed_follow_ack(owner,p.follow_sequence,p.basis,later)==CompletedAckHandoff::unavailable && before.same(s),
+        "same Follow sequence restamped its stored park epoch");
+    check(leaves.advanced(0,0,0,0),"mismatched completed history crossed a native reader");
+    // Keep both arenas alive so the independently issued opaque values cannot
+    // accidentally share recycled addresses in the constructed native fixture.
+    {
+        CompletedFollowAckFixture other;const ParkSlotSnapshot authority(other.f.slot());const ParkLeafCounts paired_leaves;
+        check(record_completed_follow_ack(owner,p.follow_sequence,p.basis,other.parked)==CompletedAckHandoff::unavailable &&
+            record_completed_follow_ack(owner,p.follow_sequence,other.basis,p.parked)==CompletedAckHandoff::unavailable &&
+            authority.same(other.f.slot()) && paired_leaves.advanced(0,0,0,0),
+            "different opaque basis/park pairs manufactured or altered completed history");
+    }
+}
+void completed_ack_history_busy_and_unclosed_are_nonmutating() {
+    for(unsigned fault=0;fault<7;++fault) {
+        CompletedFollowAckFixture p;auto& s=p.f.slot();
+        if(fault==0)s.active=true;if(fault==1)s.retained=false;if(fault==2)s.release_hold=17;
+        if(fault==3)s.release_requested=false;if(fault==4)s.mailbox.pending=true;
+        if(fault==5)s.mailbox.producing=true;if(fault==6)s.mailbox.failed=false;
+        const ParkSlotSnapshot before(s);const ParkLeafCounts leaves;
+        check(p.record()==CompletedAckHandoff::unavailable && before.same(s) && leaves.advanced(0,0,0,0),
+            "unclosed completed-ACK attempt altered body authority or read native state");
+    }
+    CompletedFollowAckFixture p;const ParkSlotSnapshot before(p.f.slot());const ParkLeafCounts leaves;
+    std::atomic<bool> locked{},resume{};
+    std::thread holder([&]{AcquireSRWLockExclusive(&service.lock);locked=true;while(!resume.load())std::this_thread::yield();ReleaseSRWLockExclusive(&service.lock);});
+    while(!locked.load())std::this_thread::yield();
+    SetLastError(0xA732);const auto result=p.record();const auto error=GetLastError();resume=true;holder.join();
+    check(result==CompletedAckHandoff::unavailable && error==0xA732 && before.same(p.f.slot()) && leaves.advanced(0,0,0,0),
+        "busy completed-ACK attempt blocked, changed LastError or partially stored history");
+    CompletedAckHandoff foreign_thread=CompletedAckHandoff::recorded;
+    std::thread caller([&]{foreign_thread=p.record();});caller.join();
+    check(foreign_thread==CompletedAckHandoff::unavailable && before.same(p.f.slot()),"foreign thread recorded completed history");
+    check(p.record()==CompletedAckHandoff::recorded,"unavailable attempt consumed the exact later history");
+}
+void completed_ack_ineligible_history_keeps_terminal_body_ack() {
+    for(unsigned fault=0;fault<12;++fault) {
+        CompletedFollowAckFixture p;auto& s=p.f.slot();check(p.record()==CompletedAckHandoff::recorded,"ineligible history setup failed");
+        if(fault==0)s.allocation.body_confirmed=false;if(fault==1)s.creation_failed=true;if(fault==2)s.owner_closed=true;
+        if(fault==3)s.reuse_faulted=true;if(fault==4)++service.world_generation;if(fault==5)s.allocation.shapes_confirmed=0;
+        if(fault==6)s.quarantined=true;if(fault==7)++s.body.generation;if(fault==8)++service.context;
+        if(fault==9)service.hooked=false;if(fault==10)service.eligible=false;if(fault==11)s.body_observed=false;
+        std::array<unsigned char,sizeof(s.mailbox)> debt{};std::memcpy(debt.data(),&s.mailbox,debt.size());
+        const ParkLeafCounts leaves;const auto models=test_facts::model_calls.load();
+        check(p.record()==CompletedAckHandoff::closed_ineligible && !s.completed_ack_sequence &&
+            !s.completed_ack_basis.available() && !s.completed_ack_park.available(),"closed ineligible body retained optional completed history");
+        check(std::memcmp(debt.data(),&s.mailbox,debt.size())==0 && acknowledge(owner,p.f.handle,p.sequence).empty() &&
+            s.mailbox.count==0 && s.retained && !s.active,"ineligible bookkeeping blocked body ACK or erased its debt");
+        check(leaves.advanced(0,0,0,0) && test_facts::model_calls.load()==models,"ineligible history queried current native state");
+        if(fault==1||fault==6)check(s.reuse_faulted,"native uncertainty did not become a sticky bookkeeping fault");
+    }
+}
+void completed_ack_owner_close_covers_already_retained_slots() {
+    CompletedFollowAckFixture p;auto& s=p.f.slot();check(p.record()==CompletedAckHandoff::recorded,"owner close setup failed");
+    const ParkSlotSnapshot before(s);const ParkLeafCounts leaves;const auto models=test_facts::model_calls.load();
+    release_all(owner+1);check(before.same(s),"foreign owner close changed another retained body");
+    release_all(owner);
+    check(s.owner_closed && !s.completed_ack_sequence && !s.completed_ack_basis.available() && !s.completed_ack_park.available() &&
+        s.retained && !s.active && s.mailbox.count==1,"owner close skipped retained provenance or erased body debt");
+    check(p.record()==CompletedAckHandoff::closed_ineligible && acknowledge(owner,p.f.handle,p.sequence).empty(),
+        "closed owner reacquired completed history or lost terminal body ACK");
+    check(leaves.advanced(0,0,0,0) && test_facts::model_calls.load()==models && test_facts::mutations.load()==0,
+        "already-retained owner close repeated native cleanup");
+}
+
+// Counted no-op ABI stand-ins use the already-zeroed constructed arrays. Their
+// argument checks exercise actual retire without executing a retail setter.
+unsigned completed_ack_park_calls{};
+bool completed_ack_park_arguments_valid{};
+void completed_ack_park_mask(NativeHandle*,const std::uint32_t* value) {
+    ++completed_ack_park_calls;completed_ack_park_arguments_valid = completed_ack_park_arguments_valid && value && *value==0;
+}
+void completed_ack_park_vector(NativeHandle*,const float* value) {
+    ++completed_ack_park_calls;
+    if(!value){completed_ack_park_arguments_valid=false;return;}
+    for(unsigned lane=0;lane<4;++lane)completed_ack_park_arguments_valid = completed_ack_park_arguments_valid && value[lane]==0;
+}
+void completed_ack_park_motion(NativeHandle*,int value) {
+    ++completed_ack_park_calls;completed_ack_park_arguments_valid = completed_ack_park_arguments_valid && value==2;
+}
+void completed_ack_fault_survives_later_successful_park() {
+    for(unsigned fault=0;fault<2;++fault) {
+        CompletedFollowAckFixture p;auto& s=p.f.slot();check(p.record()==CompletedAckHandoff::recorded,"sticky fault setup failed");
+        if(fault==0)s.quarantined=true;else s.creation_failed=true;
+        completed_ack_park_calls=0;completed_ack_park_arguments_valid=true;
+        service.api.categories=service.api.collides=completed_ack_park_mask;
+        service.api.linear=service.api.angular=service.api.clear_force=service.api.clear_torque=completed_ack_park_vector;
+        service.api.motion=completed_ack_park_motion;
+        retire(s,true);
+        check(completed_ack_park_calls>0 && completed_ack_park_arguments_valid && s.reuse_faulted && s.retained && !s.quarantined && !s.active &&
+            !s.completed_ack_sequence && !s.completed_ack_basis.available() && !s.completed_ack_park.available(),
+            "successful park erased prior quarantine or creation uncertainty");
+        p.advance();RetainedParkReceipt later;
+        check(observe_retained_park(owner,p.basis,later),"later positive park observation failed after sticky uncertainty");
+        check(record_completed_follow_ack(owner,p.follow_sequence,p.basis,later)==CompletedAckHandoff::closed_ineligible &&
+            acknowledge(owner,p.f.handle,p.sequence).empty() && s.reuse_faulted && s.mailbox.count==0,
+            "later positive park or terminal body ACK erased sticky uncertainty");
+    }
+}
+void completed_ack_new_hold_clears_only_old_provenance() {
+    RetirementBasis previous_basis;RetainedParkReceipt previous_park;
+    { CompletedFollowAckFixture prior;previous_basis=prior.basis;previous_park=prior.parked; }
+    Fixture f;auto& s=f.slot();s.completed_ack_sequence=CompletedFollowAckFixture::follow_sequence;
+    s.completed_ack_basis=previous_basis;s.completed_ack_park=previous_park;s.reuse_faulted=s.owner_closed=true;
+    const auto source=f.source();BodyReleaseHold hold;
+    check(acquire_release_hold(owner,source,hold) && hold.available() && s.release_hold,
+        "new exact dependency hold could not bind the current measured source");
+    check(!s.completed_ack_sequence && !s.completed_ack_basis.available() && !s.completed_ack_park.available() &&
+        s.reuse_faulted && s.owner_closed && s.active && !s.retained && s.mailbox.count==1,
+        "new hold inherited completed history, cleared sticky facts or altered body debt");
+    check(release_body_hold(owner,hold),"test dependency hold did not release");
+}
+void completed_ack_offthread_owner_close_is_atomic_metadata_only() {
+    {
+        CompletedFollowAckFixture p;auto& s=p.f.slot();check(p.record()==CompletedAckHandoff::recorded,"offthread close setup failed");
+        const ParkSlotSnapshot before(s);const ParkLeafCounts leaves;const auto models=test_facts::model_calls.load();DWORD error{};
+        AcquireSRWLockExclusive(&service.lock);
+        std::thread closer([&]{SetLastError(0xA733);release_all(owner);error=GetLastError();});closer.join();
+        ReleaseSRWLockExclusive(&service.lock);
+        check(error==0xA733 && service.owner_close_uncertain.load() && before.same(s),
+            "unsupported owner close blocked on World or forged a client Slot scan");
+        check(p.record()==CompletedAckHandoff::closed_ineligible && !s.completed_ack_sequence &&
+            !s.completed_ack_basis.available() && !s.completed_ack_park.available() && !s.owner_closed,
+            "unsupported close left optional history eligible or claimed exact owner closure");
+        check(acknowledge(owner,p.f.handle,p.sequence).empty() && service.owner_close_uncertain.load(),
+            "body receipt ACK cleared process uncertainty or was blocked by it");
+        release_all(owner);check(service.owner_close_uncertain.load(),"later client close cleared process uncertainty");
+        check(leaves.advanced(0,0,0,0) && test_facts::model_calls.load()==models && test_facts::mutations.load()==0,
+            "offthread retained close entered native cleanup");
+    }
+    {
+        Fixture f;auto& s=f.slot();const ParkSlotSnapshot before(s);const ParkLeafCounts leaves;
+        std::thread empty_owner([&]{release_all(0);});empty_owner.join();
+        check(!service.owner_close_uncertain.load() && before.same(s),"zero owner invented unsupported-close uncertainty");
+        std::thread closer([&]{release_all(owner);});closer.join();
+        check(service.owner_close_uncertain.load() && before.same(s) && s.active && !s.retained &&
+            leaves.advanced(0,0,0,0) && test_facts::mutations.load()==0,"offthread active close changed body authority or touched native state");
     }
 }

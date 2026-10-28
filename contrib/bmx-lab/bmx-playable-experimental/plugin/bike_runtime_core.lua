@@ -935,6 +935,14 @@ flush_removals=function()
     T.visual_cleanup_deferred=false
     for id=1,8 do if T.deferred_removals[id] then remove_once(id) end end
 end
+-- Reconciliation can observe only this stopped owner's original cleanup window.
+-- Check fresh clocks around each native read/ACK, not just the tick's old clock:
+-- a callback crossing the deadline must not authorize the next call or completion.
+local function source_cleanup_open(now)
+    local start=T.stop_at or T.effect_at
+    return T.stop_latched==true and not T.unloaded and not T.cleanup_expired and not T.clock_unknown
+        and finite(now) and finite(start) and now>=start and now-start<CLEANUP_WATCHDOG_MS
+end
 local input_proxy={}
 local input_methods={"lease","lease_read","lease_renew","lease_state","lease_release","lease_acknowledge",
     "lease_capture","lease_capture_state","lease_release_capture","lease_acknowledge_capture"}
@@ -942,6 +950,11 @@ for _,method in ipairs(input_methods) do
     local name=method
     local label="input."..name -- The ledger name and SDK path, built once.
     input_proxy[name]=function(...)
+        local cleanup_observation=T.stop_latched and (name=="lease_capture_state" or name=="lease_acknowledge_capture"
+            or name=="lease_state" or name=="lease_acknowledge")
+        if cleanup_observation and not source_cleanup_open(clock()) then
+            return nil,"bike source cleanup window closed"
+        end
         if T.stop_latched and name=="lease" then return nil,"bike lifecycle cancelled before lease acquisition" end
         if T.stop_latched and name=="lease_renew" then return false,"bike lifecycle cancelled before lease renewal" end
         if name=="lease_release" or name=="lease_release_capture" then
@@ -953,6 +966,9 @@ for _,method in ipairs(input_methods) do
             T.capture_attempted=true
         end
         local r=call(label,lookup(label),...)
+        if cleanup_observation and not source_cleanup_open(clock()) then
+            return nil,"bike source cleanup window closed during callback"
+        end
         -- Let Source classify known false versus unknown before outer cleanup.
         if name=="lease_capture" and not yes(r) then latch_stop("capture refusal, exception or malformed result") end
         if not r[1] then error("input "..name.." callback failed",0) end
@@ -1730,7 +1746,8 @@ local function tick(dt)
         local generation=T.generation
         local allow=not T.stop_latched and closed_ready(T.facts,T.phase~="following")
         T.source_inflight=true;T.input_current=false
-        local frame=call("source.step",source.step,source,T.now or 0,{allow_acquire=allow,allow_drive=allow})
+        local frame=call("source.step",source.step,source,T.now or 0,{allow_acquire=allow,allow_drive=allow,
+            allow_cleanup_reconcile=source_cleanup_open(T.now)})
         T.source_inflight=false
         if T.stop_needs_cleanup then stop_all(T.stop_reason) end
         if frame[1] and frame.n==2 and type(frame[2])=="table" then

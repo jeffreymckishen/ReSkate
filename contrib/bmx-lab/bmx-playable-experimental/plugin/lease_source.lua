@@ -237,11 +237,14 @@ local function stop(s, reason)
         s.phase = s.request_uncertain and "cleanup_unknown" or "complete"
     end
 end
-local function drain(s, now)
+local function drain(s, now, reconcile)
     s.input_ok = false
-    if s.phase == "cleanup_unknown" or s.phase == "complete" then return end
+    local retained_unknown = s.phase == "cleanup_unknown"
+    if s.phase == "complete" or retained_unknown and not reconcile then return end
     if not s.handle then s.phase = s.request_uncertain and "cleanup_unknown" or "complete"; return end
-    s.phase = "draining"
+    -- A late observation does not erase the local timeout. Only both native
+    -- acknowledgements below can resolve its retained duty.
+    if not retained_unknown then s.phase = "draining" end
     if (s.capture_admitted or s.capture_uncertain) and not s.capture_acknowledged then
         local called, row, why = invoke(s, "lease_capture_state", s.handle)
         local checked = called and capture_copy(s, row) or nil
@@ -399,13 +402,22 @@ end
 
 local function advance(s, now_ms, gates)
     s.input_ok = false
-    if s.phase == "idle" or s.phase == "complete" or s.phase == "cleanup_unknown" then return frame(s, false, false) end
+    -- Core alone opts into read/ACK reconciliation within its original cleanup
+    -- window. Other callers keep the terminal local watchdog behavior.
+    local reconcile = type(gates) == "table" and gates.allow_cleanup_reconcile == true
+        and s.phase == "cleanup_unknown" and s.handle ~= nil and s.lease_release_requested == true
+        and (not (s.capture_admitted or s.capture_uncertain) or s.capture_release_requested == true)
+    if s.phase == "idle" or s.phase == "complete" or s.phase == "cleanup_unknown" and not reconcile then
+        return frame(s, false, false)
+    end
     if not clock(s, now_ms) then
         stop(s, "invalid or regressed caller clock")
         if s.handle or s.request_uncertain then s.phase = "cleanup_unknown" end
         return frame(s, false, false)
     end
-    if s.phase == "stopping" or s.phase == "draining" then drain(s, now_ms); return frame(s, false, false) end
+    if s.phase == "stopping" or s.phase == "draining" or reconcile then
+        drain(s, now_ms, reconcile); return frame(s, false, false)
+    end
     if not api_ready(s) then stop(s, "input lease API unavailable"); return frame(s, false, false) end
     local acquire = type(gates) == "table" and gates.allow_acquire == true
     local drive = type(gates) == "table" and gates.allow_drive == true

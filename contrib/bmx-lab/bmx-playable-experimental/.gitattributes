@@ -5,3 +5,4 @@
 /README.md -text
 /Test/*.ps1 text eol=lf
 /Test/README.md text eol=lf
+.gitattributes -text

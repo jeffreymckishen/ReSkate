@@ -2021,6 +2021,9 @@ void plugin_approval_follows_the_plugins_own_files() {
         const auto requested_prompt = approval_prompt(permission_groups(parse_manifest(manifest(requested))));
         check(requested_prompt.find("\n- ") != std::string::npos && requested_prompt.find("No special permissions") == std::string::npos,
               "A request for " + std::string(name) + " has a capability summary");
+        if (name.starts_with("input."))
+            check(requested_prompt.find("text input") == std::string::npos,
+                  "Controller-source permissions do not claim text-input access");
         if (name == "room")
             check(requested_prompt.find("character room, where others see your skater") != std::string::npos,
                   "The room permission says others can see the skater");

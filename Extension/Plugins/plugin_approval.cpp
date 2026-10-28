@@ -269,6 +269,7 @@ std::string approval_prompt(const std::vector<PermissionGroup>& groups) {
             if (has("outfit")) actions.push_back("change what your skater wears");
             if (has("board")) actions.push_back("change how your board is drawn");
             if (has("skater.read")) actions.push_back("read your skater's position, speed, state, and physics");
+            if (has("skater.input_trace")) actions.push_back("read bounded input callback samples for your skater");
             if (has("events.tricks")) actions.push_back("follow your tricks, lines, and score");
             if (has("events.skater")) actions.push_back("follow your skater's state, bails, and launches");
             if (has("events.physics.geometry")) actions.push_back("follow detailed skater physics, including geometry, each step");
@@ -277,6 +278,8 @@ std::string approval_prompt(const std::vector<PermissionGroup>& groups) {
             if (has("world.objects")) actions.push_back("list and edit park objects");
             if (has("world.physics")) actions.push_back("create physical bodies in your world and push them around");
             if (has("world.physics.observe")) actions.push_back("see what its rays hit, other skaters' shapes included");
+            if (has("world.physics.follow")) actions.push_back("move your skater with a physical body the plugin owns");
+            if (has("world.physics.follow.renew")) actions.push_back("extend skater-follow movement using renewable leases");
             if (has("travel")) actions.push_back("travel to locations and levels");
             if (has("world.environment")) actions.push_back("change parks, world controls, and time of day");
             if (has("world.entities")) actions.push_back("spawn objects visible only to you");
@@ -286,7 +289,10 @@ std::string approval_prompt(const std::vector<PermissionGroup>& groups) {
         } else if (group.category == "CAMERA") {
             actions.push_back("control the camera");
         } else if (group.category == "INPUT") {
-            actions.push_back("bind keys, pads, and mouse, and read text input");
+            if (has("input")) actions.push_back("bind keys, pads, and mouse, and read text input");
+            if (has("input.control")) actions.push_back("control your game's controller input");
+            if (has("input.lease")) actions.push_back("observe and reserve a controller input stream with a bounded lease");
+            if (has("input.capture")) actions.push_back("consume selected controller inputs while holding an input lease");
         } else if (group.category == "SCREEN") {
             if (has("strings")) actions.push_back("change the text the game shows, in its menus and its store");
             if (has("capture")) actions.push_back("record your screen");

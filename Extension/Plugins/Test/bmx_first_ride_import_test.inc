@@ -60,6 +60,8 @@ void run_bmx_first_ride_import_fixture(const std::filesystem::path& plugin_direc
         void log(LogLevel, std::string_view text) override { logs.emplace_back(text); }
         void console(std::string_view) override { ++console_callbacks; }
         double now_ms() override { return now; }
+        // Constructed test host has no player approval provider.
+        std::optional<bool> approved(const Candidate&) override { return std::nullopt; }
         std::filesystem::path storage_root() override { return scratch / "first-ride-import-storage"; }
         bool builtin_command(std::string_view) override { return false; }
         Game& game() override { ++game_accesses; return fake; }

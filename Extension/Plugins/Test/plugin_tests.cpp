@@ -1425,9 +1425,6 @@ struct FakeGame final : Game {
     // grid was asked to show and mark (Item Tabs).
     std::set<int> keys_held;
     bool key_down(int virtual_key) override { return keys_held.contains(virtual_key); }
-    // The game window has the focus and nothing is in the way (reskate.input.allowed): off unless a test says so.
-    bool input_open{};
-    bool input_allowed() override { return input_open; }
     std::vector<std::uint8_t> kept_keys;
     std::uint16_t kept_buttons{};
     void game_keys(std::string_view, std::vector<std::uint8_t> keys) override { kept_keys = std::move(keys); }
@@ -3138,6 +3135,8 @@ void input_lease_api_observes_only_qualified_owner_scoped_streams() {
         void log(LogLevel, std::string_view text) override { logs.emplace_back(text); }
         void console(std::string_view) override {}
         double now_ms() override { return now; }
+        // Constructed test host has no player approval provider.
+        std::optional<bool> approved(const Candidate&) override { return std::nullopt; }
         std::filesystem::path storage_root() override { return scratch / "lease-storage"; }
         bool builtin_command(std::string_view) override { return false; }
         Game& game() override { return fake; }
@@ -3633,6 +3632,8 @@ void input_lease_capture_api_keeps_publication_duty_owner_scoped() {
         void log(LogLevel,std::string_view text) override { logs.emplace_back(text); }
         void console(std::string_view) override {}
         double now_ms() override { return now; }
+        // Constructed test host has no player approval provider.
+        std::optional<bool> approved(const Candidate&) override { return std::nullopt; }
         std::filesystem::path storage_root() override { return scratch/"capture-storage"; }
         bool builtin_command(std::string_view) override { return false; }
         Game& game() override { return fake; }
@@ -9109,7 +9110,7 @@ void fps_shoots_on_foot() {
     check(host.run_console("fps test"), "fps test");
     check(environment.logged("fps test: all"), "The FPS plugin's own checks pass\n" + environment.all());
     check(game.called("viewmodel load fps pistol.rsvm"), "It loads its pistol\n" + environment.all());
-    game.input_open = true;
+    game.input_allowed_now = true;
     game.pad = std::nullopt; // the fake pad holds RT down
     environment.local_skater = SkaterState{{0, 0.9f, 0}, 0, 0, 0, false, 0};
     game.state = 504; // on foot
@@ -9173,9 +9174,9 @@ void fps_deathmatch_kills_and_scores() {
     };
     const auto click = [&] {
         ann.fake.keys_held = {1};
-        ann.fake.input_open = true;
+        ann.fake.input_allowed_now = true;
         pump(1);
-        ann.fake.input_open = false;
+        ann.fake.input_allowed_now = false;
         ann.fake.keys_held = {};
         pump(12); // past the pistol's 0.14 s between shots
     };

@@ -22,7 +22,8 @@ function Admission.snapshot(T,qualification_only)
             or T.storage_fault==true or T.clock_unknown==true or T.unloaded==true or T.used==true and not T.bike_cleanup_complete,
         retained_reload_marker=T.reload_blocked==true,marker_unknown=T.marker_unknown==true,
         unloaded=T.unloaded==true,stop_latched=T.stop_latched==true,stop_reason=T.stop_reason,
-        arm_ms=T.arm_at,qualification_ms=500,one_attempt_per_vm=true,
+        arm_ms=T.arm_at,qualification_ms=500,one_attempt_per_vm=T.experimental_attempt_limit==nil,
+        experimental_attempt_limit=T.experimental_attempt_limit,
         equipment={phase="idle",retained=false,unloaded=false},
         startup={pending=T.startup_pending==true,loaded=T.startup_loaded or 0,last_module=T.startup_last,
             core_ready=T.core_ready==true,backend_ready=T.backend_ready==true}}

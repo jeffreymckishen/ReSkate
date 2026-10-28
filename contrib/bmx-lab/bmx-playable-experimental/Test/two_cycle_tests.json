@@ -1,0 +1,657 @@
+{
+  "schema": 1,
+  "matrix": "closed-experimental-two-cycle-v1",
+  "flat_file_count": 53,
+  "quota_file_count": 54,
+  "expected_processes": 20,
+  "expected_cases": 128,
+  "expected_assertions": 1145,
+  "source_admission": "UNCHANGED_FALSE",
+  "files": [
+    {
+      "source": "Test/two_cycle_entry_tests.lua",
+      "destination": "two_cycle_entry_tests.lua",
+      "bytes": 14028,
+      "sha256": "CA0CD739881C00EBC137832CE4A642DFDD02B4D089C21C24B4E7A3C8C9C1868A"
+    },
+    {
+      "source": "Test/two_cycle_handoff_tests.lua",
+      "destination": "two_cycle_handoff_tests.lua",
+      "bytes": 5040,
+      "sha256": "788F5A125AC172737B4EF313CD01351DEB40FEFB9DD920CCD442FE0889E35021"
+    },
+    {
+      "source": "Test/two_cycle_archive_failure_tests.lua",
+      "destination": "two_cycle_archive_failure_tests.lua",
+      "bytes": 843,
+      "sha256": "52C9DE9CC05AC048302CB1AA7E8CD717BDB107AFB1E7749126830C3EA5D38F5F"
+    },
+    {
+      "source": "Test/two_cycle_onfoot_archive_failure_tests.lua",
+      "destination": "two_cycle_onfoot_archive_failure_tests.lua",
+      "bytes": 936,
+      "sha256": "EA944993ADF79A69BEFA7319B7D3E63BA185B351BC649CB872642E0549C116E9"
+    },
+    {
+      "source": "Test/two_cycle_marker_failure_tests.lua",
+      "destination": "two_cycle_marker_failure_tests.lua",
+      "bytes": 1113,
+      "sha256": "44ABEE29733029B2B7F44FF36E41F51FBD8611AE9C8B813A3A862E1FE636032D"
+    },
+    {
+      "source": "Test/two_cycle_marker_cancel_tests.lua",
+      "destination": "two_cycle_marker_cancel_tests.lua",
+      "bytes": 830,
+      "sha256": "23D7309120105D06471F749D10B92B18AEDD3433FA1F184B13A53D762B508ECA"
+    },
+    {
+      "source": "Test/two_cycle_archive_cancel_tests.lua",
+      "destination": "two_cycle_archive_cancel_tests.lua",
+      "bytes": 634,
+      "sha256": "D615EEB51B254593E4368628E93DCE33185FC7F123B4FE5873CF688A77CC8938"
+    },
+    {
+      "source": "Test/two_cycle_stale_equipment_tests.lua",
+      "destination": "two_cycle_stale_equipment_tests.lua",
+      "bytes": 767,
+      "sha256": "49BF20CFAB2D59835395EACB90CA4D364418447705AC8C4B05487207955DAF6E"
+    },
+    {
+      "source": "Test/two_cycle_source_pending_tests.lua",
+      "destination": "two_cycle_source_pending_tests.lua",
+      "bytes": 741,
+      "sha256": "44DD9D49A043BA21B7BCE645F0E4E1048943FD03411E27CC7306A6CDB6FBB73F"
+    },
+    {
+      "source": "Test/two_cycle_equipment_failure_tests.lua",
+      "destination": "two_cycle_equipment_failure_tests.lua",
+      "bytes": 978,
+      "sha256": "B63B6F53D48EE0D73B6E6813EBD28D97584BC3B3A1395F0F081DBD4943D3723D"
+    },
+    {
+      "source": "Test/two_cycle_facade_flow_tests.lua",
+      "destination": "two_cycle_facade_flow_tests.lua",
+      "bytes": 1515,
+      "sha256": "28AAAC4B0E7771836DAE91A8D9AED3817E9E54F92959CB9EAA69AEC296F192BC"
+    },
+    {
+      "source": "Test/two_cycle_facade_cancel_tests.lua",
+      "destination": "two_cycle_facade_cancel_tests.lua",
+      "bytes": 790,
+      "sha256": "53EFF3174E0FCFEB85EEDCC48EFE65494D8D99BA9D23FF90CEAACA0F4D13266C"
+    },
+    {
+      "source": "Test/two_cycle_facade_archive_cancel_tests.lua",
+      "destination": "two_cycle_facade_archive_cancel_tests.lua",
+      "bytes": 613,
+      "sha256": "008573821E414281D9978FB0E3980B8FA135DFDE22C34F4819D725E7E001FDDB"
+    },
+    {
+      "source": "Test/two_cycle_main_tests.lua",
+      "destination": "two_cycle_main_tests.lua",
+      "bytes": 1383,
+      "sha256": "3F1B25936B4686E6DF5AB4C453EF35914853B3C6186CF3E33DAE4B643D21618B"
+    },
+    {
+      "source": "Test/bmx_playable_entry_tests.lua",
+      "destination": "bmx_playable_entry_tests.lua",
+      "bytes": 18652,
+      "sha256": "9EB27D0713DF4B693D5300B0E04FE3BB6BDB02EA91544940F62287E72A077D11"
+    },
+    {
+      "source": "Test/bmx_playable_main_tests.lua",
+      "destination": "bmx_playable_main_tests.lua",
+      "bytes": 3403,
+      "sha256": "E29F35B4FEF9F346943A55FF9F8CC5962F2BC385A860C46D81886064BCC80133"
+    },
+    {
+      "source": "Test/source_cleanup_reconcile_tests.lua",
+      "destination": "source_cleanup_reconcile_tests.lua",
+      "bytes": 24703,
+      "sha256": "221D42ECF6F3A831EA796C8E836D66746F4B5915E5EF2A07C2F6E9C912535EBE"
+    },
+    {
+      "source": "Test/lease_source_previous_tests.lua",
+      "destination": "lease_source_previous_tests.lua",
+      "bytes": 27843,
+      "sha256": "F0F121B71785AF7A20E019E094411B4CFFBDC0D4038AD62AA6694A7713E32D4E"
+    },
+    {
+      "source": "Test/two_cycle_quota_tests.lua",
+      "destination": "two_cycle_quota_tests.lua",
+      "bytes": 1205,
+      "sha256": "3E415D1E0A53301A9562944172FE1EE190A6F179E2B6F2FAC5BDDF22646B4DFD"
+    },
+    {
+      "source": "plugin/bmx_playable_entry.lua",
+      "destination": "bmx_playable_entry.lua",
+      "bytes": 19776,
+      "sha256": "12C25499AE135AF85A9C414830B1C5326426350846E910CE52CB721D3863AF71"
+    },
+    {
+      "source": "plugin/ride_r1_record.lua",
+      "destination": "ride_r1_record.lua",
+      "bytes": 61437,
+      "sha256": "295F18623F6809FC97419A24DB283013F9E3D2B530A989A70A09DA8720F13577"
+    },
+    {
+      "source": "Test/two_cycle_fixture.lua",
+      "destination": "two_cycle_fixture.lua",
+      "bytes": 16370,
+      "sha256": "1B6837C3C08EF8344B3B4E4AE02B4D02292360C5D35C4E81A7F4B58B2E2C8DD1"
+    },
+    {
+      "source": "Test/two_cycle_facade_test_support.lua",
+      "destination": "two_cycle_facade_test_support.lua",
+      "bytes": 3600,
+      "sha256": "5DF5751F55822A25AD0FCF3E84420CD81D0F75F374895ED910C6A7FD7342F0A2"
+    },
+    {
+      "source": "Test/playable_main_fixture.lua",
+      "destination": "playable_main_fixture.lua",
+      "bytes": 1856,
+      "sha256": "EAD44AF81028AE0F31B8DA03C89F114B8BB36A865B8526FE3ADCE2957BD01570"
+    },
+    {
+      "source": "plugin/lease_source.lua",
+      "destination": "lease_source.lua",
+      "bytes": 29028,
+      "sha256": "7681DF2025B2EA8FE58D87DAAA6C44ACFDE04BEB9621583C00FCA2E273FA4352"
+    },
+    {
+      "source": "plugin/lease_identity.lua",
+      "destination": "lease_identity.lua",
+      "bytes": 2685,
+      "sha256": "5CAB94938191D1FAB38A8F8F9D34A72D8E91E0642046989C9CF201103D3E4807"
+    },
+    {
+      "source": "plugin/bike_runtime_core.lua",
+      "destination": "bike_runtime_core.lua",
+      "bytes": 118323,
+      "sha256": "1E18C985A3FF2BC3B98F45C5A53BFD77A8E8792C22A639DB507E5CA86D3F6DAE"
+    },
+    {
+      "source": "plugin/force_math.lua",
+      "destination": "force_math.lua",
+      "bytes": 4596,
+      "sha256": "3690E55D0B3330889C70EFD8D8EABF24CF64DC6EC28BBE8FB9C415DD82C2E1DC"
+    },
+    {
+      "source": "plugin/bike_geometry.lua",
+      "destination": "bike_geometry.lua",
+      "bytes": 1937,
+      "sha256": "4FA05633F54D0A2026B6CAC128FC61EF12A9E4B864B4A9758350B330100DBA9C"
+    },
+    {
+      "source": "Test/two_cycle_facade_fixture.lua",
+      "destination": "two_cycle_facade_fixture.lua",
+      "bytes": 16663,
+      "sha256": "A5DE4CB9DF92B7DF740CAA36E77A20F8D0C7257E626BA59FCCFB8B6BB6442A49"
+    },
+    {
+      "source": "plugin/bike_runtime.lua",
+      "destination": "bike_runtime.lua",
+      "bytes": 16633,
+      "sha256": "29376361A11262E2F540213BF678CAF67ED68B972138EA0A74D4955A63FF2CB7"
+    },
+    {
+      "source": "plugin/equipment_runtime.lua",
+      "destination": "equipment_runtime.lua",
+      "bytes": 16660,
+      "sha256": "0CB9B96FEC611A267B8A419051844EA1B4DCFDC6957B6EDCAEC3FE50F24710B3"
+    },
+    {
+      "source": "plugin/bike_admission.lua",
+      "destination": "bike_admission.lua",
+      "bytes": 8256,
+      "sha256": "449DFCB517C83CE45B3F2DDD9750B8FA832601FFB5DC8BB6E57F093A98C158CE"
+    },
+    {
+      "source": "plugin/bike_spawn.lua",
+      "destination": "bike_spawn.lua",
+      "bytes": 22045,
+      "sha256": "13D75BCC8E0DA68A539E8BB26B291FAEA68D3BFF863E646B41CF0F08B8111DA6"
+    },
+    {
+      "source": "plugin/ride_runtime.lua",
+      "destination": "ride_runtime.lua",
+      "bytes": 65400,
+      "sha256": "8F29CA1BEE8D3CC501F2E612217A86D7CCEBCD8865E499EC1E0E90BA5D69B3FA"
+    },
+    {
+      "source": "plugin/contact_runtime.lua",
+      "destination": "contact_runtime.lua",
+      "bytes": 11972,
+      "sha256": "C087DE1D82DAE4BB5E39C075C282979BC8178764D6A2E29B9C9CB2F176F07136"
+    },
+    {
+      "source": "plugin/force_stage.lua",
+      "destination": "force_stage.lua",
+      "bytes": 11461,
+      "sha256": "069D65800D4927CB73CC302A46502CA56D0B0ACC8A837728B3371A547D64A483"
+    },
+    {
+      "source": "plugin/mounted_pose.lua",
+      "destination": "mounted_pose.lua",
+      "bytes": 64445,
+      "sha256": "0A02DD77B5A157561048FA1E6B06910289B9FBE81B105BD0C54AAC055F28412A"
+    },
+    {
+      "source": "plugin/board_drop.lua",
+      "destination": "board_drop.lua",
+      "bytes": 16458,
+      "sha256": "6B22154BDDAFFC5536B97946E4A57CEAA4E091B9C87E0FDD621FA1F3C52D1760"
+    },
+    {
+      "source": "plugin/equipment_transition.lua",
+      "destination": "equipment_transition.lua",
+      "bytes": 21184,
+      "sha256": "8848E1DCCB874FA48AE3BCBEE2F5A94F5F5396C4476CF2AFA728553D503F5B54"
+    },
+    {
+      "source": "plugin/bike_visual.lua",
+      "destination": "bike_visual.lua",
+      "bytes": 6477,
+      "sha256": "CA53811504777900B124895A37C4332A5BEC8630CFD81B26D3021BB69EF640DA"
+    },
+    {
+      "source": "plugin/ride_input_mapping.lua",
+      "destination": "ride_input_mapping.lua",
+      "bytes": 17706,
+      "sha256": "1163E9A4199B91B774368CA24285631C5ECA3C014802AF63786F16279010F008"
+    },
+    {
+      "source": "plugin/forces.lua",
+      "destination": "forces.lua",
+      "bytes": 36901,
+      "sha256": "8C2491E29CA6D1F7AE26350CF346DB1ADEC983427869B78E4772D6148F15FF0A"
+    },
+    {
+      "source": "plugin/ride_inflight.lua",
+      "destination": "ride_inflight.lua",
+      "bytes": 10209,
+      "sha256": "C46CDC9B453D4E846B78AA4AD0AAE221D1C31A6E09BE3BC5C891EA7F2650177A"
+    },
+    {
+      "source": "plugin/frame_identity.lua",
+      "destination": "frame_identity.lua",
+      "bytes": 11881,
+      "sha256": "58B5CE629707FE97D35DFA1E2A3ECF93DFF874E9782636D20DB4ADD15A5799A7"
+    },
+    {
+      "source": "plugin/bones.lua",
+      "destination": "bones.lua",
+      "bytes": 870,
+      "sha256": "C3AC30379577A725B493F2DE2C540AA1EC5F70F2F0215FDCD4AE8C808484711A"
+    },
+    {
+      "source": "plugin/input.lua",
+      "destination": "input.lua",
+      "bytes": 11446,
+      "sha256": "D89048B9FF6CB387E822D3544394799986BDB8801107DED0433782A2FD6F131E"
+    },
+    {
+      "source": "plugin/tire.lua",
+      "destination": "tire.lua",
+      "bytes": 5004,
+      "sha256": "B86C5979667C023B62753628CE72C27E8BB0B974C327E2F50C900766206E67D4"
+    },
+    {
+      "source": "plugin/pump.lua",
+      "destination": "pump.lua",
+      "bytes": 3204,
+      "sha256": "83010293A795D8FA0C1076F5112A486D153B12EBD4C63FB94859CA9DBDC43A47"
+    },
+    {
+      "source": "plugin/force_solver.lua",
+      "destination": "force_solver.lua",
+      "bytes": 11943,
+      "sha256": "E99E5866E7FA7C3C2078C28663A0E333E5A612B3DA77610DFCF29FCAF5E03B13"
+    },
+    {
+      "source": "plugin/catalog.lua",
+      "destination": "catalog.lua",
+      "bytes": 2262,
+      "sha256": "82892EAE262AFCF46A587407A96ADBC2937C48E33AB0017C10A7CCC4EF53A0AC"
+    },
+    {
+      "source": "plugin/brake.lua",
+      "destination": "brake.lua",
+      "bytes": 12991,
+      "sha256": "C9E55AEC27A453411D1193FA86CF26C158FD89D34F5EA2239605D2768ED6455A"
+    },
+    {
+      "source": "Test/two_cycle_facade_reentry_anchor_tests.lua",
+      "destination": "two_cycle_facade_reentry_anchor_tests.lua",
+      "bytes": 907,
+      "sha256": "104119E64CED254C14457AED84CB443A3679501F44E00CC524C5326EE01964A9"
+    }
+  ],
+  "runtime_files": [
+    {
+      "source": "plugin/bike_admission.lua",
+      "bytes": 8256,
+      "sha256": "449DFCB517C83CE45B3F2DDD9750B8FA832601FFB5DC8BB6E57F093A98C158CE"
+    },
+    {
+      "source": "plugin/bike_geometry.lua",
+      "bytes": 1937,
+      "sha256": "4FA05633F54D0A2026B6CAC128FC61EF12A9E4B864B4A9758350B330100DBA9C"
+    },
+    {
+      "source": "plugin/bike_runtime_core.lua",
+      "bytes": 118323,
+      "sha256": "1E18C985A3FF2BC3B98F45C5A53BFD77A8E8792C22A639DB507E5CA86D3F6DAE"
+    },
+    {
+      "source": "plugin/bike_runtime.lua",
+      "bytes": 16633,
+      "sha256": "29376361A11262E2F540213BF678CAF67ED68B972138EA0A74D4955A63FF2CB7"
+    },
+    {
+      "source": "plugin/bike_spawn.lua",
+      "bytes": 22045,
+      "sha256": "13D75BCC8E0DA68A539E8BB26B291FAEA68D3BFF863E646B41CF0F08B8111DA6"
+    },
+    {
+      "source": "plugin/bike_visual.lua",
+      "bytes": 6477,
+      "sha256": "CA53811504777900B124895A37C4332A5BEC8630CFD81B26D3021BB69EF640DA"
+    },
+    {
+      "source": "plugin/bmx_playable_entry.lua",
+      "bytes": 19776,
+      "sha256": "12C25499AE135AF85A9C414830B1C5326426350846E910CE52CB721D3863AF71"
+    },
+    {
+      "source": "plugin/board_drop.lua",
+      "bytes": 16458,
+      "sha256": "6B22154BDDAFFC5536B97946E4A57CEAA4E091B9C87E0FDD621FA1F3C52D1760"
+    },
+    {
+      "source": "plugin/bones.lua",
+      "bytes": 870,
+      "sha256": "C3AC30379577A725B493F2DE2C540AA1EC5F70F2F0215FDCD4AE8C808484711A"
+    },
+    {
+      "source": "plugin/brake.lua",
+      "bytes": 12991,
+      "sha256": "C9E55AEC27A453411D1193FA86CF26C158FD89D34F5EA2239605D2768ED6455A"
+    },
+    {
+      "source": "plugin/catalog.lua",
+      "bytes": 2262,
+      "sha256": "82892EAE262AFCF46A587407A96ADBC2937C48E33AB0017C10A7CCC4EF53A0AC"
+    },
+    {
+      "source": "plugin/contact_runtime.lua",
+      "bytes": 11972,
+      "sha256": "C087DE1D82DAE4BB5E39C075C282979BC8178764D6A2E29B9C9CB2F176F07136"
+    },
+    {
+      "source": "plugin/equipment_runtime.lua",
+      "bytes": 16660,
+      "sha256": "0CB9B96FEC611A267B8A419051844EA1B4DCFDC6957B6EDCAEC3FE50F24710B3"
+    },
+    {
+      "source": "plugin/equipment_transition.lua",
+      "bytes": 21184,
+      "sha256": "8848E1DCCB874FA48AE3BCBEE2F5A94F5F5396C4476CF2AFA728553D503F5B54"
+    },
+    {
+      "source": "plugin/force_math.lua",
+      "bytes": 4596,
+      "sha256": "3690E55D0B3330889C70EFD8D8EABF24CF64DC6EC28BBE8FB9C415DD82C2E1DC"
+    },
+    {
+      "source": "plugin/force_solver.lua",
+      "bytes": 11943,
+      "sha256": "E99E5866E7FA7C3C2078C28663A0E333E5A612B3DA77610DFCF29FCAF5E03B13"
+    },
+    {
+      "source": "plugin/force_stage.lua",
+      "bytes": 11461,
+      "sha256": "069D65800D4927CB73CC302A46502CA56D0B0ACC8A837728B3371A547D64A483"
+    },
+    {
+      "source": "plugin/forces.lua",
+      "bytes": 36901,
+      "sha256": "8C2491E29CA6D1F7AE26350CF346DB1ADEC983427869B78E4772D6148F15FF0A"
+    },
+    {
+      "source": "plugin/frame_identity.lua",
+      "bytes": 11881,
+      "sha256": "58B5CE629707FE97D35DFA1E2A3ECF93DFF874E9782636D20DB4ADD15A5799A7"
+    },
+    {
+      "source": "plugin/input.lua",
+      "bytes": 11446,
+      "sha256": "D89048B9FF6CB387E822D3544394799986BDB8801107DED0433782A2FD6F131E"
+    },
+    {
+      "source": "plugin/lease_identity.lua",
+      "bytes": 2685,
+      "sha256": "5CAB94938191D1FAB38A8F8F9D34A72D8E91E0642046989C9CF201103D3E4807"
+    },
+    {
+      "source": "plugin/lease_source.lua",
+      "bytes": 29028,
+      "sha256": "7681DF2025B2EA8FE58D87DAAA6C44ACFDE04BEB9621583C00FCA2E273FA4352"
+    },
+    {
+      "source": "plugin/main.lua",
+      "bytes": 1817,
+      "sha256": "73230E059876C358840DB4D02921C93CA1F97052EB73D49F5F3F267B9B557120"
+    },
+    {
+      "source": "plugin/mounted_pose.lua",
+      "bytes": 64445,
+      "sha256": "0A02DD77B5A157561048FA1E6B06910289B9FBE81B105BD0C54AAC055F28412A"
+    },
+    {
+      "source": "plugin/pump.lua",
+      "bytes": 3204,
+      "sha256": "83010293A795D8FA0C1076F5112A486D153B12EBD4C63FB94859CA9DBDC43A47"
+    },
+    {
+      "source": "plugin/ride_inflight.lua",
+      "bytes": 10209,
+      "sha256": "C46CDC9B453D4E846B78AA4AD0AAE221D1C31A6E09BE3BC5C891EA7F2650177A"
+    },
+    {
+      "source": "plugin/ride_input_mapping.lua",
+      "bytes": 17706,
+      "sha256": "1163E9A4199B91B774368CA24285631C5ECA3C014802AF63786F16279010F008"
+    },
+    {
+      "source": "plugin/ride_r1_record.lua",
+      "bytes": 61437,
+      "sha256": "295F18623F6809FC97419A24DB283013F9E3D2B530A989A70A09DA8720F13577"
+    },
+    {
+      "source": "plugin/ride_runtime.lua",
+      "bytes": 65400,
+      "sha256": "8F29CA1BEE8D3CC501F2E612217A86D7CCEBCD8865E499EC1E0E90BA5D69B3FA"
+    },
+    {
+      "source": "plugin/tire.lua",
+      "bytes": 5004,
+      "sha256": "B86C5979667C023B62753628CE72C27E8BB0B974C327E2F50C900766206E67D4"
+    },
+    {
+      "source": "README.md",
+      "bytes": 3135,
+      "sha256": "77F1003D80CD93B6955672387AE508A5896245AD3A631CD2E1EB7DFBFDE19E86"
+    },
+    {
+      "source": "reskate-plugin.json",
+      "bytes": 371,
+      "sha256": "545D60DE43B4EA0D9888FCEDECD324B7525BE908251134C24CF7E0DFD52AD165"
+    }
+  ],
+  "wrappers": [
+    {
+      "source": "plugin/main.lua",
+      "fixture": "Test/playable_main_fixture.lua",
+      "source_sha256": "73230E059876C358840DB4D02921C93CA1F97052EB73D49F5F3F267B9B557120",
+      "fixture_sha256": "EAD44AF81028AE0F31B8DA03C89F114B8BB36A865B8526FE3ADCE2957BD01570",
+      "prefix": "return function(reskate, require)\n",
+      "suffix": "\nend\n"
+    },
+    {
+      "source": "plugin/bike_runtime.lua",
+      "fixture": "Test/two_cycle_facade_fixture.lua",
+      "source_sha256": "29376361A11262E2F540213BF678CAF67ED68B972138EA0A74D4955A63FF2CB7",
+      "fixture_sha256": "A5DE4CB9DF92B7DF740CAA36E77A20F8D0C7257E626BA59FCCFB8B6BB6442A49",
+      "prefix": "return function(require)\n",
+      "suffix": "\nend\n"
+    }
+  ],
+  "quota": {
+    "source": "Test/two_cycle_quota_tests.lua",
+    "destination": "json_encoding_tests.lua",
+    "sha256": "3E415D1E0A53301A9562944172FE1EE190A6F179E2B6F2FAC5BDDF22646B4DFD"
+  },
+  "suites": [
+    {
+      "suite": "two_cycle_entry_tests",
+      "invoked": "two_cycle_entry_tests",
+      "context": "flat",
+      "expected_cases": 14,
+      "expected_assertions": 154
+    },
+    {
+      "suite": "two_cycle_handoff_tests",
+      "invoked": "two_cycle_handoff_tests",
+      "context": "flat",
+      "expected_cases": 1,
+      "expected_assertions": 51
+    },
+    {
+      "suite": "two_cycle_archive_failure_tests",
+      "invoked": "two_cycle_archive_failure_tests",
+      "context": "flat",
+      "expected_cases": 1,
+      "expected_assertions": 15
+    },
+    {
+      "suite": "two_cycle_onfoot_archive_failure_tests",
+      "invoked": "two_cycle_onfoot_archive_failure_tests",
+      "context": "flat",
+      "expected_cases": 1,
+      "expected_assertions": 22
+    },
+    {
+      "suite": "two_cycle_marker_failure_tests",
+      "invoked": "two_cycle_marker_failure_tests",
+      "context": "flat",
+      "expected_cases": 1,
+      "expected_assertions": 23
+    },
+    {
+      "suite": "two_cycle_marker_cancel_tests",
+      "invoked": "two_cycle_marker_cancel_tests",
+      "context": "flat",
+      "expected_cases": 1,
+      "expected_assertions": 21
+    },
+    {
+      "suite": "two_cycle_archive_cancel_tests",
+      "invoked": "two_cycle_archive_cancel_tests",
+      "context": "flat",
+      "expected_cases": 1,
+      "expected_assertions": 13
+    },
+    {
+      "suite": "two_cycle_stale_equipment_tests",
+      "invoked": "two_cycle_stale_equipment_tests",
+      "context": "flat",
+      "expected_cases": 1,
+      "expected_assertions": 15
+    },
+    {
+      "suite": "two_cycle_source_pending_tests",
+      "invoked": "two_cycle_source_pending_tests",
+      "context": "flat",
+      "expected_cases": 1,
+      "expected_assertions": 9
+    },
+    {
+      "suite": "two_cycle_equipment_failure_tests",
+      "invoked": "two_cycle_equipment_failure_tests",
+      "context": "flat",
+      "expected_cases": 1,
+      "expected_assertions": 21
+    },
+    {
+      "suite": "two_cycle_facade_flow_tests",
+      "invoked": "two_cycle_facade_flow_tests",
+      "context": "flat",
+      "expected_cases": 1,
+      "expected_assertions": 15
+    },
+    {
+      "suite": "two_cycle_facade_cancel_tests",
+      "invoked": "two_cycle_facade_cancel_tests",
+      "context": "flat",
+      "expected_cases": 1,
+      "expected_assertions": 8
+    },
+    {
+      "suite": "two_cycle_facade_archive_cancel_tests",
+      "invoked": "two_cycle_facade_archive_cancel_tests",
+      "context": "flat",
+      "expected_cases": 1,
+      "expected_assertions": 7
+    },
+    {
+      "suite": "two_cycle_main_tests",
+      "invoked": "two_cycle_main_tests",
+      "context": "flat",
+      "expected_cases": 1,
+      "expected_assertions": 9
+    },
+    {
+      "suite": "two_cycle_quota_tests",
+      "invoked": "json_encoding_tests",
+      "context": "quota-flat",
+      "expected_cases": 1,
+      "expected_assertions": 16
+    },
+    {
+      "suite": "two_cycle_facade_reentry_anchor_tests",
+      "invoked": "two_cycle_facade_reentry_anchor_tests",
+      "context": "flat",
+      "expected_cases": 1,
+      "expected_assertions": 11
+    },
+    {
+      "suite": "bmx_playable_entry_tests",
+      "invoked": "bmx_playable_entry_tests",
+      "context": "flat",
+      "expected_cases": 21,
+      "expected_assertions": 290
+    },
+    {
+      "suite": "bmx_playable_main_tests",
+      "invoked": "bmx_playable_main_tests",
+      "context": "flat",
+      "expected_cases": 3,
+      "expected_assertions": 26
+    },
+    {
+      "suite": "source_cleanup_reconcile_tests",
+      "invoked": "source_cleanup_reconcile_tests",
+      "context": "flat",
+      "expected_cases": 25,
+      "expected_assertions": 209
+    },
+    {
+      "suite": "lease_source_previous_tests",
+      "invoked": "lease_source_previous_tests",
+      "context": "flat",
+      "expected_cases": 50,
+      "expected_assertions": 210
+    }
+  ]
+}

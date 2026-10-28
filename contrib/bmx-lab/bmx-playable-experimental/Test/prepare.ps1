@@ -1,24 +1,81 @@
-param([Parameter(Mandatory)][string]$TestRoot)
-# File preparation only. Root owns the separate offline execution grant and runner.
+param(
+    [Parameter(Mandatory)][string]$TestRoot,
+    [ValidateSet('entry','two-cycle')][string]$Matrix='entry'
+)
+# File preparation only. Root separately owns the runner and execution grant.
 $ErrorActionPreference='Stop'
 $Package=Split-Path -Parent $PSScriptRoot
-if(-not [IO.Path]::IsPathFullyQualified($TestRoot) -or [IO.Path]::GetFullPath($TestRoot) -cne $TestRoot -or (Split-Path -Parent $TestRoot) -cne 'E:\RESKATE DEV' -or (Split-Path -Leaf $TestRoot) -notmatch '^bmx-playable-tests-[a-z0-9-]{1,64}$' -or (Test-Path -LiteralPath $TestRoot)){throw 'New direct E bmx-playable-tests-* directory required'}
-foreach($root in @($Package,$TestRoot)){$p=$root;while($p){if((Test-Path -LiteralPath $p) -and ((Get-Item -LiteralPath $p -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)){throw 'Reparse path refused'};$next=[IO.Path]::GetDirectoryName($p);if($next -ceq $p){break};$p=$next}}
-$files=@(
- @{source='plugin\bmx_playable_entry.lua';destination='bmx_playable_entry.lua';sha256='DB50098F1A406E3CCD94147464C603B735F587CFE96AAE58B20345E3B32E2D37'},
- @{source='plugin\ride_r1_record.lua';destination='ride_r1_record.lua';sha256='295F18623F6809FC97419A24DB283013F9E3D2B530A989A70A09DA8720F13577'},
- @{source='Test\bmx_playable_entry_tests.lua';destination='bmx_playable_entry_tests.lua';sha256='9EB27D0713DF4B693D5300B0E04FE3BB6BDB02EA91544940F62287E72A077D11'},
- @{source='Test\playable_main_fixture.lua';destination='playable_main_fixture.lua';sha256='583E6243C84F87D546572B352BA4FD97D0B2D2A0DD240B7F74434632528BCA9D'},
- @{source='Test\bmx_playable_main_tests.lua';destination='bmx_playable_main_tests.lua';sha256='E29F35B4FEF9F346943A55FF9F8CC5962F2BC385A860C46D81886064BCC80133'},
- @{source='plugin\force_math.lua';destination='force_math.lua';sha256='3690E55D0B3330889C70EFD8D8EABF24CF64DC6EC28BBE8FB9C415DD82C2E1DC'},
- @{source='plugin\bike_geometry.lua';destination='bike_geometry.lua';sha256='4FA05633F54D0A2026B6CAC128FC61EF12A9E4B864B4A9758350B330100DBA9C'}
-)
-foreach($row in $files){if((Get-FileHash -LiteralPath (Join-Path $Package $row.source)).Hash -cne $row.sha256){throw 'Exact tested unit source changed'}}
-$main=Join-Path $Package 'plugin\main.lua'
-if((Get-FileHash -LiteralPath $main).Hash -cne '97E74EC1497B02CD5F14DFA8A7425577142083D9B54B7B6E2569DD3A18233012'){throw 'Closed main changed'}
+if(-not [IO.Path]::IsPathFullyQualified($TestRoot) -or [IO.Path]::GetFullPath($TestRoot) -cne $TestRoot -or
+    (Split-Path -Parent $TestRoot) -cne 'E:\RESKATE DEV' -or
+    (Split-Path -Leaf $TestRoot) -notmatch '^bmx-playable-tests-[a-z0-9-]{1,64}$' -or
+    (Test-Path -LiteralPath $TestRoot)){throw 'New direct E bmx-playable-tests-* directory required'}
+function Assert-PlainPath([string]$Path){
+    $p=$Path
+    while($p){
+        if((Test-Path -LiteralPath $p) -and ((Get-Item -LiteralPath $p -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)){throw 'Reparse path refused'}
+        $next=[IO.Path]::GetDirectoryName($p);if($next -ceq $p){break};$p=$next
+    }
+}
+Assert-PlainPath $Package
+Assert-PlainPath $TestRoot
+$manifestPath=Join-Path $PSScriptRoot 'two_cycle_tests.json'
+Assert-PlainPath $manifestPath
+if((Get-FileHash -LiteralPath $manifestPath).Hash -cne 'F7CA43F177EB266C9E1A0BBA85D1D2F93C9A234E03A453692396457C0532F0A6'){throw 'Exact matrix manifest changed'}
+$plan=Get-Content -LiteralPath $manifestPath -Raw|ConvertFrom-Json
+if($plan.schema -ne 1 -or $plan.flat_file_count -ne 53 -or $plan.quota_file_count -ne 54 -or
+    @($plan.files).Count -ne 53 -or @($plan.runtime_files).Count -ne 32 -or @($plan.suites).Count -ne 20){throw 'Unexpected matrix shape'}
+function Assert-Source($Row){
+    if($Row.source -notmatch '^(plugin|Test)/[A-Za-z0-9_-]+\.lua$' -and $Row.source -notin @('README.md','reskate-plugin.json')){throw 'Non-relative matrix input refused'}
+    $source=Join-Path $Package $Row.source
+    Assert-PlainPath $source
+    if(-not (Test-Path -LiteralPath $source -PathType Leaf) -or (Get-Item -LiteralPath $source).Length -ne $Row.bytes -or
+        (Get-FileHash -LiteralPath $source).Hash -cne $Row.sha256){throw ('Exact source changed: '+$Row.source)}
+}
+$destinations=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+foreach($row in $plan.files){
+    if($row.destination -notmatch '^[A-Za-z0-9_-]+\.lua$' -or -not $destinations.Add($row.destination)){throw 'Duplicate/invalid flat destination'}
+    Assert-Source $row
+}
+foreach($row in $plan.runtime_files){Assert-Source $row}
+$wanted=@($plan.runtime_files|Where-Object {$_.source.StartsWith('plugin/',[StringComparison]::Ordinal)}|ForEach-Object {[IO.Path]::GetFileName($_.source)}|Sort-Object)
+$actual=@(Get-ChildItem -LiteralPath (Join-Path $Package 'plugin') -File|ForEach-Object Name|Sort-Object)
+if(($wanted -join "`n") -cne ($actual -join "`n")){throw 'Shipping plugin has missing/extra files; no tests or wrappers may be installed there'}
+$main=[IO.File]::ReadAllText((Join-Path $Package 'plugin/main.lua'))
+if(([regex]::Matches($main,[regex]::Escape('local EXPERIMENTAL_ADMITTED=false'))).Count -ne 1){throw 'Closed admission changed'}
 $utf=[Text.UTF8Encoding]::new($false)
-$expected=$utf.GetBytes("return function(reskate, require)`n"+[IO.File]::ReadAllText($main)+"`nend`n")
-if([Convert]::ToBase64String($expected) -cne [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $PSScriptRoot 'playable_main_fixture.lua')))){throw 'Test wrapper is not the exact closed main body'}
-$null=[IO.Directory]::CreateDirectory($TestRoot)
-foreach($row in $files){$to=Join-Path $TestRoot $row.destination;[IO.File]::Copy((Join-Path $Package $row.source),$to,$false);if((Get-FileHash -LiteralPath $to).Hash -cne $row.sha256){throw 'Copied unit differs; preserve partials'}}
-[ordered]@{files=7;destination=$TestRoot;source_admission='UNCHANGED_FALSE';executed=$false;modules=@('bmx_playable_entry_tests','bmx_playable_main_tests')}|ConvertTo-Json -Compress
+foreach($wrapper in $plan.wrappers){
+    $source=Join-Path $Package $wrapper.source;$fixture=Join-Path $Package $wrapper.fixture
+    Assert-PlainPath $source;Assert-PlainPath $fixture
+    if((Get-FileHash -LiteralPath $source).Hash -cne $wrapper.source_sha256 -or
+        (Get-FileHash -LiteralPath $fixture).Hash -cne $wrapper.fixture_sha256){throw 'Wrapper source pin changed'}
+    $expected=$utf.GetBytes($wrapper.prefix+[IO.File]::ReadAllText($source)+$wrapper.suffix)
+    if([Convert]::ToBase64String($expected) -cne [Convert]::ToBase64String([IO.File]::ReadAllBytes($fixture))){throw 'Wrapper raw inverse differs'}
+}
+$entryNames=@('bmx_playable_entry.lua','ride_r1_record.lua','bmx_playable_entry_tests.lua','playable_main_fixture.lua','bmx_playable_main_tests.lua','force_math.lua','bike_geometry.lua')
+$files=if($Matrix -ceq 'entry'){@($plan.files|Where-Object {$_.destination -in $entryNames})}else{@($plan.files)}
+if($Matrix -ceq 'entry' -and $files.Count -ne 7){throw 'Seven-file legacy unit differs'}
+$null=New-Item -ItemType Directory -Path $TestRoot -ErrorAction Stop
+function Copy-Files([string]$Destination,$Rows){
+    foreach($row in $Rows){
+        $to=Join-Path $Destination $row.destination
+        [IO.File]::Copy((Join-Path $Package $row.source),$to,$false)
+        if((Get-Item -LiteralPath $to).Length -ne $row.bytes -or (Get-FileHash -LiteralPath $to).Hash -cne $row.sha256){throw 'Copied source differs; preserve partials'}
+    }
+}
+$invocations=@()
+if($Matrix -ceq 'entry'){
+    Copy-Files $TestRoot $files
+    foreach($name in @('bmx_playable_entry_tests','bmx_playable_main_tests')){$invocations+=[ordered]@{directory=$TestRoot;module=$name;suite=$name}}
+}else{
+    $flat=Join-Path $TestRoot 'flat';$quota=Join-Path $TestRoot 'quota-flat'
+    $null=New-Item -ItemType Directory -Path $flat,$quota -ErrorAction Stop
+    Copy-Files $flat $files
+    Copy-Files $quota $files
+    $alias=Join-Path $quota $plan.quota.destination
+    [IO.File]::Copy((Join-Path $Package $plan.quota.source),$alias,$false)
+    if((Get-FileHash -LiteralPath $alias).Hash -cne $plan.quota.sha256){throw 'Quota alias differs; preserve partials'}
+    foreach($run in $plan.suites){$invocations+=[ordered]@{directory=(Join-Path $TestRoot $run.context);module=$run.invoked;suite=$run.suite;expected_cases=$run.expected_cases;expected_assertions=$run.expected_assertions}}
+}
+$result=[ordered]@{matrix=$Matrix;flat_files=$files.Count;quota_files=$(if($Matrix -ceq 'two-cycle'){54}else{0});destination=$TestRoot;source_admission='UNCHANGED_FALSE';executed=$false;invocations=$invocations}
+[IO.File]::WriteAllText((Join-Path $TestRoot 'preparation.json'),($result|ConvertTo-Json -Depth 8),$utf)
+$result|ConvertTo-Json -Depth 8 -Compress

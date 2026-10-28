@@ -6,3 +6,4 @@
 /Test/*.ps1 text eol=lf
 /Test/README.md text eol=lf
 .gitattributes -text
+/Test/two_cycle_tests.json -text

@@ -20,12 +20,15 @@ function Entry.new(R,Runtime,Survey,options)
     assert(type(R)=="table" and type(Runtime)=="table" and type(Survey)=="table","entry dependencies required")
     local slot=type(options)=="table" and options.slot or 0
     assert(finite(slot) and slot%1==0 and slot>=0 and slot<=3,"controller slot required")
-    local made=call(Runtime.new,R,{qualification_only=true})
+    local two_cycle=type(options)=="table" and options.experimental_two_cycle==true
+    local made=call(two_cycle and Runtime.new_experimental_two_cycle or Runtime.new,R,{qualification_only=true})
     assert(made[1] and made.n==2 and type(made[2])=="table","one inert lifecycle owner required")
     local owner=made[2] -- Constructed exactly once; never replaced or rearmed here.
     local admitted=type(options)=="table" and options.admitted==true
     local phase,detail="idle",admitted and "On foot, choose Mount in a flat clear area." or "This experimental source build is closed."
     local used,mount_issued,return_pending,stock_attempted=false,false,false,false
+    local attempts_used=0
+    local attempt_limit=two_cycle and 2 or 1
     local stopped,cancel_sent,cancelled,unloaded,ticking=false,false,false,false,false
     local generation,latest,known=0,nil,false
     local prep_at,prep_last,prep_calls,last_clock,survey=nil,nil,0,nil,nil
@@ -186,7 +189,19 @@ function Entry.new(R,Runtime,Survey,options)
         local version=generation
         if not known or not clean(latest) then detail="Returning: waiting for confirmed cleanup; no stock input sent.";return end
         local observed=state();if observed==nil or generation~=version or cancelled or unloaded then return end
-        if observed==100 then return_pending=false;phase,detail="skateboard","Skateboard observed; the one bike session is spent.";return end
+        if observed==100 then
+            return_pending=false
+            if two_cycle and attempts_used<attempt_limit then
+                local ready=call(owner.can_prepare_next_mount,owner)
+                if generation~=version or cancelled or unloaded then return end
+                if not ready[1] or ready[2]~=true then
+                    phase,detail="spent","Skateboard observed; prior cycle did not qualify a clean successor. No further attempt."
+                    return
+                end
+            end
+            phase,detail="skateboard",two_cycle and attempts_used<attempt_limit and "Skateboard observed. One fresh-allocation attempt remains; Mount first obtains on-foot504 again." or "Skateboard observed; the bounded attempts are spent."
+            return
+        end
         if stock_attempted then fail("Stock transition ended without an observed skateboard; no retry.");return end
         if not environment(false) then return end
         if generation~=version or cancelled or unloaded then return end
@@ -196,10 +211,46 @@ function Entry.new(R,Runtime,Survey,options)
         if not out[1] or out[2]~=true then fail(text(out[3],"Stock switch refused; cleanup remains owned by the lifecycle."));return end
         phase,detail="returning","Stock transition armed. Release all controls and wait for the skateboard."
     end
+    local function step_off(now)
+        local version=generation
+        local out=call(owner.next_mount_ready,owner)
+        if generation~=version or cancelled or unloaded then return end
+        if not out[1] or out.n~=3 or type(out[2])~="boolean" then fail("On-foot preparation status unavailable.");return end
+        if not out[2] then
+            if out[3]~="pending" then fail(text(out[3],"On-foot preparation failed.")) end
+            return
+        end
+        if state()~=504 or generation~=version or cancelled or unloaded then
+            if generation==version and not cancelled and not unloaded then fail("Fresh acknowledged on-foot target required.") end
+            return
+        end
+        prep_at=now;prep_last=nil;prep_calls=0;survey=nil
+        phase,detail="preparing","On-foot504 + ACK observed. Preparing a fresh survey for attempt two."
+    end
     function object:mount()
         if not admitted then return false,"Experimental source admission is closed." end
-        if unloaded or ticking or used or cancelled or not namespace_clear then return false,"One experimental attempt per session; not available." end
-        used=true;generation+=1;phase,detail="preparing","Preparing, then surveying the clear area. Stay on foot and still."
+        if unloaded or ticking or cancelled or not namespace_clear or attempts_used>=attempt_limit
+            or used and (not two_cycle or phase~="skateboard") then return false,"Consumed, busy or retained attempt; not available." end
+        attempts_used+=1;used=true;generation+=1
+        local version=generation
+        if attempts_used==2 then
+            -- Burn the second intent before ALL fallible callbacks. Return's
+            -- old stock100 history is archived by the private owner first.
+            phase,detail="stepping_off","Attempt two: archiving Return, then one guarded stock100 to on-foot504 transition. Close menus."
+            mount_issued=false;return_pending=false;stock_attempted=false;stopped=false;cancel_sent=false
+            if not known or not clean(latest) then fail("Previous Return is not fully clean.");return false,detail end
+            local current=state()
+            if generation~=version or cancelled or unloaded then return false,detail end
+            if current~=100 then
+                fail("Attempt two requires current stock100 after Return. Already on foot or unreadable state spends this intent.")
+                return false,detail
+            end
+            local out=call(owner.prepare_next_mount,owner,slot)
+            if generation~=version or cancelled or unloaded then return false,detail end
+            if not out[1] or out[2]~=true then fail(text(out[3],"Second preparation refused."));return false,detail end
+            return true
+        end
+        phase,detail="preparing","Preparing, then surveying the clear area. Stay on foot and still."
         prep_at=clock()
         if not prep_at or cancelled or unloaded or phase~="preparing" then return false,detail end
         return true
@@ -229,10 +280,11 @@ function Entry.new(R,Runtime,Survey,options)
             else known=false;fail("Lifecycle step unavailable; cleanup remains required.") end
             if not cancelled and phase~="blocked" then
             if return_pending then return_step()
-            elseif phase=="preparing" or phase=="surveying" or phase=="awaiting_mount" then
+            elseif phase=="stepping_off" or phase=="preparing" or phase=="surveying" or phase=="awaiting_mount" then
                 local now=clock()
                 if now then
-                    if phase=="preparing" then prep_step(now)
+                    if phase=="stepping_off" then step_off(now)
+                    elseif phase=="preparing" then prep_step(now)
                     elseif phase=="surveying" then
                         local version=generation
                         if environment(true) and generation==version and not cancelled and not unloaded and phase=="surveying" then survey_step(now) end
@@ -257,6 +309,7 @@ function Entry.new(R,Runtime,Survey,options)
             lifecycle_detail=known and (plain(latest.spawn) and text(latest.spawn.detail,nil) or text(latest.detail,nil)
                 or text(latest.stop_reason,"Lifecycle status observed.")) or "Lifecycle status is unknown; no stock switch is allowed.",
             bike_authority=not known or latest.bike_authority~=false,
+            attempts_used=attempts_used,attempt_limit=attempt_limit,new_allocation_each_cycle=two_cycle,
             cleanup_pending=not known or latest.cleanup_pending~=false,cleanup_unknown=not known or latest.cleanup_unknown~=false,
             stock_toggle_blocked=not known or latest.stock_toggle_blocked~=false,session_reusable=false})
     end

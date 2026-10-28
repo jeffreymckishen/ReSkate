@@ -421,7 +421,7 @@ function BikeRuntime.force_transaction_adapter(identity,binding,guard,read_seria
     return table.freeze(api)
 end
 
-function BikeRuntime.new(services,options,shared_state)
+local function new_core(services,options,shared_state,session)
 local supplied=services or reskate
 local R=type(supplied)=="table" and supplied or {}
 local qualification_only=type(options)=="table" and options.qualification_only==true
@@ -429,6 +429,7 @@ local T=shared_state or {phase="idle",detail="Stock switching and inspection onl
     generation=0,cancel_version=0,calls={},counts={},receipts={},omitted_calls=0,omitted_receipts=0,
     remove_attempted={},remove_accepted={}}
 local object={}
+local mount_attempt_used=false
 local stop_all,latch_stop,source,spawn,equipment,facts,closed_ready,snapshot,flush_removals
 local ride,ride_binding,selected_source_frame,stop_ride,drain_ride,observe_ride
 local function finite(v) return type(v)=="number" and v==v and math.abs(v)<math.huge end
@@ -477,6 +478,7 @@ local function event(name, result)
     calls[n+1]=row
 end
 local function call(name, fn, ...)
+    if T.session_retired then return {false,"retired Lua session",n=2} end
     local result=table.pack(pcall(fn,...))
     event(name,result)
     return result
@@ -648,6 +650,8 @@ local function stock_blocked(read_status)
     return false
 end
 snapshot=function()
+    local native_retirement_known
+    if session then native_retirement_known=false end
     -- These dependency status methods read only local cached state. Reuse one
     -- detached observation inside this diagnostic copy, never across a call,
     -- tick or actuator callback. Authority helpers keep their ordinary reader.
@@ -675,7 +679,8 @@ snapshot=function()
         lease_renew_calls=T.lease_renew_calls or 0,lease_renew_accepted=T.lease_renew_accepted or 0,
         lease_renew_last=T.lease_renew_last,lease_renew_off=T.lease_renew_off==true,
         renewals_this_tick=T.renewals_tick or 0,
-        one_attempt_per_vm=true,retained_body_slot_limit=8,
+        one_attempt_per_vm=session==nil,experimental_session=session and session.index or nil,
+        experimental_attempt_limit=session and 2 or nil,native_retirement_known=native_retirement_known,session_retired=session and T.session_retired==true or nil,retained_body_slot_limit=8,
         limit_scope=T.lease_renewable and "Eight retained native body slots may already be exhausted; not a retry budget. Core renews its one Follow and requests no body reuse."
             or "Eight retained native body slots may already be exhausted; not a retry budget. Core requests no Follow renewal or body reuse.",
         source_freshness_scope=T.lease_renewable and "Selected-input lease renewal. The Follow lease moves later only by an accepted Follow renewal; a copied lease report can only shorten it."
@@ -1562,6 +1567,7 @@ local function equipment_tick()
     end
 end
 function object:prepare_backend()
+    if T.session_retired then return false end
     if source or spawn then return source~=nil and spawn~=nil end
     if T.unloaded or T.stop_latched or not qualification_only then return false end
     -- Dependencies were staged individually. These require calls are cache hits.
@@ -1633,8 +1639,8 @@ function object:request_mount(slot,admitted)
         if T.intent_inflight or T.active or T.gear_requested then stop_all("reentrant mount request") end
         return false,"Bike lifecycle operation already in progress"
     end
-    if (T.used and admitted~=T) or vm_attempt_used or T.unloaded or stock_blocked() then return false,"One attempt per VM; busy or retained duty prevents rearm" end
-    T.busy=true;T.intent_inflight=true;T.used=true;vm_attempt_used=true;T.slot=slot
+    if (T.used and admitted~=T) or mount_attempt_used or T.session_retired or (vm_attempt_used and not (session and session.index==2)) or T.unloaded or stock_blocked() then return false,session and "Consumed attempt, busy or retained duty prevents admission" or "One attempt per VM; busy or retained duty prevents rearm" end
+    mount_attempt_used=true;T.busy=true;T.intent_inflight=true;T.used=true;vm_attempt_used=true;T.slot=slot
     local generation=T.generation
     local clear=marker_clear()
     if clear and current(generation) then
@@ -1665,13 +1671,14 @@ function object:request_mount(slot,admitted)
     return true
 end
 function object:request_stop(why)
-    if T.unloaded then return false,"Runtime is unloaded; SDK retains cleanup" end
+    if T.session_retired or T.unloaded then return false,"Runtime is retired or unloaded; SDK retains cleanup" end
     if not T.used and not T.gear_requested and not T.intent_inflight then return true end
     stop_all(reason(why) and why or "explicit Stop")
     if T.ledger_owned then persist(true) end
     return true
 end
 function object:request_stock_toggle(slot,admitted)
+    if T.session_retired then return false,"Retired session" end
     if not valid_slot(slot) then return false,"Choose an XInput slot from0 to3" end
     if stock_blocked() then
         if T.busy and (T.intent_inflight or T.active or T.gear_requested) then stop_all("reentrant stock request") end
@@ -1702,7 +1709,7 @@ local function tick(dt)
     -- an SDK tick credential: the SDK's own quota stays authoritative.
     T.follow_reads_tick=0;T.lease_reads_tick=0;T.renewals_tick=0
     selected_source_frame=nil;tick_facts=nil;tick_authorization=nil
-    if T.unloaded or T.phase=="blocked" then return end
+    if T.session_retired or T.unloaded or T.phase=="blocked" then return end
     if not T.used and not T.gear_requested or T.phase=="done" and not T.gear_requested then
         -- No tick-end save runs from here, so a throttled snapshot would
         -- otherwise remain the cached ledger for the rest of this VM.
@@ -1837,7 +1844,7 @@ function object:step(dt_ms)
     return self:status()
 end
 function object:unload()
-    if T.unloaded then return self:status() end
+    if T.session_retired or T.unloaded then return self:status() end
     T.unloaded=true;T.generation+=1
     if T.used or T.gear_requested or T.intent_inflight then stop_all("unload; SDK retains unresolved native duty") end
     drain_ride()
@@ -1847,6 +1854,140 @@ function object:unload()
     if T.used then stop_spawn_when_allowed("unload visual cleanup");persist(true) end
     return self:status()
 end
-return table.freeze(object)
+-- These hooks stay inside one facade-owned experimental factory. They never
+-- expose or recycle native handles, and default Core.new has no such handoff.
+local function cycle_ready(expected,after_attempt)
+    if not session or not mount_attempt_used or T.session_retired or T.unloaded or T.busy or T.saving
+        or T.gear_requested or T.intent_inflight or T.cleanup_expired or T.storage_fault or T.clock_unknown
+        or not T.ledger_owned or T.reload_blocked or T.marker_unknown or T.phase~="done"
+        or T.bike_cleanup_complete~=true or stock_blocked() or not source_clean() or not force_clear()
+        or T.follow~=nil or T.body~=nil or T.completed_ack~=true or T.acknowledged~=true
+        or T.ack_attempted~=true or not visuals_accepted() then return false,"Prior lifecycle is not fully clean" end
+    local terminal=T.terminal
+    if type(terminal)~="table" or terminal.phase~="completed" or terminal.terminal~=true
+        or terminal.park_observed~=true or terminal.in_flight~=0 or type(terminal.pending)~="table" or next(terminal.pending)~=nil
+        or terminal.final_revision=="0" or terminal.final_revision~=terminal.returned_revision
+        or terminal.sequence~=T.sequence or terminal.orphaned~=false then return false,"Matched park/Follow ACK required" end
+    local pose,board=T.pose_status,T.board_status
+    if type(pose)~="table" or pose.stopped~=true or pose.state~="off" or pose.nil_accepted~=true
+        or pose.issue~=nil or type(board)~="table" or board.state~="restored" or board.clear_result~="cleared"
+        or board.issue~=nil then return false,"Pose and board cleanup must be confirmed" end
+    local e=status_of(equipment)
+    if not e or e.phase~="done" or e.retained~=false or e.unloaded or e.storage_fault
+        or e.storage_accepted~=true or e.acknowledged~=true or e.qualified_transition~=true
+        or e.current_transition~=true or e.expected_state~=expected or e.outcome~="target_observed"
+        or type(e.attempt)~="number" or e.attempt%1~=0 or e.attempt<1
+        or after_attempt and e.attempt<=after_attempt then return false,"Fresh target and equipment ACK required" end
+    local receipt=e.terminal_receipt
+    if type(receipt)~="table" or receipt.terminal~=true or receipt.report_debt~=false
+        or receipt.claim_released~=true or receipt.quarantined~=false or receipt.orphaned~=false then
+        return false,"Equipment terminal debt remains"
+    end
+    return true,e.attempt
+end
+local function cycle_checkpoint(expected,after_attempt,key,retire)
+    local ok,attempt=cycle_ready(expected,after_attempt)
+    if not ok then return false,attempt end
+    -- Capture the already-clean detached record before the callback-exclusion
+    -- latch: stock_blocked truthfully treats busy as blocked during callbacks.
+    local got,row=pcall(snapshot)
+    if not got then return false,"Terminal snapshot unavailable" end
+    T.busy=true
+    local version=T.cancel_version
+    local now=clock()
+    local f=now and facts() or nil
+    local valid=now and f and base_ready(f,true) and f.grounded and f.state==expected
+        and T.cancel_version==version and not T.unloaded and not T.session_retired
+    if valid and key then
+        local fits=BikeRuntime.ledger_bound(row)
+        if not fits or fits>LEDGER_LIMIT then
+            local encoded=call("json.encode",lookup("json.encode"),row)
+            valid=encoded[1] and encoded.n==2 and type(encoded[2])=="string" and #encoded[2]<=LEDGER_LIMIT
+        end
+        if valid and T.cancel_version==version and not T.unloaded then
+            local saved=call("storage.set",lookup("storage.set"),key,row)
+            valid=saved[1] and saved.n==1 -- Host cache acceptance only.
+            if not valid then T.storage_fault=true end
+        else valid=false end
+    end
+    valid=valid and T.cancel_version==version and not T.unloaded and not T.session_retired
+        and not T.storage_fault and not T.clock_unknown
+    T.busy=false
+    if not valid then return false,"Cycle archive/readiness changed or storage failed" end
+    local still,why=cycle_ready(expected,after_attempt)
+    if not still then return false,why end
+    if retire then
+        -- No callback follows until this owner is irreversibly inert. Old
+        -- step/stop/unload and all its SDK closures can no longer write.
+        T.session_retired=true;T.generation+=1;T.cancel_version+=1
+    end
+    return true,attempt
+end
+local hooks={
+    checkpoint=cycle_checkpoint,
+    can_return=function() return cycle_ready(100,nil) end,
+    ready=function(after_attempt)
+        if T.session_retired or T.unloaded or T.gear_unknown or T.gear_cancelled or T.storage_fault
+            or T.clock_unknown or T.startup_closed then return false,"On-foot preparation failed or became uncertain" end
+        if T.gear_requested then return false,"pending" end
+        return cycle_checkpoint(504,after_attempt,nil,false)
+    end,
+    initialize=function() return persist(true) end,
+}
+return table.freeze(object),hooks
+end
+
+function BikeRuntime.new(services,options,shared_state)
+    return (new_core(services,options,shared_state,nil))
+end
+local experimental_owner_created=false
+function BikeRuntime.experimental_two_cycle_owner()
+    if experimental_owner_created or vm_attempt_used then return nil,"VM already has a bike owner or attempt" end
+    experimental_owner_created=true
+    local made,hooks,failed,return_attempt,epoch=0,nil,false,nil,0
+    local owner={}
+    function owner:abort_preparation() epoch+=1;failed=true end
+    function owner:first(services,options,state)
+        if failed or made~=0 or vm_attempt_used then return nil,"First private session unavailable" end
+        made=1
+        local object
+        object,hooks=new_core(services,options,state,{index=1})
+        return object
+    end
+    function owner:can_archive_return()
+        if failed or made~=1 or return_attempt then return false,"Second intent unavailable" end
+        return hooks.can_return()
+    end
+    function owner:archive_return()
+        if failed or made~=1 or return_attempt then return false,"Second intent already consumed or unavailable" end
+        -- Burn before fallible callbacks: a failed archive can never be retried.
+        failed=true
+        local version=epoch
+        local ok,attempt=hooks.checkpoint(100,nil,"bmx_bike_cycle_1_stock100_v1",false)
+        if not ok or epoch~=version then return false,epoch~=version and "Preparation cancelled" or attempt end
+        return_attempt=attempt;failed=false
+        return true
+    end
+    function owner:ready()
+        if failed or made~=1 or not return_attempt then return false,"Second preparation is unavailable" end
+        local version=epoch
+        local ok,why=hooks.ready(return_attempt)
+        if failed or epoch~=version then return false,"Preparation cancelled" end
+        return ok,why
+    end
+    function owner:successor(services,options,state)
+        if failed or made~=1 or not return_attempt then return nil,"No private successor available" end
+        failed=true;made=2
+        local version=epoch
+        local ok,why=hooks.checkpoint(504,return_attempt,"bmx_bike_cycle_1_onfoot504_v1",true)
+        if not ok then return nil,why end
+        state.ledger_owned=true
+        local object,next_hooks=new_core(services,options,state,{index=2})
+        -- Replace the active marker only after both old snapshots were saved
+        -- and old callbacks are inert, before any successor actuator exists.
+        if not next_hooks.initialize() or epoch~=version then return nil,"Successor active marker failed or intent cancelled" end
+        return object
+    end
+    return table.freeze(owner)
 end
 return table.freeze(BikeRuntime)

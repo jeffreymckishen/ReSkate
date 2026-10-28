@@ -16,14 +16,15 @@ local mount_modules={"./lease_identity","./lease_source","./force_math","./bike_
     "./bike_runtime_core"}
 local function finite(v) return type(v)=="number" and v==v and math.abs(v)<math.huge end
 local function valid_slot(v) return finite(v) and v>=0 and v<=3 and v%1==0 end
-function BikeRuntime.new(services,options)
+local function new_runtime(services,options,two_cycle)
     local R=services or reskate
     local qualification_only=type(options)=="table" and options.qualification_only==true
     local T={phase="idle",detail="Stock switching and inspection only; native bike qualification unavailable.",
         generation=0,cancel_version=0,calls={},counts={},receipts={},omitted_calls=0,omitted_receipts=0,
-        remove_attempted={},remove_accepted={}}
+        remove_attempted={},remove_accepted={},experimental_attempt_limit=two_cycle and 2 or nil}
     local object={}
     local core,api,pending,running,cancelling
+    local session_owner,mounts_burned,next_preparation= nil,0,false
     local loaded={}
     local function status()
         if core then return core:status() end
@@ -35,9 +36,13 @@ function BikeRuntime.new(services,options)
             startup={pending=false,loaded=0,core_ready=false,backend_ready=false}}
     end
     local function cancel(why,unloading)
+        if next_preparation and session_owner then session_owner:abort_preparation() end
         if pending and pending.kind=="stock" then T.startup_closed=true end
         T.cancel_version+=1;T.generation+=1
-        T.stop_latched=true;T.stop_reason=why;T.stop_at=T.now
+        -- A second-intent callback may cancel the old clean owner. Keep that
+        -- owner's original stop/deadline history; this is not a new bike stop.
+        if not (two_cycle and next_preparation and T.stop_at~=nil) then T.stop_at=T.now end
+        T.stop_latched=true;T.stop_reason=why
         pending=nil;T.startup_pending=false
         if unloading and not core then T.unloaded=true end
         if core then
@@ -69,12 +74,12 @@ function BikeRuntime.new(services,options)
         end
         local clean_new_stock=kind=="stock" and T.used==true and T.bike_cleanup_complete and not T.marker_unknown
             and not T.reload_blocked and not T.storage_fault and not T.clock_unknown
-        if pending or T.unloaded or T.startup_closed or T.stop_latched and not clean_new_stock or kind=="mount" and (T.used or vm_attempt_used) then
+        if pending or T.unloaded or T.startup_closed or T.stop_latched and not clean_new_stock or kind=="mount" and (T.used or vm_attempt_used and not (two_cycle and mounts_burned==1 and T.experimental_session==2)) then
             return false,"One attempt per VM; busy or retained duty prevents rearm"
         end
         -- Burn private admission and latch before require or any service callback.
         running=true;T.startup_pending=true
-        if kind=="mount" then T.used=true;vm_attempt_used=true end
+        if kind=="mount" then mounts_burned+=1;T.used=true;vm_attempt_used=true end
         local generation=T.generation
         if not Admission then
             local ok,value=pcall(require,"./bike_admission")
@@ -124,10 +129,49 @@ function BikeRuntime.new(services,options)
         if not qualification_only then return false,"Native bike lifecycle qualification unavailable" end
         if core and T.backend_ready and not pending then
             if running then cancel("reentrant mount request");return false,"Bike lifecycle operation already in progress" end
-            if vm_attempt_used then return false,"One attempt per VM; busy or retained duty prevents rearm" end
-            -- Existing stock owner remains the owner. Admit and prepare cold deps first.
+            if two_cycle and mounts_burned==1 and next_preparation and session_owner then
+                running=true
+                local next_state={phase="idle",detail="Second bounded fresh-allocation session.",generation=0,cancel_version=0,
+                    calls={},counts={},receipts={},omitted_calls=0,omitted_receipts=0,remove_attempted={},remove_accepted={},
+                    experimental_session=2,experimental_attempt_limit=2}
+                local successor,why=session_owner:successor(R,{qualification_only=qualification_only},next_state)
+                if not successor then running=false;T.startup_closed=true;return false,why end
+                T=next_state;core=successor;api=Admission.bind(T,R,qualification_only)
+                T.core_ready=true;T.backend_ready=false;next_preparation=false
+                running=false
+            elseif vm_attempt_used then return false,"One attempt per VM; busy or retained duty prevents rearm" end
         end
         return admission("mount",slot)
+    end
+    function object:can_prepare_next_mount()
+        if not two_cycle or running or pending or T.unloaded or T.startup_closed or mounts_burned~=1
+            or next_preparation or not session_owner then return false,"No clean successor available" end
+        return session_owner:can_archive_return()
+    end
+    function object:prepare_next_mount(slot)
+        if not two_cycle or not valid_slot(slot) or running or pending or T.unloaded or T.startup_closed
+            or mounts_burned~=1 or next_preparation or not session_owner or not core then
+            return false,"Second preparation unavailable"
+        end
+        -- Intent two is spent before archive/stock callbacks. Any failure closes
+        -- it permanently; no fresh facade or reset can recover this admission.
+        next_preparation=true;running=true
+        local ok,why=session_owner:archive_return()
+        if not ok then T.startup_closed=true;running=false;return false,why end
+        local accepted,reason=core:request_stock_toggle(slot)
+        running=false
+        if not accepted then T.startup_closed=true;return false,reason end
+        return true
+    end
+    function object:next_mount_ready()
+        if not two_cycle or not next_preparation or running or pending or T.unloaded or T.startup_closed then
+            return false,"Second preparation unavailable"
+        end
+        running=true
+        local ok,why=session_owner:ready()
+        running=false
+        if not ok and why~="pending" then T.startup_closed=true end
+        return ok,why
     end
     function object:request_stock_toggle(slot)
         if core and not pending then
@@ -138,6 +182,7 @@ function BikeRuntime.new(services,options)
         return admission("stock",slot)
     end
     function object:request_stop(why)
+        if next_preparation and session_owner then session_owner:abort_preparation() end
         if T.unloaded then return false,"Runtime is unloaded; SDK retains cleanup" end
         if core and not pending then
             local outer=running;running=true;local result=table.pack(core:request_stop(why));running=outer
@@ -171,7 +216,14 @@ function BikeRuntime.new(services,options)
                     loaded[name]=value;intent.index+=1
                     T.startup_loaded=(T.startup_loaded or 0)+1;T.startup_last=name
                     if name=="./bike_runtime_core" and not core then
-                        core=value.new(R,{qualification_only=qualification_only},T);T.core_ready=true
+                        if two_cycle then
+                            session_owner=value.experimental_two_cycle_owner()
+                            if not session_owner then cancel("private two-cycle owner unavailable");return end
+                            T.experimental_session=1
+                            core=session_owner:first(R,{qualification_only=qualification_only},T)
+                            if not core then cancel("first private Core unavailable");return end
+                        else core=value.new(R,{qualification_only=qualification_only},T) end
+                        T.core_ready=true
                         T.core_instances=(T.core_instances or 0)+1
                     end
                 end
@@ -210,11 +262,21 @@ function BikeRuntime.new(services,options)
         return result
     end
     function object:unload()
+        if next_preparation and session_owner then session_owner:abort_preparation() end
         if T.unloaded then return status() end
         if core and not pending then local outer=running;running=true;local result=core:unload();running=outer;return result end
         cancel("unload before startup; no game authority acquired",true)
         return status()
     end
     return table.freeze(object)
+end
+function BikeRuntime.new(services,options)
+    return new_runtime(services,options,false)
+end
+local experimental_manager_created=false
+function BikeRuntime.new_experimental_two_cycle(services,options)
+    if experimental_manager_created or vm_attempt_used then return nil,"VM already has a manager or consumed mount" end
+    experimental_manager_created=true
+    return new_runtime(services,options,true)
 end
 return table.freeze(BikeRuntime)

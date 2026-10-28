@@ -2,7 +2,7 @@
 # Pure consumer for the versioned private evidence wire. Dot-sourcing performs
 # no IO. Legacy evidence belongs to the caller's explicitly selected old parser;
 # malformed encoded input is never retried as unencoded evidence.
-# Contract 0F79490494905284569C3A42AE90FDD43101B1391F82239E044D3D18DBD47790;
+# Contract C3F6BE7DFBA89AC2815DD5C58139E482E330D3CA54CA93D9F578E5EA9CFE1B5C;
 # static FIELDS.txt SHA256 0DDC1E87FE212DA9471238FB1165F3574197EB720A7D51AE763740A99689C2B3.
 Set-StrictMode -Version Latest
 $script:HopEvidenceFields=[Array]::AsReadOnly([string[]]@(
@@ -345,6 +345,25 @@ function Get-HopEvidenceStringBytes([string]$Value){
     foreach($b in $bytes){$cost+=$(if($b -lt 32 -or $b -eq 34 -or $b -eq 92 -or $b -ge 127){6}else{1})}
     return $cost
 }
+# Match plugin_api.cpp's int64 JSON branch for already finite numeric values.
+# Inspect exact integral/Decimal inputs before Double conversion: otherwise an
+# out-of-profile Int64 value 2^53+1 could round into the inclusive cheap boundary.
+# Canonical DATA/state sizing still charges 32 bytes for every number.
+function Get-HopEvidenceNumericWireBytes($Value){
+    Assert-HopEvidence (Test-HopEvidenceNumber $Value) 'numeric wire value must be finite'
+    if($Value -is [double] -or $Value -is [single]){
+        $number=[double]$Value
+        if([Math]::Abs($number) -le 9007199254740992.0 -and [Math]::Floor($number) -eq $number){
+            return ([long]$number).ToString([Globalization.CultureInfo]::InvariantCulture).Length
+        }
+    }else{
+        $exact=[decimal]$Value
+        if($exact -ge -9007199254740992D -and $exact -le 9007199254740992D -and [decimal]::Truncate($exact) -eq $exact){
+            return ([long]$exact).ToString([Globalization.CultureInfo]::InvariantCulture).Length
+        }
+    }
+    return 32L
+}
 function Get-HopEvidenceDigits([long]$Value){return $Value.ToString([Globalization.CultureInfo]::InvariantCulture).Length}
 function Assert-HopEvidenceKeys($Value,[string[]]$Keys){
     Assert-HopEvidence ($Value -is [Collections.IDictionary] -and $Value.Count -eq $Keys.Count) 'envelope keys differ'
@@ -410,7 +429,7 @@ function Read-HopEvidenceNode($Node,$Base,[bool]$HasBase,$Active,[int]$Depth=0){
             $v=$Node[1]
             if($v -is [string]){$cost=Get-HopEvidenceStringBytes $v}
             elseif($v -is [bool]){$cost=5L}
-            else{Assert-HopEvidence (Test-HopEvidenceNumber $v) 'unsupported scalar';Assert-HopEvidence ($v -ne 0 -or [BitConverter]::DoubleToInt64Bits([double]$v) -ne [long]::MinValue) 'negative zero requires tag 4';$cost=32L}
+            else{Assert-HopEvidence (Test-HopEvidenceNumber $v) 'unsupported scalar';Assert-HopEvidence ($v -ne 0 -or [BitConverter]::DoubleToInt64Bits([double]$v) -ne [long]::MinValue) 'negative zero requires tag 4';$cost=Get-HopEvidenceNumericWireBytes $v}
             return @{value=$v;wire_bytes=(4L+$cost)}
         }
         if($Node[1] -is [bool]){
@@ -471,7 +490,7 @@ function Read-HopEvidenceChunks {
     foreach($chunk in $Chunks){
         Assert-HopEvidenceKeys $chunk @('schema','encoding','run_id','chunk','rows')
         $schema=Get-HopEvidenceField $chunk 'schema';$encoding=Get-HopEvidenceField $chunk 'encoding';$run=Get-HopEvidenceField $chunk 'run_id';$number=Get-HopEvidenceField $chunk 'chunk';$wireRows=Get-HopEvidenceField $chunk 'rows'
-        Assert-HopEvidence ((Test-HopEvidenceInteger $schema 2 2) -and $encoding -is [string] -and $encoding -ceq 'hop-delta-v2') 'unsupported schema or encoding; no legacy fallback'
+        Assert-HopEvidence ((Test-HopEvidenceInteger $schema 2 2) -and $encoding -is [string] -and $encoding -ceq 'hop-delta-v3') 'unsupported schema or encoding; no legacy fallback'
         Assert-HopEvidence ($run -is [string] -and $run -ceq $RunId -and (Test-HopEvidenceInteger $number $expectedChunk $expectedChunk)) 'run or contiguous chunk identity differs'
         Assert-HopEvidence ((Test-HopEvidenceList $wireRows) -and $wireRows.Count -ge 1 -and $wireRows.Count -le 16) 'chunk requires 1..16 rows'
         [long]$chunkWire=0
@@ -509,7 +528,7 @@ function Read-HopEvidenceChunks {
             Assert-HopEvidence ($dataBytes -le 11904) 'expanded data exceeds 11904 bytes'
             [long]$wireCost=12+5+(Get-HopEvidenceDigits ([long]$wire[1]))+$projectionCost+5+[long]$decoded.wire_bytes
             foreach($slot in @(3,4,5,6)){$wireCost+=Get-HopEvidenceDigits ([long]$wire[$slot])}
-            foreach($slot in @(7,8)){$wireCost+=$(if($wire[$slot] -is [bool]){5}elseif($wire[$slot] -is [string]){4}else{32})}
+            foreach($slot in @(7,8)){$wireCost+=$(if($wire[$slot] -is [bool]){5}elseif($wire[$slot] -is [string]){4}else{Get-HopEvidenceNumericWireBytes $wire[$slot]})}
             Assert-HopEvidence ($wireCost -le 12288) 'encoded row exceeds 12288 bytes'
             $chunkWire+=$wireCost;Assert-HopEvidence (1024+$chunkWire -le 24576) 'encoded chunk exceeds 24576 bytes'
             if($wire[0]){$critical++;$criticalWire+=$wireCost;Assert-HopEvidence ($critical -le 128 -and $criticalWire -le 131072) 'critical stream capacity exceeded'}
@@ -528,12 +547,12 @@ function Read-HopEvidenceChunks {
         # Bound the provided encoded documents and their storage-key wrappers.
         # The complete SDK store and summary are outside this function's input.
         $arrayBytes=2+($wireRows.Count-1)+$chunkWire
-        $envelope=2+('schema'.Length+4)+1+('encoding'.Length+4)+(Get-HopEvidenceStringBytes 'hop-delta-v2')+
+        $envelope=2+('schema'.Length+4)+1+('encoding'.Length+4)+(Get-HopEvidenceStringBytes 'hop-delta-v3')+
             ('run_id'.Length+4)+(Get-HopEvidenceStringBytes $RunId)+('chunk'.Length+4)+(Get-HopEvidenceDigits $expectedChunk)+('rows'.Length+4)+$arrayBytes
         $storageKey='hop.'+$RunId+'.chunk.'+$expectedChunk
         $envelopeBytes+=$storageKey.Length+4+$envelope
         Assert-HopEvidence ($envelopeBytes -le 1048576) 'aggregate encoded envelopes exceed 1 MiB'
         $expectedChunk++
     }
-    return ,([ordered]@{rows=$rows.ToArray();encoding='hop-delta-v2'})
+    return ,([ordered]@{rows=$rows.ToArray();encoding='hop-delta-v3'})
 }

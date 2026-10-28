@@ -345,7 +345,7 @@ function Tests.run()
         return {critical==true,kind_id,projection,base or 0,first,first,1,false,false,false,node}
     end
     local function chunk(rows,index,run)
-        return {schema=2,encoding="hop-delta-v2",run_id=run or "codec_fixture",chunk=index or 1,rows=rows}
+        return {schema=2,encoding="hop-delta-v3",run_id=run or "codec_fixture",chunk=index or 1,rows=rows}
     end
     local function pack(wires,width)
         local chunks={}
@@ -396,7 +396,7 @@ function Tests.run()
     local function envelope_bytes(row_costs,run,index)
         local rows_bytes=2+math.max(0,#row_costs-1)
         for _,cost in ipairs(row_costs) do rows_bytes+=cost end
-        local object=2+(6+4+1)+(8+4+escaped_string_bytes("hop-delta-v2"))
+        local object=2+(6+4+1)+(8+4+escaped_string_bytes("hop-delta-v3"))
             +(6+4+escaped_string_bytes(run))+(5+4+#tostring(index))+(4+4+rows_bytes)
         local key="hop."..run..".chunk."..tostring(index)
         return object+escaped_string_bytes(key)+4
@@ -408,7 +408,7 @@ function Tests.run()
     end
 
     case("frozen public version and complete static dictionaries",function()
-        check(Codec.version==2 and Codec.encoding=="hop-delta-v2","wire version is explicit")
+        check(Codec.version==3 and Codec.encoding=="hop-delta-v3","wire version is explicit")
         check(#expected_fields==314 and same(Codec.fields,expected_fields),"all 314 field slots match the independent contract")
         check(same(Codec.kinds,expected_kinds),"kind IDs retain their specified order")
         check(table.isfrozen(Codec.fields) and table.isfrozen(Codec.kinds),"public dictionaries are immutable")
@@ -591,7 +591,7 @@ function Tests.run()
     end)
     case("unsupported envelopes ordering run IDs and chunk holes fail closed",function()
         local valid=chunk({wire(13,"",1,{2,false})})
-        for _,change in ipairs({{"schema",1},{"schema",3},{"encoding","hop-delta-v3"},{"chunk",0},{"chunk",2},{"run_id","other"},{"unknown",false}}) do
+        for _,change in ipairs({{"schema",1},{"schema",3},{"encoding","hop-delta-v2"},{"chunk",0},{"chunk",2},{"run_id","other"},{"unknown",false}}) do
             local invalid=copy(valid);invalid[change[1]]=change[2]
             refuses(function() return Codec.decode_chunks({invalid},"codec_fixture") end,"malformed or unsupported chunk")
         end

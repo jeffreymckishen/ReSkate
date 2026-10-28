@@ -224,7 +224,7 @@ never repair it in place or reuse a partial output.
 
 ## Encoded evidence
 
-New recorder chunks use schema 2 and `encoding="hop-delta-v2"`. The pure
+New recorder chunks use schema 2 and `encoding="hop-delta-v3"`. The pure
 `plugin/hop_evidence_codec.lua` codec and `Decode-HopEvidence.ps1` consumer share
 fixed field/kind tables and reconstruct the logical rows before semantic checks.
 They preserve field absence, false, zero, signed zero, exact numbers and occurrence
@@ -232,13 +232,22 @@ metadata. Regular deltas reference only the previous row in the same projection;
 critical rows are complete anchors and can be decoded independently as rows.
 The strict stream reader still requires every ordered chunk from the run.
 
+The v3 accounting profile keeps every decoded value and observation unchanged. Wire
+numbers that the SDK serializes as signed int64 JSON (finite integral values with
+absolute value at most 9,007,199,254,740,992) use their exact invariant decimal
+length; other finite doubles keep the conservative 32-byte charge. Expanded DATA
+and retained projection-state numbers still cost 32 bytes. Signed zero keeps its
+explicit node/time sentinels. The strict v3 reader rejects older profile markers;
+frozen v2 evidence requires its separate v2 reader. This accounting change alone
+does not establish that a complete window fits either the row or byte budget.
+
 The 2,048-row/512 KiB regular budget, separate cleanup budget, storage quota,
 readiness gates and 1,500 ms driving window remain unchanged. Retained projection
 bases are charged to the regular budget. Overflow still marks observation loss
 and stops the trial. Flushing remains terminal-only and failed writes do not
-advance the cursor. `Read-HopEvidenceChunks` rejects malformed v2 evidence;
+advance the cursor. `Read-HopEvidenceChunks` rejects malformed v3 evidence;
 operators must explicitly decode it before applying their existing predicates.
-Frozen schema-1 operators and packages remain separate and cannot qualify a new
+Frozen schema-1 and v2 operators and packages remain separate and cannot qualify a new
 encoding without their own reviewed integration.
 
 Pure codec tests, exact recorded-prefix replay and packaging tests establish their

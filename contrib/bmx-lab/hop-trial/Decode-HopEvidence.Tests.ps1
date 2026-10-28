@@ -31,7 +31,7 @@ function New-Row($Node=(New-Table),[long]$First=1,[long]$Base=0,[string]$Project
     $v=[object[]]::new(11);$v[0]=$Critical;$v[1]=$Kind;$v[2]=$Projection;$v[3]=$Base;$v[4]=$First;$v[5]=$First;$v[6]=1;$v[7]=$false;$v[8]=$false;$v[9]=$false;$v[10]=$Node;return ,$v
 }
 function New-Chunk([object[]]$Rows,[int]$Number=1,[string]$Run='fixture'){
-    return [ordered]@{schema=2;encoding='hop-delta-v2';run_id=$Run;chunk=$Number;rows=$Rows}
+    return [ordered]@{schema=2;encoding='hop-delta-v3';run_id=$Run;chunk=$Number;rows=$Rows}
 }
 function Read-Rows([object[]]$Rows){return (Read-HopEvidenceChunks -Chunks @((New-Chunk -Rows $Rows)) -RunId 'fixture')}
 function Assert-Value($Actual,$Expected){
@@ -55,7 +55,7 @@ Invoke-CodecCase 'full semantic roundtrip and metadata' {
     $data=New-Data @{call=(New-Scalar 'world.physics.read');valid=(New-Scalar $false);id=(New-Scalar '18446744073709551615');fraction=(New-Scalar (1.0/60));position=$vector;normal=(New-Table);pending_count=(New-Scalar 0)}
     $wire=New-Row -Node $data -Projection 'world.physics.read';$wire[5]=7;$wire[6]=4;$wire[7]=0;$wire[8]=1.0/60;$wire[9]=$true
     $result=Read-Rows (,$wire)
-    Assert-Codec ($result.encoding -ceq 'hop-delta-v2' -and $result.rows.Count -eq 1) 'result shape differs'
+    Assert-Codec ($result.encoding -ceq 'hop-delta-v3' -and $result.rows.Count -eq 1) 'result shape differs'
     Assert-Value $result.rows[0].data @{call='world.physics.read';valid=$false;id='18446744073709551615';fraction=(1.0/60);position=@(1.0,2.0,3.0);normal=@{};pending_count=0}
     Assert-Codec ($result.rows[0].first_call -eq 1 -and $result.rows[0].last_call -eq 7 -and $result.rows[0].repeats -eq 4 -and $result.rows[0].incomplete -and -not $result.rows[0].critical) 'coalesced metadata differs'
     Assert-Value $result.rows[0].first_at_ms 0;Assert-Value $result.rows[0].last_at_ms (1.0/60)
@@ -108,12 +108,12 @@ Invoke-CodecCase 'all 2176 permitted occurrences survive contiguous chunks' {
     $chunks=[object[]]::new(2176);for($i=0;$i -lt $chunks.Count;$i++){$chunks[$i]=New-Chunk -Rows (,(New-Row -First ($i+1) -Critical ($i -ge 2048))) -Number ($i+1)}
     Assert-Codec ((Read-HopEvidenceChunks -Chunks $chunks -RunId fixture).rows.Count -eq 2176) 'maximum occurrence stream rejected'
 }
-Invoke-CodecCase 'empty input yields one explicit v2 result' {
-    $result=Read-HopEvidenceChunks -Chunks @() -RunId fixture;Assert-Codec ($result.rows.Count -eq 0 -and $result.encoding -ceq 'hop-delta-v2') 'empty result differs'
+Invoke-CodecCase 'empty input yields one explicit v3 result' {
+    $result=Read-HopEvidenceChunks -Chunks @() -RunId fixture;Assert-Codec ($result.rows.Count -eq 0 -and $result.encoding -ceq 'hop-delta-v3') 'empty result differs'
 }
 Invoke-CodecCase 'legacy and unsupported encodings never downgrade' {
     foreach($schema in @(1,3,'2',$true)){$chunk=New-Chunk -Rows (,(New-Row));$chunk.schema=$schema;Expect-CodecFailure {Read-HopEvidenceChunks -Chunks @($chunk) -RunId fixture}}
-    $chunk=New-Chunk -Rows (,(New-Row));$chunk.encoding='hop-delta-v3';Expect-CodecFailure {Read-HopEvidenceChunks -Chunks @($chunk) -RunId fixture}
+    $chunk=New-Chunk -Rows (,(New-Row));$chunk.encoding='hop-delta-v2';Expect-CodecFailure {Read-HopEvidenceChunks -Chunks @($chunk) -RunId fixture}
 }
 Invoke-CodecCase 'exact envelope keys run and chunk identity' {
     $chunk=New-Chunk -Rows (,(New-Row));$chunk['extra']=0;Expect-CodecFailure {Read-HopEvidenceChunks -Chunks @($chunk) -RunId fixture}
@@ -240,7 +240,7 @@ function New-WideData([string]$Call=''){
 }
 Invoke-CodecCase 'encoded row byte cap refuses wire overhead independently' {
     $outer=[object[]]::new(32)
-    for($i=0;$i -lt 32;$i++){$inner=[object[]]::new(9);for($j=0;$j -lt 9;$j++){$inner[$j]=New-Pair ($j-9) (New-Scalar 1)};$outer[$i]=New-Pair ($i-32) (New-Table -Pairs $inner)}
+    for($i=0;$i -lt 32;$i++){$inner=[object[]]::new(9);for($j=0;$j -lt 9;$j++){$inner[$j]=New-Pair ($j-9) (New-Scalar 1.5)};$outer[$i]=New-Pair ($i-32) (New-Table -Pairs $inner)}
     Expect-CodecFailure {Read-Rows (,(New-Row (New-Table -Pairs $outer)))} 'encoded (node|row) exceeds'
 }
 Invoke-CodecCase 'encoded chunk byte cap refuses three individually valid rows' {
@@ -269,5 +269,82 @@ Invoke-CodecCase 'aggregate envelope cap is subsumed by tighter present limits' 
     [long]$upper=524288+131072+2176*175
     Assert-Codec ($upper -eq 1036160 -and $upper -lt 1048576) 'aggregate subsumption proof differs'
 }
+Invoke-CodecCase 'v3 signed integral wire decimal widths across powers of ten' {
+    foreach($pair in @(@(0,1),@(-1,2),@(1,1),@(9,1),@(-9,2),@(10,2),@(-10,3),@(99,2),@(-99,3),@(100,3),@(-100,4),@(999,3),@(-999,4),@(1000,4),@(-1000,5),@(1000000000000000,16),@(-1000000000000000,17),@(9007199254740991,16),@(-9007199254740991,17),@(9007199254740992,16),@(-9007199254740992,17))){
+        Assert-Codec ((Get-HopEvidenceNumericWireBytes $pair[0]) -eq $pair[1]) 'Signed invariant integer wire width differs'
+    }
+}
+Invoke-CodecCase 'v3 inclusive Double boundary and exact integral Decimal inputs' {
+    foreach($pair in @(@([double]9007199254740991,16),@([double]-9007199254740991,17),@([double]9007199254740992,16),@([double]-9007199254740992,17),@([double]9007199254740994,32),@([double]-9007199254740994,32),@([long]9007199254740993,32),@([long]-9007199254740993,32),@([uint64]9007199254740993,32),@([double]1.5,32),@([double]1e-300,32),@([double]::MaxValue,32))){
+        Assert-Codec ((Get-HopEvidenceNumericWireBytes $pair[0]) -eq $pair[1]) 'Boundary input rounded into a cheaper wire branch'
+    }
+    foreach($pair in @(@('9007199254740992',16),@('-9007199254740992',17),@('9007199254740993',32),@('-9007199254740993',32),@('9007199254740991.5',32),@('-9007199254740991.5',32),@('9007199254740992.5',32),@('-9007199254740992.5',32))){
+        $value=[decimal]::Parse($pair[0],[Globalization.CultureInfo]::InvariantCulture)
+        Assert-Codec ((Get-HopEvidenceNumericWireBytes $value) -eq $pair[1]) 'Exact Decimal boundary or fractional value was rounded'
+    }
+    # 2^53+1 is not an above-boundary Double fixture: it rounds to 2^53.
+    $rounded=[double]9007199254740993
+    Assert-Codec ($rounded -eq [double]9007199254740992 -and (Get-HopEvidenceNumericWireBytes $rounded) -eq 16) 'Already-rounded Double profile differs'
+}
+Invoke-CodecCase 'v3 integer wire agrees with independently serialized Int64 literals' {
+    foreach($pair in @(@(0,'0'),@(-1,'-1'),@(10,'10'),@(-1000,'-1000'),@(9007199254740992,'9007199254740992'),@(-9007199254740992,'-9007199254740992'))){
+        $json=ConvertTo-Json -InputObject ([long]$pair[0]) -Compress
+        Assert-Codec ($json -ceq $pair[1]) 'Independent Int64 JSON literal changed'
+        $bytes=[Text.UTF8Encoding]::new($false,$true).GetByteCount($json)
+        Assert-Codec ((Get-HopEvidenceNumericWireBytes $pair[0]) -eq $bytes) 'Wire estimate differs from Int64 JSON byte width'
+    }
+}
+Invoke-CodecCase 'v3 numeric wire saving leaves canonical DATA and values unchanged' {
+    $active=[Collections.Generic.HashSet[object]]::new([Collections.Generic.ReferenceEqualityComparer]::Instance)
+    $zero=Read-HopEvidenceNode (New-Scalar 0) $null $false $active
+    Assert-Codec ($zero.wire_bytes -eq 5) 'Positive-zero scalar must be4 wrapper plus1 numeric byte'
+    $table=New-Data @{x=(New-Scalar 0);y=(New-Scalar 1)}
+    $node=Read-HopEvidenceNode $table $null $false $active
+    Assert-Codec ((Get-HopEvidenceDataMeasure $node.value @{nodes=0}) -eq 76) 'Canonical numeric DATA stopped charging32 per number'
+    foreach($value in @([double]0,[double]-1,[double]1.25,[double]9007199254740992,[double]-9007199254740992,[double]9007199254740994)){
+        $row=(Read-Rows (,(New-Row (New-Data @{x=(New-Scalar $value)})))).rows[0]
+        Assert-Value $row.data['x'] $value
+    }
+    $exact=[long]9007199254740993;$row=(Read-Rows (,(New-Row (New-Data @{x=(New-Scalar $exact)})))).rows[0]
+    Assert-Codec ($row.data['x'] -is [long] -and $row.data['x'] -eq $exact) 'Structured exact Int64 value was changed by accounting'
+}
+Invoke-CodecCase 'v3 numeric timestamps and signed zero keep exact metadata' {
+    $wire=New-Row (New-Data @{x=(New-Scalar 0)});$wire[7]=0;$wire[8]=10
+    $row=(Read-Rows (,$wire)).rows[0]
+    Assert-Codec ((Get-HopEvidenceNumericWireBytes $wire[7]) -eq 1 -and (Get-HopEvidenceNumericWireBytes $wire[8]) -eq 2) 'Integral timestamp widths differ'
+    Assert-Value $row.first_at_ms 0;Assert-Value $row.last_at_ms 10
+    $wire[7]='-0';$wire[8]=1.25;$row=(Read-Rows (,$wire)).rows[0]
+    Assert-Codec ([BitConverter]::DoubleToInt64Bits([double]$row.first_at_ms) -eq [long]::MinValue -and (Get-HopEvidenceNumericWireBytes $wire[8]) -eq 32) 'Signed-zero time or fractional fallback changed'
+    $active=[Collections.Generic.HashSet[object]]::new([Collections.Generic.ReferenceEqualityComparer]::Instance)
+    Assert-Codec ((Read-HopEvidenceNode (New-NegativeZero) $null $false $active).wire_bytes -eq 3) 'Negative-zero node cost changed'
+}
+Invoke-CodecCase 'v3 wire accounting is invariant under a nonstandard current culture' {
+    # Command-mode negative literals can bind as strings under a custom sign.
+    # Prepare the intended numeric arguments and complete wire before the swap.
+    [long]$negative=-1000;[long]$boundary=-9007199254740992;[double]$fraction=1.25
+    $wire=New-Row (New-Data @{x=(New-Scalar $negative)})
+    $previous=[Threading.Thread]::CurrentThread.CurrentCulture
+    try{
+        $culture=[Globalization.CultureInfo]::InvariantCulture.Clone();$culture.NumberFormat.NegativeSign='minus';$culture.NumberFormat.NumberDecimalSeparator=','
+        [Threading.Thread]::CurrentThread.CurrentCulture=$culture
+        Assert-Codec ((Get-HopEvidenceNumericWireBytes $negative) -eq 5 -and (Get-HopEvidenceNumericWireBytes $boundary) -eq 17 -and (Get-HopEvidenceNumericWireBytes $fraction) -eq 32) 'Current culture changed numeric wire lengths'
+        $row=(Read-Rows (,$wire)).rows[0]
+        Assert-Codec ($row.data['x'] -is [long] -and $row.data['x'] -eq $negative) 'Culture fixture lost its exact numeric Int64 value'
+        Assert-Value $row.data['x'] $negative
+    }finally{[Threading.Thread]::CurrentThread.CurrentCulture=$previous}
+}
+Invoke-CodecCase 'v3 numeric helper refuses coercion and nonfinite values' {
+    foreach($value in @($null,'1',$true,[double]::NaN,[double]::PositiveInfinity,[double]::NegativeInfinity)){
+        Expect-CodecFailure {Get-HopEvidenceNumericWireBytes $value} 'numeric wire value must be finite'
+    }
+}
+Invoke-CodecCase 'v3 rejects old v2 and mixed streams without partial output or fallback' {
+    $old=New-Chunk -Rows (,(New-Row));$old.encoding='hop-delta-v2'
+    Expect-CodecFailure {Read-HopEvidenceChunks -Chunks @($old) -RunId fixture} 'unsupported schema or encoding'
+    $first=New-Chunk -Rows (,(New-Row));$second=New-Chunk -Rows (,(New-Row -First 2)) -Number 2;$second.encoding='hop-delta-v2'
+    $seen=[Collections.Generic.List[object]]::new()
+    Expect-CodecFailure {Read-HopEvidenceChunks -Chunks @($first,$second) -RunId fixture|ForEach-Object {$seen.Add($_)}} 'unsupported schema or encoding'
+    Assert-Codec ($seen.Count -eq 0) 'Mixed-profile failure emitted partial v3 rows'
+}
 # Counts are synthetic test-case groups, not native/gameplay qualification.
-[pscustomobject]@{suite='hop-delta-v2 PowerShell consumer';cases=$script:caseCount;status='PASS';native_gameplay='UNRUN'}
+[pscustomobject]@{suite='hop-delta-v3 PowerShell consumer';cases=$script:caseCount;status='PASS';native_gameplay='UNRUN'}

@@ -1,5 +1,5 @@
 -- Private evidence format only. No SDK, storage, game or qualification authority.
-local Codec={version=2,encoding='hop-delta-v2'}
+local Codec={version=3,encoding='hop-delta-v3'}
 local field_text=[[
 __index
 __mode
@@ -334,6 +334,18 @@ local function string_cost(v)
     return n
 end
 local function digits(v) return #tostring(v) end
+-- The SDK writes integral doubles through int64 JSON, up to inclusive 2^53.
+-- Count decimal characters without Luau tostring's scientific notation.
+-- Canonical expanded/state data keeps its separate 32-byte numeric charge.
+local function number_wire_cost(v)
+    local magnitude=math.abs(v)
+    if v==math.floor(v) and magnitude<=9007199254740992 then
+        local bytes,threshold=1,10
+        while magnitude>=threshold do bytes+=1;threshold*=10 end
+        return bytes+(v<0 and 1 or 0)
+    end
+    return 32
+end
 local function dense(v,n)
     if not plain(v) then fail("dense plain array required") end
     local count=0
@@ -404,7 +416,7 @@ local function node_cost(node,depth,b,seen)
     if tag==0 or tag==4 then dense(node,1);bytes=3
     elseif tag==1 then
         dense(node,2);local v=node[2];local t=type(v)
-        if t=="number" then if not finite(v) or v==0 and 1/v==-math.huge then fail("nonfinite or noncanonical wire scalar") end;bytes=36
+        if t=="number" then if not finite(v) or v==0 and 1/v==-math.huge then fail("nonfinite or noncanonical wire scalar") end;bytes=4+number_wire_cost(v)
         elseif t=="boolean" then bytes=9
         elseif t=="string" and #v<=192 then bytes=4+string_cost(v)
         else fail("invalid wire scalar") end
@@ -503,7 +515,7 @@ local function time_cost(v)
     if v==false then return 5 end
     if v=="-0" then return 4 end
     if not finite(v) or v<0 or negative_zero(v) then fail("invalid wire time") end
-    return 32
+    return number_wire_cost(v)
 end
 local function row_cost(wire)
     dense(wire,11)

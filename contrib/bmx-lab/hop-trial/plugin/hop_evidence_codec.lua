@@ -632,16 +632,25 @@ function Codec.wire_bytes(wire) return public(row_cost,wire) end
 function Codec.data_bytes(value) return public(checked_data,value) end
 function Codec.encode_row(row,base) return public(encode_row,row,base) end
 function Codec.decode_row(wire,base) return public(decode_row,wire,base) end
-local function chunk_cost(chunk,index,run_id)
+local function chunk_fields(chunk)
     if not plain(chunk) then fail("plain chunk required") end
     local known={schema=true,encoding=true,run_id=true,chunk=true,rows=true}
     for key in pairs(chunk) do if not known[key] then fail("unknown chunk field") end end
+end
+local function chunk_shape(chunk)
+    chunk_fields(chunk)
     local n=array_count(chunk.rows,16);if n<1 then fail("empty chunk") end
+    return n
+end
+local function chunk_envelope(n,index,run_id,sum)
+    return 2+(#"schema"+4)+1+(#"encoding"+4)+string_cost(Codec.encoding)
+        +(#"run_id"+4)+string_cost(run_id)+(#"chunk"+4)+digits(index)+(#"rows"+4)+2+math.max(0,n-1)+sum
+end
+local function chunk_cost(chunk,index,run_id)
+    local n=chunk_shape(chunk)
     local sum=0;for _,wire in ipairs(chunk.rows) do dense(wire,12);sum+=row_cost(wire) end
     if sum+1024>24576 then fail("chunk byte limit") end
-    local bytes=2+(#"schema"+4)+1+(#"encoding"+4)+string_cost(Codec.encoding)
-        +(#"run_id"+4)+string_cost(run_id)+(#"chunk"+4)+digits(index)+(#"rows"+4)+2+math.max(0,n-1)+sum
-    return bytes,sum
+    return chunk_envelope(n,index,run_id,sum),sum
 end
 function Codec.envelope_bytes(chunk)
     return public(function()
@@ -664,43 +673,125 @@ function Codec.state_bytes(row)
     return public(function() validate_row(row);return checked_data(row.data)+64+string_cost(row.kind)+string_cost(projection(row))+(row.paired and Codec.pair_state_meta_bytes or 0) end)
 end
 function Codec.projection(row) return public(function() validate_row(row);return row.kind.."|"..projection(row) end) end
-local function decode_chunks(chunks,run_id)
+-- Public cursors borrow immutable input; bulk decode uses this same admission
+-- core synchronously with its original eager chunk preflight and mutable inputs.
+local Cursor={};Cursor.__index=Cursor
+local cursors=setmetatable({}, {__mode="k"})
+local function immutable_wire(value)
+    if type(value)~="table" then return true end
+    if not plain(value) or not table.isfrozen(value) then return false end
+    for _,child in pairs(value) do if not immutable_wire(child) then return false end end
+    return true
+end
+local function decoder_state(chunks,run_id,immutable,eager)
     if type(run_id)~="string" or #run_id<1 or #run_id>32 or not run_id:match("^[A-Za-z0-9_-]+$") then fail("invalid run") end
     local count=array_count(chunks,2176)
-    local rows,bases,state_costs={}, {}, {}
-    local regular,critical,regular_wire,critical_bytes,state_bytes,base_count,last,store=0,0,0,0,Codec.pair_pointer_bytes,0,0,2
-    for index=1,count do
-        local chunk=chunks[index]
-        if not plain(chunk) then fail("plain chunk required") end
-        local known={schema=true,encoding=true,run_id=true,chunk=true,rows=true}
-        for key in pairs(chunk) do if not known[key] then fail("unknown chunk field") end end
-        if chunk.schema~=2 or chunk.encoding~=Codec.encoding or chunk.run_id~=run_id or chunk.chunk~=index then fail("chunk identity or version") end
-        local envelope=chunk_cost(chunk,index,run_id)
-        store+=envelope+string_cost("hop."..run_id..".chunk."..tostring(index))+4
-        if store>1048576 then fail("encoded store byte limit") end
-        for _,wire in ipairs(chunk.rows) do
-            dense(wire,12)
-            if not integer(wire[2],1,#kinds) or type(wire[3])~="string" then fail("invalid projection identity") end
-            local key=kinds[wire[2]].."|"..wire[3]
-            local base=wire[4]~=0 and bases[key] or nil
-            local row,bytes=decode_row(wire,base)
-            if row.first_call<=last then fail("row ordering") end;last=row.first_call
-            if row.critical then
-                critical+=1;critical_bytes+=bytes
-                if critical>128 or critical_bytes>131072 then fail("critical capacity") end
-            else
-                regular+=1;regular_wire+=bytes
-                if not bases[key] then base_count+=1 end
-                if base_count>64 then fail("projection capacity") end
-                local size=checked_data(row.data)+64+string_cost(row.kind)+string_cost(projection(row))+(row.paired and Codec.pair_state_meta_bytes or 0)
-                state_bytes+=size-(state_costs[key] or 0)
-                state_costs[key]=size;bases[key]=row
-                if regular>2048 or regular_wire+state_bytes>524288 then fail("regular capacity") end
-            end
-            rows[#rows+1]=row
-        end
+    if immutable and not table.isfrozen(chunks) then fail("immutable cursor archive required") end
+    return {input=chunks,count=count,run_id=run_id,immutable=immutable,eager=eager,
+        index=1,current=nil,row_index=0,chunk_rows=0,chunk_wire=0,chunk_base_store=2,
+        bases={},state_costs={},regular=0,critical=0,regular_wire=0,critical_bytes=0,
+        state_bytes=Codec.pair_pointer_bytes,base_count=0,last=0,store=2,rows=0,chunks=0,
+        complete=false,failed=false}
+end
+local function enter_chunk(s)
+    local chunk=s.input[s.index]
+    -- Keep the legacy bulk ordering: fields, identity, full wire/envelope
+    -- preflight, then rows. Public cursors only inspect this bounded header.
+    chunk_fields(chunk)
+    if chunk.schema~=2 or chunk.encoding~=Codec.encoding or chunk.run_id~=s.run_id or chunk.chunk~=s.index then fail("chunk identity or version") end
+    if s.eager then
+        local envelope=chunk_cost(chunk,s.index,s.run_id)
+        local projected=s.store+envelope+string_cost("hop."..s.run_id..".chunk."..tostring(s.index))+4
+        if projected>1048576 then fail("encoded store byte limit") end
     end
-    return rows
+    local n=chunk_shape(chunk)
+    if s.immutable and (not table.isfrozen(chunk) or not table.isfrozen(chunk.rows)) then fail("immutable cursor chunk required") end
+    s.current=chunk;s.row_index=1;s.chunk_rows=n;s.chunk_wire=0;s.chunk_base_store=s.store
+end
+local function admit_row(s,row,bytes,key)
+    if row.first_call<=s.last then fail("row ordering") end
+    local regular,critical,regular_wire,critical_bytes,state_bytes,base_count=
+        s.regular,s.critical,s.regular_wire,s.critical_bytes,s.state_bytes,s.base_count
+    local size
+    if row.critical then
+        critical+=1;critical_bytes+=bytes
+        if critical>128 or critical_bytes>131072 then fail("critical capacity") end
+    else
+        regular+=1;regular_wire+=bytes
+        if not s.bases[key] then base_count+=1 end
+        if base_count>64 then fail("projection capacity") end
+        size=checked_data(row.data)+64+string_cost(row.kind)+string_cost(projection(row))+(row.paired and Codec.pair_state_meta_bytes or 0)
+        state_bytes+=size-(s.state_costs[key] or 0)
+        if regular>2048 or regular_wire+state_bytes>524288 then fail("regular capacity") end
+    end
+    local chunk_wire=s.chunk_wire+bytes
+    if not s.eager and chunk_wire+1024>24576 then fail("chunk byte limit") end
+    local store=s.chunk_base_store+chunk_envelope(s.chunk_rows,s.index,s.run_id,chunk_wire)
+        +string_cost("hop."..s.run_id..".chunk."..tostring(s.index))+4
+    if not s.eager and store>1048576 then fail("encoded store byte limit") end
+    -- Nothing observable is committed until all row/base/cap checks succeed.
+    if not row.critical then s.state_costs[key]=size;s.bases[key]=row end
+    s.regular=regular;s.critical=critical;s.regular_wire=regular_wire;s.critical_bytes=critical_bytes
+    s.state_bytes=state_bytes;s.base_count=base_count;s.last=row.first_call;s.store=store
+    s.chunk_wire=chunk_wire;s.rows+=1;s.row_index+=1
+    if s.row_index>s.chunk_rows then s.chunks+=1;s.index+=1;s.current=nil end
+end
+local function advance_decoder(s)
+    if s.index>s.count then s.complete=true;return nil end
+    if s.current==nil then enter_chunk(s) end
+    local wire=s.current.rows[s.row_index]
+    dense(wire,12)
+    if not integer(wire[2],1,#kinds) or type(wire[3])~="string" then fail("invalid projection identity") end
+    local key=kinds[wire[2]].."|"..wire[3]
+    local base=wire[4]~=0 and s.bases[key] or nil
+    local row,bytes=decode_row(wire,base)
+    -- Existing strict parsing has bounded every table/node/depth and rejected
+    -- cycles before this lazy read-only check; never walk the whole archive.
+    if s.immutable and not immutable_wire(wire) then fail("immutable cursor wire required") end
+    admit_row(s,row,bytes,key)
+    return row
+end
+local function next_decoded(s)
+    if s.failed then return nil,s.reason end
+    if s.complete then return nil,nil end
+    local ok,row=pcall(advance_decoder,s)
+    if not ok then
+        s.failed=true;s.complete=false
+        s.reason=type(row)=="string" and row or "hop codec: invalid input"
+        return nil,s.reason
+    end
+    return row,nil
+end
+function Codec.open_chunks(chunks,run_id)
+    return public(function()
+        local s=decoder_state(chunks,run_id,true,false)
+        local self=setmetatable({},Cursor);cursors[self]=s
+        return table.freeze(self)
+    end)
+end
+function Cursor:next()
+    local s=cursors[self]
+    if not s then return nil,"hop codec: invalid decoder cursor" end
+    return next_decoded(s)
+end
+function Cursor:status()
+    local s=cursors[self]
+    if not s then return nil,"hop codec: invalid decoder cursor" end
+    return table.freeze({complete=s.complete,failed=s.failed,reason=s.reason,rows=s.rows,
+        regular_rows=s.regular,critical_rows=s.critical,chunks=s.chunks,
+        regular_wire_bytes=s.regular_wire,regular_state_bytes=s.state_bytes,
+        regular_bytes=s.regular_wire+s.state_bytes,critical_bytes=s.critical_bytes,encoded_store_bytes=s.store})
+end
+local function decode_chunks(chunks,run_id)
+    local s=decoder_state(chunks,run_id,false,true)
+    local rows={}
+    while true do
+        local row,why=next_decoded(s)
+        if why~=nil then error(why,0) end
+        if row==nil then return rows end
+        rows[#rows+1]=row
+    end
 end
 function Codec.decode_chunks(chunks,run_id) return public(decode_chunks,chunks,run_id) end
+table.freeze(Cursor)
 return table.freeze(Codec)

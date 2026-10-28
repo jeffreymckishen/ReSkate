@@ -1,0 +1,35 @@
+# Profile4 bounded decoder cursor contract
+
+This private pure Lua module contract accompanies Codec0DBDEC3FCBEDE4C47A5E4B063DAD833F67919B2BFE19BBDCFB680F99182B47F8. It adds no reskate SDK API or execution authority. Recorder116FE2AA, profile/version4, encoding hop-delta-v4, chunk schema2, summary schema1 and all existing accounting/limits remain unchanged. Historical de52aa28 contains Codec9454, not this cursor successor; exact future committed source/tree must be recorded separately.
+
+## Input and completion
+
+Codec.open_chunks(chunks, run_id) returns a frozen cursor or nil,reason. Open validates the run and bounded dense outer array metadata (at most2176 chunk references), never all chunk bodies. Public cursor input is borrowed and must be deeply frozen for its entire lifetime: outer array, chunks, rows arrays and every wire/node/pair/list table. The decoder never copies or freezes caller input. Each current layer is checked lazily after strict bounded parsing. A violated immutability precondition supplies no atomic snapshot guarantee.
+
+cursor:next() returns one decoded logical row,nil, or nil,nil at EOF, or nil,firstreason on failure. Each call inspects at most one current chunk header and one logical row. Empty chunks refuse instead of being skipped. No callback, per-call occurrence expansion or whole-archive decode occurs. Every strict wire/reference/order/data/DTO/count/byte check is retained. Any first failure is sticky and later next calls return that same refusal. Yielded prefix rows never qualify a complete stream.
+
+EOF is a separate constant-work next call after the last row. Only EOF marks complete=true. Exact multiples of a caller's64-call budget need the next normal tick for this real EOF check; never decode a65th row as a probe or insert padding. A caller must retain all original evidence assertions and complete within its unchanged original scheduling/resource limits.
+
+cursor:status() returns a frozen table with complete,failed,reason if failed,rows,regular_rows,critical_rows,chunks,regular_wire_bytes,regular_state_bytes,regular_bytes,critical_bytes,encoded_store_bytes. chunks counts fully consumed chunks, not visited headers. All row/class/current-base/state/byte totals are projected and checked before commit; a rejected row does not alter validated-prefix counters or current bases. Empty input starts with regular state2048/store2 and becomes complete only on EOF. Invalid self returns nil,reason without changing genuine cursor state.
+
+## Legacy bulk compatibility
+
+Codec.decode_chunks(chunks, run_id) retains its existing final row-array or nil,reason interface and mutable plain inputs. It synchronously uses the same private row admission core with private eager chunk preflight, preserving the old run/outer density/chunk fields/identity/full chunk cost/envelope/store-before-row refusal ordering and reason strings. It never returns a prefix. The public cursor cannot select eager mode or disable immutability. Existing encode_row, decode_row, data/wire/state helpers and single strict parser remain shared and unchanged.
+
+Both modes retain at most64 latest projection bases with the exact existing backward-reference identity. Streaming mode retains only borrowed input references, scalar position/counters and current bases/state prices, not all decoded rows or an expanded endpoint archive. Per-row data/node/depth work is bounded structurally, not a measured CPU guarantee. Recursive frozen checks follow strict bounded wire parsing/cycle refusal; open never performs a full archive walk/freeze.
+
+## Readonly object and private state
+
+The public cursor instance and its method table are frozen. getmetatable(cursor) exposes only that frozen method/__index table; no __metatable sentinel is installed because vendored Luau table.freeze rejects a protected metatable. Frozen instances reject metatable replacement/removal, frozen method tables reject field/rawset/metatable edits, and a clone or forged object has no entry in the private weak-key state map. The module never grants access to that map. The regression exercises open, tampering, invalid identities, normal decoding/status and EOF.
+
+## Unchanged bounds and packaging
+
+Regular2048rows/524288bytes includes fixed2048 pointer reserve plus current paired256 state; critical128rows/131072bytes; at most2176 rows/chunks; chunk16rows/24576bytes; row12288bytes; DATA11904bytes/768nodes/depth32/physical JSONdepth32; at most64 bases; cumulative envelopes1MiB; summary16KiB. Host64MiB/6ms average/50ms callback/20ms unload and original16ms/1500ms/400tick composition budgets remain unchanged.
+
+Only the existing Codec filename changes in the eight-module private Stage graph. This Test directory is not staged runtime or optional runtime tests. hop_evidence_codec_before.lua is the exact frozen9454 historical decoder oracle solely for the21-case unit module; it must not replace the current live Codec or be staged alongside it. Copy current Codec, before oracle and tests into one fresh external unit folder using the row-pair runbook, never a game/mod directory.
+
+The original20 cursor cases retain exact before-versus-after values/refusals, sign/absence, paired/report_debt, partition/lazy-error/immutable-input/atomic-prefix/EOF/logical/projection/byte/chunk checks. The21st case checks the vendored readonly pattern. Aggregate1MiB guard arithmetic is source-preserved; this suite does not isolate its boundary. No exhaustive coverage claim is made.
+
+## Evidence boundaries
+
+The earlier protected-metatable865E actual test run failed, and the original full1500ms Host callback failed. Preserve those receipts. Root's actual0DBD pure96-case receipt covers75 existing cases/1612assertions plus21 cursor cases/9592assertions. Its separate remaining85 receipt passes85/19781: together original160/21393 and181unique/30985, with no duplicates counted. These constructed pure/real-writer/private-fault results do not qualify normal Host budgets or native gameplay. The separate16D bounded neutral Host run completed EOF349/1993rows/93acknowledgedcommands but FAILED its unchanged6ms acceptance check with sampled maximum average6.1869ms; sampled heap21,456,055bytes is not a high-water guarantee. Exact RESULTD1844986 remains failed. The EOF349/1993rows/93ACK result describes PRE-UNLOAD stream verification only. D184 separately retains post_unload_observation_loss=true, interrupted=true, flushed=false, first_fault="explicit_unload_incomplete" and storage_fault=false; the unload tail is incomplete and no global-lossless claim is made. Child exit0 and EOF do not confer normal-budget/full-window/native qualification, and no measured phase/cost cause is assigned. New source/commit/package selections need their own exact hashes and results. No native P0/H1, first hop, trick score or BMX Streets likeness is established by this contract.

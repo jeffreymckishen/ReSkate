@@ -1,8 +1,8 @@
-# Profile4 portable source checkpoint and offline unit preparation
+# Profile4 portable source checkpoint with bounded decoder cursor
 
 This is a portable source checkpoint, not a completed BMX port or a qualified game package. BMX behavior stays in the installable Lua mod. The checkpoint adds no SDK/native feature, private C++/header fixture, binary, game data, runtime package, controller input or process framework.
 
-At the2026-10-28 checkpoint, exact matched offline sources passed:
+At the historical de52aa28 checkpoint on2026-10-28, exact matched offline sources passed:
 
 | Scope | Cases | Meaning |
 | --- | --- | --- |
@@ -17,12 +17,23 @@ These are separate immutable Root receipts, not results produced by these instru
 
 ## Source and Test-only boundary
 
-Runtime-facing source remains in `../../plugin`: Codec9454BD22, Recorder116FE2AA and lazy EndpointView2A5646B6. The existing Stage-Trial graph lists Codec and Recorder; it does NOT list EndpointView, the new public/View/Codec suites or SDK fixture. The existing canonical59-module pins,13transforms, default closed config and graph are unchanged by this checkpoint. Adding a source file beside private plugin modules does not silently add it to any staged runtime.
+Runtime-facing source remains in `../../plugin`: Codec0DBDEC3F, Recorder116FE2AA and lazy EndpointView2A5646B6. The existing Stage-Trial graph lists Codec and Recorder; it does NOT list EndpointView, the new public/View/Codec suites or SDK fixture. The existing canonical59-module pins,13transforms, default closed config and graph are unchanged by this checkpoint. Adding a source file beside private plugin modules does not silently add it to any staged runtime.
 
-`numeric/` and `private/` here are TEST ONLY. The numeric `json_encoding_tests` wrapper receives the existing Luau runner's explicit real JSON argument only when selected directly. The private Codec proxy and cost control are never staged into a plugin or used for normal Host/native qualification. `private/LEXICAL-RECIPE.json` is copied byte-exact from the reviewed source: its absolute production_recorder_path is archival provenance only, NOT a portable dependency. Preparation below always uses the current repository Recorder bytes and exact declared hash.
+`numeric/` and `private/` here are TEST ONLY. The numeric `json_encoding_tests` wrapper receives the existing Luau runner's explicit real JSON argument only when selected directly. The private Codec proxy and cost control are never staged into a plugin or used for normal Host/native qualification. `private/LEXICAL-RECIPE.json` retains the exact Recorder116FE/factoryD8CF recipe; only its selected production_codec_sha256 now binds Codec0DBD. Its absolute production_recorder_path is archival provenance only, NOT a portable dependency. Preparation below always uses the current repository Recorder bytes and exact declared hash.
 
 Do NOT commit generated `hop_recorder_private_test_factory.lua` or `hop_evidence_codec_real.lua`. Generate/copy them only inside a fresh external unit folder. The factory is the current exact Recorder with only its final return replaced, then inverted byte-exact; it is not another maintained production source body or a public private-state API.
 
+## Bounded cursor source and separate evidence
+
+This successor adds `Codec.open_chunks` with the [portable cursor contract](../decoder-cursor/CONTRACT.md). It preserves wire/accounting4 and the legacy bulk decoder, adds no SDK API and keeps the same runtime Stage graph. Current source uses Codec0DBD, not the Codec9454 contained in historical de52aa28. Recorder116FE, its one-return private factoryD8CF, all original160 suite source bytes and all PowerShell consumer sources remain unchanged.
+
+`../decoder-cursor/hop_evidence_codec_before.lua` is the exact frozen9454 TEST-ONLY legacy oracle. `hop_decoder_cursor_tests.lua` there is the independently authored21-case successor; it requires the current Codec and this before oracle in a fresh external unit folder. Neither file is a runtime dependency, optional staged test, emitted mod or alternate live codec. Do not copy them to the closed base or runtime graph.
+
+Current0DBD has two matched Root pure receipts:75existing/1612assertions plus21cursor/9592assertions in the96-case receipt, then the remaining85/19781assertions. Together they cover the original160/21393 and181unique/30985 with the new cursor; no duplicate executions are counted. These are constructed standalone Luau/real-writer/fault fixtures, not normal Host budgets or gameplay. Full original Host composition and future native trials remain separate. Its predecessor865E failed cursor open because vendored Luau forbids freezing a protected metatable. Current0DBD removes only that sentinel while freezing both cursor and method table; the21st case exercises tampering and clone/forgery refusal. Preserve both actual receipts, never relabel the failure.
+
+The exact current pure receipts are Root2 RESULT505B2526248D2CA93F12A1AB2CCE5FA13828D9172C8B871DAD6EAECC47F1F295 and remaining85 RESULT5D7A0019FE6240828DC4AEFDC0D83FF621608CD8CB04039FCCB6A46245688A33. They bind Codec0DBD and runner9DD1090A; the latter records five exact suite counts/exit0/emptyerrors. These hashes document completed Root runs, not commands executed by this runbook or a claim that future source/output copies pass. Keep their archived source/argv/log boundaries.
+
+The earlier37CC/EBDB full original1500ms Host failures remain FAILED with their private phases unknown. A separate15BE diagnostic reached finish_entered and before_bulk_decode at outertick318 after terminal flush, without any after_bulk_decode or correlation marker. Those separate markers do not backfill the earlier failures, isolate decoder cost or establish one failure cause. The separate16D01A7B bounded neutral Host run has now finished with strict EOF at349ticks,1993verifiedrows and93acknowledgedcommands, but its adapter result is FAILED: sampled maximum average tick6.1869ms exceeds the unchanged6ms boundary. Sampled heap peak21,456,055bytes is not allocator/process high water. Child exit0/EOF does not qualify the resource-failed composition; no full-window or native acceptance is claimed. Exact RESULTD184498629B84F0496BEC0501D803BAFD1EE2289A44C4A618B62B599479E21E4 preserves that failure; a C++ timeline/cost cause is still unmeasured. The EOF349/1993rows/93ACK result describes PRE-UNLOAD stream verification only. D184 separately retains post_unload_observation_loss=true, interrupted=true, flushed=false, first_fault="explicit_unload_incomplete" and storage_fault=false; the unload tail is incomplete and no global-lossless claim is made. No change here raises64MiB/6ms/50ms,16ms/1500ms/400ticks, row/byte/depth/node/store limits or changes game/native policy. Source review and pure tests do not establish full-window or gameplay qualification.
 ## Closed base using the EXISTING stager
 
 Commands below are a source-only runbook. Nothing runs merely by reading this file. Root must own an offline execution/preparation slot, reconcile all active processes/HID-HOLDs and choose fresh E-drive output. No native/game/deployment authority is supplied.
@@ -55,16 +66,16 @@ $Base=Join-Path $Lab 'BMX_Hop_Trial_unreviewed'
 & (Join-Path $Trial 'Stage-Trial.ps1') -Mode Verify -SourceRoot $CanonicalSourceRoot -OutputDirectory $Base -IncludeTests
 ```
 
-`$Repo` and `$Trial` always identify the CURRENT private source/stager (Codec9454/Recorder116FE), not the frozen canonical checkout. `-SourceRoot` identifies the separate canonical checkout; the existing stager reads its private modules from its own `$PSScriptRoot`, so invoking `$Trial/Stage-Trial.ps1` preserves that split. Its report records both source_root and private_root. Never run the old checkout's stager/private folder by accident.
+`$Repo` and `$Trial` always identify the CURRENT private source/stager (Codec0DBD/Recorder116FE), not the frozen canonical checkout. `-SourceRoot` identifies the separate canonical checkout; the existing stager reads its private modules from its own `$PSScriptRoot`, so invoking `$Trial/Stage-Trial.ps1` preserves that split. Its report records both source_root and private_root. Never run the old checkout's stager/private folder by accident.
 
-A whole repository HEAD or branch name is not proof that its canonical subtree equals062. Read/hash ALL59 entries in the pinned `source-pins.json`, including each raw byte length. At this checkpoint the current private worktree's canonical bike_runtime_core hasC3BD7813 rather than required887D5405, so `$CanonicalSourceRoot=$Repo` correctly refuses. Root's validated existing example is `E:\RESKATE DEV\worktrees\reskate-native-prepare-20261027`; other users must choose an existing checkout matching all59 pins, or separately arrange a frozen source checkout under their own authorized workflow. These instructions create no worktree and never rewrite pins/graph or substitute individual files to hide a mismatch. The CURRENT23 payloads and new runbook remain the checkpoint sources; canonical062 is only the separate unchanged staging input.
-Keep admission CLOSED: no ReviewedAdmission, alternate Phase/RunId/ReviewId or native config changes. The existing stager emits `transform-report.json` with exact raw `inputs` and `artifact-inventory.json` with exact output `files`; it does not emit a SOURCE-INVENTORY file. Its canonical source_commit062 describes that pinned canonical subtree, not the entire checkpoint/repository head. Check the CURRENT private Codec9454/Recorder116FE raw source, recorded input, recorded output and actual staged output explicitly before any unit copy:
+A whole repository HEAD or branch name is not proof that its canonical subtree equals062. Read/hash ALL59 entries in the pinned `source-pins.json`, including each raw byte length. At this checkpoint the current private worktree's canonical bike_runtime_core hasC3BD7813 rather than required887D5405, so `$CanonicalSourceRoot=$Repo` correctly refuses. Root's validated existing example is `E:\RESKATE DEV\worktrees\reskate-native-prepare-20261027`; other users must choose an existing checkout matching all59 pins, or separately arrange a frozen source checkout under their own authorized workflow. These instructions create no worktree and never rewrite pins/graph or substitute individual files to hide a mismatch. The current committed private sources and this runbook remain the checkpoint inputs; canonical062 is only the separate unchanged staging input.
+Keep admission CLOSED: no ReviewedAdmission, alternate Phase/RunId/ReviewId or native config changes. The existing stager emits `transform-report.json` with exact raw `inputs` and `artifact-inventory.json` with exact output `files`; it does not emit a SOURCE-INVENTORY file. Its canonical source_commit062 describes that pinned canonical subtree, not the entire checkpoint/repository head. Check the CURRENT private Codec0DBD/Recorder116FE raw source, recorded input, recorded output and actual staged output explicitly before any unit copy:
 
 ```powershell
 $stageReport=Get-Content -LiteralPath (Join-Path $Base 'transform-report.json') -Raw | ConvertFrom-Json
 $stageInventory=Get-Content -LiteralPath (Join-Path $Base 'artifact-inventory.json') -Raw | ConvertFrom-Json
 $privatePins=[ordered]@{
-    'plugin/hop_evidence_codec.lua'='9454BD22F7CD24D570CD4BFBEB82C41981AE8F469DCE7CB71A9991844342BF9B'
+    'plugin/hop_evidence_codec.lua'='0DBDEC3FCBEDE4C47A5E4B063DAD833F67919B2BFE19BBDCFB680F99182B47F8'
     'plugin/hop_recorder.lua'='116FE2AA7F708DCE2DA28745535A89F75766CD85074113C4253AD3737C6039AA'
 }
 foreach($relative in $privatePins.Keys){
@@ -95,12 +106,13 @@ $Normal=Join-Path $Lab 'unit-normal'
 $Numeric=Join-Path $Lab 'unit-numeric'
 $Fault=Join-Path $Lab 'unit-private-fault'
 $Ps=Join-Path $Lab 'unit-powershell'
-foreach($directory in @($Normal,$Numeric,$Fault,$Ps)){if(Test-Path -LiteralPath $directory){throw 'Unit destination must be fresh'};$null=New-Item -ItemType Directory -Path $directory}
+$Cursor=Join-Path $Lab 'unit-decoder-cursor'
+foreach($directory in @($Normal,$Numeric,$Fault,$Ps,$Cursor)){if(Test-Path -LiteralPath $directory){throw 'Unit destination must be fresh'};$null=New-Item -ItemType Directory -Path $directory}
 foreach($file in Get-ChildItem -LiteralPath (Join-Path $Base 'plugin') -File -Filter '*.lua'){Copy-UnitBytes $file.FullName (Join-Path $Normal $file.Name)}
 foreach($name in @('hop_endpoint_view.lua','hop_row_pair_candidate_tests.lua','hop_endpoint_view_contract_tests.lua','hop_pair_v4_codec_tests.lua','hop_pair_sdk_fixtures.lua')){Copy-UnitBytes (Join-Path $Trial ('plugin\'+$name)) (Join-Path $Normal $name)}
 $Codec=Join-Path $Trial 'plugin\hop_evidence_codec.lua'
 $Recorder=Join-Path $Trial 'plugin\hop_recorder.lua'
-$codecSha='9454BD22F7CD24D570CD4BFBEB82C41981AE8F469DCE7CB71A9991844342BF9B'
+$codecSha='0DBDEC3FCBEDE4C47A5E4B063DAD833F67919B2BFE19BBDCFB680F99182B47F8'
 $recorderSha='116FE2AA7F708DCE2DA28745535A89F75766CD85074113C4253AD3737C6039AA'
 Copy-UnitBytes $Codec (Join-Path $Numeric 'hop_evidence_codec.lua') $codecSha
 foreach($name in @('hop_integral_wire_tests.lua','json_encoding_tests.lua')){Copy-UnitBytes (Join-Path $Trial ('Test\row-pair\numeric\'+$name)) (Join-Path $Numeric $name)}
@@ -108,6 +120,9 @@ foreach($name in @('hop_evidence_codec.lua','hop_pair_fault_control.lua','hop_pa
 Copy-UnitBytes (Join-Path $Trial 'plugin\hop_pair_sdk_fixtures.lua') (Join-Path $Fault 'hop_pair_sdk_fixtures.lua') 'B14BFE28CF4AC44D2AE412FCA2D0C1A3EAF7660C1B23E24247B7C34089109146'
 Copy-UnitBytes $Codec (Join-Path $Fault 'hop_evidence_codec_real.lua') $codecSha
 foreach($name in @('Decode-HopEvidence.ps1','Decode-HopEvidence.Tests.ps1','P0-Evidence.ps1','P0-Evidence.Tests.ps1')){Copy-UnitBytes (Join-Path $Trial $name) (Join-Path $Ps $name)}
+Copy-UnitBytes $Codec (Join-Path $Cursor 'hop_evidence_codec.lua') $codecSha
+Copy-UnitBytes (Join-Path $Trial 'Test\decoder-cursor\hop_evidence_codec_before.lua') (Join-Path $Cursor 'hop_evidence_codec_before.lua') '9454BD22F7CD24D570CD4BFBEB82C41981AE8F469DCE7CB71A9991844342BF9B'
+Copy-UnitBytes (Join-Path $Trial 'Test\decoder-cursor\hop_decoder_cursor_tests.lua') (Join-Path $Cursor 'hop_decoder_cursor_tests.lua') '5F5C1FB664DC38191A0C85EE1F9E0C21411E67303B94AB42B54C4179EC360E8E'
 ```
 
 Generate the private factory ONLY from the current exact Recorder and the reviewed one-return recipe. Byte-preserving inverse and expected factory hash are mandatory before writing it:
@@ -145,6 +160,8 @@ foreach($suite in @('hop_evidence_codec_tests','hop_recorder_tests','hop_prepare
 if($LASTEXITCODE -ne 0){throw 'Real JSON numeric suite failed'}
 & $Runner $Fault 'hop_pair_preflight_fault_tests'
 if($LASTEXITCODE -ne 0){throw 'Private preflight suite failed'}
+& $Runner $Cursor 'hop_decoder_cursor_tests'
+if($LASTEXITCODE -ne 0){throw 'Bounded decoder cursor suite failed'}
 ```
 
 The wrapper name `json_encoding_tests` is essential for the EXISTING real-writer argument; never inject a global helper or route the fault proxy through normal tests. These commands do not establish normal Host timing or SDK permission. Use the current approved Root capture harness if retained process/deadline evidence is required; this runbook adds none.

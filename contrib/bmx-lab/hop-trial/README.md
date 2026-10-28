@@ -197,18 +197,18 @@ parent must already exist, and the output directory must be new and named
 
 ```powershell
 $trialSource = 'E:\RESKATE DEV\worktrees\reskate-native-prepare-20261027'
-$trialTools = 'E:\RESKATE DEV\worktrees\reskate-hop-prepare-20261027\contrib\bmx-lab\hop-trial'
+$trialTools = (Resolve-Path '.\contrib\bmx-lab\hop-trial').Path
 & (Join-Path $trialTools 'Stage-Trial.Tests.ps1') -SourceRoot $trialSource -RunReviewedTests
 ```
 
-For the five pure Lua suites, first stage a **closed**, test-only artifact into
+For the six pure Lua suites, first stage a **closed**, test-only artifact into
 a new output directory with `Stage-Trial.ps1 -Mode Stage -SourceRoot $trialSource
 -OutputDirectory <new-output> -IncludeTests`, then use the same arguments with
 `-Mode Verify`. Run the existing, separately reviewed `bmx_luau_tests.exe` against
-its `plugin` directory and each module `hop_guard_tests`, `hop_recorder_tests`,
+its `plugin` directory and each module `hop_guard_tests`, `hop_evidence_codec_tests`, `hop_recorder_tests`,
 `hop_composition_tests`, `hop_prepare_evidence_tests` and `hop_prepare_cancel_tests`,
-each in a fresh runner process. The runtime inventory remains 72 files; the test
-artifact has 78. The unchanged 13 production transforms and four private identity
+each in a fresh runner process. The runtime inventory is 73 files; the test
+artifact has 80. The unchanged 13 production transforms and four private identity
 transforms remain the only admitted substitutions. The test-only lexical fixture wraps exact private
 `main.lua` bytes with injected SDK/module-loader parameters; it tests entry
 control flow without changing production or registering a new native API. It
@@ -221,3 +221,26 @@ Verify it with identical parameters. Inspection of transform-report.json and
 artifact-inventory.json is required before the main operator considers any
 separate deployment. A stale artifact after any source change must fail Verify;
 never repair it in place or reuse a partial output.
+
+## Encoded evidence
+
+New recorder chunks use schema 2 and `encoding="hop-delta-v2"`. The pure
+`plugin/hop_evidence_codec.lua` codec and `Decode-HopEvidence.ps1` consumer share
+fixed field/kind tables and reconstruct the logical rows before semantic checks.
+They preserve field absence, false, zero, signed zero, exact numbers and occurrence
+metadata. Regular deltas reference only the previous row in the same projection;
+critical rows are complete anchors and can be decoded independently as rows.
+The strict stream reader still requires every ordered chunk from the run.
+
+The 2,048-row/512 KiB regular budget, separate cleanup budget, storage quota,
+readiness gates and 1,500 ms driving window remain unchanged. Retained projection
+bases are charged to the regular budget. Overflow still marks observation loss
+and stops the trial. Flushing remains terminal-only and failed writes do not
+advance the cursor. `Read-HopEvidenceChunks` rejects malformed v2 evidence;
+operators must explicitly decode it before applying their existing predicates.
+Frozen schema-1 operators and packages remain separate and cannot qualify a new
+encoding without their own reviewed integration.
+
+Pure codec tests, exact recorded-prefix replay and packaging tests establish their
+stated boundaries. They do not establish the complete 16 ms composition, SDK tick
+budget, persistent storage, native input consumption, a hop or landing.

@@ -15,7 +15,7 @@ $ErrorActionPreference = 'Stop'
 $utf8 = [Text.UTF8Encoding]::new($false, $true)
 $comparison = [StringComparison]::Ordinal
 $pathComparison = [StringComparison]::OrdinalIgnoreCase
-$planSha256 = '643FAE696DB0C2B583C1BC2234630E9AE2E3EB13303EDD7A01EA800F9FE5A35F'
+$planSha256 = 'C8184385495B011BC5754F31AC3DBDF5EA89B4860AFF04270D8A425F32EC005C'
 $pinsSha256 = '3E7FF0DE0DBCEF178B8CCF3B0D8237A71E364F0F35F20C6397DE01F34C92E7E1'
 
 function Assert-NoHold {

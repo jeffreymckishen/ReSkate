@@ -19,10 +19,12 @@
     "hop_force_stage.lua",
     "hop_services.lua",
     "hop_guard.lua",
+    "hop_evidence_codec.lua",
     "hop_recorder.lua"
   ],
   "optional_tests": [
     "hop_guard_tests.lua",
+    "hop_evidence_codec_tests.lua",
     "hop_recorder_tests.lua",
     "hop_composition_tests.lua",
     "hop_prepare_evidence_tests.lua",

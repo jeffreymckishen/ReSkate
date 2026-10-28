@@ -1,7 +1,8 @@
 -- Private trial evidence only. No game calls, native polling or Core ledger writes.
 -- The wrapper supplies observations from calls it already made; these copies
 -- confer no authority and cannot establish native consumption or retirement.
-local Recorder = {}
+local Codec = require("./hop_evidence_codec")
+local Recorder = {codec=Codec}
 local Object = {} Object.__index = Object
 local states = setmetatable({}, {__mode="k"})
 local LIMITS = table.freeze({regular_rows=2048, regular_bytes=512*1024,
@@ -189,6 +190,7 @@ local function sanitized(value,shape,limit)
 end
 -- Both arguments are our bounded, detached plain copies, never caller tables.
 local function same(a,b)
+    if type(a)=="number" and type(b)=="number" and a==0 and b==0 then return 1/a==1/b end
     if a==b then return true end
     if type(a)~="table" or type(b)~="table" then return false end
     for k,v in pairs(a) do if not same(v,b[k]) then return false end end
@@ -207,33 +209,79 @@ local function known_identity(kind,row)
     if kind=="source" then return row.sequence~=nil and row.observation_serial~=nil end
     return false
 end
-local function retain(s,kind,data,bytes,critical,at_ms,incomplete)
+local function capacity_fault(s,critical,why)
+    s.dropped+=1;fault(s,why or (critical and "critical_capacity" or "regular_capacity"))
+    return false,s.first_fault
+end
+local function encoded_time(value)
+    if value==nil then return false end
+    if value==0 and 1/value==-math.huge then return "-0" end
+    return value
+end
+local function retained_row(s,entry)
+    if not entry.critical then
+        local base=s.bases[entry.key]
+        return base and base.first_call==entry.first_call and base or nil
+    end
+    return Codec.decode_row(entry.wire)
+end
+local function retain(s,kind,data,_bytes,critical,at_ms,incomplete)
     s.calls+=1;s.version+=1
     local prior=s.last[kind]
-    if not incomplete and known_identity(kind,data) and prior and not prior.flushed and not prior.writing
-        and prior.critical==critical and same(prior.data,data) then
-        prior.repeats+=1;prior.last_call=s.calls;prior.last_at_ms=at_ms
-        s.coalesced+=1
-        return true,"coalesced"
+    local previous=prior and retained_row(s,prior)
+    if not incomplete and known_identity(kind,data) and prior and previous and not prior.flushed and not prior.writing
+        and prior.critical==critical and same(previous.data,data) then
+        -- Replacing the positional occurrence metadata is itself an admission.
+        -- A writer's frozen row and all encoded bases stay immutable.
+        local wire={};for i=1,11 do wire[i]=prior.wire[i] end
+        wire[6]=s.calls;wire[7]=prior.repeats+1;wire[9]=encoded_time(at_ms)
+        local size=Codec.wire_bytes(wire)
+        if not size or size>LIMITS.row_bytes then return capacity_fault(s,critical,"invalid_encoding") end
+        local used=critical and s.critical_bytes or s.regular_bytes
+        local cap=critical and LIMITS.critical_bytes or LIMITS.regular_bytes
+        if used+size-prior.bytes>cap then return capacity_fault(s,critical) end
+        if critical then s.critical_bytes+=size-prior.bytes
+        else s.regular_wire_bytes+=size-prior.bytes;s.regular_bytes+=size-prior.bytes end
+        prior.wire=table.freeze(wire);prior.bytes=size;prior.repeats+=1;prior.last_call=s.calls;prior.last_at_ms=at_ms
+        if not critical then
+            local cached={};for k,v in pairs(previous) do cached[k]=v end
+            cached.last_call=s.calls;cached.repeats=prior.repeats;cached.last_at_ms=at_ms
+            s.bases[prior.key]=table.freeze(cached)
+        end
+        s.coalesced+=1;return true,"coalesced"
     end
     local rows=critical and s.critical or s.regular
     local cap=critical and LIMITS.critical_rows or LIMITS.regular_rows
-    local byte_cap=critical and LIMITS.critical_bytes or LIMITS.regular_bytes
-    local used=critical and s.critical_bytes or s.regular_bytes
-    bytes+=384 -- Row metadata, punctuation and bounded timestamp/indices.
-    if #rows>=cap or used+bytes>byte_cap then
-        s.dropped+=1;fault(s,critical and "critical_capacity" or "regular_capacity")
-        return false,s.first_fault
-    end
+    if #rows>=cap then return capacity_fault(s,critical) end
     local row={kind=kind,data=data,first_call=s.calls,last_call=s.calls,repeats=1,
-        first_at_ms=at_ms,last_at_ms=at_ms,incomplete=incomplete==true}
-    local entry={row=row,data=data,kind=kind,bytes=bytes,critical=critical,flushed=false,
+        first_at_ms=at_ms,last_at_ms=at_ms,incomplete=incomplete==true,critical=critical==true}
+    local call=rawget(data,"call") or ""
+    local key=kind.."|"..call
+    local base;if not critical then base=s.bases[key] end
+    local wire,size=Codec.encode_row(row,base)
+    if not wire then return capacity_fault(s,critical,"invalid_encoding") end
+    local state_size
+    if critical then
+        if s.critical_bytes+size>LIMITS.critical_bytes then return capacity_fault(s,true) end
+    else
+        local expanded=Codec.data_bytes(data)
+        if not expanded then return capacity_fault(s,false,"invalid_encoding") end
+        state_size=expanded+64+string_cost(kind)+string_cost(call)
+        local projected=s.regular_bytes+size+state_size-(s.base_bytes[key] or 0)
+        if projected>LIMITS.regular_bytes or not base and s.base_count>=64 then return capacity_fault(s,false) end
+    end
+    local entry={wire=wire,key=key,kind=kind,bytes=size,critical=critical,flushed=false,
         first_call=s.calls,last_call=s.calls,repeats=1,first_at_ms=at_ms,last_at_ms=at_ms}
     rows[#rows+1]=entry;s.last[kind]=entry
-    if critical then s.critical_bytes+=bytes else s.regular_bytes+=bytes end
+    if critical then s.critical_bytes+=size
+    else
+        if not base then s.base_count+=1 end
+        s.regular_state_bytes+=state_size-(s.base_bytes[key] or 0)
+        s.base_bytes[key]=state_size;s.bases[key]=table.freeze(row)
+        s.regular_wire_bytes+=size;s.regular_bytes=s.regular_wire_bytes+s.regular_state_bytes
+    end
     return not incomplete,incomplete and "observation_loss" or "recorded"
 end
-
 -- Call with the real storage.set function and a fresh private run's ASCII ID.
 -- The caller must use a fresh private package/store; this module never reads,
 -- deletes or overwrites prior runs intentionally, and performs no admission I/O.
@@ -243,6 +291,7 @@ function Recorder.new(storage_set,run_id)
         string.match(run_id,"^[A-Za-z0-9_-]+$"),"fresh run ID must be 1..32 ASCII letters, digits, _ or -")
     local self=setmetatable({},Object)
     states[self]={writer=storage_set,run_id=run_id,regular={},critical={},last={},regular_bytes=0,critical_bytes=0,
+        bases={},base_bytes={},base_count=0,regular_wire_bytes=0,regular_state_bytes=0,store_bytes=2,
         regular_next=1,critical_next=1,calls=0,coalesced=0,dropped=0,chunks=0,stored_rows=0,
         latest_revision=0,version=0,saved_revision=-1,cleanup_observed=false,unresolved_debt=true,
         observation_loss=false,stop_requested=false,storage_fault=false,stopping=false,busy=false}
@@ -322,13 +371,14 @@ function Object:terminal(snapshot)
     return retain(s,"terminal",transition,transition_bytes,s.stopping,t.wall_ms,b.lost==true)
 end
 local function summary(s)
-    return table.freeze({schema=1,kind="hop-trial-evidence",run_id=s.run_id,
+    return table.freeze({schema=1,encoding=Codec.encoding,kind="hop-trial-evidence",run_id=s.run_id,
         observation_loss=s.observation_loss,unqualified=s.observation_loss or s.storage_fault or s.unresolved_debt or s.cleanup_unknown_seen==true,
         stop_requested=s.stop_requested,first_fault=s.first_fault,storage_fault=s.storage_fault,storage_error=s.storage_error,
         interrupted=s.interrupted==true,emergency_attempted=s.emergency_attempted==true,
         final_snapshot_unavailable=s.final_snapshot_unavailable==true,
         calls=s.calls,coalesced=s.coalesced,dropped=s.dropped,regular_rows=#s.regular,critical_rows=#s.critical,
-        regular_bytes=s.regular_bytes,critical_bytes=s.critical_bytes,chunks=s.chunks,stored_rows=s.stored_rows,
+        regular_bytes=s.regular_bytes,critical_bytes=s.critical_bytes,
+        regular_wire_bytes=s.regular_wire_bytes,regular_state_bytes=s.regular_state_bytes,chunks=s.chunks,stored_rows=s.stored_rows,
         cleanup_observed=s.cleanup_observed,unresolved_debt=s.unresolved_debt,cleanup_unknown_seen=s.cleanup_unknown_seen==true,
         board_restore_unresolved=s.board_restore_unresolved==true,pose_release_unresolved=s.pose_release_unresolved==true,
         latest_revision=s.latest_revision,latest=s.latest,
@@ -347,8 +397,10 @@ function Object:status()
     return table.freeze(out)
 end
 local function row_copy(entry)
-    return table.freeze({kind=entry.kind,data=entry.data,first_call=entry.first_call,last_call=entry.last_call,
-        repeats=entry.repeats,first_at_ms=entry.first_at_ms,last_at_ms=entry.last_at_ms,incomplete=entry.row.incomplete})
+    -- The codec recursively freezes data nodes; copy/freeze the occurrence
+    -- header so a reentrant storage callback cannot mutate retained history.
+    local out={};for i=1,11 do out[i]=entry.wire[i] end
+    return table.freeze(out)
 end
 -- One storage call at most. The wrapper must witness actual terminal/watchdog
 -- inactivity; a recorder overflow alone is never that witness. Unknown cleanup
@@ -372,10 +424,18 @@ function Object:flush(gate)
     local key,value,revision
     if #rows>0 then
         key="hop."..s.run_id..".chunk."..tostring(s.chunks+1)
-        value=table.freeze({schema=1,run_id=s.run_id,chunk=s.chunks+1,rows=table.freeze(rows)})
+        value=table.freeze({schema=2,encoding=Codec.encoding,run_id=s.run_id,chunk=s.chunks+1,rows=table.freeze(rows)})
     else
         if s.saved_revision==s.version then return true,"complete" end
         key="hop."..s.run_id..".summary";revision=s.version;value=summary(s)
+    end
+    local charge=0
+    if #rows>0 then
+        charge=Codec.envelope_bytes(value)
+        if not charge or s.store_bytes+charge+LIMITS.summary_bytes>1024*1024 then
+            s.storage_fault=true;fault(s,"storage_capacity");s.storage_error="encoded evidence exceeds the private store budget"
+            return false,"storage_fault"
+        end
     end
     for _,entry in ipairs(picked) do entry.writing=true end
     s.busy=true
@@ -392,7 +452,7 @@ function Object:flush(gate)
     if revision then s.saved_revision=revision
     else
         for _,entry in ipairs(picked) do entry.flushed=true end
-        s.regular_next,s.critical_next=ri,ci;s.chunks+=1;s.stored_rows+=#rows
+        s.regular_next,s.critical_next=ri,ci;s.chunks+=1;s.stored_rows+=#rows;s.store_bytes+=charge
     end
     return true,revision and "summary_cached" or "chunk_cached"
 end

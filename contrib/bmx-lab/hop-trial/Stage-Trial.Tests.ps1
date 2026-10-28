@@ -25,8 +25,8 @@ foreach ($pin in @($pins.files)) {
 }
 foreach ($name in @('Stage-Trial.ps1','stage-plan.json','source-pins.json','manifest.json','reskate-plugin.json',
     'plugin/main.lua','plugin/hop_config.lua','plugin/hop_context.lua','plugin/hop_force_stage.lua',
-    'plugin/hop_services.lua','plugin/hop_guard.lua','plugin/hop_recorder.lua',
-    'plugin/hop_guard_tests.lua','plugin/hop_recorder_tests.lua','plugin/hop_composition_tests.lua',
+    'plugin/hop_services.lua','plugin/hop_guard.lua','plugin/hop_evidence_codec.lua','plugin/hop_recorder.lua',
+    'plugin/hop_guard_tests.lua','plugin/hop_evidence_codec_tests.lua','plugin/hop_recorder_tests.lua','plugin/hop_composition_tests.lua',
     'plugin/hop_prepare_evidence_tests.lua','plugin/hop_prepare_cancel_tests.lua')) {
     [IO.File]::WriteAllBytes((Join-Path $tool $name),[IO.File]::ReadAllBytes((Join-Path $PSScriptRoot $name)))
 }
@@ -63,7 +63,7 @@ $admitted=Out 'admitted' 'p0test'
 $h1=Out 'h1' 'h1test'
 Case 'closed copy and read-only verification' {
     $result=& $script -Mode Stage -SourceRoot $clone -OutputDirectory $closed
-    Check ($result.files -eq 72 -and -not $result.reviewed_admission) 'Closed inventory/admission'
+    Check ($result.files -eq 73 -and -not $result.reviewed_admission) 'Closed inventory/admission'
     foreach ($pin in @($pins.files)) {
         $copied=Join-Path $closed $pin.path
         Check ((Get-FileHash -LiteralPath $copied -Algorithm SHA256).Hash -ceq $pin.sha256) 'Closed canonical bytes changed'
@@ -73,10 +73,22 @@ Case 'closed copy and read-only verification' {
     Check ((Snapshot $closed) -ceq $before) 'Verify wrote files'
     Check ((Get-Content -LiteralPath (Join-Path $closed 'plugin/hop_config.lua') -Raw).Contains('admission_enabled=false')) 'Closed config opened'
     Check (-not (Test-Path -LiteralPath (Join-Path $closed 'plugin/hop_guard_tests.lua'))) 'Tests copied by default'
+    Check (-not (Test-Path -LiteralPath (Join-Path $closed 'plugin/hop_evidence_codec_tests.lua'))) 'Codec tests copied by default'
+    $codec=Join-Path $closed 'plugin/hop_evidence_codec.lua'
+    Check ((Get-FileHash -LiteralPath $codec -Algorithm SHA256).Hash -ceq
+        (Get-FileHash -LiteralPath (Join-Path $tool 'plugin/hop_evidence_codec.lua') -Algorithm SHA256).Hash) 'Runtime codec bytes changed'
+    $report=Get-Content -LiteralPath (Join-Path $closed 'transform-report.json') -Raw | ConvertFrom-Json
+    $privateInputs=@($report.inputs | Where-Object { $_.origin -ceq 'private' })
+    $codecInput=@($privateInputs | Where-Object { $_.path -ceq 'plugin/hop_evidence_codec.lua' })
+    Check ($codecInput.Count -eq 1 -and $codecInput[0].sha256 -ceq
+        (Get-FileHash -LiteralPath $codec -Algorithm SHA256).Hash) 'Codec private-source provenance missing'
+    $privateNames=@($privateInputs | ForEach-Object { $_.path })
+    Check ([Array]::IndexOf($privateNames,'plugin/hop_evidence_codec.lua') -lt
+        [Array]::IndexOf($privateNames,'plugin/hop_recorder.lua')) 'Codec dependency must precede Recorder in the private inventory'
 }
 Case 'explicit admitted P0 exact changes and unchanged gates' {
     $result=& $script -Mode Stage -SourceRoot $clone -OutputDirectory $admitted -ReviewedAdmission -Phase P0 -RunId p0test -ReviewId review1
-    Check ($result.files -eq 72 -and $result.reviewed_admission) 'Admitted inventory'
+    Check ($result.files -eq 73 -and $result.reviewed_admission) 'Admitted inventory'
     $null=& $script -SourceRoot $clone -OutputDirectory $admitted -ReviewedAdmission -Phase P0 -RunId p0test -ReviewId review1
     $core=Get-Content -LiteralPath (Join-Path $admitted 'plugin/bike_runtime_core.lua') -Raw
     Check ($core.Contains('local RIDE_COMPOSITION_QUALIFIED=true') -and $core.Contains('local RIDE_WINDOW_MS=1500')) 'Core transforms absent'
@@ -93,7 +105,13 @@ Case 'explicit admitted P0 exact changes and unchanged gates' {
 }
 Case 'H1 explicit identity and isolated optional test inventory' {
     $result=& $script -Mode Stage -SourceRoot $clone -OutputDirectory $h1 -ReviewedAdmission -Phase H1 -RunId h1test -ReviewId review2 -IncludeTests
-    Check ($result.files -eq 78) 'Optional tests and exact-entry fixture inventory'
+    Check ($result.files -eq 80) 'Optional tests and exact-entry fixture inventory'
+    $codecTest=Join-Path $h1 'plugin/hop_evidence_codec_tests.lua'
+    Check ((Get-FileHash -LiteralPath $codecTest -Algorithm SHA256).Hash -ceq
+        (Get-FileHash -LiteralPath (Join-Path $tool 'plugin/hop_evidence_codec_tests.lua') -Algorithm SHA256).Hash) 'Optional codec-test bytes changed'
+    $report=Get-Content -LiteralPath (Join-Path $h1 'transform-report.json') -Raw | ConvertFrom-Json
+    $codecTestInput=@($report.inputs | Where-Object { $_.path -ceq 'plugin/hop_evidence_codec_tests.lua' })
+    Check ($codecTestInput.Count -eq 1 -and $codecTestInput[0].origin -ceq 'private-test') 'Codec test must stay an optional test input'
     $null=& $script -SourceRoot $clone -OutputDirectory $h1 -ReviewedAdmission -Phase H1 -RunId h1test -ReviewId review2 -IncludeTests
     $config=Get-Content -LiteralPath (Join-Path $h1 'plugin/hop_config.lua') -Raw
     Check ($config.Contains('admission_enabled=true') -and $config.Contains('phase="H1"') -and $config.Contains('run_id="h1test"')) 'H1 config'
@@ -139,13 +157,15 @@ Case 'extra selected source module refuses before creation' {
     } finally { Remove-Item -LiteralPath $extra }
 }
 Case 'missing private dependency refuses before creation' {
-    $path=Join-Path $tool 'plugin/hop_recorder.lua'
-    $saved=[IO.File]::ReadAllBytes($path)
-    try {
-        Remove-Item -LiteralPath $path
-        $out=Out 'missing-private'
-        Refuses { & $script -Mode Stage -SourceRoot $clone -OutputDirectory $out } $out
-    } finally { [IO.File]::WriteAllBytes($path,$saved) }
+    foreach ($name in @('hop_evidence_codec.lua','hop_recorder.lua')) {
+        $path=Join-Path $tool ('plugin/'+$name)
+        $saved=[IO.File]::ReadAllBytes($path)
+        try {
+            Remove-Item -LiteralPath $path
+            $out=Out ('missing-private-'+$name.Replace('.','-'))
+            Refuses { & $script -Mode Stage -SourceRoot $clone -OutputDirectory $out } $out
+        } finally { [IO.File]::WriteAllBytes($path,$saved) }
+    }
 }
 Case 'changed pins or plan cannot redefine expected output' {
     foreach ($name in @('source-pins.json','stage-plan.json')) {
@@ -159,7 +179,7 @@ Case 'changed pins or plan cannot redefine expected output' {
     }
 }
 Case 'manifest config module inventory and report tampering are read-only refusals' {
-    foreach ($name in @('manifest.json','reskate-plugin.json','plugin/hop_config.lua','plugin/ride_runtime.lua','artifact-inventory.json','transform-report.json')) {
+    foreach ($name in @('manifest.json','reskate-plugin.json','plugin/hop_config.lua','plugin/hop_evidence_codec.lua','plugin/ride_runtime.lua','artifact-inventory.json','transform-report.json')) {
         $path=Join-Path $closed $name
         $saved=[IO.File]::ReadAllBytes($path)
         try {
@@ -287,6 +307,20 @@ Case 'actual-entry fixture is exact and absent without IncludeTests' {
         Check ((Snapshot $h1) -ceq $before) 'Verify repaired modified fixture'
     } finally { [IO.File]::WriteAllBytes($path,$actual) }
 }
-Check ($cases -eq 17) 'Unexpected regression case count'
+Case 'missing optional codec test leaves runtime available and test staging closed' {
+    $path=Join-Path $tool 'plugin/hop_evidence_codec_tests.lua'
+    $saved=[IO.File]::ReadAllBytes($path)
+    try {
+        Remove-Item -LiteralPath $path
+        $runtimeOut=Out 'missing-codec-test-runtime'
+        $result=& $script -Mode Stage -SourceRoot $clone -OutputDirectory $runtimeOut
+        Check ($result.files -eq 73 -and -not $result.reviewed_admission) 'Missing optional codec test changed closed runtime staging'
+        Check (Test-Path -LiteralPath (Join-Path $runtimeOut 'plugin/hop_evidence_codec.lua') -PathType Leaf) 'Runtime codec dependency was omitted'
+        Check (-not (Test-Path -LiteralPath (Join-Path $runtimeOut 'plugin/hop_evidence_codec_tests.lua'))) 'Missing optional codec test was fabricated'
+        $testOut=Out 'missing-codec-test-required'
+        Refuses { & $script -Mode Stage -SourceRoot $clone -OutputDirectory $testOut -IncludeTests } $testOut
+    } finally { [IO.File]::WriteAllBytes($path,$saved) }
+}
+Check ($cases -eq 18) 'Unexpected regression case count'
 # Preserve this isolated evidence folder. No recursive deletion or deployment follows.
 [pscustomobject]@{cases=$cases;artifact_root=$testRoot;native_execution=$false}

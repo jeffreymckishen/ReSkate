@@ -1,6 +1,7 @@
 -- Source-only regression cases. This module is inert until an assigned runner
 -- calls run(); it cannot provide game, storage durability or native proof.
 local Recorder=require("./hop_recorder")
+local Codec=require("./hop_evidence_codec")
 local Tests={}
 function Tests.run()
     local cases,assertions=0,0
@@ -30,11 +31,12 @@ function Tests.run()
         error("fixture exceeded bounded flush count")
     end
     local function rows(writes)
-        local out={}
-        for _,write in ipairs(writes) do
-            if write.value.rows then for _,row in ipairs(write.value.rows) do out[#out+1]=row end end
-        end
-        return out
+        local chunks={}
+        for _,write in ipairs(writes) do if write.value.rows then chunks[#chunks+1]=write.value end end
+        if #chunks==0 then return {} end
+        local decoded,why=Codec.decode_chunks(chunks,chunks[1].run_id)
+        check(decoded~=nil,"strict v2 test evidence decoding: "..tostring(why))
+        return decoded
     end
     local function find(writes,kind)
         for _,row in ipairs(rows(writes)) do if row.kind==kind then return row end end
@@ -374,6 +376,55 @@ function Tests.run()
             "missing final observation is explicit uncertainty")
         check(value.latest.stop_reason==previous.stop_reason and value.latest.ride.pending_count==3
             and value.latest.cleanup_unknown,"prior actual fields are retained rather than replaced or cleared")
+    end)
+    case("encoded evidence preserves Source deltas and separately anchored cleanup",function()
+        local recorder,writes=fresh()
+        for i=1,40 do
+            check(recorder:append("source",{call="input.lease_read",sequence="31",source_epoch="2",context_generation="3",
+                observation_serial=tostring(i),observed_ms=tostring(i*16),packet=i,
+                pad={left_x=0,right_y=0,playstation=false,buttons={a=false}}}),"new exact Source observation retained")
+        end
+        local before=recorder:status().summary
+        check(before.regular_state_bytes>0 and before.regular_wire_bytes>0
+            and before.regular_bytes==before.regular_state_bytes+before.regular_wire_bytes,
+            "canonical projection state is charged inside the ordinary budget")
+        check(recorder:append("receipt",{sequence="7",requested_serial="6",produced_serial="7",outcome="applied",quarantined=true}),
+            "critical receipt independently retained")
+        recorder:terminal(closed(true));drain(recorder)
+        local observed=rows(writes);local sources=0;local critical=false
+        for _,row in ipairs(observed) do
+            if row.kind=="source" then sources+=1;check(row.data.observation_serial==tostring(sources)
+                and row.data.pad.buttons.a==false and row.data.pad.right_y==0,"source identities, false and zero survive deltas") end
+            if row.kind=="receipt" then critical=row.critical end
+        end
+        check(sources==40 and critical,"no unique Source observation dropped and critical marker remains separate")
+        for _,write in ipairs(writes) do if write.value.rows then for _,wire in ipairs(write.value.rows) do
+            if wire[1] then check(wire[4]==0,"critical cleanup never references a regular row") end
+        end end end
+    end)
+    case("storage writers cannot mutate retained encoded history",function()
+        local recorder;local writes={};local attempts=0
+        recorder=Recorder.new(function(key,value)
+            writes[#writes+1]={key=key,value=value}
+            if value.rows then
+                attempts+=1
+                check(not pcall(function() value.rows[1][6]=999 end),"writer sees frozen occurrence header")
+                check(not pcall(function() value.rows[1][11][1]=99 end),"writer sees frozen encoded node graph")
+            end
+        end,"immutable_writer")
+        recorder:append("ack",{sequence="9",acknowledged=true});recorder:terminal(closed(false));drain(recorder)
+        check(attempts>0 and #rows(writes)==recorder:status().stored_rows,"writer mutation changes no retained record")
+    end)
+    case("signed zero changes cannot disappear through semantic coalescing",function()
+        local recorder,writes=fresh()
+        recorder:append("receipt",{sequence="9",requested_serial="8",produced_serial="9",outcome="applied",
+            successor={velocity={-1/math.huge,0,0}}})
+        recorder:append("receipt",{sequence="9",requested_serial="8",produced_serial="9",outcome="applied",
+            successor={velocity={0,0,0}}})
+        recorder:terminal(closed(false));drain(recorder)
+        local found={};for _,row in ipairs(rows(writes)) do if row.kind=="receipt" then found[#found+1]=row end end
+        check(#found==2 and 1/found[1].data.successor.velocity[1]==-math.huge
+            and 1/found[2].data.successor.velocity[1]==math.huge,"actual zero sign transition remains two observations")
     end)
     return {cases=cases,assertions=assertions}
 end

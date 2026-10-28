@@ -3,6 +3,7 @@
 local Services=require("./hop_services")
 local Context=require("./hop_context")
 local Recorder=require("./hop_recorder")
+local Codec=require("./hop_evidence_codec")
 local Tests={}
 local setup_pending="native body producer setup pending; call prepare again explicitly"
 local step_pending="waiting for a fresh qualified 60 Hz physics step"
@@ -39,13 +40,12 @@ function Tests.run()
         error("prepare evidence exceeded bounded fixture flush")
     end
     local function rows(f)
-        local out={}
-        for _,write in ipairs(f.writes) do
-            if write.value.rows then
-                for _,row in ipairs(write.value.rows) do out[#out+1]=row end
-            end
-        end
-        return out
+        local chunks={}
+        for _,write in ipairs(f.writes) do if write.value.rows then chunks[#chunks+1]=write.value end end
+        if #chunks==0 then return {} end
+        local decoded,why=Codec.decode_chunks(chunks,"prepare_fixture")
+        check(decoded~=nil,"strict v2 preparation evidence decoding: "..tostring(why))
+        return decoded
     end
     local function prepare_rows(f)
         local out={}

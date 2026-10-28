@@ -2,6 +2,7 @@
 -- Require/new are inert. Public mounting remains unavailable: native park and
 -- attachment qualification are unresolved. No riding/consumption claim is made.
 local EquipmentRuntime=require("./equipment_runtime")
+local CurrentRecovery=require("./current_recovery")
 local Admission=require("./bike_admission")
 local BikeRuntime={}
 local PROBE_BATCHES_PER_SERIAL=4
@@ -626,12 +627,13 @@ local T=shared_state or {phase="idle",detail="Stock switching and inspection onl
     generation=0,cancel_version=0,calls={},counts={},receipts={},omitted_calls=0,omitted_receipts=0,
     remove_attempted={},remove_accepted={}}
 local object={}
-local stop_all,latch_stop,source,spawn,equipment,facts,closed_ready,snapshot,flush_removals
+local stop_all,latch_stop,source,spawn,equipment,recovery,facts,closed_ready,snapshot,flush_removals
 local ride,ride_binding,selected_source_frame,stop_ride,drain_ride,observe_ride,trick_presenter
 -- Return intent is separate from the bike generation: normal draining stops
 -- that generation again, but must not authorize or cancel another stock action.
 local board={phase="idle",detail="No board return requested.",pending=false,target_state=100}
 local check_board
+local stock_context
 local function finite(v) return type(v)=="number" and v==v and math.abs(v)<math.huge end
 local function short(v) return type(v)=="string" and v:gsub("[%c]"," "):sub(1,180) or "unavailable or malformed result" end
 local function reason(v) return type(v)=="string" and #v>0 and #v<=200 end
@@ -844,7 +846,7 @@ local function unknown_duty(read_status,allow_force_drain)
         or e and e.outcome=="unresolved" or T.removal_unknown==true
 end
 local function stock_blocked(read_status)
-    if board.pending or T.unloaded or T.busy or T.gear_requested or T.startup_pending or T.startup_closed or unknown_duty(read_status) then return true end
+    if board.pending or recovery and recovery:active() or T.unloaded or T.busy or T.gear_requested or T.startup_pending or T.startup_closed or unknown_duty(read_status) then return true end
     local e=(read_status or status_of)(equipment)
     if e and e.storage_fault==true then return true end
     if not force_clear() or not equipment_clear(read_status) or not source_clear(read_status) then return true end
@@ -871,7 +873,7 @@ snapshot=function()
         cleanup_unknown=unknown_duty(read_cached)==true,stock_toggle_blocked=stock_blocked(read_cached),
         retained_reload_marker=T.reload_blocked==true,marker_unknown=T.marker_unknown==true,
         bike_cleanup_complete=T.bike_cleanup_complete==true,
-        stock_requested=T.gear_requested==true,equipment_purpose=T.gear_purpose,
+        stock_requested=T.gear_requested==true,equipment_purpose=T.gear_purpose,stock_context=stock_context,
         board_return={phase=board.phase,detail=board.detail,pending=board.pending,slot=board.slot,
             admitted_at_ms=board.admitted_at_ms,deadline_ms=board.deadline_ms,target_state=100},
         native_follow_lease_ms=BASE_LEASE_MS,qualification_ms=RIDE_WINDOW_MS,ride_window_ms=RIDE_WINDOW_MS,
@@ -899,6 +901,7 @@ snapshot=function()
         spawn=b,equipment=e,
         ride_composition_qualified=RIDE_COMPOSITION_QUALIFIED,ride=T.ride_status,mounted_pose=T.pose_status,
         board_drop=T.board_drop_status,
+        recovery=recovery and recovery:status() or {phase="idle",retained=false},
         force_cleanup_clear=force_clear(),force_cleanup_unknown=T.ride_unknown==true,
         handoff_attempted=T.handoff_attempted==true,body_transferred=T.transferred==true,
         handoff_unknown=T.handoff_unknown==true,reserve_attempted=T.reserve_attempted==true,
@@ -1142,6 +1145,7 @@ latch_stop=function(why)
     end
 end
 stop_all=function(why,draining_board)
+    if recovery then recovery:stop(why) end
     -- Only known cleanup continuations can preserve the explicit return. All
     -- ordinary stops, faults and reentrant callbacks cancel it before effects.
     if board.pending and not (draining_board and board.phase=="draining") then
@@ -1303,6 +1307,17 @@ for _,method in ipairs({"pulse","pulse_state","pulse_cancel","pulse_acknowledge"
 end
 equipment=EquipmentRuntime.new(gear_api)
 T.equipment_instances=(T.equipment_instances or 0)+1
+-- Recovery selects the current local skater inside the existing SDK recover API.
+-- Only this owner can attest all bike duties drained. Recovery does not clear
+-- the one-mount latch, adopt body epochs as actor IDs, or remount the bike.
+local function recovery_clear()
+    return T.used==true and T.bike_cleanup_complete==true and T.phase=="done"
+        and not T.active and not T.body and not T.follow and not T.intent_inflight
+        and not T.gear_requested and not board.pending and not T.unloaded
+        and not T.startup_pending and not T.startup_closed and not T.follow_unknown
+        and not unknown_duty() and force_clear() and source_clear() and equipment_clear()
+end
+recovery=CurrentRecovery.new(lookup,call,recovery_clear)
 
 local required={"time.now","input.focus","input.allowed","skater.get","skater.telemetry","level.current",
     "menu.game","json.encode","storage.get","storage.set","entities.bounds","entities.set","entities.status","entities.remove",
@@ -1325,8 +1340,26 @@ facts=function()
     return f
 end
 local function base_ready(f,stock)
+    -- The active bike keeps its original continuity. A separate explicit stock
+    -- transaction after complete cleanup uses its own current sampled context.
+    local context=stock and not T.active and (board.pending or T.gear_requested and T.gear_purpose~="mount") and stock_context or nil
     return f and f.focused and f.gameplay and (stock and f.upright_stock or f.upright_onfoot)
-        and (not T.level or f.level==T.level) and (not T.wipeouts or f.wipeouts==T.wipeouts)
+        and (context and f.level==context.level and f.wipeouts==context.wipeouts
+            or not context and (not T.level or f.level==T.level) and (not T.wipeouts or f.wipeouts==T.wipeouts))
+end
+local function fresh_stock_context_allowed()
+    return (not T.used or T.bike_cleanup_complete==true) and not T.active and not T.body and not T.follow
+        and not T.gear_requested and not T.unloaded and not T.startup_pending and not T.startup_closed
+        and not T.follow_unknown and not unknown_duty() and not recovery:active()
+        and force_clear() and source_clear() and equipment_clear()
+end
+local function stock_admission_ready(f)
+    if not fresh_stock_context_allowed() then return base_ready(f,true) end
+    return f and f.focused and f.gameplay and f.upright_stock and finite(f.wipeouts)
+        and f.wipeouts>=0 and f.wipeouts<=MAX and f.wipeouts%1==0
+end
+local function bind_stock_context(f)
+    if fresh_stock_context_allowed() then stock_context={level=f.level,wipeouts=f.wipeouts} end
 end
 closed_ready=function(f,grounded,stock)
     return base_ready(f,stock) and f.interface_closed and f.game_menu_closed and f.input_allowed
@@ -2102,6 +2135,7 @@ function object:request_mount(slot,admitted)
         T.mount_deadline_at=wall(T.mount_admitted_at) and T.mount_admitted_at<=MAX-MOUNT_INTENT_MS
             and T.mount_admitted_at+MOUNT_INTENT_MS or nil
         T.initial_facts=observed;T.facts=observed;T.active=true
+        stock_context=nil -- A fresh mount cannot inherit a prior stock transaction context.
         T.native_prepare_phase="pending";T.mount_equipment_pending=observed.state==100
         if not T.mount_deadline_at or now<T.mount_admitted_at or now>=T.mount_deadline_at then
             stop_all("original mount intent expired before native preparation")
@@ -2116,10 +2150,27 @@ function object:request_mount(slot,admitted)
 end
 function object:request_stop(why)
     if T.unloaded then return false,"Runtime is unloaded; SDK retains cleanup" end
+    recovery:stop(reason(why) and why or "explicit Stop")
     if not T.used and not T.gear_requested and not T.intent_inflight and not board.pending then return true end
     stop_all(reason(why) and why or "explicit Stop")
     if T.ledger_owned then persist(true) end
     return true
+end
+function object:request_get_up()
+    if T.busy or T.unloaded or not recovery_clear() then return false,"Complete bike cleanup is required before get-up" end
+    T.busy=true
+    local version=T.cancel_version
+    local now=clock()
+    local accepted,why=false,"Get-up clock unavailable or request cancelled"
+    if now and T.cancel_version==version and recovery_clear() then accepted,why=recovery:request(now) end
+    if T.cancel_version~=version or T.unloaded then
+        recovery:stop("Get-up cancelled during admission")
+        accepted,why=false,"Get-up cancelled during admission"
+    end
+    T.persist_dirty=true
+    T.busy=false
+    if T.ledger_owned then persist(true) end
+    return accepted,why
 end
 function object:request_board(slot,admitted)
     if not valid_slot(slot) then return false,"Choose an XInput slot from0 to3" end
@@ -2128,7 +2179,7 @@ function object:request_board(slot,admitted)
         return false,"Bike lifecycle operation already in progress"
     end
     if board.pending then return false,"Board return already pending; its original deadline is unchanged" end
-    if T.unloaded or T.startup_closed or T.startup_pending or T.gear_requested or unknown_duty(nil,true)
+    if recovery:active() or T.unloaded or T.startup_closed or T.startup_pending or T.gear_requested or unknown_duty(nil,true)
         or T.follow_unknown or not equipment_clear() then
         finish_board("refused","Bike startup, equipment or unresolved cleanup blocks board return.")
         return false,board.detail
@@ -2144,9 +2195,10 @@ function object:request_board(slot,admitted)
     local accepted=board.pending and clear and now~=nil and finite(at) and at>=0 and at<=MAX-60000
         and now>=at and now-at<60000 and not T.unloaded and not T.startup_closed
         and not unknown_duty(nil,true) and not T.follow_unknown
-        and base_ready(f,true) and f.grounded
+        and stock_admission_ready(f) and f.grounded
         and (admitted~=T or Admission.matches(T.admitted_facts,f))
     if accepted then
+        bind_stock_context(f)
         board.admitted_at_ms=math.floor(at);board.deadline_ms=board.admitted_at_ms+60000
         board.level=f.level;board.wipeouts=f.wipeouts
         board.admitted_menu_open=not f.interface_closed or not f.game_menu_closed
@@ -2181,8 +2233,9 @@ function object:request_stock_toggle(slot,admitted)
     local observed=clear and facts() or nil
     local accepted=false
     if clear and T.cancel_version==version and not T.unloaded and not T.storage_fault and not T.clock_unknown
-        and base_ready(observed,true) and observed.grounded
+        and stock_admission_ready(observed) and observed.grounded
         and (admitted~=T or Admission.matches(T.admitted_facts,observed)) then
+        bind_stock_context(observed)
         accepted=begin_equipment(slot,"stock",observed.state)
     elseif clear then T.detail="Stock request refused by fresh readiness or cancelled intent." end
     T.intent_inflight=false;T.busy=false
@@ -2200,7 +2253,7 @@ local function tick(dt)
     T.follow_reads_tick=0;T.lease_reads_tick=0;T.renewals_tick=0;T.body_read_retry_tick=false
     selected_source_frame=nil;tick_facts=nil;tick_authorization=nil
     if T.unloaded or T.phase=="blocked" then return end
-    if not board.pending and (not T.used and not T.gear_requested or T.phase=="done" and not T.gear_requested) then
+    if not board.pending and not recovery:active() and (not T.used and not T.gear_requested or T.phase=="done" and not T.gear_requested) then
         -- No tick-end save runs from here, so a throttled snapshot would
         -- otherwise remain the cached ledger for the rest of this VM.
         if T.persist_dirty then persist(true) end
@@ -2352,6 +2405,7 @@ local function tick(dt)
     end
     if T.stop_latched and not T.bike_cleanup_complete then cleanup_tick() end
     advance_board()
+    if recovery:active() then recovery:update(T.now) end
     persist(stock_open and (not T.gear_requested or T.gear_cancelled==true) or board_open and not board.pending)
 end
 function object:step(dt_ms)
@@ -2372,6 +2426,7 @@ end
 function object:unload()
     if T.unloaded then return self:status() end
     T.unloaded=true;T.generation+=1
+    recovery:unload()
     if board.pending or T.used or T.gear_requested or T.intent_inflight then stop_all("unload; SDK retains unresolved native duty") end
     pose_stop()
     drain_ride()

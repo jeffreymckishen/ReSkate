@@ -5571,6 +5571,7 @@ void camera_inspector_prepares_then_explicitly_requests_a_view() {
 }
 
 #include "bmx_first_ride_import_test.inc"
+#include "bmx_current_recovery_host_fixture.inc"
 #include "bmx_contact_runtime_host_fixture.inc"
 #include "passive_sync_trial_test.inc"
 #include "passive_sync_routes_trial_test.inc"
@@ -5592,10 +5593,10 @@ void bmx_lua_policy_runs_as_modules_and_the_inspector_starts_inert() {
         return std::string(std::istreambuf_iterator<char>(file), {});
     };
     const auto declaration = contents(directory / manifest_file);
-    check(parse_manifest(declaration).permissions == std::set<std::string, std::less<>>{"input", "input.control", "input.lease", "input.capture", "skater.read",
+    check(parse_manifest(declaration).permissions == std::set<std::string, std::less<>>{"input", "input.control", "input.lease", "input.capture", "skater.read", "skater.control",
                   "menu", "storage", "overlay", "board", "world.physics", "world.physics.follow", "world.entities"} &&
               check_package_files(directory).empty(),
-          "The public package declares exactly its reviewed general input/body/entity permissions and no native skater control");
+          "The public package declares exactly its reviewed input/body/entity and explicit current-skater recovery permissions");
     TestEnvironment environment;
     Host host(environment, Side::client);
     host.apply({{"bmx-lua-inspector", directory, "1", {}}});
@@ -5627,6 +5628,12 @@ void bmx_lua_policy_runs_as_modules_and_the_inspector_starts_inert() {
                   panel_value("Cleanup pending / unknown") == "false / false",
               "Each real public Mount button refuses before authority or cleanup duty");
     }
+    environment.actions = {plugin_ui::Action{"bmx-lua-inspector", "BMX Lua migration", "bike_get_up", false}};
+    ticks(host, environment, 10);
+    running(host, "bmx-lua-inspector", environment);
+    check(panel_value("Last stop click") == "Complete a bike session and cleanup before get-up" &&
+              panel_value("Get-up phase") == "idle" && panel_value("Get-up duty retained") == "false",
+          "The public Get-up button refuses before a bike session and complete cleanup, even with skater.control");
     check(environment.fake.calls.empty() && environment.fake.binds.empty() && environment.fake.entities.empty() &&
               !environment.fake.body_prepares && !environment.fake.body_create_calls && !environment.fake.body_read_calls &&
               !environment.fake.body_submit_entries && !environment.fake.follow_reserves && !environment.fake.follow_publishes &&
@@ -5634,8 +5641,9 @@ void bmx_lua_policy_runs_as_modules_and_the_inspector_starts_inert() {
               !environment.fake.input_pulse_requests && !environment.fake.input_pulse_reads &&
               !environment.fake.input_pulse_cancels && !environment.fake.input_pulse_acks &&
               !environment.fake.native_action_requests && !environment.fake.native_recovery_requests &&
+              !environment.fake.native_recovery_reads && !environment.fake.native_recovery_cancels && !environment.fake.native_recovery_acks &&
               environment.teleports.empty() && !environment.rays,
-          "Public Mount denial never reaches input reports, Follow, body/entity allocation or native skater actions");
+          "Public Mount and premature Get-up denial never reach input reports, Follow, body/entity allocation or native skater actions");
     host.apply({});
     check(!std::filesystem::exists(environment.storage_root() / "bmx-lua-inspector" / "storage.json"),
           "An idle package also unloads without writing equipment storage");
@@ -5876,7 +5884,7 @@ void bmx_lua_equipment_runtime_uses_typed_services_without_native_permissions() 
     const auto directory = std::filesystem::path(RESKATE_SOURCE_DIR) / "contrib" / "bmx-lab" / "bmx-plugin";
     std::map<std::string, std::string> files{{manifest_file, R"({"api":1,"entry":"plugin/main.lua","permissions":[]})"}};
     for (const auto* name : {"equipment_transition.lua", "bike_admission.lua", "equipment_runtime.lua",
-             "bike_runtime_core.lua", "equipment_runtime_tests.lua"}) {
+             "recovery.lua", "current_recovery.lua", "bike_runtime_core.lua", "equipment_runtime_tests.lua"}) {
         std::ifstream file(directory / "plugin" / name, std::ios::binary);
         check(file.good(), std::string("BMX Lua runtime source is available: ") + name);
         files[std::string("plugin/") + name] = std::string(std::istreambuf_iterator<char>(file), {});
@@ -5884,7 +5892,7 @@ void bmx_lua_equipment_runtime_uses_typed_services_without_native_permissions() 
     files["plugin/main.lua"] = R"(
         -- Compile each cold module in its own unchanged-budget callback.
         local modules = {"./equipment_transition", "./bike_admission", "./equipment_runtime",
-            "./bike_runtime_core", "./equipment_runtime_tests"}
+            "./recovery", "./current_recovery", "./bike_runtime_core", "./equipment_runtime_tests"}
         local loaded, cases, done, runner = 0, 0, false, nil
         reskate.on("tick", function()
             if done then return end
@@ -5907,7 +5915,7 @@ void bmx_lua_equipment_runtime_uses_typed_services_without_native_permissions() 
     TestEnvironment environment;
     Host host(environment, Side::client);
     host.apply({package("bmx-lua-runtime-tests", files)});
-    for (int tick = 0; tick < 18; ++tick) host.tick(1.0 / 60.0);
+    for (int tick = 0; tick < 20; ++tick) host.tick(1.0 / 60.0);
     running(host, "bmx-lua-runtime-tests", environment);
     check(environment.logged("BMX Lua runtime:") && environment.fake.calls.empty() && environment.fake.binds.empty() &&
               !environment.fake.input_pulse_requests && !environment.fake.input_pulse_reads &&
@@ -5925,7 +5933,7 @@ void bmx_lua_persistence_keeps_terminal_records_and_public_fault_gates() {
     const auto directory = std::filesystem::path(RESKATE_SOURCE_DIR) / "contrib" / "bmx-lab" / "bmx-plugin";
     std::map<std::string, std::string> files{{manifest_file, R"({"api":1,"entry":"plugin/main.lua","permissions":[]})"}};
     for (const auto* name : {"equipment_transition.lua", "bike_admission.lua", "equipment_runtime.lua",
-             "bike_runtime_core.lua", "bike_runtime.lua", "lease_identity.lua", "bike_runtime_core_persist_tests.lua",
+             "recovery.lua", "current_recovery.lua", "bike_runtime_core.lua", "bike_runtime.lua", "lease_identity.lua", "bike_runtime_core_persist_tests.lua",
              "runtime_progress_fault_tests.lua"}) {
         std::ifstream file(directory / "plugin" / name, std::ios::binary);
         check(file.good(), std::string("BMX Lua persistence source is available: ") + name);
@@ -5933,7 +5941,7 @@ void bmx_lua_persistence_keeps_terminal_records_and_public_fault_gates() {
     }
     files["plugin/main.lua"] = R"(
         local modules = {"./equipment_transition", "./bike_admission", "./equipment_runtime",
-            "./bike_runtime_core", "./bike_runtime", "./lease_identity", "./bike_runtime_core_persist_tests",
+            "./recovery", "./current_recovery", "./bike_runtime_core", "./bike_runtime", "./lease_identity", "./bike_runtime_core_persist_tests",
             "./runtime_progress_fault_tests"}
         local loaded, persisted, persisted_work, persistence, public_done = 0, 0, 0, nil, false
         local expected_cases = {1,1,1,1,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17}
@@ -6112,7 +6120,7 @@ void bmx_lua_menu_switches_explicit_slots_and_retains_cleanup_duty() {
         const auto slot = scenario % 4;
         environment.actions = {plugin_ui::Action{id, "BMX Lua migration", "equipment" + std::to_string(slot), false}};
         step();
-        // Three cold stock imports, then a separate Core construction tick.
+        // Five cold stock imports, then a separate Core construction tick.
         // Keep the existing ten-tick wait and the unchanged Host budgets.
         for (unsigned i = 0; i < 10; ++i) {
             step();
@@ -9761,6 +9769,7 @@ int main() {
         run(bmx_lua_equipment_transitions_keep_cleanup_and_target_observation_separate);
         run(bmx_lua_equipment_runtime_uses_typed_services_without_native_permissions);
         run(bmx_lua_persistence_keeps_terminal_records_and_public_fault_gates);
+        run(bmx_lua_current_recovery_keeps_cleanup_and_explicit_stock_return);
         run(equipment_interruption_fixture_keeps_effects_one_shot);
         run(bmx_lua_menu_switches_explicit_slots_and_retains_cleanup_duty);
         run(bmx_lua_menu_returns_to_board_without_inverting_the_target);

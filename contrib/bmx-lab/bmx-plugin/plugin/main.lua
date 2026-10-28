@@ -151,6 +151,12 @@ reskate.menu.page("BMX Lua migration", function(ui)
         stop_request = accepted and "Stop requested. Cleanup continues on ticks."
             or string.sub(tostring(why or "No active bike request"), 1, 160)
     end
+    if ui:button("bike_get_up", "Get up after bike fall") then
+        local accepted, why = bike:request_get_up()
+        stop_request = accepted and "Get-up armed. Close both menus; one current-local-skater recovery will be requested."
+            or string.sub(tostring(why or "Get-up refused"), 1, 160)
+    end
+    ui:note("Get-up requires complete bike cleanup. It requests the current local skater once and does not remount the bike.")
     ui:note("Return to skateboard stops the bike and waits for cleanup. Close the menu and leave every control released; Stop cancels the return.")
     for slot = 0, 3 do
         if ui:button("bike_board" .. slot, "Return to skateboard: slot " .. slot) then
@@ -176,6 +182,10 @@ reskate.menu.page("BMX Lua migration", function(ui)
     ui:info("Stock toggle blocked", tostring(lifecycle.stock_toggle_blocked == true))
     ui:info("Last mount click", mount_request)
     ui:info("Last stop click", stop_request)
+    local recovery = lifecycle.recovery or {}
+    ui:info("Get-up phase", tostring(recovery.phase or "idle"))
+    ui:info("Get-up duty retained", tostring(recovery.retained == true))
+    ui:info("Get-up receipt completed / acknowledged", tostring(recovery.native_completed == true) .. " / " .. tostring(recovery.acknowledged == true))
     local board = lifecycle.board_return or {}
     ui:info("Board return phase", tostring(board.phase or "idle"))
     ui:info("Board return detail", tostring(board.detail or "No board return requested."))

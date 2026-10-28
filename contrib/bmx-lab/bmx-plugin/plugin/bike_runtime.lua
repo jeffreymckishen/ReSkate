@@ -3,7 +3,7 @@
 local BikeRuntime={}
 local vm_attempt_used=false
 local Admission
-local stock_modules={"./equipment_transition","./equipment_runtime","./bike_runtime_core"}
+local stock_modules={"./equipment_transition","./equipment_runtime","./recovery","./current_recovery","./bike_runtime_core"}
 -- One cold module per startup tick, each after everything it requires. The
 -- two middle rows are Ride and Contact with their dependencies, so
 -- prepare_backend binds them from cache and the first following tick imports nothing.
@@ -13,7 +13,7 @@ local mount_modules={"./lease_identity","./lease_source","./force_math","./bike_
     "./frame_identity","./motions","./tricks","./trick_runtime","./pose_targets",
     "./contact_runtime","./ride_inflight","./ride_runtime",
     "./bones","./mounted_pose","./board_drop",
-    "./equipment_transition","./equipment_runtime","./bike_runtime_core"}
+    "./equipment_transition","./equipment_runtime","./recovery","./current_recovery","./bike_runtime_core"}
 local function finite(v) return type(v)=="number" and v==v and math.abs(v)<math.huge end
 local function valid_slot(v) return finite(v) and v>=0 and v<=3 and v%1==0 end
 function BikeRuntime.new(services,options)
@@ -178,6 +178,13 @@ function BikeRuntime.new(services,options)
                 detail=why or "Board return refused before startup.",pending=false,slot=slot,target_state=100}
         end
         return accepted,why
+    end
+    function object:request_get_up()
+        if running or pending or not core then return false,"Complete a bike session and cleanup before get-up" end
+        running=true
+        local result=table.pack(core:request_get_up())
+        running=false
+        return table.unpack(result,1,result.n)
     end
     function object:request_stop(why)
         if T.unloaded then return false,"Runtime is unloaded; SDK retains cleanup" end

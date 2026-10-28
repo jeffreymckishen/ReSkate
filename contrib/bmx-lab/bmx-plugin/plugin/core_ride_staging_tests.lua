@@ -18,7 +18,7 @@ local expected_order={"./lease_identity","./lease_source","./force_math","./bike
     "./tire","./brake","./pump","./force_solver","./forces","./force_stage","./catalog","./input","./ride_input_mapping",
     "./frame_identity","./motions","./tricks","./trick_runtime","./pose_targets",
     "./contact_runtime","./ride_inflight","./ride_runtime","./bones","./mounted_pose","./board_drop",
-    "./equipment_transition","./equipment_runtime","./bike_runtime_core"}
+    "./equipment_transition","./equipment_runtime","./recovery","./current_recovery","./bike_runtime_core"}
 -- Each staged module's top-level requires, read from its source. bike_admission
 -- is loaded by admission itself, before the list starts.
 local requires={
@@ -45,7 +45,8 @@ local requires={
     ["./bones"]={},["./board_drop"]={},
     ["./mounted_pose"]={"./bike_geometry","./bones"},
     ["./equipment_runtime"]={"./equipment_transition"},
-    ["./bike_runtime_core"]={"./equipment_runtime","./bike_admission"},
+    ["./recovery"]={},["./current_recovery"]={"./recovery"},
+    ["./bike_runtime_core"]={"./equipment_runtime","./current_recovery","./bike_admission"},
 }
 -- What prepare_backend binds, and through it what create_ride needs.
 local backend={"./lease_source","./bike_spawn","./lease_identity","./bike_geometry","./ride_runtime","./contact_runtime","./force_stage","./trick_runtime","./pose_targets","./mounted_pose","./board_drop"}

@@ -227,13 +227,15 @@ local function retained_row(s,entry)
 end
 local function retain(s,kind,data,_bytes,critical,at_ms,incomplete)
     s.calls+=1;s.version+=1
+    local slot=kind=="lease" and (data.call=="input.lease_state" and 1 or data.call=="input.lease_capture_state" and 2) or nil
+    local eligible=slot and not critical and not incomplete and Codec.pair_data_known(data)
     local prior=s.last[kind]
     local previous=prior and retained_row(s,prior)
     if not incomplete and known_identity(kind,data) and prior and previous and not prior.flushed and not prior.writing
-        and prior.critical==critical and same(previous.data,data) then
+        and prior.critical==critical and not prior.wire[12] and same(previous.data,data) then
         -- Replacing the positional occurrence metadata is itself an admission.
         -- A writer's frozen row and all encoded bases stay immutable.
-        local wire={};for i=1,11 do wire[i]=prior.wire[i] end
+        local wire={};for i=1,12 do wire[i]=prior.wire[i] end
         wire[6]=s.calls;wire[7]=prior.repeats+1;wire[9]=encoded_time(at_ms)
         local size=Codec.wire_bytes(wire)
         if not size or size>LIMITS.row_bytes then return capacity_fault(s,critical,"invalid_encoding") end
@@ -248,7 +250,58 @@ local function retain(s,kind,data,_bytes,critical,at_ms,incomplete)
             cached.last_call=s.calls;cached.repeats=prior.repeats;cached.last_at_ms=at_ms
             s.bases[prior.key]=table.freeze(cached)
         end
+        if slot then s.pair_candidates[slot]=false end
         s.coalesced+=1;return true,"coalesced"
+    end
+    local candidate=eligible and s.pair_candidates[slot]
+    if candidate and not plain(candidate) then return capacity_fault(s,false,"invalid_pair_state") end
+    if candidate and not candidate.flushed and not candidate.writing then
+        local key=kind.."|"..data.call
+        local cached=s.bases[key]
+        local old_state=cached and Codec.state_bytes(cached)
+        local old_wire=Codec.wire_bytes(candidate.wire)
+        -- Refuse malformed private bookkeeping before any arithmetic or mutation.
+        -- Frozen original wire nodes retain their already-admitted historical ref.
+        if candidate.key~=key or candidate.kind~=kind or candidate.critical~=false or candidate.repeats~=1
+            or candidate.first_call~=candidate.last_call or not finite(old_state) or not finite(old_wire)
+            or old_state<0 or old_wire<0 or old_state%1~=0 or old_wire%1~=0 or old_wire>LIMITS.row_bytes
+            or not table.isfrozen(candidate.wire) or candidate.bytes~=old_wire or s.base_bytes[key]~=old_state
+            or cached.kind~=kind or cached.critical~=false or cached.incomplete~=false or cached.paired~=nil or cached.repeats~=1
+            or cached.first_call~=candidate.first_call or cached.last_call~=candidate.last_call
+            or not same(cached.first_at_ms,candidate.first_at_ms) or not same(cached.last_at_ms,candidate.last_at_ms)
+            or not same(candidate.first_at_ms,candidate.last_at_ms)
+            or candidate.wire[1]~=false or candidate.wire[2]~=12 or candidate.wire[3]~=data.call
+            or candidate.wire[5]~=candidate.first_call or candidate.wire[6]~=candidate.last_call or candidate.wire[7]~=1
+            or not same(candidate.wire[8],encoded_time(candidate.first_at_ms)) or not same(candidate.wire[9],encoded_time(candidate.last_at_ms))
+            or candidate.wire[10]~=false or candidate.wire[12]~=false
+            or candidate.wire[4]~=0 and candidate.wire[4]>=candidate.first_call
+            or not finite(s.regular_wire_bytes) or not finite(s.regular_state_bytes) or not finite(s.regular_bytes)
+            or s.regular_wire_bytes<0 or s.regular_state_bytes<Codec.pair_pointer_bytes
+            or s.regular_bytes~=s.regular_wire_bytes+s.regular_state_bytes then
+            return capacity_fault(s,false,"invalid_pair_state")
+        end
+        if same(cached.data,data) then
+            -- Every fallible size/metadata operation precedes mutation. Reuse
+            -- the immutable DTO and add only the exact second endpoint.
+            local wire={};for i=1,12 do wire[i]=candidate.wire[i] end
+            wire[6]=s.calls;wire[7]=2;wire[9]=encoded_time(at_ms);wire[12]=true
+            local next_cached={};for k,v in pairs(cached) do next_cached[k]=v end
+            next_cached.last_call=s.calls;next_cached.repeats=2;next_cached.last_at_ms=at_ms;next_cached.paired=true
+            local size=Codec.wire_bytes(wire)
+            local state_size=Codec.state_bytes(next_cached)
+            if not finite(size) or not finite(state_size) or size<0 or state_size<0 or size%1~=0 or state_size%1~=0
+                or size>LIMITS.row_bytes then return capacity_fault(s,false,"invalid_encoding") end
+            local wire_delta=size-old_wire
+            local state_delta=state_size-old_state
+            if s.regular_bytes+wire_delta+state_delta>LIMITS.regular_bytes then return capacity_fault(s,false) end
+            local frozen_wire=table.freeze(wire);local frozen_cached=table.freeze(next_cached)
+            candidate.wire=frozen_wire;candidate.bytes=size;candidate.repeats=2;candidate.last_call=s.calls;candidate.last_at_ms=at_ms
+            s.bases[key]=frozen_cached;s.base_bytes[key]=state_size
+            s.regular_wire_bytes+=wire_delta;s.regular_state_bytes+=state_delta
+            s.regular_bytes=s.regular_wire_bytes+s.regular_state_bytes
+            s.last[kind]=candidate;s.pair_candidates[slot]=false
+            s.coalesced+=1;return true,"paired"
+        end
     end
     local rows=critical and s.critical or s.regular
     local cap=critical and LIMITS.critical_rows or LIMITS.regular_rows
@@ -280,6 +333,7 @@ local function retain(s,kind,data,_bytes,critical,at_ms,incomplete)
         s.base_bytes[key]=state_size;s.bases[key]=table.freeze(row)
         s.regular_wire_bytes+=size;s.regular_bytes=s.regular_wire_bytes+s.regular_state_bytes
     end
+    if slot then s.pair_candidates[slot]=eligible and entry or false end
     return not incomplete,incomplete and "observation_loss" or "recorded"
 end
 -- Call with the real storage.set function and a fresh private run's ASCII ID.
@@ -290,8 +344,8 @@ function Recorder.new(storage_set,run_id)
     assert(type(run_id)=="string" and #run_id>=1 and #run_id<=32 and
         string.match(run_id,"^[A-Za-z0-9_-]+$"),"fresh run ID must be 1..32 ASCII letters, digits, _ or -")
     local self=setmetatable({},Object)
-    states[self]={writer=storage_set,run_id=run_id,regular={},critical={},last={},regular_bytes=0,critical_bytes=0,
-        bases={},base_bytes={},base_count=0,regular_wire_bytes=0,regular_state_bytes=0,store_bytes=2,
+    states[self]={writer=storage_set,run_id=run_id,regular={},critical={},last={},regular_bytes=Codec.pair_pointer_bytes,critical_bytes=0,pair_candidates={false,false},
+        bases={},base_bytes={},base_count=0,regular_wire_bytes=0,regular_state_bytes=Codec.pair_pointer_bytes,store_bytes=2,
         regular_next=1,critical_next=1,calls=0,coalesced=0,dropped=0,chunks=0,stored_rows=0,
         latest_revision=0,version=0,saved_revision=-1,cleanup_observed=false,unresolved_debt=true,
         observation_loss=false,stop_requested=false,storage_fault=false,stopping=false,busy=false}
@@ -399,7 +453,7 @@ end
 local function row_copy(entry)
     -- The codec recursively freezes data nodes; copy/freeze the occurrence
     -- header so a reentrant storage callback cannot mutate retained history.
-    local out={};for i=1,11 do out[i]=entry.wire[i] end
+    local out={};for i=1,12 do out[i]=entry.wire[i] end
     return table.freeze(out)
 end
 -- One storage call at most. The wrapper must witness actual terminal/watchdog

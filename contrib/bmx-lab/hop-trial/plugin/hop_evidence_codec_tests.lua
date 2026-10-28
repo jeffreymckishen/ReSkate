@@ -342,10 +342,10 @@ function Tests.run()
         return {kind=kind,data=data,first_call=first,last_call=first,repeats=1,incomplete=false,critical=critical==true}
     end
     local function wire(kind_id,projection,first,node,base,critical)
-        return {critical==true,kind_id,projection,base or 0,first,first,1,false,false,false,node}
+        return {critical==true,kind_id,projection,base or 0,first,first,1,false,false,false,node,false}
     end
     local function chunk(rows,index,run)
-        return {schema=2,encoding="hop-delta-v3",run_id=run or "codec_fixture",chunk=index or 1,rows=rows}
+        return {schema=2,encoding="hop-delta-v4",run_id=run or "codec_fixture",chunk=index or 1,rows=rows}
     end
     local function pack(wires,width)
         local chunks={}
@@ -396,7 +396,7 @@ function Tests.run()
     local function envelope_bytes(row_costs,run,index)
         local rows_bytes=2+math.max(0,#row_costs-1)
         for _,cost in ipairs(row_costs) do rows_bytes+=cost end
-        local object=2+(6+4+1)+(8+4+escaped_string_bytes("hop-delta-v3"))
+        local object=2+(6+4+1)+(8+4+escaped_string_bytes("hop-delta-v4"))
             +(6+4+escaped_string_bytes(run))+(5+4+#tostring(index))+(4+4+rows_bytes)
         local key="hop."..run..".chunk."..tostring(index)
         return object+escaped_string_bytes(key)+4
@@ -408,18 +408,20 @@ function Tests.run()
     end
 
     case("frozen public version and complete static dictionaries",function()
-        check(Codec.version==3 and Codec.encoding=="hop-delta-v3","wire version is explicit")
+        check(Codec.version==4 and Codec.encoding=="hop-delta-v4","wire version is explicit")
+        check(Codec.pair_pointer_bytes==2048 and Codec.pair_wire_meta_bytes==16 and Codec.pair_state_meta_bytes==256,
+            "profile4 fixed pointer reserve and marker/current-pair metadata charges are explicit")
         check(#expected_fields==314 and same(Codec.fields,expected_fields),"all 314 field slots match the independent contract")
         check(same(Codec.kinds,expected_kinds),"kind IDs retain their specified order")
         check(table.isfrozen(Codec.fields) and table.isfrozen(Codec.kinds),"public dictionaries are immutable")
     end)
     case("literal standalone row and exact conservative arithmetic",function()
-        local literal={false,13,"",0,1,1,1,false,false,false,{2,false}}
+        local literal={false,13,"",0,1,1,1,false,false,false,{2,false},false}
         local expected=row("prepare",{},1)
         local actual,bytes=decoded(literal)
-        check(same(actual,expected) and bytes==49,"independent empty prepare wire is 49 bytes")
+        check(same(actual,expected) and bytes==71,"independent empty prepare v4 wire is 71 charged bytes")
         local written,charged=encoded(expected)
-        check(same(written,literal) and charged==49,"encoder uses the same literal and charge")
+        check(same(written,literal) and charged==71,"encoder uses the same literal and charge")
         check(Codec.data_bytes({})==2,"empty object includes its braces")
         check(Codec.data_bytes({mass=1})==42,"ordinary numbers retain the 32-byte upper bound")
         check(Codec.data_bytes({result=false})==17,"false is a five-byte value, not absence")
@@ -591,7 +593,7 @@ function Tests.run()
     end)
     case("unsupported envelopes ordering run IDs and chunk holes fail closed",function()
         local valid=chunk({wire(13,"",1,{2,false})})
-        for _,change in ipairs({{"schema",1},{"schema",3},{"encoding","hop-delta-v2"},{"chunk",0},{"chunk",2},{"run_id","other"},{"unknown",false}}) do
+        for _,change in ipairs({{"schema",1},{"schema",3},{"encoding","hop-delta-v2"},{"encoding","hop-delta-v3"},{"chunk",0},{"chunk",2},{"run_id","other"},{"unknown",false}}) do
             local invalid=copy(valid);invalid[change[1]]=change[2]
             refuses(function() return Codec.decode_chunks({invalid},"codec_fixture") end,"malformed or unsupported chunk")
         end
@@ -611,12 +613,12 @@ function Tests.run()
     end)
     case("wire metadata must have exact dense arity and valid ranges",function()
         local valid=wire(13,"",1,{2,false})
-        for _,slot_value in ipairs({{1,0},{2,0},{2,15},{3,false},{4,-1},{5,0},{5,10000001},{5,1.5},{6,0},{7,0},{7,2},{8,-1},{9,"0"},{10,0}}) do
+        for _,slot_value in ipairs({{1,0},{2,0},{2,15},{3,false},{4,-1},{5,0},{5,10000001},{5,1.5},{6,0},{7,0},{7,2},{8,-1},{9,"0"},{10,0},{12,0}}) do
             local invalid=copy(valid);invalid[slot_value[1]]=slot_value[2]
             refuses(function() return Codec.decode_row(invalid) end,"invalid wire metadata")
         end
-        local truncated=copy(valid);truncated[11]=nil
-        local extra=copy(valid);extra[12]=false
+        local truncated=copy(valid);truncated[12]=nil
+        local extra=copy(valid);extra[13]=false
         local hole=copy(valid);hole[5]=nil
         for _,invalid in ipairs({truncated,extra,hole}) do refuses(function() return Codec.decode_row(invalid) end,"wire array arity or hole") end
         local unexpected=row("prepare",{},1);unexpected.run_id="codec_fixture"
@@ -747,21 +749,21 @@ function Tests.run()
     end)
     case("regular byte admission includes its current canonical base",function()
         local data=large_data()
-        local cache_cost=object_bytes(data)+64+escaped_string_bytes("body")+escaped_string_bytes(data.call)
+        local cache_cost=2048+object_bytes(data)+64+escaped_string_bytes("body")+escaped_string_bytes(data.call)
         local wires,total={},0
         for at=1,128 do
             local next_wire,bytes=encoded(row("body",copy(data),at))
             if total+bytes>512*1024 then break end
             total+=bytes;wires[#wires+1]=next_wire
         end
-        check(total<=512*1024 and total+cache_cost>512*1024,"encoded rows alone fit but their required full canonical base exceeds 512KiB")
+        check(total<=512*1024 and total+cache_cost>512*1024,"encoded rows alone fit but their canonical base and fixed pointer reserve exceed 512KiB")
         check(#wires<2048,"regular row count is below its independent cap")
         local legal_prefix,legal_wire_bytes={},0
         for at=1,#wires-2 do
             legal_prefix[at]=wires[at]
             local _,bytes=decoded(wires[at]);legal_wire_bytes+=bytes
         end
-        check(legal_wire_bytes+cache_cost<=512*1024,"prefix fits wire plus one replacement canonical state")
+        check(legal_wire_bytes+cache_cost<=512*1024,"prefix fits wire plus one replacement canonical state and fixed pointer reserve")
         check(#stream(pack(legal_prefix,2))==#legal_prefix,"replacing a projection does not accumulate old expanded snapshots")
         refuses(function() return Codec.decode_chunks(pack(wires,2),"codec_fixture") end,"regular cache plus wire budget")
     end)
@@ -782,10 +784,10 @@ function Tests.run()
         local chunks,aggregate_bytes={},2
         for at=1,1000 do
             chunks[at]=chunk({wire(13,"",at,{2,false})},at)
-            local row_bytes=49+2*(#tostring(at)-1)
+            local row_bytes=71+2*(#tostring(at)-1)
             aggregate_bytes+=envelope_bytes({row_bytes},"codec_fixture",at)
         end
-        check(1000*(1024+49)>1024*1024,"the intentionally larger per-chunk reserve would reject this legal stream")
+        check(1000*(1024+71)>1024*1024,"the intentionally larger per-chunk reserve would reject this legal stream")
         check(aggregate_bytes<1024*1024,"the independently counted actual fixed envelopes fit the aggregate cap")
         check(#stream(chunks)==1000,"aggregate accounting does not charge the 1024-byte chunk reserve a thousand times")
     end)

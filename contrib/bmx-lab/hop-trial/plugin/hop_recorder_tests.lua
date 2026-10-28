@@ -35,7 +35,7 @@ function Tests.run()
         for _,write in ipairs(writes) do if write.value.rows then chunks[#chunks+1]=write.value end end
         if #chunks==0 then return {} end
         local decoded,why=Codec.decode_chunks(chunks,chunks[1].run_id)
-        check(decoded~=nil,"strict v2 test evidence decoding: "..tostring(why))
+        check(decoded~=nil,"strict v4 test evidence decoding: "..tostring(why))
         return decoded
     end
     local function find(writes,kind)

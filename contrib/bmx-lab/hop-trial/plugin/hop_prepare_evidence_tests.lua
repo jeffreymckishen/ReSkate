@@ -44,7 +44,7 @@ function Tests.run()
         for _,write in ipairs(f.writes) do if write.value.rows then chunks[#chunks+1]=write.value end end
         if #chunks==0 then return {} end
         local decoded,why=Codec.decode_chunks(chunks,"prepare_fixture")
-        check(decoded~=nil,"strict v2 preparation evidence decoding: "..tostring(why))
+        check(decoded~=nil,"strict v4 preparation evidence decoding: "..tostring(why))
         return decoded
     end
     local function prepare_rows(f)

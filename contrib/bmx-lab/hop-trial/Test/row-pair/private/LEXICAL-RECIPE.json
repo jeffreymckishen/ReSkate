@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "status": "TEST_ONLY_NEVER_STAGE_OR_RUNTIME",
+  "production_recorder_path": "E:\\RESKATE DEV\\hop-row-pair-producer-source-20261028-code-v2\\plugin\\hop_recorder.lua",
+  "production_recorder_sha256": "116FE2AA7F708DCE2DA28745535A89F75766CD85074113C4253AD3737C6039AA",
+  "production_codec_sha256": "9454BD22F7CD24D570CD4BFBEB82C41981AE8F469DCE7CB71A9991844342BF9B",
+  "factory_sha256": "D8CFF34CA53F064395D98110D218B90F7A904648C26E538C4873B7155E15F9F1",
+  "only_transform": "Final return statement; original EOF/newlines preserved",
+  "before": "return table.freeze(Recorder)",
+  "after": "return table.freeze({Recorder=table.freeze(Recorder),state=function(self) return get(self) end})",
+  "occurrences": 1,
+  "inverse_byte_exact": true,
+  "codec_proxy": "Bounded test-only pure cost return fault injection",
+  "production_api_changed": false,
+  "runtime_staging_authorized": false,
+  "execution": "UNRUN"
+}

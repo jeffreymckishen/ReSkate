@@ -28,10 +28,10 @@ function New-Data([Collections.IDictionary]$Fields,[int]$Tag=2){
     return ,(New-Table -Pairs $pairs -Tag $Tag)
 }
 function New-Row($Node=(New-Table),[long]$First=1,[long]$Base=0,[string]$Projection='',[int]$Kind=2,[bool]$Critical=$false){
-    $v=[object[]]::new(11);$v[0]=$Critical;$v[1]=$Kind;$v[2]=$Projection;$v[3]=$Base;$v[4]=$First;$v[5]=$First;$v[6]=1;$v[7]=$false;$v[8]=$false;$v[9]=$false;$v[10]=$Node;return ,$v
+    $v=[object[]]::new(12);$v[11]=$false;$v[0]=$Critical;$v[1]=$Kind;$v[2]=$Projection;$v[3]=$Base;$v[4]=$First;$v[5]=$First;$v[6]=1;$v[7]=$false;$v[8]=$false;$v[9]=$false;$v[10]=$Node;return ,$v
 }
 function New-Chunk([object[]]$Rows,[int]$Number=1,[string]$Run='fixture'){
-    return [ordered]@{schema=2;encoding='hop-delta-v3';run_id=$Run;chunk=$Number;rows=$Rows}
+    return [ordered]@{schema=2;encoding='hop-delta-v4';run_id=$Run;chunk=$Number;rows=$Rows}
 }
 function Read-Rows([object[]]$Rows){return (Read-HopEvidenceChunks -Chunks @((New-Chunk -Rows $Rows)) -RunId 'fixture')}
 function Assert-Value($Actual,$Expected){
@@ -55,7 +55,7 @@ Invoke-CodecCase 'full semantic roundtrip and metadata' {
     $data=New-Data @{call=(New-Scalar 'world.physics.read');valid=(New-Scalar $false);id=(New-Scalar '18446744073709551615');fraction=(New-Scalar (1.0/60));position=$vector;normal=(New-Table);pending_count=(New-Scalar 0)}
     $wire=New-Row -Node $data -Projection 'world.physics.read';$wire[5]=7;$wire[6]=4;$wire[7]=0;$wire[8]=1.0/60;$wire[9]=$true
     $result=Read-Rows (,$wire)
-    Assert-Codec ($result.encoding -ceq 'hop-delta-v3' -and $result.rows.Count -eq 1) 'result shape differs'
+    Assert-Codec ($result.encoding -ceq 'hop-delta-v4' -and $result.rows.Count -eq 1) 'result shape differs'
     Assert-Value $result.rows[0].data @{call='world.physics.read';valid=$false;id='18446744073709551615';fraction=(1.0/60);position=@(1.0,2.0,3.0);normal=@{};pending_count=0}
     Assert-Codec ($result.rows[0].first_call -eq 1 -and $result.rows[0].last_call -eq 7 -and $result.rows[0].repeats -eq 4 -and $result.rows[0].incomplete -and -not $result.rows[0].critical) 'coalesced metadata differs'
     Assert-Value $result.rows[0].first_at_ms 0;Assert-Value $result.rows[0].last_at_ms (1.0/60)
@@ -108,8 +108,8 @@ Invoke-CodecCase 'all 2176 permitted occurrences survive contiguous chunks' {
     $chunks=[object[]]::new(2176);for($i=0;$i -lt $chunks.Count;$i++){$chunks[$i]=New-Chunk -Rows (,(New-Row -First ($i+1) -Critical ($i -ge 2048))) -Number ($i+1)}
     Assert-Codec ((Read-HopEvidenceChunks -Chunks $chunks -RunId fixture).rows.Count -eq 2176) 'maximum occurrence stream rejected'
 }
-Invoke-CodecCase 'empty input yields one explicit v3 result' {
-    $result=Read-HopEvidenceChunks -Chunks @() -RunId fixture;Assert-Codec ($result.rows.Count -eq 0 -and $result.encoding -ceq 'hop-delta-v3') 'empty result differs'
+Invoke-CodecCase 'empty input yields one explicit v4 result' {
+    $result=Read-HopEvidenceChunks -Chunks @() -RunId fixture;Assert-Codec ($result.rows.Count -eq 0 -and $result.encoding -ceq 'hop-delta-v4') 'empty result differs'
 }
 Invoke-CodecCase 'legacy and unsupported encodings never downgrade' {
     foreach($schema in @(1,3,'2',$true)){$chunk=New-Chunk -Rows (,(New-Row));$chunk.schema=$schema;Expect-CodecFailure {Read-HopEvidenceChunks -Chunks @($chunk) -RunId fixture}}
@@ -269,12 +269,12 @@ Invoke-CodecCase 'aggregate envelope cap is subsumed by tighter present limits' 
     [long]$upper=524288+131072+2176*175
     Assert-Codec ($upper -eq 1036160 -and $upper -lt 1048576) 'aggregate subsumption proof differs'
 }
-Invoke-CodecCase 'v3 signed integral wire decimal widths across powers of ten' {
+Invoke-CodecCase 'v4 signed integral wire decimal widths across powers of ten' {
     foreach($pair in @(@(0,1),@(-1,2),@(1,1),@(9,1),@(-9,2),@(10,2),@(-10,3),@(99,2),@(-99,3),@(100,3),@(-100,4),@(999,3),@(-999,4),@(1000,4),@(-1000,5),@(1000000000000000,16),@(-1000000000000000,17),@(9007199254740991,16),@(-9007199254740991,17),@(9007199254740992,16),@(-9007199254740992,17))){
         Assert-Codec ((Get-HopEvidenceNumericWireBytes $pair[0]) -eq $pair[1]) 'Signed invariant integer wire width differs'
     }
 }
-Invoke-CodecCase 'v3 inclusive Double boundary and exact integral Decimal inputs' {
+Invoke-CodecCase 'v4 inclusive Double boundary and exact integral Decimal inputs' {
     foreach($pair in @(@([double]9007199254740991,16),@([double]-9007199254740991,17),@([double]9007199254740992,16),@([double]-9007199254740992,17),@([double]9007199254740994,32),@([double]-9007199254740994,32),@([long]9007199254740993,32),@([long]-9007199254740993,32),@([uint64]9007199254740993,32),@([double]1.5,32),@([double]1e-300,32),@([double]::MaxValue,32))){
         Assert-Codec ((Get-HopEvidenceNumericWireBytes $pair[0]) -eq $pair[1]) 'Boundary input rounded into a cheaper wire branch'
     }
@@ -286,7 +286,7 @@ Invoke-CodecCase 'v3 inclusive Double boundary and exact integral Decimal inputs
     $rounded=[double]9007199254740993
     Assert-Codec ($rounded -eq [double]9007199254740992 -and (Get-HopEvidenceNumericWireBytes $rounded) -eq 16) 'Already-rounded Double profile differs'
 }
-Invoke-CodecCase 'v3 integer wire agrees with independently serialized Int64 literals' {
+Invoke-CodecCase 'v4 integer wire agrees with independently serialized Int64 literals' {
     foreach($pair in @(@(0,'0'),@(-1,'-1'),@(10,'10'),@(-1000,'-1000'),@(9007199254740992,'9007199254740992'),@(-9007199254740992,'-9007199254740992'))){
         $json=ConvertTo-Json -InputObject ([long]$pair[0]) -Compress
         Assert-Codec ($json -ceq $pair[1]) 'Independent Int64 JSON literal changed'
@@ -294,7 +294,7 @@ Invoke-CodecCase 'v3 integer wire agrees with independently serialized Int64 lit
         Assert-Codec ((Get-HopEvidenceNumericWireBytes $pair[0]) -eq $bytes) 'Wire estimate differs from Int64 JSON byte width'
     }
 }
-Invoke-CodecCase 'v3 numeric wire saving leaves canonical DATA and values unchanged' {
+Invoke-CodecCase 'v4 numeric wire saving leaves canonical DATA and values unchanged' {
     $active=[Collections.Generic.HashSet[object]]::new([Collections.Generic.ReferenceEqualityComparer]::Instance)
     $zero=Read-HopEvidenceNode (New-Scalar 0) $null $false $active
     Assert-Codec ($zero.wire_bytes -eq 5) 'Positive-zero scalar must be4 wrapper plus1 numeric byte'
@@ -308,7 +308,7 @@ Invoke-CodecCase 'v3 numeric wire saving leaves canonical DATA and values unchan
     $exact=[long]9007199254740993;$row=(Read-Rows (,(New-Row (New-Data @{x=(New-Scalar $exact)})))).rows[0]
     Assert-Codec ($row.data['x'] -is [long] -and $row.data['x'] -eq $exact) 'Structured exact Int64 value was changed by accounting'
 }
-Invoke-CodecCase 'v3 numeric timestamps and signed zero keep exact metadata' {
+Invoke-CodecCase 'v4 numeric timestamps and signed zero keep exact metadata' {
     $wire=New-Row (New-Data @{x=(New-Scalar 0)});$wire[7]=0;$wire[8]=10
     $row=(Read-Rows (,$wire)).rows[0]
     Assert-Codec ((Get-HopEvidenceNumericWireBytes $wire[7]) -eq 1 -and (Get-HopEvidenceNumericWireBytes $wire[8]) -eq 2) 'Integral timestamp widths differ'
@@ -318,7 +318,7 @@ Invoke-CodecCase 'v3 numeric timestamps and signed zero keep exact metadata' {
     $active=[Collections.Generic.HashSet[object]]::new([Collections.Generic.ReferenceEqualityComparer]::Instance)
     Assert-Codec ((Read-HopEvidenceNode (New-NegativeZero) $null $false $active).wire_bytes -eq 3) 'Negative-zero node cost changed'
 }
-Invoke-CodecCase 'v3 wire accounting is invariant under a nonstandard current culture' {
+Invoke-CodecCase 'v4 wire accounting is invariant under a nonstandard current culture' {
     # Command-mode negative literals can bind as strings under a custom sign.
     # Prepare the intended numeric arguments and complete wire before the swap.
     [long]$negative=-1000;[long]$boundary=-9007199254740992;[double]$fraction=1.25
@@ -333,18 +333,187 @@ Invoke-CodecCase 'v3 wire accounting is invariant under a nonstandard current cu
         Assert-Value $row.data['x'] $negative
     }finally{[Threading.Thread]::CurrentThread.CurrentCulture=$previous}
 }
-Invoke-CodecCase 'v3 numeric helper refuses coercion and nonfinite values' {
+Invoke-CodecCase 'v4 numeric helper refuses coercion and nonfinite values' {
     foreach($value in @($null,'1',$true,[double]::NaN,[double]::PositiveInfinity,[double]::NegativeInfinity)){
         Expect-CodecFailure {Get-HopEvidenceNumericWireBytes $value} 'numeric wire value must be finite'
     }
 }
-Invoke-CodecCase 'v3 rejects old v2 and mixed streams without partial output or fallback' {
+Invoke-CodecCase 'v4 rejects old v2 and mixed streams without partial output or fallback' {
     $old=New-Chunk -Rows (,(New-Row));$old.encoding='hop-delta-v2'
     Expect-CodecFailure {Read-HopEvidenceChunks -Chunks @($old) -RunId fixture} 'unsupported schema or encoding'
     $first=New-Chunk -Rows (,(New-Row));$second=New-Chunk -Rows (,(New-Row -First 2)) -Number 2;$second.encoding='hop-delta-v2'
     $seen=[Collections.Generic.List[object]]::new()
     Expect-CodecFailure {Read-HopEvidenceChunks -Chunks @($first,$second) -RunId fixture|ForEach-Object {$seen.Add($_)}} 'unsupported schema or encoding'
-    Assert-Codec ($seen.Count -eq 0) 'Mixed-profile failure emitted partial v3 rows'
+    Assert-Codec ($seen.Count -eq 0) 'Mixed-profile failure emitted partial v4 rows'
 }
 # Counts are synthetic test-case groups, not native/gameplay qualification.
-[pscustomobject]@{suite='hop-delta-v3 PowerShell consumer';cases=$script:caseCount;status='PASS';native_gameplay='UNRUN'}
+function New-KnownPairData([string]$Call='input.lease_capture_state'){
+    if($Call -ceq 'input.lease_state'){
+        return @{call=$Call;arity=1;call_ok=$true;sequence='2';user=0;source_epoch='3';context_generation='4';status='active';reason='none';terminal=$false;requested_ms='100';expires_ms='1000';observed_ms='101';last_observation='5';renewals='0';source_released=$false;capture_reserved=$true;orphaned=$false;capturing=$false;report_debt=$false}
+    }
+    return @{call=$Call;arity=1;call_ok=$true;sequence='2';user=0;source_epoch='3';context_generation='4';phase='capturing';reason='none';terminal=$false;quarantined=$false;capturing=$true;report_debt=$true;generation='6';revision='7';expires_ms='1000';publications='1';neutral_releases='0'}
+}
+function New-SealedPair($Data=(New-KnownPairData),[long]$First=1,[long]$Last=3){
+    $fields=@{};foreach($key in $Data.Keys){$value=$Data[$key];$fields[$key]=$(if((Test-HopEvidenceNumber $value) -and $value -eq 0 -and [BitConverter]::DoubleToInt64Bits([double]$value) -eq [long]::MinValue){New-NegativeZero}else{New-Scalar $value})}
+    $wire=New-Row -First $First -Kind ($script:HopEvidenceKinds.IndexOf('lease')+1) -Projection $Data.call -Node (New-Data $fields)
+    $wire[5]=$Last;$wire[6]=2;$wire[11]=$true;return ,$wire
+}
+function New-ViewRow([long]$First=1,[long]$Last=$First,[long]$Repeats=1,[bool]$Critical=$false){return [ordered]@{kind='body';data=@{};first_call=$First;last_call=$Last;repeats=$Repeats;incomplete=$false;critical=$Critical}}
+Invoke-CodecCase 'v4 twelve-slot marker is explicit and old profiles never retry' {
+    $row=New-Row;Assert-Codec ($row.Count -eq 12 -and $row[11] -is [bool] -and -not $row[11]) 'fixture marker is not explicit false'
+    foreach($profile in @('hop-delta-v2','hop-delta-v3','HOP-DELTA-V4')){$chunk=New-Chunk -Rows (,$row);$chunk.encoding=$profile;Expect-CodecFailure {Read-HopEvidenceChunks -Chunks @($chunk) -RunId fixture} 'unsupported schema or encoding'}
+    Expect-CodecFailure {Read-Rows (,$row[0..10])} 'twelve dense slots'
+    foreach($marker in @(0,1,'true',$null)){$row=New-Row;$row[11]=$marker;Expect-CodecFailure {Read-Rows (,$row)} 'pair flags'}
+}
+Invoke-CodecCase 'sealed active capture retains full DTO and exact endpoint absence and sign' {
+    $data=New-KnownPairData;$wire=New-SealedPair $data;$wire[7]='-0';$wire[8]=$false
+    $row=(Read-Rows (,$wire)).rows[0]
+    Assert-Value $row.data $data;Assert-Codec ($row.paired -and $row.repeats -eq 2 -and $row.data['report_debt']) 'pair or active debt changed'
+    Assert-Codec ([BitConverter]::DoubleToInt64Bits([double]$row.first_at_ms) -eq [long]::MinValue -and -not $row.Contains('last_at_ms')) 'endpoint absence/sign changed'
+}
+Invoke-CodecCase 'sealed passive lease full DTO and UInt64 boundary relations' {
+    $data=New-KnownPairData 'input.lease_state';$data.requested_ms='18446744073709551365';$data.observed_ms='18446744073709551365';$data.expires_ms='18446744073709551615'
+    Assert-Codec ((Read-Rows (,(New-SealedPair $data))).rows[0].paired) 'exact max UInt64 relation refused'
+    foreach($bad in @('18446744073709551366','18446744073709551616','0100','0')){$data=New-KnownPairData 'input.lease_state';$data.requested_ms=$bad;Expect-CodecFailure {Read-Rows (,(New-SealedPair $data))} 'sealed pair'}
+}
+Invoke-CodecCase 'sealed marker cannot relabel critical incomplete singleton or nontarget data' {
+    foreach($slot in @(0,9)){$wire=New-SealedPair;$wire[$slot]=$true;Expect-CodecFailure {Read-Rows (,$wire)} 'sealed pair'}
+    $wire=New-SealedPair;$wire[6]=1;Expect-CodecFailure {Read-Rows (,$wire)} 'sealed pair'
+    $wire=New-SealedPair;$wire[1]=2;Expect-CodecFailure {Read-Rows (,$wire)} 'sealed pair'
+    $data=New-KnownPairData;$data.call='world.physics.read_follow_lease';Expect-CodecFailure {Read-Rows (,(New-SealedPair $data))} 'sealed pair'
+}
+Invoke-CodecCase 'sealed marker requires every exact DTO field and rejects extras and case variants' {
+    foreach($call in @('input.lease_state','input.lease_capture_state')){
+        $basis=New-KnownPairData $call
+        foreach($key in @($basis.Keys)){$data=New-KnownPairData $call;$data.Remove($key);if($key -ceq 'call'){Assert-Codec (-not(Test-HopEvidencePairedData $data)) 'missing call admitted'}else{Expect-CodecFailure {Read-Rows (,(New-SealedPair $data))} 'sealed pair'}}
+        $data=New-KnownPairData $call;$data['known']=$true;Expect-CodecFailure {Read-Rows (,(New-SealedPair $data))} 'sealed pair'
+    }
+    $basis=New-KnownPairData;Assert-Codec (Test-HopEvidencePairedData $basis) 'canonical positive control refused'
+    $data=[Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
+    foreach($key in $basis.Keys){$data.Add($key,$basis[$key])}
+    $arity=$data['arity'];$null=$data.Remove('arity');$data.Add('Arity',$arity)
+    Assert-Codec ($data.Count -eq $basis.Count -and -not $data.ContainsKey('arity') -and $data.ContainsKey('Arity')) 'wrong-case fixture is not complete and ordinal'
+    Assert-Codec (-not(Test-HopEvidencePairedData $data)) 'complete wrong-case DTO admitted'
+}
+Invoke-CodecCase 'sealed marker refuses semantic unknown and contradictory debt counters' {
+    foreach($change in @(@('phase','complete'),@('reason','unknown'),@('terminal',$true),@('quarantined',$true),@('report_debt',$false),@('capturing',$false),@('publications','0'),@('neutral_releases','2'),@('sequence','02'),@('generation','0'),@('revision','18446744073709551616'))){$data=New-KnownPairData;$data[$change[0]]=$change[1];Expect-CodecFailure {Read-Rows (,(New-SealedPair $data))} 'sealed pair'}
+    $data=New-KnownPairData;$data.phase='waiting_neutral';$data.capturing=$false;$data.report_debt=$false;$data.publications='0';Assert-Codec ((Read-Rows (,(New-SealedPair $data))).rows[0].paired) 'complete waiting-neutral subset refused'
+}
+Invoke-CodecCase 'paired projection reference retains original first identity and replaces current state only' {
+    $first=New-SealedPair;$second=New-Row -First 2;$fourth=New-Row -First 4 -Base 1 -Kind ($script:HopEvidenceKinds.IndexOf('lease')+1) -Projection 'input.lease_capture_state' -Node (New-Table -Tag 3)
+    $rows=(Read-Rows @($first,$second,$fourth)).rows
+    Assert-Codec ($rows.Count -eq 3 -and $rows[0].first_call -eq 1 -and $rows[0].last_call -eq 3 -and $rows[0].paired -and -not $rows[2].Contains('paired')) 'row/base identity or paired presence changed'
+    Assert-Value $rows[0].data $rows[2].data
+}
+Invoke-CodecCase 'ordinary legacy Follow309 remains one unpaired coalesced row' {
+    $wire=New-Row -Kind ($script:HopEvidenceKinds.IndexOf('follow')+1);$wire[5]=309;$wire[6]=309
+    $rows=(Read-Rows (,$wire)).rows;Assert-Codec ($rows.Count -eq 1 -and $rows[0].repeats -eq 309 -and -not $rows[0].Contains('paired')) 'legacy Follow relabeled or expanded'
+    $cursor=New-HopEvidenceEndpointCursor $rows;Assert-Codec ((Read-HopEvidenceEndpoint $cursor).call_id -eq 1 -and (Read-HopEvidenceEndpoint $cursor).call_id -eq 309 -and $null -eq (Read-HopEvidenceEndpoint $cursor)) 'legacy known endpoints expanded'
+    Assert-Codec ((Find-HopEvidenceEndpoint $cursor 150).reason -ceq 'UNKNOWN_INTERIOR') 'dense count fabricated interior call'
+}
+Invoke-CodecCase 'lazy endpoints globally merge pair with intervening singleton by call ID' {
+    $a=New-ViewRow 1 3 2;$b=New-ViewRow 2;$rows=@($a,$b);$cursor=New-HopEvidenceEndpointCursor $rows
+    Assert-Codec ($cursor.heap -is [int[]] -and $cursor.heap.Length -eq 2 -and [object]::ReferenceEquals($cursor.rows,$rows)) 'cursor copied rows or grew heap'
+    foreach($id in @(1,2,3)){$endpoint=Read-HopEvidenceEndpoint $cursor;Assert-Codec ($endpoint.call_id -eq $id) 'known order differs';Assert-Codec ([object]::ReferenceEquals($endpoint.row,$(if($id -eq 2){$b}else{$a}))) 'original row reference lost'}
+    Assert-Codec ($null -eq (Read-HopEvidenceEndpoint $cursor)) 'EOF produced an endpoint'
+}
+Invoke-CodecCase 'two overlapping pair ranges merge endpoints without inventing range members' {
+    $cursor=New-HopEvidenceEndpointCursor @((New-ViewRow 1 3 2),(New-ViewRow 2 5 2),(New-ViewRow 4))
+    foreach($id in @(1,2,3,4,5)){Assert-Codec ((Read-HopEvidenceEndpoint $cursor).call_id -eq $id) 'overlapping endpoint merge differs'}
+    Assert-Codec ($null -eq (Read-HopEvidenceEndpoint $cursor)) 'pair ranges expanded'
+}
+Invoke-CodecCase 'lookup is nonconsuming and known other rows override opaque range uncertainty' {
+    $opaque=New-ViewRow 1 5 3;$b=New-ViewRow 2;$d=New-ViewRow 4;$cursor=New-HopEvidenceEndpointCursor @($opaque,$b,$d)
+    $found=Find-HopEvidenceEndpoint $cursor 2;Assert-Codec ([object]::ReferenceEquals($found.endpoint.row,$b) -and $null -eq $found.reason) 'known row inside opaque range lost'
+    Assert-Codec ((Find-HopEvidenceEndpoint $cursor 3).reason -ceq 'UNKNOWN_INTERIOR' -and (Find-HopEvidenceEndpoint $cursor 6).reason -ceq 'UNKNOWN') 'unknown was promoted to absence/interpolated call'
+    Assert-Codec ((Read-HopEvidenceEndpoint $cursor).call_id -eq 1) 'lookup consumed cursor'
+}
+Invoke-CodecCase 'lazy timestamps retain absent positive-zero negative-zero and ignore clock ordering' {
+    $negative=[BitConverter]::Int64BitsToDouble([long]::MinValue);$a=New-ViewRow 1 3 2;$a['last_at_ms']=$negative;$b=New-ViewRow 2;$b['first_at_ms']=0;$b['last_at_ms']=0
+    $cursor=New-HopEvidenceEndpointCursor @($a,$b);$first=Read-HopEvidenceEndpoint $cursor;Assert-Codec (-not $first.Contains('at_ms')) 'absent time appeared'
+    $second=Read-HopEvidenceEndpoint $cursor;$last=Read-HopEvidenceEndpoint $cursor
+    Assert-Codec ($first.call_id -eq 1 -and $second.call_id -eq 2 -and $last.call_id -eq 3 -and [BitConverter]::DoubleToInt64Bits([double]$second.at_ms) -eq 0 -and [BitConverter]::DoubleToInt64Bits([double]$last.at_ms) -eq [long]::MinValue) 'time bits or call authority changed'
+}
+Invoke-CodecCase 'exact endpoint collision refuses before either colliding ID is yielded' {
+    $cursor=New-HopEvidenceEndpointCursor @((New-ViewRow 1 3 2),(New-ViewRow 2 3 2));$seen=[Collections.Generic.List[long]]::new()
+    Expect-CodecFailure {while($null -ne ($ep=Read-HopEvidenceEndpoint $cursor)){$seen.Add($ep.call_id)}} 'duplicate known endpoint'
+    Assert-Codec ($seen.Count -eq 2 -and $seen[0] -eq 1 -and $seen[1] -eq 2 -and $cursor.failed) 'collision yielded partial tied endpoint'
+    Expect-CodecFailure {Read-HopEvidenceEndpoint $cursor} 'invalidated'
+}
+Invoke-CodecCase 'lookup collision invalidates cursor without deduplication' {
+    $cursor=New-HopEvidenceEndpointCursor @((New-ViewRow 1 3 2),(New-ViewRow 2 3 2))
+    Expect-CodecFailure {Find-HopEvidenceEndpoint $cursor 3} 'duplicate known endpoint'
+    Assert-Codec $cursor.failed 'duplicate lookup did not poison cursor'
+}
+Invoke-CodecCase 'malformed singleton and repeated metadata refuse before cursor publication' {
+    foreach($row in @((New-ViewRow 1 3 1),(New-ViewRow 1 1 2),(New-ViewRow 1 2 3))){Expect-CodecFailure {New-HopEvidenceEndpointCursor (,$row)} 'view'}
+    $row=New-ViewRow;$row['first_at_ms']=0;Expect-CodecFailure {New-HopEvidenceEndpointCursor (,$row)} 'singleton endpoints'
+    $row=New-ViewRow;$row['first_at_ms']=0;$row['last_at_ms']=[BitConverter]::Int64BitsToDouble([long]::MinValue);Expect-CodecFailure {New-HopEvidenceEndpointCursor (,$row)} 'timestamp bits'
+    $row=New-ViewRow;$row['paired']=$false;Expect-CodecFailure {New-HopEvidenceEndpointCursor (,$row)} 'sealed pair'
+}
+Invoke-CodecCase 'cursor reset reuses fixed heap and never mutates row or payload references' {
+    $row=New-ViewRow 1 3 2;$payload=$row.data;$cursor=New-HopEvidenceEndpointCursor @($row,(New-ViewRow 2));$heap=$cursor.heap
+    $null=Read-HopEvidenceEndpoint $cursor;Reset-HopEvidenceEndpointCursor $cursor
+    Assert-Codec ([object]::ReferenceEquals($cursor.heap,$heap) -and [object]::ReferenceEquals($row.data,$payload) -and $row.first_call -eq 1 -and $row.last_call -eq 3 -and $row.repeats -eq 2) 'reset copied or mutated evidence'
+    Assert-Codec ((Read-HopEvidenceEndpoint $cursor).call_id -eq 1) 'reset changed first endpoint'
+}
+Invoke-CodecCase 'endpoint input bounds stay 2176 total 2048 regular 128 critical' {
+    $rows=[object[]]::new(2176);for($i=0;$i -lt $rows.Count;$i++){$rows[$i]=New-ViewRow ($i+1) ($i+1) 1 ($i -ge 2048)}
+    $cursor=New-HopEvidenceEndpointCursor $rows;Assert-Codec ($cursor.heap.Length -eq 2176) 'maximum coalesced inputs rejected or expanded'
+    Expect-CodecFailure {New-HopEvidenceEndpointCursor ($rows+@((New-ViewRow 2177 2177 1 $true)))} '2176'
+    $rows[2048].critical=$false;Expect-CodecFailure {New-HopEvidenceEndpointCursor $rows} 'regular/critical'
+    $rows=[object[]]::new(129);for($i=0;$i -lt 129;$i++){$rows[$i]=New-ViewRow ($i+1) ($i+1) 1 $true};Expect-CodecFailure {New-HopEvidenceEndpointCursor $rows} 'regular/critical'
+}
+Invoke-CodecCase 'empty cursor has fixed zero-length heap and no absence certificate' {
+    $cursor=New-HopEvidenceEndpointCursor @();Assert-Codec ($cursor.heap.Length -eq 0 -and $null -eq (Read-HopEvidenceEndpoint $cursor) -and (Find-HopEvidenceEndpoint $cursor 1).reason -ceq 'UNKNOWN') 'empty view fabricated a fact'
+}
+Invoke-CodecCase 'known marker rejects nonscalar strings and negative-zero user' {
+    foreach($key in @('call','reason','phase')){$data=New-KnownPairData;$data[$key]=@($data[$key]);Assert-Codec (-not(Test-HopEvidencePairedData $data)) ('array field admitted: '+$key)}
+    $data=New-KnownPairData 'input.lease_state';$data.status=@('active');Assert-Codec (-not(Test-HopEvidencePairedData $data)) 'array status admitted'
+    $data=New-KnownPairData;$data.user=[BitConverter]::Int64BitsToDouble([long]::MinValue);Expect-CodecFailure {Read-Rows (,(New-SealedPair $data))} 'sealed pair'
+}
+Invoke-CodecCase 'singleton exact parsed Int64 and Decimal timestamps cannot alias through Double' {
+    $json=[Text.Json.JsonDocument]::Parse('[9007199254740992,9007199254740993]')
+    try{$times=[long[]]@($json.RootElement[0].GetInt64(),$json.RootElement[1].GetInt64())}finally{$json.Dispose()}
+    Assert-Codec ([double]$times[0] -eq [double]$times[1]) 'fixture does not exercise Double alias'
+    $row=New-ViewRow;$row['first_at_ms']=$times[0];$row['last_at_ms']=$times[1];Expect-CodecFailure {New-HopEvidenceEndpointCursor (,$row)} 'timestamp bits'
+    $row=New-ViewRow;$row['first_at_ms']=[decimal]::Parse('9007199254740991.5',[Globalization.CultureInfo]::InvariantCulture);$row['last_at_ms']=[decimal]::Parse('9007199254740992',[Globalization.CultureInfo]::InvariantCulture);Expect-CodecFailure {New-HopEvidenceEndpointCursor (,$row)} 'timestamp bits'
+    $row=New-ViewRow;$row['first_at_ms']=[double]9007199254740992;$row['last_at_ms']=$times[1];Expect-CodecFailure {New-HopEvidenceEndpointCursor (,$row)} 'timestamp bits'
+    $row.last_at_ms=$times[0];Assert-Codec ((New-HopEvidenceEndpointCursor (,$row)).count -eq 1) 'exact same mixed numeric timestamp refused'
+}
+Invoke-CodecCase 'lookup refuses coercible strings booleans fractions and range overflow' {
+    $cursor=New-HopEvidenceEndpointCursor (,(New-ViewRow))
+    foreach($id in @('1',$true,1.5,0,10000001,[double]::NaN,[double]::PositiveInfinity)){Expect-CodecFailure {Find-HopEvidenceEndpoint $cursor $id} 'lookup/cursor'}
+    Assert-Codec ((Find-HopEvidenceEndpoint $cursor 1).endpoint.call_id -eq 1 -and -not $cursor.failed) 'invalid query consumed or poisoned valid cursor'
+}
+Invoke-CodecCase '2048 coalesced rows lazily yield4096 endpoints within the same fixed row heap' {
+    $rows=[object[]]::new(2048)
+    for($i=0;$i -lt $rows.Count;$i++){$rows[$i]=New-ViewRow ($i*2+1) ($i*2+2) 2}
+    $cursor=New-HopEvidenceEndpointCursor $rows;$heap=$cursor.heap
+    Assert-Codec ($heap -is [int[]] -and $heap.Length -eq 2048 -and @($cursor.Keys).Count -eq 4 -and [object]::ReferenceEquals($cursor.rows,$rows)) 'cursor changed coalesced row count or allocated an occurrence archive'
+    for($id=1;$id -le 4096;$id++){
+        $endpoint=Read-HopEvidenceEndpoint $cursor;$index=[int][Math]::Floor(($id-1)/2)
+        Assert-Codec ($endpoint.call_id -eq $id -and [object]::ReferenceEquals($endpoint.row,$rows[$index]) -and [object]::ReferenceEquals($endpoint.row.data,$rows[$index].data)) 'maximum lazy endpoints changed order or copied payloads'
+        Assert-Codec ([object]::ReferenceEquals($cursor.heap,$heap) -and $heap.Length -eq 2048) 'heap grew with emitted endpoint count'
+    }
+    Assert-Codec ($null -eq (Read-HopEvidenceEndpoint $cursor) -and $rows.Count -eq 2048 -and $rows[2047].repeats -eq 2) 'EOF expanded or mutated coalesced records'
+    Expect-CodecFailure {New-HopEvidenceEndpointCursor ($rows+@((New-ViewRow 4097 4098 2)))} 'regular/critical'
+}
+Invoke-CodecCase 'mixed numeric singleton times compare exact rationals not shortest decimal aliases' {
+    [double]$floating=1e23
+    $exactText='99999999999999991611392'
+    Assert-Codec (([Numerics.BigInteger]::new($floating)).ToString([Globalization.CultureInfo]::InvariantCulture) -ceq $exactText) 'literal binary64 represented-integer oracle differs'
+    $shortDecimal=[decimal]::Parse('100000000000000000000000',[Globalization.CultureInfo]::InvariantCulture)
+    $actualDecimal=[decimal]::Parse($exactText,[Globalization.CultureInfo]::InvariantCulture)
+    foreach($times in @(@($floating,$shortDecimal),@($shortDecimal,$floating))){
+        Assert-Codec ([double]$times[0] -eq [double]$times[1]) 'large alias fixture does not share rounded bits'
+        $row=New-ViewRow;$row['first_at_ms']=$times[0];$row['last_at_ms']=$times[1];Expect-CodecFailure {New-HopEvidenceEndpointCursor (,$row)} 'timestamp bits'
+    }
+    foreach($times in @(@($floating,$actualDecimal),@($actualDecimal,$floating),@([double]1e20,[decimal]::Parse('100000000000000000000',[Globalization.CultureInfo]::InvariantCulture)),@([double]0.5,[decimal]::Parse('0.5',[Globalization.CultureInfo]::InvariantCulture)),@([double]0,[decimal]0))){
+        $row=New-ViewRow;$row['first_at_ms']=$times[0];$row['last_at_ms']=$times[1];Assert-Codec ((New-HopEvidenceEndpointCursor (,$row)).count -eq 1) 'exact mixed rational positive control refused'
+    }
+    foreach($times in @(@([double]0.1,[decimal]::Parse('0.1',[Globalization.CultureInfo]::InvariantCulture)),@([double][decimal]::MaxValue,[decimal]::MaxValue),@([double]::Epsilon,[decimal]0),@([BitConverter]::Int64BitsToDouble([long]::MinValue),[decimal]0))){
+        $row=New-ViewRow;$row['first_at_ms']=$times[0];$row['last_at_ms']=$times[1];Expect-CodecFailure {New-HopEvidenceEndpointCursor (,$row)} 'timestamp bits'
+    }
+}
+[pscustomobject]@{suite='hop-delta-v4 PowerShell consumer';cases=$script:caseCount;status='PASS';native_gameplay='UNRUN'}

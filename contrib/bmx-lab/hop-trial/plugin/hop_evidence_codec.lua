@@ -1,5 +1,5 @@
 -- Private evidence format only. No SDK, storage, game or qualification authority.
-local Codec={version=3,encoding='hop-delta-v3'}
+local Codec={version=4,encoding='hop-delta-v4',pair_pointer_bytes=2048,pair_wire_meta_bytes=16,pair_state_meta_bytes=256}
 local field_text=[[
 __index
 __mode
@@ -323,7 +323,7 @@ local kinds={"source","body","contact","force_pending","mapped_hop","preview","s
 local kind_ids={};for i,name in ipairs(kinds) do kind_ids[name]=i end
 Codec.kinds=table.freeze(kinds)
 local DATA_MAX,ROW_MAX,NODE_MAX,DEPTH_MAX=11904,12288,768,32
-local row_keys={kind=true,data=true,first_call=true,last_call=true,repeats=true,first_at_ms=true,last_at_ms=true,incomplete=true,critical=true}
+local row_keys={kind=true,data=true,first_call=true,last_call=true,repeats=true,first_at_ms=true,last_at_ms=true,incomplete=true,critical=true,paired=true}
 local function fail(why) error("hop codec: "..why,0) end
 local function plain(v) return type(v)=="table" and getmetatable(v)==nil end
 local function finite(v) return type(v)=="number" and v==v and math.abs(v)<math.huge end
@@ -493,6 +493,57 @@ local function projection(row)
     if type(p)~="string" or #p>192 then fail("invalid projection") end
     return p
 end
+-- This conservative subset matches the exact sanitized public SDK DTO builders.
+-- Unknown/contradictory results stay separately retained under legacy rules.
+local state_fields={}
+for key in ("call arity call_ok sequence user source_epoch context_generation status reason terminal requested_ms expires_ms observed_ms last_observation renewals source_released capture_reserved orphaned capturing report_debt"):gmatch("%S+") do state_fields[key]=true end
+local capture_fields={}
+for key in ("call arity call_ok sequence user source_epoch context_generation phase reason terminal quarantined capturing report_debt generation revision expires_ms publications neutral_releases"):gmatch("%S+") do capture_fields[key]=true end
+local shared_ids=table.freeze({"sequence","source_epoch","context_generation","expires_ms"})
+local state_ids=table.freeze({"requested_ms","observed_ms","last_observation"})
+local capture_ids=table.freeze({"generation","revision"})
+local function decimal_id(value,nonzero)
+    return type(value)=="string" and #value>=1 and #value<=20 and value:match("^%d+$")~=nil
+        and (value=="0" and not nonzero or value:sub(1,1)~="0")
+        and (#value<20 or value<="18446744073709551615")
+end
+local function decimal_le(a,b) return #a<#b or #a==#b and a<=b end
+local function add250(value)
+    local text="";local carry=250
+    for at=#value,1,-1 do
+        local n=string.byte(value,at)-48+carry
+        text=string.char(48+n%10)..text;carry=math.floor(n/10)
+    end
+    while carry>0 do text=string.char(48+carry%10)..text;carry=math.floor(carry/10) end
+    return text
+end
+local function known_pair_data(data)
+    local state=data.call=="input.lease_state"
+    if not state and data.call~="input.lease_capture_state" then return false end
+    local allowed=state and state_fields or capture_fields
+    for key in pairs(data) do if not allowed[key] then return false end end
+    for key in pairs(allowed) do if rawget(data,key)==nil then return false end end
+    if data.call_ok~=true or data.arity~=1 or not integer(data.user,0,3)
+        or data.user==0 and 1/data.user==-math.huge or data.reason~="none" or data.terminal~=false then return false end
+    for _,key in ipairs(shared_ids) do
+        if not decimal_id(data[key],true) then return false end
+    end
+    if state then
+        if data.status~="active" or data.capturing~=false or data.report_debt~=false or data.source_released~=false
+            or data.orphaned~=false or type(data.capture_reserved)~="boolean" or not decimal_id(data.renewals,false) then return false end
+        for _,key in ipairs(state_ids) do if not decimal_id(data[key],true) then return false end end
+        return decimal_le(data.requested_ms,"18446744073709551365")
+            and decimal_le(add250(data.requested_ms),data.expires_ms) and decimal_le(data.requested_ms,data.observed_ms)
+            and not decimal_le(data.expires_ms,data.observed_ms)
+    end
+    local capturing=data.phase=="capturing"
+    if not capturing and data.phase~="waiting_neutral" then return false end
+    if data.quarantined~=false or data.capturing~=capturing or data.report_debt~=capturing then return false end
+    for _,key in ipairs(capture_ids) do if not decimal_id(data[key],true) then return false end end
+    if not decimal_id(data.publications,false) or not decimal_id(data.neutral_releases,false)
+        or not decimal_le(data.neutral_releases,data.publications) then return false end
+    return capturing and data.publications~="0" or not capturing and data.publications=="0" and data.neutral_releases=="0"
+end
 local function validate_row(row)
     if not plain(row) then fail("plain logical row required") end
     for key in pairs(row) do if not row_keys[key] then fail("unknown row field") end end
@@ -501,6 +552,10 @@ local function validate_row(row)
         or not integer(row.repeats,1,row.last_call-row.first_call+1) then fail("invalid row metadata") end
     for _,key in ipairs({"first_at_ms","last_at_ms"}) do local v=rawget(row,key);if v~=nil and (not finite(v) or v<0) then fail("invalid row time") end end
     checked_data(row.data);projection(row)
+    if rawget(row,"paired")~=nil then
+        if row.paired~=true or row.critical or row.incomplete or row.kind~="lease" or row.repeats~=2
+            or row.first_call>=row.last_call or not known_pair_data(row.data) then fail("invalid sealed pair") end
+    end
 end
 local function valid_base(row,base,expected)
     if base~=nil then
@@ -518,13 +573,15 @@ local function time_cost(v)
     return number_wire_cost(v)
 end
 local function row_cost(wire)
-    dense(wire,11)
+    dense(wire,12)
     if type(wire[1])~="boolean" or not integer(wire[2],1,#kinds) or type(wire[3])~="string" or #wire[3]>192
         or not integer(wire[4],0,10000000) or not integer(wire[5],1,10000000)
         or not integer(wire[6],wire[5],10000000) or not integer(wire[7],1,wire[6]-wire[5]+1)
-        or type(wire[10])~="boolean" then fail("invalid wire metadata") end
-    return 12+5+digits(wire[2])+string_cost(wire[3])+digits(wire[4])+digits(wire[5])+digits(wire[6])+digits(wire[7])
-        +time_cost(wire[8])+time_cost(wire[9])+5+cost(wire[11])
+        or type(wire[10])~="boolean" or type(wire[12])~="boolean" then fail("invalid wire metadata") end
+    if wire[12] and (wire[1] or wire[10] or wire[2]~=kind_ids.lease or wire[7]~=2 or wire[6]<=wire[5]
+        or wire[3]~="input.lease_state" and wire[3]~="input.lease_capture_state") then fail("invalid sealed pair metadata") end
+    return 13+5+digits(wire[2])+string_cost(wire[3])+digits(wire[4])+digits(wire[5])+digits(wire[6])+digits(wire[7])
+        +time_cost(wire[8])+time_cost(wire[9])+5+cost(wire[11])+5+Codec.pair_wire_meta_bytes
 end
 local function freeze_tree(value)
     if type(value)=="table" and not table.isfrozen(value) then
@@ -537,14 +594,14 @@ local function encode_row(row,base)
     local node=base and delta(row.data,base.data) or full(row.data)
     local wire={row.critical,kind_ids[row.kind],projection(row),base and base.first_call or 0,
         row.first_call,row.last_call,row.repeats,pack_time(row.first_at_ms),
-        pack_time(row.last_at_ms),row.incomplete,node}
+        pack_time(row.last_at_ms),row.incomplete,node,row.paired==true}
     local bytes=row_cost(wire);if bytes>ROW_MAX then fail("wire row byte limit") end
     return freeze_tree(wire),bytes
 end
 local function decode_row(wire,base)
-    dense(wire,11)
+    dense(wire,12)
     if type(wire[1])~="boolean" or not integer(wire[2],1,#kinds) or type(wire[3])~="string" or #wire[3]>192
-        or not integer(wire[4],0,10000000) or type(wire[10])~="boolean" then fail("invalid wire metadata") end
+        or not integer(wire[4],0,10000000) or type(wire[10])~="boolean" or type(wire[12])~="boolean" then fail("invalid wire metadata") end
     for _,i in ipairs({8,9}) do time_cost(wire[i]) end
     local bytes=row_cost(wire);if bytes>ROW_MAX then fail("wire row byte limit") end
     if wire[1] and (wire[4]~=0 or base~=nil) then fail("critical base forbidden") end
@@ -557,6 +614,7 @@ local function decode_row(wire,base)
     local row={kind=metadata.kind,critical=wire[1],first_call=wire[5],last_call=wire[6],repeats=wire[7],
         incomplete=wire[10],data=data}
     if wire[8]~=false then row.first_at_ms=wire[8]=="-0" and -1/math.huge or wire[8] end;if wire[9]~=false then row.last_at_ms=wire[9]=="-0" and -1/math.huge or wire[9] end
+    if wire[12] then row.paired=true end
     validate_row(row);if projection(row)~=wire[3] then fail("projection mismatch") end
     return table.freeze(row),bytes
 end
@@ -564,6 +622,11 @@ local function public(fn,...)
     local ok,a,b=pcall(fn,...)
     if not ok then return nil,type(a)=="string" and a or "hop codec: invalid input" end
     return a,b
+end
+local function checked_pair_data(data) checked_data(data);return known_pair_data(data) end
+function Codec.pair_data_known(data)
+    local ok,result=pcall(checked_pair_data,data)
+    return ok and result or false
 end
 function Codec.wire_bytes(wire) return public(row_cost,wire) end
 function Codec.data_bytes(value) return public(checked_data,value) end
@@ -574,7 +637,7 @@ local function chunk_cost(chunk,index,run_id)
     local known={schema=true,encoding=true,run_id=true,chunk=true,rows=true}
     for key in pairs(chunk) do if not known[key] then fail("unknown chunk field") end end
     local n=array_count(chunk.rows,16);if n<1 then fail("empty chunk") end
-    local sum=0;for _,wire in ipairs(chunk.rows) do dense(wire,11);sum+=row_cost(wire) end
+    local sum=0;for _,wire in ipairs(chunk.rows) do dense(wire,12);sum+=row_cost(wire) end
     if sum+1024>24576 then fail("chunk byte limit") end
     local bytes=2+(#"schema"+4)+1+(#"encoding"+4)+string_cost(Codec.encoding)
         +(#"run_id"+4)+string_cost(run_id)+(#"chunk"+4)+digits(index)+(#"rows"+4)+2+math.max(0,n-1)+sum
@@ -598,14 +661,14 @@ function Codec.chunk_bytes(chunk)
     end)
 end
 function Codec.state_bytes(row)
-    return public(function() validate_row(row);return checked_data(row.data)+64+string_cost(row.kind)+string_cost(projection(row)) end)
+    return public(function() validate_row(row);return checked_data(row.data)+64+string_cost(row.kind)+string_cost(projection(row))+(row.paired and Codec.pair_state_meta_bytes or 0) end)
 end
 function Codec.projection(row) return public(function() validate_row(row);return row.kind.."|"..projection(row) end) end
 local function decode_chunks(chunks,run_id)
     if type(run_id)~="string" or #run_id<1 or #run_id>32 or not run_id:match("^[A-Za-z0-9_-]+$") then fail("invalid run") end
     local count=array_count(chunks,2176)
     local rows,bases,state_costs={}, {}, {}
-    local regular,critical,regular_wire,critical_bytes,state_bytes,base_count,last,store=0,0,0,0,0,0,0,2
+    local regular,critical,regular_wire,critical_bytes,state_bytes,base_count,last,store=0,0,0,0,Codec.pair_pointer_bytes,0,0,2
     for index=1,count do
         local chunk=chunks[index]
         if not plain(chunk) then fail("plain chunk required") end
@@ -616,7 +679,7 @@ local function decode_chunks(chunks,run_id)
         store+=envelope+string_cost("hop."..run_id..".chunk."..tostring(index))+4
         if store>1048576 then fail("encoded store byte limit") end
         for _,wire in ipairs(chunk.rows) do
-            dense(wire,11)
+            dense(wire,12)
             if not integer(wire[2],1,#kinds) or type(wire[3])~="string" then fail("invalid projection identity") end
             local key=kinds[wire[2]].."|"..wire[3]
             local base=wire[4]~=0 and bases[key] or nil
@@ -629,7 +692,7 @@ local function decode_chunks(chunks,run_id)
                 regular+=1;regular_wire+=bytes
                 if not bases[key] then base_count+=1 end
                 if base_count>64 then fail("projection capacity") end
-                local size=checked_data(row.data)+64+string_cost(row.kind)+string_cost(projection(row))
+                local size=checked_data(row.data)+64+string_cost(row.kind)+string_cost(projection(row))+(row.paired and Codec.pair_state_meta_bytes or 0)
                 state_bytes+=size-(state_costs[key] or 0)
                 state_costs[key]=size;bases[key]=row
                 if regular>2048 or regular_wire+state_bytes>524288 then fail("regular capacity") end

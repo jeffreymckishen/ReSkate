@@ -593,7 +593,8 @@ struct WorldApi {
     }
     // world.probe(from, to): {status = "unavailable"|"clear"|"hit"}; only a hit has position and
     // fraction. A clear result qualifies this ray, not streaming for a region. No native identity,
-    // surface normal or velocity is supplied. Shares world.raycast/pick's per-tick query budget.
+    // surface normal or velocity is supplied. Shares the per-tick ray and counted native cast
+    // budgets with the other Lua world queries, including probe_batch.
     static int world_probe(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "world.raycast", "reskate.world.probe");
@@ -606,19 +607,17 @@ struct WorldApi {
             luaL_error(L, "a ray is at most %d m long", static_cast<int>(plugin.limits_.raycast_metres));
         if (++plugin.raycasts_ > plugin.limits_.raycasts_per_tick)
             luaL_error(L, "more than %d raycasts in one tick", plugin.limits_.raycasts_per_tick);
-        // The native query also refuses segments below this squared length. Do not call it for
-        // one, or label a nonexistent direction clear; still count this bounded API request.
+        // The counted native ray refuses segments below this squared length. Do not call it for
+        // one, or label a nonexistent direction clear; the request still counts as a raycast.
         const auto allowed = std::min(plugin.native_casts_.remaining(), body_query::casts_per_ray);
         const auto counted = distance_squared < 1e-10f || !allowed ? Game::CountedProbe{} : game(plugin).world_probe_bounded(from, to, allowed);
-        auto probe = counted.probe;
-        if (!plugin.native_casts_.consume(counted.native_casts, allowed) || !counted.native_casts) probe = {};
-        bool hit = probe.available && probe.hit && std::isfinite(probe.fraction) && probe.fraction >= 0 && probe.fraction <= 1;
-        for (std::size_t i = 0; i < from.size() && hit; ++i) {
-            const float expected = from[i] + (to[i] - from[i]) * probe.fraction;
-            hit = std::isfinite(probe.position[i]) && std::abs(probe.position[i]) <= 1e5f &&
-                  std::abs(probe.position[i] - expected) <= 0.025f;
-        }
-        const char* status = !probe.available || (probe.hit && !hit) ? "unavailable" : hit ? "hit" : "clear";
+        const bool accounted = plugin.native_casts_.consume(counted.native_casts, allowed);
+        const auto& probe = counted.probe;
+        const bool ran = accounted && counted.native_casts && probe.available;
+        // A hit is reported only where it lies on this segment at its fraction.
+        const bool hit = ran && probe.hit &&
+                         body_query::consistent({from, to}, {body_query::Status::hit, probe.position, probe.fraction});
+        const char* status = !ran || (probe.hit && !hit) ? "unavailable" : hit ? "hit" : "clear";
         lua_createtable(L, 0, hit ? 3 : 1);
         lua_pushstring(L, status);
         lua_setfield(L, -2, "status");
@@ -1812,6 +1811,20 @@ struct WorldApi {
         game(plugin).board_clear(plugin.id(), lua_isnoneornil(L, 1) ? -1 : bone_number(L, 1));
         return 0;
     }
+    // scale(bone, size): the bone drawn this much bigger over its animation, which still turns and places
+    // it; a number for every axis or a vector, 0.25 to 4 each, on this screen only. scale(bone) ends it.
+    static int board_scale(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "board", "reskate.board.scale");
+        const int bone = bone_number(L, 1);
+        if (lua_isnoneornil(L, 2)) return result(L, game(plugin).board_scale(plugin.id(), bone, std::nullopt));
+        Vec3 size;
+        if (lua_type(L, 2) == LUA_TNUMBER) {
+            const auto k = static_cast<float>(lua_tonumber(L, 2));
+            size = {k, k, k};
+        } else size = position_of(L, 2, "a bone's size");
+        return result(L, game(plugin).board_scale(plugin.id(), bone, size));
+    }
     // park({12, 13, 14, 15}): these bones out of sight on every board, other players' too.
     static int board_park(lua_State* L) {
         auto& plugin = plugin_of(L);
@@ -2659,10 +2672,21 @@ struct WorldApi {
         return 1;
     }
     // settings.set(name, value): a game setting held at `value` while the plugin keeps it; nil lets go.
+    // Whether a game setting is about sound: how loud the game, its music, its voices and its
+    // speakers are. No plugin changes those: a plugin that turned every volume up to scare the
+    // player is why (plugin_listing.h).
+    static bool sound_setting(std::string_view name) {
+        std::string lower(name);
+        for (auto& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        for (const char* word : {"volume", "audio", "sound", "mute", "loud", "speaker", "voip", "voice", "sfx", "dynamicrange"})
+            if (lower.find(word) != std::string::npos) return true;
+        return false;
+    }
     static int setting_set(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "settings.write", "reskate.settings.set");
         const auto name = checked_text(L, 1, 120, "a setting's name");
+        if (sound_setting(name)) return result(L, "sound settings are the player's: no plugin changes how loud the game is");
         std::optional<std::string> value;
         if (lua_type(L, 2) == LUA_TBOOLEAN) value = lua_toboolean(L, 2) ? "true" : "false";
         else if (lua_type(L, 2) == LUA_TNUMBER) value = std::format("{}", lua_tonumber(L, 2));
@@ -3038,7 +3062,7 @@ void WorldApi::install(Plugin& plugin, lua_State* L) {
     lua_setfield(L, LUA_REGISTRYINDEX, "reskate.permissions");
     add_functions(L, "skater", {{"state", state}, {"noclip", noclip}, {"boost", boost}, {"freeze", freeze}, {"wipeout", wipeout}, {"xray", xray},
                                 {"shape_launch", shape_launch}, {"hide", hide_skater}, {"reach", reach}, {"carry", carry}, {"hand", hand}, {"joint", skater_joint}, {"pose", skater_pose}});
-    add_functions(L, "board", {{"motion", board_motion}, {"bones", board_bones}, {"set", board_set}, {"hide", board_hide}, {"clear", board_clear},
+    add_functions(L, "board", {{"motion", board_motion}, {"bones", board_bones}, {"set", board_set}, {"hide", board_hide}, {"clear", board_clear}, {"scale", board_scale},
                                {"park", board_park}, {"fit", board_fit}, {"toss", board_toss}, {"parameters", board_parameters},
                                {"set_parameter", board_set_parameter}, {"clear_parameter", board_clear_parameter}});
     add_functions(L, "camera", {{"look", camera_look}, {"set", camera_set}, {"follow", camera_follow}, {"release", camera_release}, {"held", camera_held}, {"get", camera_get}, {"cycle", camera_cycle}});

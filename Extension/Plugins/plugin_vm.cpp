@@ -5,13 +5,14 @@
 #include "lua.h"
 #include "luacode.h"
 #include "lualib.h"
+#include <atomic>
 #include <cstdlib>
 #include <format>
 #include <fstream>
-#include <atomic>
 
 namespace dingosdk::plugins {
 namespace {
+// Each load gets a new VM instance, so a reloaded plugin never adopts the old VM's bodies.
 std::atomic<std::uint64_t> next_instance{1};
 double elapsed_ms(std::chrono::steady_clock::time_point since) {
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - since).count();
@@ -46,9 +47,10 @@ std::string read_package_file(const std::filesystem::path& file, std::size_t mos
     return text;
 }
 
-Plugin::Plugin(std::string id, std::filesystem::path directory, Manifest manifest, Services& services, Limits limits)
-    : id_(std::move(id)), directory_(std::move(directory)), manifest_(std::move(manifest)), services_(services),
-      limits_(limits) {
+Plugin::Plugin(std::string id, std::filesystem::path directory, Manifest manifest, Services& services, Limits limits,
+               std::shared_ptr<const PluginSources> sources)
+    : id_(std::move(id)), directory_(std::move(directory)), sources_(std::move(sources)), manifest_(std::move(manifest)),
+      services_(services), limits_(limits) {
     const auto entry = std::filesystem::path(manifest_.entry);
     code_root_ = entry.has_parent_path() ? entry.parent_path().generic_string() : std::string{};
 }
@@ -160,7 +162,14 @@ bool Plugin::load(std::string entry) {
 
 bool Plugin::load_chunk(lua_State* L, const std::string& relative, const std::filesystem::path& file) {
     std::string error;
-    const auto source = read_package_file(file, limits_.source_bytes, error);
+    std::string source;
+    if (sources_) {
+        const auto found = sources_->find(plugin_source_key(relative));
+        if (found == sources_->end()) error = "not in the approved source snapshot";
+        else if (found->second.size() > limits_.source_bytes)
+            error = std::format("is larger than {} MB", limits_.source_bytes >> 20);
+        else source = found->second;
+    } else source = read_package_file(file, limits_.source_bytes, error);
     if (!error.empty()) {
         lua_pushstring(L, error.c_str());
         return false;

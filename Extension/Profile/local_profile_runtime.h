@@ -118,6 +118,9 @@ struct LocalSurfaceProbe {
     std::uint64_t hit_entity{};
     std::array<std::uint64_t, 2> hit_body{};
     unsigned excluded_bodies{};
+    // The counted geometry query exposes a shape handle, never an owner/body identity.
+    std::array<std::uint64_t, 2> hit_shape{};
+    unsigned native_casts{};
     std::array<float,3> normal{};
     bool normal_available{};
 };
@@ -138,6 +141,15 @@ BoundedLocalSurfaceProbe probe_local_surface_bounded(const std::array<float,3>& 
 // preset picks the native filter only; an unknown value makes no native call.
 BoundedLocalSurfaceProbe probe_local_surface_geometry_bounded(const std::array<float,3>& from,const std::array<float,3>& to,
     unsigned maximum_casts, bool measure_contact=false, body_query::QueryPreset preset=body_query::QueryPreset::camera);
+// One counted geometry ray, with no owner lookup, ignore list or retry. A clear ray does not
+// prove collision for the entire region has streamed. native_casts records a native call even
+// when its result is malformed; an early refusal records zero.
+struct LocalSurfaceQuery {
+    bool read_shape{}, measure_contact{};
+    body_query::QueryPreset preset{body_query::QueryPreset::camera};
+};
+LocalSurfaceProbe probe_local_surface_counted(const std::array<float, 3>& from, const std::array<float, 3>& to,
+                                              const LocalSurfaceQuery& query = {});
 // Small allowlisted progression commands, executed on the game update thread.
 bool set_local_progression(const std::vector<std::string>& arguments);
 // Small ReSkate-owned booleans saved beside the profile under a "ReSkate."

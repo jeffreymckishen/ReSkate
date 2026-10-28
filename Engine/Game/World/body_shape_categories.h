@@ -1,6 +1,7 @@
 #pragma once
 #include "body_hit_identity.h"
 #include "body_query.h"
+#include "Engine/Game/Build/20260929/physics_bodies.h"
 #include "Engine/Game/Build/20260929/rigid_bodies.h"
 #include <array>
 #include <cstddef>
@@ -29,7 +30,7 @@ struct Witness {
 enum class Capture : std::uint8_t { available, unavailable, identity_changed };
 // The per-shape DWORD arrays a witness may read: InCategories, or the owner slot.
 inline bool known_field(std::uintptr_t field) noexcept {
-    return field == addr::rigid_bodies::shape_categories || field == addr::rigid_bodies::shape_owners;
+    return field == addr::rigid_bodies::shape_categories || field == addr::physics_bodies::body_owner_offset;
 }
 
 // The pinned getter reads World+28, then state+FE8, then DWORD[shape.index].
@@ -83,7 +84,7 @@ Capture current(const Witness& value, Read&& read, Qualified&& qualified) {
 // One optional value per requested ray, bound to the query ordinal: execute calls
 // its query once per ray, in order. It is never keyed by body, so child shapes of
 // one body, or two rays on one shape, keep their own witnesses. Category values by
-// default; Sidecars(shape_owners) holds owner slots under the same rules.
+// default; Sidecars(physics_bodies::body_owner_offset) holds owner slots under the same rules.
 template<std::size_t Capacity> class Sidecars {
 public:
     Sidecars() noexcept = default;
@@ -120,17 +121,19 @@ public:
     // Pass the result execute returned. Nothing is copied into a refused batch,
     // a row that is not a hit, or a request that did not opt in to this value.
     void publish(const body_query::Request& request, body_query::Result& out) const noexcept {
-        const bool owners = field_ == addr::rigid_bodies::shape_owners;
+        const bool owners = field_ == addr::physics_bodies::body_owner_offset;
         if (!out.available || identity_lost_ || !(owners ? request.include_hit_owner : request.include_shape_categories)) return;
         for (std::size_t i = 0; i < out.count && i < out.rays.size() && i < Capacity; ++i) {
             auto& hit = out.rays[i];
             if (hit.status != body_query::Status::hit || !present_[i]) continue;
             const auto value = witnesses_[i].value;
             if (owners) {
-                hit.owner = value; hit.owner_available = true;
+                hit.owner = value;
+                hit.owner_available = true;
                 hit.owner_assigned = value != addr::rigid_bodies::unassigned_shape_owner;
             } else {
-                hit.in_categories = value; hit.in_categories_available = true;
+                hit.in_categories = value;
+                hit.in_categories_available = true;
             }
         }
     }

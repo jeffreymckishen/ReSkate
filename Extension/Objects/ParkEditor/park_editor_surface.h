@@ -50,6 +50,9 @@ struct NativeSurfaceApi {
     void (*release)(void *, std::uintptr_t){};
     bool ready{}, contact_ready{};
 };
+// What one cast found, for a caller that needs more than a position: an unavailable or
+// malformed native result and a successful clear ray are told apart. This establishes that
+// the query ran, not that collision for a whole region has streamed.
 struct SurfaceCastProbe {
     bool available{}, hit{};
     Vec3 position{};
@@ -60,13 +63,14 @@ struct SurfaceCastProbe {
     Vec3 normal{};
     bool normal_available{};
 };
-inline NativeSurfaceApi surface_api(std::uintptr_t base, bool measure_contact=false) {
-    const auto &surface_contracts = addr::park_editor::surface_contracts;
-    NativeSurfaceApi api;
-    api.ready = std::all_of(surface_contracts.begin(), surface_contracts.end(), [&](const auto &contract) {
+inline NativeSurfaceApi surface_api(std::uintptr_t base, bool measure_contact = false) {
+    const auto matches = [&](const auto &contract) {
         std::array<unsigned char, 32> bytes{};
         return memory::read_bytes(base + contract.rva, bytes.data(), bytes.size()) && bytes == contract.bytes;
-    });
+    };
+    const auto &surface_contracts = addr::park_editor::surface_contracts;
+    NativeSurfaceApi api;
+    api.ready = std::all_of(surface_contracts.begin(), surface_contracts.end(), matches);
     if (api.ready) {
         api.world = reinterpret_cast<decltype(api.world)>(base + surface_contracts[0].rva);
         api.ray = reinterpret_cast<decltype(api.ray)>(base + surface_contracts[1].rva);
@@ -74,26 +78,54 @@ inline NativeSurfaceApi surface_api(std::uintptr_t base, bool measure_contact=fa
             reinterpret_cast<decltype(api.scope_allocator)>(base + surface_contracts[2].rva);
         api.release = reinterpret_cast<decltype(api.release)>(base + surface_contracts[3].rva);
     }
-    api.contact_ready = measure_contact && api.ready && std::all_of(addr::body_contact::contracts.begin(), addr::body_contact::contracts.end(), [&](const auto& contract) {
-        std::array<unsigned char, 32> bytes{};
-        return memory::read_bytes(base+contract.rva,bytes.data(),bytes.size()) && bytes==contract.bytes;
-    });
+    // The contact readers are compared only for a caller that asks to measure contact.
+    const auto &contact_contracts = addr::body_contact::contracts;
+    api.contact_ready = measure_contact && api.ready &&
+                        std::all_of(contact_contracts.begin(), contact_contracts.end(), matches);
     return api;
 }
+// What a caller adds to one cast. Without a probe the cast keeps the park editor's own rules,
+// which its placement, picking, world rays and ground checks rely on: a malformed fraction is
+// skipped and the request is not checked before the native call. probe, when given, makes it
+// the counted cast instead: an unready API, a missing world, a non-finite or out-of-map endpoint
+// and a zero-length segment are refused before the native call, a malformed fraction makes the
+// whole result unknown, and the probe receives the typed result: the nearest hit's body as
+// body_reader read it (read for that hit only, and kept only when the reader succeeds) and, with
+// measure_contact, the hit's point and normal, copied while the native result is still alive.
+// native_casts, when given, is counted just before the native call, so a call that fails or
+// throws is counted too. The preset changes only the request's filter lane, and one with no
+// native filter makes no call.
+struct SurfaceCastOptions {
+    SurfaceCastProbe *probe{};
+    unsigned *native_casts{};
+    bool measure_contact{};
+    body_query::QueryPreset preset{body_query::QueryPreset::camera};
+};
 inline std::optional<Vec3> cast_surface_once(const NativeSurfaceApi &api, std::uintptr_t world, Vec3 start,
                                              Vec3 end, SurfaceOwner owner,
                                              std::span<const std::uint64_t> ignored, std::uint64_t *entity,
                                              std::span<const SurfaceBody> ignored_bodies,
                                              std::vector<SurfaceBody> &discovered,
                                              SurfaceBodyReader body_reader,
-                                             SurfaceCastProbe *probe = nullptr) {
-    if (probe) *probe = {};
-    if (!api.ready || !api.ray || !world) return {};
-    for (const auto &point : {start, end})
-        for (const float value : point)
-            if (!std::isfinite(value) || std::abs(value) > 100000) return {};
-    if (dot(sub(end, start), sub(end, start)) < 1e-10f) return {};
+                                             const SurfaceCastOptions &options = {}) {
+    const bool counted = options.probe != nullptr;
+    if (counted) {
+        *options.probe = {};
+        if (!api.ready || !api.ray || !world)
+            return {};
+        for (const auto &point : {start, end})
+            for (const float value : point)
+                if (!std::isfinite(value) || std::abs(value) > 100000)
+                    return {};
+        if (dot(sub(end, start), sub(end, start)) < 1e-10f)
+            return {};
+    }
+    const auto filter = surface_query_filter(options.preset);
+    if (!filter)
+        return {};
     NativeSurfaceRay request;
+    // Mode, tolerance, flags and the allocator lanes stay as the camera ray sends them.
+    request.filter = *filter;
     std::vector<SurfaceBody> bodies;
     for (const auto &body : ignored_bodies)
         if (body[0] == world)
@@ -107,7 +139,8 @@ inline std::optional<Vec3> cast_surface_once(const NativeSurfaceApi &api, std::u
     std::copy(start.begin(), start.end(), request.start.begin());
     std::copy(end.begin(), end.end(), request.end.begin());
     NativeSurfaceResult result;
-    api.ray(world, &result, &request, "ReSkate_ParkSurface");
+    // Before the call, so a call that unwinds still releases what it wrote. A call that returns
+    // is released where it always was, when the cast returns.
     struct Release {
         const NativeSurfaceApi &api;
         NativeSurfaceResult &result;
@@ -125,6 +158,9 @@ inline std::optional<Vec3> cast_surface_once(const NativeSurfaceApi &api, std::u
                 api.release(&result.allocator_vtable, result.data);
         }
     } release{api, result};
+    if (options.native_casts)
+        ++*options.native_casts;
+    api.ray(world, &result, &request, "ReSkate_ParkSurface");
     if (result.world != world || !result.data || result.count > 4096 ||
         result.first > UINT32_MAX - result.count)
         return {};
@@ -135,18 +171,26 @@ inline std::optional<Vec3> cast_surface_once(const NativeSurfaceApi &api, std::u
     // world/data, first=0, count=number of hits (0x26651fb..0x2665216). An empty
     // query can have no fraction array. A zeroed/unowned result is not a clear ray.
     if (!result.count) {
-        if (probe && !result.first) probe->available = true;
+        if (counted && !result.first)
+            options.probe->available = true;
         return {};
     }
-    if (!fractions) return {};
+    if (!fractions)
+        return {};
     float closest = 2;
+    std::uint32_t closest_index{};
     std::uint64_t closest_entity{};
-    SurfaceBody closest_body{};
     for (std::uint32_t n = 0; n < result.count; ++n) {
         float fraction{};
         if (!memory::read(fractions + static_cast<std::uintptr_t>(result.first + n) * 4, fraction))
             return {};
-        if (!std::isfinite(fraction) || fraction < 0 || fraction > 1) return {};
+        if (!std::isfinite(fraction) || fraction < 0 || fraction > 1) {
+            // The counted cast must not skip it: that could report a farther surface than the
+            // one the ray met, or a clear ray.
+            if (counted)
+                return {};
+            continue;
+        }
         if (fraction < closest) {
             const auto hit_entity = owner ? owner(world, result.first + n, result.data) : 0;
             if (hit_entity && std::find(ignored.begin(), ignored.end(), hit_entity) != ignored.end()) {
@@ -157,9 +201,8 @@ inline std::optional<Vec3> cast_surface_once(const NativeSurfaceApi &api, std::u
                 continue;
             }
             closest = fraction;
+            closest_index = result.first + n;
             closest_entity = hit_entity;
-            closest_body = {};
-            if (probe && body_reader) (void)body_reader(world, result.first + n, result.data, closest_body);
             if (entity)
                 *entity = hit_entity;
         }
@@ -167,11 +210,69 @@ inline std::optional<Vec3> cast_surface_once(const NativeSurfaceApi &api, std::u
     if (closest > 1)
         return {};
     const auto position = add(start, mul(sub(end, start), closest));
-    if (probe) *probe = {true, true, position, closest, closest_entity, closest_body};
+    if (counted) {
+        auto &probe = *options.probe;
+        probe.available = probe.hit = true;
+        probe.position = position;
+        probe.fraction = closest;
+        probe.entity = closest_entity;
+        SurfaceBody body{};
+        if (body_reader && body_reader(world, closest_index, result.data, body))
+            probe.body = body;
+        body_contact_read::Vectors vectors;
+        const auto read = [](std::uintptr_t at, auto &value) { return memory::read(at, value); };
+        if (options.measure_contact && api.contact_ready &&
+            body_contact_read::vectors(result.data, closest_index, position, start, end, vectors, read)) {
+            probe.position = vectors.position;
+            probe.normal = vectors.normal;
+            probe.normal_available = true;
+        }
+    }
     return position;
 }
-// Typed path for gameplay adapters: unavailable/malformed and a successful clear ray are
-// distinct. This establishes query execution, not collision streaming for a whole region.
+// One counted cast, for the plugins' counted world queries (reskate.world.probe and
+// world.physics.probe_batch). native_casts is 1 when the native ray was called, whatever it
+// returned, and 0 when the request was refused first. No owner is asked about any hit, nothing
+// is ignored and nothing is cast again: a caller may refuse the nearest hit, never cast through
+// it. body_reader is asked only about the nearest hit.
+struct CountedSurfaceCast {
+    SurfaceCastProbe surface;
+    unsigned native_casts{};
+};
+inline CountedSurfaceCast cast_surface_counted(const NativeSurfaceApi &api, std::uintptr_t world, Vec3 start,
+                                               Vec3 end, SurfaceBodyReader body_reader = nullptr,
+                                               bool measure_contact = false,
+                                               body_query::QueryPreset preset = body_query::QueryPreset::camera) {
+    CountedSurfaceCast out;
+    std::vector<SurfaceBody> discovered; // stays empty: nothing is ignored
+    try {
+        cast_surface_once(api, world, start, end, nullptr, {}, nullptr, {}, discovered, body_reader,
+                          {&out.surface, &out.native_casts, measure_contact, preset});
+    } catch (...) {
+        // A query that throws keeps its count and loses its result.
+        out.surface = {};
+    }
+    return out;
+}
+// The existing owner-aware adapters retain their bounded schedules, but use the same cast
+// implementation as the one-cast query. Native-call counting and result cleanup happen there.
+inline std::optional<Vec3> cast_surface_once_counted(const NativeSurfaceApi &api, std::uintptr_t world,
+                                                    Vec3 start, Vec3 end, SurfaceOwner owner,
+                                                    std::span<const std::uint64_t> ignored,
+                                                    std::uint64_t *entity,
+                                                    std::span<const SurfaceBody> ignored_bodies,
+                                                    std::vector<SurfaceBody> &discovered,
+                                                    SurfaceBodyReader body_reader,
+                                                    SurfaceCastProbe *probe, unsigned &native_casts,
+                                                    bool measure_contact = false,
+                                                    body_query::QueryPreset preset = body_query::QueryPreset::camera) {
+    SurfaceCastProbe ignored_result;
+    return cast_surface_once(api, world, start, end, owner, ignored, entity, ignored_bodies,
+                             discovered, body_reader,
+                             {probe ? probe : &ignored_result, &native_casts, measure_contact, preset});
+}
+// Existing typed owner-aware observations retain their limit of 32 exclusion attempts.
+// This helper is not used to cast through an owned body's nearest-hit query.
 inline SurfaceCastProbe cast_surface_probe(const NativeSurfaceApi &api, std::uintptr_t world,
                                            Vec3 start, Vec3 end,
                                            std::span<const SurfaceBody> ignored_bodies = {},
@@ -182,155 +283,77 @@ inline SurfaceCastProbe cast_surface_probe(const NativeSurfaceApi &api, std::uin
     for (unsigned attempt = 0; attempt < 32; ++attempt) {
         SurfaceCastProbe result;
         std::vector<SurfaceBody> discovered;
-        cast_surface_once(api, world, start, end, owner, ignored, nullptr, bodies, discovered, body_reader, &result);
+        cast_surface_once(api, world, start, end, owner, ignored, nullptr, bodies, discovered,
+                          body_reader, {&result});
         if (result.available) {
             result.excluded_bodies = static_cast<unsigned>(bodies.size());
             return result;
         }
         const auto before = bodies.size();
-        for (const auto& body : discovered)
-            if (std::find(bodies.begin(), bodies.end(), body) == bodies.end()) bodies.push_back(body);
-        if (bodies.size() == before || bodies.size() > 4096) break;
+        for (const auto &body : discovered)
+            if (std::find(bodies.begin(), bodies.end(), body) == bodies.end())
+                bodies.push_back(body);
+        if (bodies.size() == before || bodies.size() > 4096)
+            break;
     }
-    return {}; // Exclusion that cannot reveal a real query result is unavailable.
+    return {};
 }
-inline std::optional<Vec3> cast_surface_once_counted(const NativeSurfaceApi &api, std::uintptr_t world, Vec3 start,
-                                             Vec3 end, SurfaceOwner owner,
-                                             std::span<const std::uint64_t> ignored, std::uint64_t *entity,
-                                             std::span<const SurfaceBody> ignored_bodies,
-                                             std::vector<SurfaceBody> &discovered,
-                                             SurfaceBodyReader body_reader,
-                                             SurfaceCastProbe *probe, unsigned& native_casts, bool measure_contact = false,
-                                             body_query::QueryPreset preset = body_query::QueryPreset::camera) {
-    if (probe) *probe = {};
-    const auto filter = surface_query_filter(preset);
-    if (!filter || !api.ready || !api.ray || !world) return {};
+struct BoundedSurfaceCastProbe {
+    SurfaceCastProbe surface;
+    unsigned native_casts{};
+    bool budget_exhausted{};
+};
+inline BoundedSurfaceCastProbe cast_surface_probe_bounded(
+    const NativeSurfaceApi &api, std::uintptr_t world, Vec3 start, Vec3 end, unsigned maximum_casts,
+    std::span<const SurfaceBody> ignored_bodies = {}, SurfaceOwner owner = nullptr,
+    std::span<const std::uint64_t> ignored = {}, SurfaceBodyReader body_reader = nullptr,
+    bool measure_contact = false,
+    body_query::QueryPreset preset = body_query::QueryPreset::camera) {
+    BoundedSurfaceCastProbe out;
+    if (!surface_query_filter(preset) || maximum_casts < 1 || maximum_casts > 2 ||
+        !api.ready || !api.ray || !world)
+        return out;
     for (const auto &point : {start, end})
         for (const float value : point)
-            if (!std::isfinite(value) || std::abs(value) > 100000) return {};
-    if (dot(sub(end, start), sub(end, start)) < 1e-10f) return {};
-    NativeSurfaceRay request;
-    request.filter = *filter; // Mode, tolerance, flags and allocator lanes stay as the camera ray sends them.
-    std::vector<SurfaceBody> bodies;
-    for (const auto &body : ignored_bodies)
-        if (body[0] == world)
-            bodies.push_back(body);
-    if (!bodies.empty()) {
-        // The native ray implementation reads begin/end and each 16-byte body's index at +8.
-        request.ignored_bodies[0] = reinterpret_cast<std::uintptr_t>(bodies.data());
-        request.ignored_bodies[1] = reinterpret_cast<std::uintptr_t>(bodies.data() + bodies.size());
-        request.ignored_bodies[2] = request.ignored_bodies[1];
-    }
-    std::copy(start.begin(), start.end(), request.start.begin());
-    std::copy(end.begin(), end.end(), request.end.begin());
-    NativeSurfaceResult result;
-    struct Release {
-        const NativeSurfaceApi &api;
-        NativeSurfaceResult &result;
-        ~Release() {
-            // Same result cleanup as the native ray callers. Pop the temporary
-            // native allocation scope before releasing an explicit allocator.
-            if (result.scope[2]) {
-                const auto allocator = api.scope_allocator();
-                std::uintptr_t vtable{}, function{};
-                if (memory::read(allocator, vtable) && memory::read(vtable + 8, function) && function)
-                    reinterpret_cast<void (*)(std::uintptr_t, void *)>(function)(allocator,
-                                                                                 result.scope.data());
-            }
-            if (result.allocator)
-                api.release(&result.allocator_vtable, result.data);
-        }
-    } release{api, result};
-    ++native_casts;
-    api.ray(world, &result, &request, "ReSkate_ParkSurface");
-    if (result.world != world || !result.data || result.count > 4096 ||
-        result.first > UINT32_MAX - result.count)
-        return {};
-    std::uintptr_t fractions{};
-    if (!memory::read(result.data + 8, fractions))
-        return {};
-    // Supported-build ray wrapper 0x26afdc0 -> 0x2664c00: the implementation writes
-    // world/data, first=0, count=number of hits (0x26651fb..0x2665216). An empty
-    // query can have no fraction array. A zeroed/unowned result is not a clear ray.
-    if (!result.count) {
-        if (probe && !result.first) probe->available = true;
-        return {};
-    }
-    if (!fractions) return {};
-    float closest = 2;
-    std::uint32_t closest_ordinal{};
-    std::uint64_t closest_entity{};
-    SurfaceBody closest_body{};
-    for (std::uint32_t n = 0; n < result.count; ++n) {
-        float fraction{};
-        if (!memory::read(fractions + static_cast<std::uintptr_t>(result.first + n) * 4, fraction))
-            return {};
-        if (!std::isfinite(fraction) || fraction < 0 || fraction > 1) return {};
-        if (fraction < closest) {
-            const auto hit_entity = owner ? owner(world, result.first + n, result.data) : 0;
-            if (hit_entity && std::find(ignored.begin(), ignored.end(), hit_entity) != ignored.end()) {
-                SurfaceBody body{};
-                if (body_reader && body_reader(world, result.first + n, result.data, body) &&
-                    body[0] == world)
-                    discovered.push_back(body);
-                continue;
-            }
-            closest = fraction;
-            closest_ordinal = result.first+n;
-            closest_entity = hit_entity;
-            closest_body = {};
-            if (probe && body_reader) (void)body_reader(world, result.first + n, result.data, closest_body);
-            if (entity)
-                *entity = hit_entity;
-        }
-    }
-    if (closest > 1)
-        return {};
-    const auto position = add(start, mul(sub(end, start), closest));
-    if (probe) {
-        *probe = {true, true, position, closest, closest_entity, closest_body};
-        body_contact_read::Vectors vectors;
-        if (measure_contact && api.contact_ready && body_contact_read::vectors(result.data,closest_ordinal,position,start,end,vectors,
-            [](std::uintptr_t at, auto& value) { return memory::read(at,value); })) {
-            probe->position=vectors.position; probe->normal=vectors.normal; probe->normal_available=true;
-        }
-    }
-    return position;
-}
-// Separate bounded diagnostic path. Existing32-attempt API/ABI above is unchanged.
-struct BoundedSurfaceCastProbe {SurfaceCastProbe surface;unsigned native_casts{};bool budget_exhausted{};};
-inline BoundedSurfaceCastProbe cast_surface_probe_bounded(const NativeSurfaceApi& api,std::uintptr_t world,
-    Vec3 start,Vec3 end,unsigned maximum_casts,std::span<const SurfaceBody> ignored_bodies={},
-    SurfaceOwner owner=nullptr,std::span<const std::uint64_t> ignored={},SurfaceBodyReader body_reader=nullptr, bool measure_contact=false,
-    body_query::QueryPreset preset=body_query::QueryPreset::camera) {
-    BoundedSurfaceCastProbe out;
-    // The counted copy preserves the exact existing cast arithmetic and
-    // increments immediately before api.ray. Only the preset's filter lane differs.
-    if(!surface_query_filter(preset)||maximum_casts<1||maximum_casts>2||!api.ready||!api.ray||!world)return out;
-    for(const auto& point:{start,end})for(float value:point)
-        if(!std::isfinite(value)||std::abs(value)>100000)return out;
-    if(dot(sub(end,start),sub(end,start))<1e-10f)return out;
+            if (!std::isfinite(value) || std::abs(value) > 100000)
+                return out;
+    if (dot(sub(end, start), sub(end, start)) < 1e-10f)
+        return out;
     try {
-    std::vector<SurfaceBody> bodies(ignored_bodies.begin(),ignored_bodies.end());
-    if(bodies.size()>4096)return out;
-    for(unsigned attempt=0;attempt<maximum_casts;++attempt) {
-        SurfaceCastProbe result;std::vector<SurfaceBody> discovered;
-        cast_surface_once_counted(api,world,start,end,owner,ignored,nullptr,bodies,discovered,body_reader,&result,out.native_casts,measure_contact,preset);
-        if(result.available){result.excluded_bodies=static_cast<unsigned>(bodies.size());out.surface=result;return out;}
-        const auto before=bodies.size();
-        for(const auto& body:discovered)
-            if(std::find(bodies.begin(),bodies.end(),body)==bodies.end())bodies.push_back(body);
-        if(bodies.size()==before||bodies.size()>4096)return out;
+        std::vector<SurfaceBody> bodies(ignored_bodies.begin(), ignored_bodies.end());
+        if (bodies.size() > 4096)
+            return out;
+        for (unsigned attempt = 0; attempt < maximum_casts; ++attempt) {
+            SurfaceCastProbe result;
+            std::vector<SurfaceBody> discovered;
+            cast_surface_once_counted(api, world, start, end, owner, ignored, nullptr, bodies,
+                                      discovered, body_reader, &result, out.native_casts,
+                                      measure_contact, preset);
+            if (result.available) {
+                result.excluded_bodies = static_cast<unsigned>(bodies.size());
+                out.surface = result;
+                return out;
+            }
+            const auto before = bodies.size();
+            for (const auto &body : discovered)
+                if (std::find(bodies.begin(), bodies.end(), body) == bodies.end())
+                    bodies.push_back(body);
+            if (bodies.size() == before || bodies.size() > 4096)
+                return out;
+        }
+        out.budget_exhausted = true;
+    } catch (...) {
+        // Preserve actual backend-call accounting, without retrying a failed query.
     }
-    out.budget_exhausted=true;return out; // unresolved exclusion is unavailable, never clear or self-hit
-    }catch(...){return out;} // preserve actual backend-call accounting even on allocation/query exceptions
+    return out;
 }
-// A single nearest-hit query. Owner lookup and native owner-ID exclusions are
-// deliberately absent; callers may reject the returned hit but must not skip it.
-inline BoundedSurfaceCastProbe cast_surface_geometry_probe_bounded(const NativeSurfaceApi& api, std::uintptr_t world,
-    Vec3 start, Vec3 end, unsigned maximum_casts, SurfaceBodyReader shape_reader, bool measure_contact=false,
-    body_query::QueryPreset preset=body_query::QueryPreset::camera) {
-    return cast_surface_probe_bounded(api, world, start, end, maximum_casts, {}, nullptr, {}, shape_reader, measure_contact, preset);
+// One nearest-hit query: no owner lookup or native owner-ID exclusions are supplied.
+inline BoundedSurfaceCastProbe cast_surface_geometry_probe_bounded(
+    const NativeSurfaceApi &api, std::uintptr_t world, Vec3 start, Vec3 end, unsigned maximum_casts,
+    SurfaceBodyReader shape_reader, bool measure_contact = false,
+    body_query::QueryPreset preset = body_query::QueryPreset::camera) {
+    return cast_surface_probe_bounded(api, world, start, end, maximum_casts, {}, nullptr, {},
+                                      shape_reader, measure_contact, preset);
 }
 inline std::optional<Vec3> cast_surface(const NativeSurfaceApi &api, std::uintptr_t world, Vec3 start,
                                         Vec3 end, SurfaceOwner owner = nullptr,

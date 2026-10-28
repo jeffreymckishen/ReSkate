@@ -4,8 +4,8 @@
 #include <cstdint>
 
 namespace dingosdk::game::build::v20260929::body_contact {
-// Static contact-vector readers and native point-motion arithmetic. The complete
-// bodies and semantic callers are recorded in the private contact proposal.
+// Static contact-vector readers and native point-motion arithmetic, whose layout the
+// opt-in contact measurement (Engine/Game/World/body_contact_read.h) follows.
 // Fingerprints alone do not qualify a world, body, result lifetime or actor exclusion.
 inline constexpr std::array<Fingerprint, 5> contracts{{
     {0x25d5390, {0x48,0x8b,0x41,0x10,0x44,0x8b,0x41,0x08,0x4d,0x03,0xc0,0x48,0x8b,0x48,0x20,0x48,0x8b,0xc2,0xc4,0xa1,0x78,0x10,0x04,0xc1,0xc5,0xf8,0x11,0x02,0xc3,0xcc,0xcc,0xcc}},

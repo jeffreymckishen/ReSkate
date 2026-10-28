@@ -1,74 +1,57 @@
-# Explicit native-body preparation
+# Preparing native bodies: `reskate.world.physics.prepare`
 
-`reskate.world.physics.prepare()` lets a mod
-request the generic producer setup before its first actual allocation attempt.
-The API builds in normal full Release and passes its focused constructed tests.
-Native readiness and a successful first mount remain unverified.
+`reskate.world.physics.prepare()` lets a mod ask for the body producer's one-time setup before its
+first real allocation, so that `create` is not the call that discovers the setup is pending. See
+[owned native bodies](plugin-owned-bodies.md) for the rest of the API.
 
-The call requires the existing `world.physics` permission and client phase. It
-takes no arguments, including no owner, body definition, handle, callback or
-proof. Permission/phase/arity errors use the ordinary Lua API error behavior.
-Every VM may attempt it at most once per actual plugin tick. Pending, unavailable
-and ready calls all consume the attempt. A second well-formed call that tick
-returns `false, reason` without reaching the native service.
+The call needs `world.physics` and the client phase. It takes no arguments: no owner, definition,
+handle, callback or proof. A VM may call it once per plugin tick; a pending, unavailable or ready
+answer all use that call, and a second call in the same tick returns `false, reason` without
+reaching the game.
 
 ```lua
 local ready, why = reskate.world.physics.prepare()
--- ready is a boolean, never a body, probe, claim or native identity.
+-- ready is a boolean, never a body or a native identity.
 ```
 
-`true` means the existing body producer is marked hooked and the call could
-freshly capture the local client/world chain and a matching qualified 60 Hz
-clock. It is a sampled prerequisite, not a reserved allocation, capacity promise,
-native callback-consumption witness, follow admission or gameplay completion.
-Slots can still be exhausted, a prior partial allocation can prohibit another,
-or state can change before the later explicit `create` call.
+`true` means the producer is hooked and the call could capture the local client and world chain
+afresh with a matching 60 Hz step clock. It is a sampled prerequisite, not a reserved allocation
+or a promise of capacity: the slots can still run out, an earlier partial allocation can still
+prohibit another, and the state can change before the later `create`.
 
-`false, reason` reports one of these native readiness results:
+`false, reason` is one of:
 
 | Reason | Meaning |
 | --- | --- |
-| `native body producer setup pending; call prepare again explicitly` | The cold call queued only the existing deferred process-lifetime initializer flag. |
-| `waiting for a fresh qualified 60 Hz physics step` | The producer is marked hooked but current actor/world/clock capture is unavailable. |
-| `native body ABI or producer hook unavailable; another producer may own it` | The existing one-shot initializer was already attempted and the producer is unavailable. The API does not retry or bypass it. |
-| `owned bodies require the current local client phase outside multiplayer` | SDK client readiness is ineligible, stale, from another thread or multiplayer. |
-| `native body preparation failed closed` | An exception was refused without constructing a body request. |
+| `native body producer setup pending; call prepare again explicitly` | The call only asked for the deferred one-time setup. |
+| `waiting for a fresh qualified 60 Hz physics step` | The producer is hooked but the local skater, world or clock cannot be captured now. |
+| `native body ABI or producer hook unavailable; another producer may own it` | The one-time setup already ran and failed. It is not retried. |
+| `owned bodies require the current local client phase outside multiplayer` | The client phase is not ready, is stale, is another thread's, or a session is on. |
+| `native body preparation failed closed` | An exception was caught before anything was requested. |
 
-The Lua quota has its own `asked to prepare native bodies more than once in one
-tick` reason. An unavailable Game façade retains its ordinary unavailable reason.
+Asking twice in a tick gives `asked to prepare native bodies more than once in one tick`.
 
-Cold preparation uses the same existing eligible/local-only setup gate as cold
-`create`. It retains no plugin owner, definition, position, pending allocation or
-slot. Only the existing later `owned_bodies::tick` may run the initializer, outside
-the plugin VM budget and service lock. An ineligible tick drops the request; a
-later return to eligibility does not requeue it. The request does not register a
-new hook, skip prefix/build checks, change an RVA or retry a failed initializer.
-An already warm read-only motion clock alone does not prepare the body producer.
+A pending call keeps no plugin owner, definition, position, allocation or slot. Only the next
+`owned_bodies::tick` may run the setup, outside the plugin VM's time budget and the service lock;
+a tick outside the client phase drops the request, and returning to the client phase does not
+bring it back. The setup registers no other hook and skips none of the byte checks. A ready call
+reads only the capture and the clock: it reconciles no world, retires no slot, changes no mailbox
+and calls no native allocator, setter or force.
 
-The warm path reads only `capture` and `clock`. It does not reconcile SDK worlds,
-retire existing slots, release/park a body, change a mailbox, reserve a generation,
-call a native body/shape allocator, set transforms or apply forces. Diagnostics
-and fixed stack copies are ordinary SDK/VM values, not native body allocations.
-The existing `create` implementation and its cold behavior remain unchanged.
+A one-shot body mod should prepare explicitly, wait for a later tick after a pending answer, call
+`prepare` again, and only after `true` make its single `create`. Failed `create` calls are not a
+readiness probe; the API retries nothing for the caller.
 
-A one-shot body trial should have an explicit preparation stage, wait for a
-later fresh eligible tick after a pending result, and separately call `prepare`
-again under its own bounded policy. A fresh `true` can permit its single explicit
-`create` attempt. That attempt remains exactly one; do not use failed `create`
-calls as readiness probes, replay a retained definition or silently retry a
-native allocation. The API performs no retries for the caller.
+## Tests
 
-The actual Host fixture checks missing permissions, server side,
-argument rejection, per-tick quota charging/reset, explicit pending/ready/refused
-results, independent VMs and reload without body side effects. Its native leaves
-are constructed and cannot prove the real initializer worked.
-
-The World fixture calls the actual native-service source over existing
-constructed arrays/TLS, clock and counted ABI leaves. It checks flag-only cold
-requests with zero attempted slots/native mutator calls, the existing deferred
-initializer's fail-closed outside-lock path, warm capture/clock and foreign-phase
-refusals, and unchanged pre-existing slot/world/mailbox state. Its seeded hooked
-state is not a retail hook installation witness.
+The plugin tests (`Extension/Plugins/Test/body_prepare_host_fixture.inc`) cover the missing
+permission, the server side, argument refusal, the per-tick charge and its reset, the pending,
+ready and refused answers, independent VMs and reload, all without any body side effect, against a
+constructed game. The service test (`Extension/World/Test/body_prepare_source_fixture.inc`) runs
+`owned_bodies::prepare` over a constructed client, world, TLS and clock: a cold call only sets the
+setup request, the failing setup runs once outside the lock and is not retried, the ready path
+needs a fresh capture and clock, and existing slots and the cached world are left as they were.
+Neither shows the real setup succeeding in the game.
 
 ## Validation checkpoint — 2026-10-24
 
@@ -88,3 +71,6 @@ rider following working in Skate.
 The built runtime is `B812D53D` and the launcher is `9191A1C5`; full hashes are in
 the execution receipt. That pair was not deployed or loaded for this checkpoint.
 The separate Luau trial's Host validation is not part of this six-test result.
+
+This is the historical source composition named above, not qualification of the later upstream
+merge or of a different loaded runtime.

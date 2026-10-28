@@ -50,7 +50,7 @@ void counts_and_discard_are_bounded() {
     const auto clear = [&](const Ray&, unsigned allowance) { ++calls; check(allowance == 2, "per-ray cast allowance"); return Probe{{Status::clear}, 2}; };
     auto out = execute(r, 64, 1000, clear, fence);
     check(out.available && out.native_casts == 64 && calls == 32 && fences == 2, "all-clear maximum batch");
-    for (const auto& hit : out.rays) check(hit.status == Status::clear && !hit.body, "clear ray invented identity");
+    for (const auto& hit : out.rays) check(hit.status == Status::clear && !hit.body && hit.position == Vec{}, "clear ray invented identity or geometry");
     calls = fences = 0;
     out = execute(r, 63, 1000, [&](const Ray&, unsigned allowance) {
         ++calls; return allowance == 2 ? Probe{{Status::hit, {1, 0, 3}, .5f, 1}, 2} : Probe{{}, allowance, true};
@@ -403,7 +403,7 @@ void every_returned_shape_body_pair_reaches_the_final_batch_fence() {
         if (mutate_second) {
             check(out.failure == Failure::observation_changed, "changed second shape escaped the batch fence"); empty(out);
         } else {
-            check(out.available && out.rays[0].status == Status::hit && !out.rays[0].body && !out.rays[1].body,
+            check(out.available && out.rays[0].status == Status::hit && out.rays[1].status == Status::hit && !out.rays[0].body && !out.rays[1].body,
                 "current pairs failed or invented public body tokens");
         }
         check(!witnesses.add({{HitFixture::world, 11, 4}, {HitFixture::world, 57, 4}}) && witnesses.count == 2,

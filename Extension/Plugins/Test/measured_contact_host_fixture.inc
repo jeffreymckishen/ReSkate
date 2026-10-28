@@ -1,6 +1,7 @@
-// Same translation unit as plugin_tests.cpp. Constructed Game facts, real Host and bindings.
-// Source preparation only: this file has not been compiled, parsed or executed.
+// Same translation unit as plugin_tests.cpp. Constructed Game facts, real Host and bindings, over
+// the tracked measured-contact diagnostic fixture; no native success is established here.
 #include <cmath>
+#include <iterator>
 
 namespace measured_contact_fixture_detail {
 using dingosdk::Json;
@@ -21,7 +22,7 @@ void no_actuators(const TestEnvironment& environment) {
     const auto& game = environment.fake;
     check(!game.body_submissions && !game.input_pulse_requests && !game.input_trace_requests &&
               !game.native_action_requests && !game.native_recovery_requests &&
-              environment.teleports.empty() && !environment.rays && !environment.native_ray_casts,
+              environment.teleports.empty() && !environment.rays && !environment.native_ray_casts && !game.probes && !game.world_picks,
           "Measured-contact Host fixture requested an unrelated actuator or world-ray API");
 }
 
@@ -147,7 +148,7 @@ void vector_lanes(const Json& value, const std::array<double,3>& expected, const
 void measured_contact_host_fixture_v1() {
     namespace f = measured_contact_fixture_detail;
     const auto directory = std::filesystem::path(RESKATE_SOURCE_DIR) /
-        "contrib/bmx-lab/measured-contact-trial";
+        "Extension/Plugins/Test/fixtures/measured-contact";
     const std::map<std::string,std::string> files{
         {manifest_file,f::contents(directory / manifest_file)},
         {"plugin/main.lua",f::contents(directory / "plugin/main.lua")}
@@ -437,7 +438,7 @@ void measured_contact_host_fixture_v1() {
         const std::string id="measured-readiness-bound";
         TestEnvironment environment; Host host(environment,Side::client); f::ready(environment,id);
         auto& game=environment.fake;
-        game.test_body_create_refusal="body_preallocation_unavailable";
+        game.test_body_create_refusal="waiting for a fresh qualified 60 Hz physics step";
         host.apply({package(id,files)}); f::show(host,environment,id); f::start(host,environment,id);
         f::close_menu(host,environment,id);
         check(game.body_create_calls==1 && !game.body_creates && !game.body_read_calls && !game.batch_calls,

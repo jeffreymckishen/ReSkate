@@ -1,344 +1,238 @@
-# Ray batches tied to an owned body's measured epoch
+# Ray batches beside an owned body: `reskate.world.physics.probe_batch`
 
-`reskate.world.physics.probe_batch(body, epoch, rays, options?)` requires both
-`world.physics` and `world.raycast`, and is client phase only. `body` is an opaque
-handle from `physics.create`; `epoch` is the opaque observation token from that
-body's `physics.read` sample. It retains that immutable complete sample internally,
-including position, rotation, linear/angular velocity, mass and inertia. A query
-grants no force, motion, pose or ownership authority.
+`reskate.world.physics.probe_batch(body, epoch, rays, options?)` needs both `world.physics` and
+`world.raycast`, and is client phase only. `body` is an opaque handle from `physics.create`
+([owned native bodies](plugin-owned-bodies.md)); `epoch` is the opaque token from that body's
+`physics.read` sample, which keeps the whole sample (position, rotation, velocities, mass and
+inertia) inside. A batch grants no force, motion, pose or ownership.
 
-The native adapter has a conservative query path with actor exclusion disabled.
-It sends no native ignored-owner IDs or ignored entities, and does no owner
-lookup. Each actual nearest hit must pass the pinned native shape reader,
-current shape-to-body association, independent body capacity/allocation and
-current generation checks. An excluded or unqualified nearest hit makes the
-whole batch unavailable; the adapter never skips it, retries through it or
+The native side sends no ignored-owner IDs or ignored entities and looks up no owner. Each actual
+nearest hit must pass the pinned native shape reader, the current shape-to-body association, the
+body's own capacity and allocation check and its current generation. An excluded or unqualified
+nearest hit makes the whole batch unavailable; the batch never skips it, casts through it or
 substitutes a farther surface. The reason says which: `owned_body_hit` or
-`hit_identity_unqualified`. In-game qualification of this replacement path
-remains required. Actor exclusion still returns
-`local_actor_exclusion_unavailable` before any native cast.
+`hit_identity_unqualified`.
 
 ```lua
 local sample = assert(reskate.world.physics.read(body))
 local batch = reskate.world.physics.probe_batch(body, sample.epoch, {
     {from = sample.position, to = sample.position - vector.create(0, 1, 0)},
-}, {exclude_local_actor = true})
+})
 if batch.status == "available" then
     local ray = batch.rays[1]
-    -- Contact fitting and vehicle decisions belong to the plugin.
+    -- What a contact means, and what to do about it, is the plugin's decision.
 elseif batch.reason == "body_epoch_or_observation_changed" then
-    -- Defer this decision. The SDK does not relabel or replay the query or a command.
-elseif batch.reason == "local_actor_exclusion_unavailable" then
-    -- The current native adapter cannot qualify this exclusion. Keep the vehicle inactive.
+    -- Decide later. The SDK does not relabel or replay the query or a command.
 elseif batch.reason == "body_exclusions_unavailable" then
-    -- Native association metadata is unavailable; no ray was attempted.
+    -- The native association data is unavailable; no ray was cast.
 end
 ```
 
-There are 1 to 32 rays, each exactly `{from = vector, to = vector}` in world
-metres. Positions must be finite and within 100 km of the map origin. Segments
-must have a nonzero direction, be at least 10 micrometres long and at most 1000 m
-long, subject to a lower configured host limit. Invalid arguments raise a Lua
-error. Lists must be dense arrays; extra fields are refused.
+## Rays and options
 
-Options are `exclude_bodies = {other_owned_body, ...}`,
-`exclude_local_actor = true|false`, `require_contact = true|false`,
-`query_preset = "camera"|"terrain"|"all"`, `include_shape_categories = true|false`,
-`require_named_actor_categories_absent = true|false` and
-`include_hit_owner = true|false` (all described below). At most eight additional opaque body handles
-are accepted. Every exclusion must still belong to this VM, its current native
-world and a fresh owned generation. The anchoring body must always be excluded.
-The native ray filter consumes owner indices, not body or shape handles, and the
-SDK-owned capsules have no native owner. The adapter supplies an empty filter
-list and checks the nearest hit's current body against the owned exclusions.
-Native body references are resolved internally; plugins cannot supply addresses, native
-body indices or actor IDs. `exclude_local_actor` defaults to false. Setting it to
-true currently returns `local_actor_exclusion_unavailable` before any native cast.
-The placement root resolver accepts a packed entity key; the current local actor
-anchor is a raw SkaterEntity pointer. Passing that pointer as a key is invalid.
-A verified actor conversion and a compatible exclusion domain are still required.
-Omitting actor exclusion does not establish rider-safe vehicle contact queries.
+There are 1 to 32 rays, each exactly `{from = vector, to = vector}` in world metres. Positions must
+be finite and within 100 km of the map origin; a segment must be at least 10 micrometres and at
+most 1000 m long (or the host's lower limit). Invalid arguments are Lua errors. Lists must be
+dense arrays, and any other field is refused.
 
-The result has `status = "available"|"unavailable"`, `native_casts`,
-`budget_exhausted`, the exact supplied opaque `epoch`, and a dense `rays` list
-of the requested length. An unavailable batch also has a `reason`.
-`local_actor_excluded` reports whether the backend established that exclusion
-for an available result that asked for it. It is the backend's fact, never a copy
-of the request's flag; an earlier binding echoed `exclude_local_actor` there, and
-that echo is removed. The native backend never sets it, so it is false today. A
-backend result that claims it, or `named_actor_categories_absent`, without the
-matching request, or claims both at once, is refused as
-`invalid_query_backend_result`. The available
-`owned_bodies_excluded` flag describes nearest-hit postclassification against
-owned exclusions, not native ignored-owner filtering or proof the whole ray is empty.
-Each available ray has `status = "clear"|"hit"`. A hit adds its segment
-`position` and `fraction`, known flags `normal_available` and
-`surface_velocity_available`, `motion`, and optionally an opaque `body` token.
-With default options the new measurements are omitted and `motion` is `"unknown"`.
-Surface/feature IDs and native identity fields stay private. A clear ray has no
-geometry, contact measurements or body token.
+The options are `exclude_bodies`, `exclude_local_actor`, `require_contact`, `query_preset`,
+`include_shape_categories`, `require_named_actor_categories_absent` and `include_hit_owner`, each
+described below; every boolean option takes only an actual boolean.
 
-`require_contact` defaults to false. Only an explicit true value enables the new
-contact fingerprints, native result-vector reads, foreign-body motion reads and
-their closing fences. Every hit then needs both a validated `normal` and
-`surface_velocity`; otherwise the entire batch reports
-`contact_measurement_unavailable`, retaining its actual cast count. A clear ray
-remains clear without invented contact values. The option does not imply actor
-exclusion: a riding caller must still request `exclude_local_actor=true` and keep
-the vehicle inactive on its current zero-cast refusal.
+`exclude_bodies = {other_owned_body, ...}` adds at most eight more of this VM's bodies, each in the
+same native world and still owned. The anchoring body is always excluded. The native ray filter
+takes owner indices, not body or shape handles, and owned capsules have no native owner, so the
+batch sends an empty filter and checks the nearest hit's body against the owned exclusions
+instead. Plugins cannot supply addresses, native indices or actor IDs.
 
-The contact path copies the actual native hit point and normal while the ray
-result's release scope remains alive. The point must agree with the segment
-interpolation within 2 cm; malformed, nonfinite, nonunit or backfacing normals
-are refused, never normalized or flipped. Point motion comes from that hit's
-separately qualified current body arrays as
-`linear + angular cross (contact_point - body_position)`.
-An available value has `motion="measured"`; zero motion is an instantaneous
-measurement, not proof that a surface is permanently static. No dynamic bit,
-inverse mass or stationary image substitutes for this measurement. Every
-accepted hit's ring headers and values are rechecked separately during the final
-whole-batch shape/body/clock fence, even when several shapes share one body.
-These remain endpoint observations; they do not pin native allocations or rule
-out same-value reuse, generation wrap, or a write after the last observation.
+`exclude_local_actor` defaults to false. `true` returns `local_actor_exclusion_unavailable` before
+any cast: the placement root lookup takes a packed entity key, while the local skater is known
+here only as a SkaterEntity pointer, and a verified conversion does not exist yet. Leaving it out
+does not make a batch safe from hitting the local skater.
 
-**Query presets.** `query_preset` chooses which fixed native filter every ray in the batch sends.
-It defaults to `"camera"`, the filter the native camera ray uses and the one
-every earlier batch sent. `"terrain"` sends the game's own physics query preset
-of that name instead: one category bit, nothing else. `"all"` is a diagnostic
-preset with every filter bit set, so the native ray tests every shape whose
-InCategories is nonzero, actors' shapes included; a shape whose categories are zero
-is still never tested. It needs `world.physics.observe` as well, checked before the
-logical ray budget or any native call is spent; without it the call raises a Lua
-error. It is for seeing what the other presets skip, never for support: an `"all"`
-hit may be the local actor's own shape. Any other value, a number
-or a differently cased name raises a Lua error before the logical ray budget or
-any native call is spent. There is no way to pass a raw mask; the native values
-live only in the supported build's `park_editor.h`.
+## The result
 
-A preset selects which shapes the native ray tests. It does not classify what a
-hit belongs to. A `"terrain"` hit is not proof that the surface is terrain,
-static, part of the map or free of the rider and board, and a `"terrain"` clear
-means only that no shape matching that one category was on the segment. The
-game's Static preset lacks the Terrain bit, so some ramps and props can be
-missed entirely; a clear is never "no collision exists". Every other rule is
-unchanged: one nearest hit per ray, the same owned-body and identity refusals,
-the same `require_contact` measurements and closing fences, and
-`exclude_local_actor = true` still returns `local_actor_exclusion_unavailable`
-before any native cast. No camera fallback or retry is made when a terrain ray
-is refused, and no zero velocity is assumed from the preset's name.
+The result has `status = "available"|"unavailable"`, `native_casts`, `budget_exhausted`, the exact
+`epoch` passed in, and a dense `rays` list of the requested length; an unavailable batch also has
+a `reason`. `local_actor_excluded` reports whether the backend established that exclusion for an
+available result that asked for it. It is the backend's fact, never a copy of the request's flag,
+and the native backend never sets it, so it is false today. A backend result that claims it, or
+`named_actor_categories_absent`, without the matching request, or claims both, is refused as
+`invalid_query_backend_result`. `owned_bodies_excluded` on an available batch says the nearest hits
+were checked against the owned bodies; it is not native filtering, and not proof that a whole ray
+is empty.
 
-A batch that names a preset gets one more field, `requested_query_preset`, on
-every result (hit, clear or refusal). It repeats the request. It is not evidence
-of which filter the native ray applied or of what was hit; `status`,
-`native_casts` and each ray's fields describe what actually ran. A batch without
-the option has exactly the earlier fields, so code that allow-lists them keeps
-working. `local_actor_excluded` stays false on a terrain refusal.
+Each available ray has `status = "clear"|"hit"`. A hit adds its `position` and `fraction` on the
+segment, the flags `normal_available` and `surface_velocity_available`, and `motion`. With the
+default options the measurements are left out and `motion` is `"unknown"`. A clear ray has no
+geometry or measurements. A hit may also carry an opaque, equality-only body observation token;
+no native body, collider, face or feature identity is exposed. The current native adapter omits
+that optional token.
 
-```lua
--- A read-only observation: two downward wheel rays over a floor the plugin
--- already knows is clear, with no force, impulse or follow command.
--- front and rear are the plugin's own wheel positions.
-local batch = reskate.world.physics.probe_batch(body, sample.epoch, {
-    {from = front + vector.create(0, .5, 0), to = front - vector.create(0, .5, 0)},
-    {from = rear + vector.create(0, .5, 0), to = rear - vector.create(0, .5, 0)},
-}, {query_preset = "terrain", require_contact = true, exclude_local_actor = false})
-if batch.status == "available" then
-    -- batch.requested_query_preset == "terrain"; each hit has a measured normal
-    -- and surface_velocity. Decide yourself whether this is the floor you expected.
-elseif batch.reason == "contact_measurement_unavailable" then
-    -- A hit lacked a measured normal or motion. Nothing was guessed.
-end
-```
+## Measured contact
 
-The preset lane is covered by source and constructed-ABI tests. No in-game
-terrain batch has been run yet: whether `"terrain"` reaches a given floor, ramp
-or prop, and whether it can return the rider's own shapes, is still unmeasured.
+`require_contact = true` turns on the contact readers (their bytes are compared first), the reads
+of the hit's result vectors and of the hit body's motion, and their closing checks. Every hit then
+needs both a validated `normal` and `surface_velocity`, or the whole batch is
+`contact_measurement_unavailable` with its actual cast count. A clear ray stays clear.
 
-**Shape categories.** `include_shape_categories = true` asks for one optional,
-read-only number on each qualified hit: `in_categories`, the hit shape's
-InCategories mask as read after the ray, an exact whole number from 0 to
-4294967295. The option needs three permissions: `world.physics` and
-`world.raycast` as for every batch, and `world.physics.observe`, which is checked
-only when the option is true, before the logical ray budget or any native call is
-spent. Without it the call raises a Lua error; the same plugin's ordinary batches
-still run. Only an actual boolean is accepted. Leaving the option out, or `false`,
-reads no category and adds no field.
+The hit point and normal are copied while the native ray result is still alive. The point must lie
+on the segment within 2 cm; a malformed, non-finite, non-unit or backfacing normal is refused,
+never normalised or flipped. The point's motion is read from the hit body's own current arrays as
+`linear + angular x (contact_point - body_position)`. An available value has `motion =
+"measured"`; zero motion is an instantaneous measurement, not proof that a surface never moves.
+Every accepted hit's rings are read again in the final whole-batch check, even when several shapes
+share one body. These are endpoint observations: they do not pin a native allocation or rule out
+reuse between reads.
 
-`in_categories` appears only on a `status = "hit"` row of an available batch that
-asked for it. Missing means unavailable; `0` is a known empty mask. It is missing
-when the supported build's own category getter no longer has its pinned bytes,
-when the category array or element cannot be read, or when the array or value
-changed between the paired reads or before the closing fence. A clear ray never
-has one, and a refused batch has none. The option adds no availability flag,
-reason, native index, handle, generation or owner, and no batch-level field.
+## Query presets
 
-The adapter reads the value only after the nearest hit has passed the shape
-reader, the shape-to-body association and the owned-body exclusion. It indexes
-the native category array with the hit's own shape, not its mapped body, so two
-shapes of one body keep their own values. It reads the array pointer and value
-twice, between two checks of the same World/state, listener epoch and sample, and
-shape/body association, and the closing fence repeats all of that. An identity
-change found there still refuses the whole batch as
-`body_epoch_or_observation_changed`; a change to the category alone only drops
-that ray's value. Values are copied into the result after the closing fence, so a
-refused batch can never carry one. Native cast and logical ray accounting,
-contact requirements, presets and exclusions are unchanged.
+`query_preset` chooses the fixed native filter every ray in the batch sends. `"camera"`, the
+default, is the filter the game's camera ray sends, as `world.raycast` and `world.probe` do. `"terrain"`
+sends the game's own physics query preset of that name: one category bit. `"all"` is a diagnostic
+with every filter bit set, so the ray tests every shape whose categories are nonzero, actors'
+shapes included; it also needs `world.physics.observe`, checked before any budget or cast is
+spent. An `"all"` hit may be the local skater's own shape. Any other value, a number or another
+spelling is a Lua error before anything is spent, and no raw mask can be passed: the native values
+live in `Engine/Game/Build/20260929/park_editor.h`.
 
-This is read-time evidence about one mask. It does not identify an actor, a
-floor, terrain, static geometry or support, says nothing about the filter the
-native ray applied at collision time, does not exclude the local actor and grants
-no force. The ray supplies no collision-time shape generation, so a category that
-changed before the first read, or changed and returned between reads, cannot be
-seen. A clear ray says nothing about categories beyond its own segment. There is
-no raw filter option, ignored-ID list, farther-hit search, extra native ray or
-fallback query. The field is covered by source and constructed-memory tests only;
-no in-game batch has asked for it yet.
+A preset selects which shapes the ray tests; it does not say what a hit belongs to. A `"terrain"`
+hit is not proof of terrain, static geometry or a surface free of the skater and board, and a
+`"terrain"` clear means only that no shape with that one bit was on the segment. The game's Static
+preset lacks the Terrain bit, so some ramps and props are not tested at all. Every other rule is
+the same, and a refused terrain ray falls back to nothing.
 
-**Named actor categories.** `require_named_actor_categories_absent = true` is a
-refusal-only check on the hits a batch returns. It needs only `world.physics` and
-`world.raycast` and shows no category. A call that names the option, true or
-false, gets one more batch field, `named_actor_categories_absent`, on every result,
-in the same way as `requested_query_preset`; a call without it keeps the earlier
-fields. The named actor categories are the supported build's category bits whose
-definitions name a character, ragdoll, character proxy, skateboard or skater (bits
-2, 3, 21, 25, 26, 28 and 29), plus bit 31, which only the SkateboardCollisionHelper
-shape template carries: `0xB620000C`, in `park_editor.h`. Bits 6 and 12 of the
-Character template are left out, because the Terrain and DynamicGameplay templates
-carry them too and real floors would be refused.
+A batch that names a preset gets one more field on every result, `requested_query_preset`, which
+repeats the request; `status`, `native_casts` and each ray say what actually ran. A batch without
+the option does not have that field.
 
-Before any cast, the batch is refused as `named_actor_categories_unavailable` when
-the preset's native filter shares a bit with those categories, which is `"all"`, or
-when the category getter's pinned bytes do not match. `exclude_local_actor = true`
-is still refused first. Otherwise the adapter reads each hit's InCategories exactly
-as `include_shape_categories` does, whether or not that option was also asked for.
-After the closing fence, and before anything is published, it judges every hit row
-in order. A value that could not be read, or was dropped at the fence, refuses the
-batch as `hit_categories_unavailable`. A value that shares no bit with the preset's
-filter, which the native gate should never return, refuses it as
-`hit_categories_inconsistent`. A value with a named bit refuses it as
-`hit_named_actor_category`. Each makes the whole batch unavailable with no rows and
-keeps its actual cast count. Clear rays pass: nothing was returned to classify.
-`named_actor_categories_absent` is true only on an available batch that passed
-every rule, and false on every unavailable one. The values themselves appear only
-when `include_shape_categories = true` was also asked for, with its permission.
+## Shape categories
 
-`named_actor_categories_absent = true` means three things: the filter the native ray
-sent shares no bit with the named categories (a compile-time check for `"camera"`
-and `"terrain"`); every returned hit had a readable InCategories word that was
-unchanged at the closing fence; and each word overlapped that filter and carried no
-named bit. It is not actor exclusion and never sets `local_actor_excluded`. It does
-not show that an actor's shapes carry only named bits: an actor or prop shape that
-carries only world-like filter bits passes. It says nothing about collision-time
-categories, about every native dispatch route, or about support or force, and
-`"camera"` also tests bits that other players, vehicles or Build Kit pieces may
-carry. The check is covered by source and constructed-memory tests only.
+`include_shape_categories = true` asks for `in_categories` on each qualified hit: the hit shape's
+InCategories mask as read after the ray, a whole number from 0 to 4294967295. It needs
+`world.physics.observe` as well, checked only when the option is true and before anything is
+spent; without it the call is a Lua error. Leaving it out reads nothing and adds no field.
 
-**Hit owners.** `include_hit_owner = true` asks for each qualified hit's shape owner
-slot, read and fenced exactly as `in_categories` is: at the hit's own shape index,
-after the hit passed the shape reader, the association and the owned-body
-exclusion, read twice between identity checks, read again at the closing fence and
-copied in only after it. It needs `world.physics.observe`, checked before the logical
-ray budget or any native call is spent. A hit row then has `owner_assigned`, which
-is false for the build's unassigned slot, and, only when that is true, `owner`: an
-opaque locked userdata that supports `==` and nothing else. Both are missing when
-the slot could not be read or changed before the closing fence; an identity change
-still refuses the whole batch as `body_epoch_or_observation_changed`. The option
-adds no batch-level field.
+`in_categories` appears only on a hit row of an available batch that asked for it. Missing means
+unavailable; `0` is a known empty mask. It is missing when the build's category getter no longer
+has its pinned bytes, when the array or element cannot be read, or when either changed between the
+paired reads or before the closing check. It is read only after the hit passed the shape reader,
+the association and the owned-body exclusion, at the hit's own shape index (so two shapes of one
+body keep their own values), and copied into the result only after the closing check. An identity
+change seen then still refuses the whole batch as `body_epoch_or_observation_changed`; a change to
+the category alone drops that ray's value.
 
-Two `owner` tokens compare equal when they come from the same plugin instance, the
-same SDK world generation and the same measured epoch serial, and their read-time
-slots were equal, so single-ray batches cast against one epoch can be compared.
-Tokens from different epochs never compare equal. The slot itself, its index, kind
-and generation never reach Lua. Equal tokens mean equal read-time owner slots, each
-stable through its own fence; they say nothing about whose owner it is, and
-`owner_assigned = false` proves nothing about a shape. The slot layout is the one
-`set_shape_owner`'s pinned bytes show, which the owned-body service checks before it
-creates any body. The token is covered by source and constructed-memory tests only.
+This is one mask as read after the ray. It does not identify an actor, a floor or static geometry,
+says nothing about collision-time filtering, excludes nothing and grants no force.
 
-The contact-vector roles are supported by static consumers in the one supported
-game build. The source and constructed-memory tests do not demonstrate the new
-measurements in a retail native ray. Known flat and moving surfaces, normal
-conventions, actor coverage and body/query/force composition still need distinct
-in-game qualification before this API can support a riding controller.
+## Named actor categories
 
-The optional `body` token supports equality **only within that returned batch**:
-two qualified hits on the same current native body compare equal. Tokens from
-different batches compare unequal, even if the physical body happens to be the
-same. A token cannot be submitted, read, released or used as an exclusion handle.
-It represents a qualified body observation, not a collider, face or surface
-feature, and carries no proof of static or moving contact. Unqualified identities
-are omitted while valid hit geometry may still be returned.
-The current native adapter omits this optional token. Its private association
-check uses the actual hit shape, the native shape-to-body index table, then the
-distinct body's capacity, allocation and u32 generation. Matching shape and body
-index/generation numbers cannot establish that conversion. Every returned
-shape/body pair is rechecked before publication, including different shapes
-sharing one body. These checks establish current association only: the native
-hit reader obtains a byte generation after the ray, so collision-time index
-reuse and generation wrap are not ruled out. No arbitrary-index conversion API
-or universal foreign shape-array capacity is exposed or claimed.
+`require_named_actor_categories_absent = true` is a refusal-only check on the hits a batch returns.
+It needs only `world.physics` and `world.raycast` and shows no category. A call that names the
+option, true or false, gets `named_actor_categories_absent` on every result. The named actor
+categories are the build's category bits whose definitions name a character, ragdoll, character
+proxy, skateboard or skater (bits 2, 3, 21, 25, 26, 28 and 29), plus bit 31, which only the
+SkateboardCollisionHelper shape template carries: `0xB620000C`, in `park_editor.h`. Bits 6 and 12
+of the Character template are left out, because the Terrain and DynamicGameplay templates carry
+them too and real floors would be refused.
 
-Before and after any executed batch, the native adapter rechecks
-the owned anchor, context, native world/state, SDK world and body generations, owned exclusions, and
-the exact listener sample epoch. Both fences also require the latest published
-sample and a fresh read-only native body observation to match every numeric lane
-of the token's canonical sample exactly. Even a read or receipt that replaces
-`latest` in the same listener epoch cannot rebind an older token. A changed
-observation discards **every** ray; no partial
-contact set escapes. These checks qualify one local observation window. They do
-not lock the native physics world or freeze native position, rotation or velocity
-arrays between those reads, and do not prove globally atomic collision geometry.
-The Lua vehicle adapter must still qualify how it pairs its body/contact
-observations and uses them for a later command.
-A clear result does not prove that an entire surrounding region is streamed.
+Before any cast the batch is refused as `named_actor_categories_unavailable` when the preset's
+filter shares a bit with those categories (`"all"`) or the category getter's bytes do not match;
+`exclude_local_actor = true` is still refused first. Otherwise each hit's InCategories is read as
+`include_shape_categories` reads it, and after the closing check every hit row is judged in order:
+an unreadable or dropped value refuses the batch as `hit_categories_unavailable`, a value sharing
+no bit with the filter as `hit_categories_inconsistent`, and a value with a named bit as
+`hit_named_actor_category`. Each refusal keeps its actual cast count. Clear rays pass.
 
-The batch contract repeats the existing native observation reads through a pure read-only
-path. It does not publish `latest`, observe a successor, consume a pending command,
-acknowledge a receipt or advance the command epoch. The native clock may naturally advance
-during the query. Any subsequent same-epoch command must still pass the existing
-submission gate; the SDK never relabels or retries it.
+`named_actor_categories_absent = true` means the filter the ray sent shares no bit with the named
+categories, every returned hit had a readable mask unchanged at the closing check, and each mask
+overlapped the filter and had no named bit. It is not actor exclusion and never sets
+`local_actor_excluded`: a shape of an actor or prop that carries only world-like bits passes, and
+`"camera"` also tests bits that other players, vehicles or Build Kit pieces may carry.
 
-Each input ray spends one of the existing logical 64 requests per VM tick, even
-when the backend is unavailable and performs zero native casts. Separately, all
-Lua world raycast, probe, pick, session occlusion and body-batch paths share a hard
-64 **actual native cast** limit. Each batch ray permits at most two actual casts,
-including an exclusion retry. `native_cast_budget_exhausted` means the shared
-allowance ended; `ray_cast_limit_exhausted` means that ray's two attempts could
-not establish a result. Both defer the whole batch and set `budget_exhausted`.
-Other reasons are `query_unavailable`, `contact_measurement_unavailable`,
-`body_epoch_or_observation_changed`, `invalid_ray_batch`, `invalid_query_backend_result`,
-`owned_body_hit`, `hit_identity_unqualified`, and, for
-`require_named_actor_categories_absent`, `hit_categories_unavailable`,
-`hit_categories_inconsistent` and `hit_named_actor_category`. A malformed internal
-accounting result closes the remaining tick budget and omits `native_casts`
-rather than inventing an actual count.
+## Hit owners
 
-Pre-cast refusals distinguish `client_phase_unavailable` (initial client gate),
-`local_actor_exclusion_unavailable` (the requested actor exclusion is unqualified),
-`named_actor_categories_unavailable` (the named-category check cannot be backed
-for this preset or build),
-`body_exclusions_unavailable` (association metadata is unavailable before casting),
-and `query_preconditions_unavailable` (the backend was unavailable before any batch
-ray cast). A C++ exception escaping the counted helper after query entry reports
-`query_backend_exception`, closes the remaining budget and omits `native_casts`
-because the adapter's accounting may be incomplete. The helper itself counts
-immediately before each native ray invocation; a C++ exception it catches can
-retain that exact attempted-call count as an ordinary unavailable result, without
-retrying. Its result cleanup guard is installed before the invocation. Exceptions
-before entering the query path report `query_preconditions_unavailable` with known
-zero casts instead. These C++ exception boundaries do not establish recovery from
-every native fault or from a failing cleanup routine.
-An accounted native ray with an ordinary unavailable result reports
-`query_unavailable`. A nearest hit on an excluded owned body reports
-`owned_body_hit`, and one whose shape or shape-to-body association could not be
-qualified reports `hit_identity_unqualified`; each keeps the actual cast that found
-it. An identity lost while reading a hit's category or owner slot reports
-`body_epoch_or_observation_changed`, because the fence that settles the reason sees
-the same loss. Missing required contact details report
-`contact_measurement_unavailable`; malformed available geometry or contact
-details report `invalid_query_backend_result`. Observation changes and budget
-failures retain their existing precedence. These categories do not identify an individual failed native
-contract or relax any guard.
+`include_hit_owner = true` asks for each qualified hit's shape owner slot, read and checked exactly
+as `in_categories` is. It needs `world.physics.observe`. A hit row then has `owner_assigned`
+(false for the build's unassigned slot) and, only when that is true, `owner`: a locked userdata
+that supports `==` and nothing else. Both are missing when the slot could not be read or changed
+before the closing check. Two `owner` tokens are equal when they come from the same plugin
+instance, SDK world generation and measured epoch serial and their slots were equal, so single-ray
+batches against one epoch can be compared. The slot, its index, kind and generation never reach
+Lua, and equal tokens say nothing about whose owner it is.
+
+## Optional body observations
+
+An optional `body` token compares equal only within that returned batch: two qualified hits on the
+same current native body compare equal. Tokens from different batches compare unequal, even if the
+physical body happens to be the same. A token cannot be submitted, read, released or used as an
+exclusion handle. It represents a body observation, not a collider, face or surface feature, and
+carries no proof of static or moving contact. An unqualified identity is omitted while otherwise
+valid hit geometry may still be returned.
+
+The native adapter's private association check uses the actual hit shape, the shape-to-body index
+table and then the distinct body's capacity, allocation and u32 generation. Matching shape and
+body index/generation numbers cannot establish that conversion. Every returned pair is checked
+again before publication, including different shapes sharing one body. These checks establish a
+current association only: the hit reader obtains a byte generation after the ray, so collision-time
+index reuse and generation wrap are not ruled out. No arbitrary-index conversion API or universal
+foreign shape-array capacity is exposed or claimed.
+
+## The observation window
+
+Before and after the rays, the batch checks the owned anchor, the client context, the native world
+and state, the SDK world and body generations, the owned exclusions and the exact step epoch of the
+sample. Both checks also need the latest published sample and a fresh read-only native read to
+match every lane of the token's sample exactly, so even a same-epoch `read` or `receipt` that
+replaced the latest sample cannot rebind an older token. A changed observation discards **every**
+ray. These checks qualify one local observation window; they do not lock the physics world or
+freeze its arrays between reads, and a clear result does not prove a whole region has streamed.
+
+A batch publishes no sample, observes no successor, consumes no pending command and acknowledges
+nothing. A later command from the same epoch still has to pass `submit`'s own checks.
+
+## Budgets and reasons
+
+Each ray spends one of the VM's 64 raycasts per tick, the limit `world.raycast`, `world.pick`,
+`world.probe` and `session.raycast` share, even when the backend is unavailable and casts nothing.
+Separately, all Lua `world.raycast`, `world.pick`, `world.probe`, `session.raycast` occlusion and
+body-batch paths share a hard limit of 64 **actual native casts** per tick, including exclusion
+retries. Each batch ray may use at most two. The native body-batch ray uses one: it ignores nothing
+and never casts through its nearest hit. Other bounded query paths may spend their permitted
+exclusion retry, so the shared native budget can run out before the logical requests do.
+`native_cast_budget_exhausted` means the shared casts ran out; `ray_cast_limit_exhausted` means a
+ray's two casts could not settle a result. Both refuse the whole batch and set `budget_exhausted`.
+
+Before any cast: `client_phase_unavailable`, `local_actor_exclusion_unavailable`,
+`named_actor_categories_unavailable`, `body_exclusions_unavailable` (association data
+unavailable) and `query_preconditions_unavailable` (the backend could not run before any ray). A
+C++ exception that escapes the query adapter after entry is `query_backend_exception`, which
+closes the rest of the tick's casts and leaves out `native_casts`; a malformed backend count does
+the same as `invalid_query_backend_result`. The helper counts immediately before a native call
+and installs result cleanup first, so an exception it catches can retain that exact attempted-call
+count as an ordinary unavailable result, without retrying. These C++ boundaries do not establish
+recovery from every native fault or a failing cleanup routine. After casting: `query_unavailable`, `owned_body_hit`,
+`hit_identity_unqualified` (each with the cast that found it), `contact_measurement_unavailable`,
+`body_epoch_or_observation_changed`, `invalid_query_backend_result`, and the three named-category
+reasons. An identity lost while reading a hit's category or owner is
+`body_epoch_or_observation_changed`, because the closing check sees the same loss.
+
+## Tests, and the game
+
+`Engine/Game/World/Test/body_query_tests.cpp`, `body_contact_read_tests.cpp` and
+`body_shape_categories_tests.cpp` cover the batch contract, contact reads and categories over
+constructed values and fake memory. `Extension/World/Test/owned_body_source_tests.cpp` runs the
+service's `probe_batch` over a constructed world. The plugin tests cover the binding:
+`owned_body_batches_*`, `body_contact_details_are_known_and_epoch_bound`, the shape-category and
+exclusion-fact fixtures, and the measured-contact fixture
+(`Extension/Plugins/Test/fixtures/measured-contact`), a diagnostic mod that can also be run in the
+game.
+
+These constructed tests do not run the game's ray or physics. The merged source composition still
+needs its own native qualification; measurements and observations from another source/runtime do
+not qualify it. The historical checkpoints below retain their original limits and identities.
+
+## Historical BMX branch checkpoints
 
 The earlier geometry-only replacement passed a clean Release runtime build and
 six focused CTest suites. The bounded in-game result below qualifies one positive geometry batch.

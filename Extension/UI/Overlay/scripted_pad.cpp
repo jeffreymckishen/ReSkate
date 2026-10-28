@@ -109,6 +109,29 @@ void hold_stick(int stick, float value, unsigned milliseconds) noexcept {
     s.held_until = next_until;
     if (changed) native_input_pulse::publication_changed(publication);
 }
+bool held_stick(int& stick, SHORT& value) noexcept {
+    native_input_pulse::PublicationScope publication;
+    if (!publication.owns()) return false;
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    const auto now = std::chrono::steady_clock::now();
+    // Native-only readers may never poll XInput to retire a completed script.
+    if (s.active && s.current + 1 == s.steps.size() && now - s.done_at > linger) {
+        s.active = false;
+        native_input_pulse::publication_changed(publication);
+    }
+    if (s.active) return false;
+    if (now >= s.held_until) {
+        if (s.held_until != std::chrono::steady_clock::time_point{}) {
+            s.held_until = {};
+            native_input_pulse::publication_changed(publication);
+        }
+        return false;
+    }
+    stick = s.stick;
+    value = s.value;
+    return true;
+}
 bool scripted_pad(DWORD user, XINPUT_STATE &output) noexcept {
     if (user != 0) return false;
     native_input_pulse::PublicationScope publication;

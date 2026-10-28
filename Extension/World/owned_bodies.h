@@ -5,6 +5,10 @@
 #include <cstdint>
 #include <string>
 
+// Native rigid bodies a plugin VM instance owns (reskate.world.physics), and bounded ray
+// batches beside one of them. Each body is a set of capsules in the local client's physics
+// world, driven only by measured force, torque and impulse commands produced on the game's
+// own body synchronizer. owner is the plugin VM instance, never a plugin name.
 namespace dingosdk::owned_bodies {
 // Client thread only. Tick grants no plugin ownership and never creates bodies;
 // a previously requested producer setup may install generic hooks.

@@ -70,8 +70,7 @@ struct Hit {
     Status status{};
     Vec position{};
     float fraction{};
-    // An SDK-assigned ordinal, comparable only inside this batch. It is not a
-    // native body index or a collider/face identity. Zero means unqualified.
+    // Batch-local SDK ordinal only; zero is unqualified, never a native body ID.
     std::uint32_t body{};
     Vec normal{}, surface_velocity{};
     bool normal_available{}, surface_velocity_available{};
@@ -130,7 +129,9 @@ struct Result {
 // cast count stays. execute refuses this way, and so does an adapter's own check
 // after execute's closing fence.
 inline Result& refuse(Result& out, Failure failure) noexcept {
-    out.rays = {}; out.available = false; out.failure = failure;
+    out.rays = {};
+    out.available = false;
+    out.failure = failure;
     out.budget_exhausted = failure == Failure::budget || failure == Failure::ray_limit;
     out.local_actor_excluded = out.named_actor_categories_absent = false;
     return out;
@@ -138,18 +139,21 @@ inline Result& refuse(Result& out, Failure failure) noexcept {
 inline bool valid(const Ray& ray, float maximum_distance) noexcept {
     if (!owned_body::finite(ray.from, 100000) || !owned_body::finite(ray.to, 100000) ||
         !std::isfinite(maximum_distance) || maximum_distance <= 0) return false;
-    Vec delta{}; for (std::size_t i = 0; i < delta.size(); ++i) delta[i] = ray.to[i] - ray.from[i];
+    Vec delta{};
+    for (std::size_t i = 0; i < delta.size(); ++i) delta[i] = ray.to[i] - ray.from[i];
     const double distance = owned_body::length(delta);
     return distance >= .00001 && distance <= maximum_distance;
 }
 inline bool valid(const Request& request, float maximum_distance) noexcept {
-    const auto& sample = request.observation; const auto& epoch = sample.epoch;
+    const auto& sample = request.observation;
+    const auto& epoch = sample.epoch;
     if (!request.count || request.count > maximum_rays || request.exclusions > maximum_exclusions || !name(request.preset) ||
         !epoch.world || !epoch.body || !epoch.serial || !std::isfinite(epoch.time) || epoch.time < 0 || !owned_body::calibrated(epoch.seconds) ||
         !owned_body::finite(sample.position, 1000000) || !owned_body::finite(sample.velocity, 100) || !owned_body::finite(sample.angular_velocity, 100) ||
         !owned_body::finite(sample.inertia, 1000000) || !std::isfinite(sample.mass) || sample.mass <= 0) return false;
     for (float value : sample.inertia) if (value <= 0) return false;
-    double norm{}; for (float value : sample.rotation) { if (!std::isfinite(value)) return false; norm += static_cast<double>(value) * value; }
+    double norm{};
+    for (float value : sample.rotation) { if (!std::isfinite(value)) return false; norm += static_cast<double>(value) * value; }
     if (norm < .9 || norm > 1.1) return false;
     for (std::size_t i = 0; i < request.count; ++i) if (!valid(request.rays[i], maximum_distance)) return false;
     return true;
@@ -161,14 +165,16 @@ inline bool consistent(const Ray& ray, const Hit& hit) noexcept {
     if (hit.owner_assigned && !hit.owner_available) return false;
     if (hit.normal_available) {
         if (!owned_body::finite(hit.normal, 1.01f)) return false;
-        double norm{}; for (float lane : hit.normal) norm += double(lane)*lane;
+        double norm{};
+        for (float lane : hit.normal) norm += double(lane) * lane;
         if (norm < .98 || norm > 1.02) return false;
         double facing{}, distance{};
-        for (std::size_t i=0;i<ray.from.size();++i) {
-            const double delta=double(ray.to[i])-ray.from[i];
-            facing+=delta*hit.normal[i]; distance+=delta*delta;
+        for (std::size_t i = 0; i < ray.from.size(); ++i) {
+            const double delta = double(ray.to[i]) - ray.from[i];
+            facing += delta * hit.normal[i];
+            distance += delta * delta;
         }
-        if (facing>1e-4*std::sqrt(distance)) return false;
+        if (facing > 1e-4 * std::sqrt(distance)) return false;
     }
     if (hit.surface_velocity_available && !owned_body::finite(hit.surface_velocity, 100)) return false;
     if (hit.status != Status::hit || !std::isfinite(hit.fraction) || hit.fraction < 0 || hit.fraction > 1 ||
@@ -184,7 +190,8 @@ struct Probe { Hit hit{}; unsigned native_casts{}; bool budget_exhausted{}; Fail
 // exclusions, actor and local observation epoch. A partial batch never escapes.
 template<class Query, class Fence>
 Result execute(const Request& request, unsigned allowance, float maximum_distance, Query&& query, Fence&& fence) {
-    Result out; out.count = request.count <= maximum_rays ? request.count : 0;
+    Result out;
+    out.count = request.count <= maximum_rays ? request.count : 0;
     const auto fail = [&](Failure failure) { return refuse(out, failure); };
     if (!valid(request, maximum_distance)) return fail(Failure::invalid);
     if (allowance > native_cast_limit) allowance = native_cast_limit;
@@ -223,7 +230,9 @@ Result execute(const Request& request, unsigned allowance, float maximum_distanc
         out.rays[i] = probe.hit;
     }
     if (!fence()) return fail(Failure::observation_changed);
-    out.available = true; out.failure = Failure::none; return out;
+    out.available = true;
+    out.failure = Failure::none;
+    return out;
 }
 // One instance belongs to a VM tick. Every backend receives only remaining(),
 // and reports actual native calls even when its query is unavailable.
@@ -236,7 +245,8 @@ struct Budget {
     }
     bool consume(unsigned actual, unsigned allowed) noexcept {
         if (actual > allowed || actual > remaining()) { used = native_cast_limit; return false; }
-        used += actual; return true;
+        used += actual;
+        return true;
     }
 };
 } // namespace dingosdk::body_query

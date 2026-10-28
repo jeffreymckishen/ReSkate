@@ -51,7 +51,7 @@ std::atomic<bool> motion_actor_enabled{}, motion_available{};
 dingosdk::actor_control_native::Actor motion_actor{};
 std::function<void()> motion_observe_once;
 std::function<void(unsigned)> park_shape_hook;
-std::function<dingosdk::BoundedLocalSurfaceProbe(const std::array<float,3>&,const std::array<float,3>&,unsigned,bool)> probe_callback;
+std::function<dingosdk::LocalSurfaceProbe(const std::array<float,3>&,const std::array<float,3>&,const dingosdk::LocalSurfaceQuery&)> probe_callback;
 std::vector<dingosdk::body_query::QueryPreset> probe_presets; // What the Service forwarded, per counted query.
 }
 namespace dingosdk::multiplayer {
@@ -104,11 +104,12 @@ bool add_no_bail_mover_observer(NoBailMoverObserver) noexcept { ++test_facts::fo
 bool no_bail_mover_observation_available(std::uintptr_t base) noexcept {
     return test_facts::motion_available.load() && test_facts::motion_actor.base == base;
 }
-BoundedLocalSurfaceProbe probe_local_surface_geometry_bounded(const std::array<float, 3>& from,
-    const std::array<float, 3>& to, unsigned allowed, bool contact, body_query::QueryPreset preset) {
-    test_facts::probe_presets.push_back(preset);
-    if(test_facts::probe_callback) return test_facts::probe_callback(from,to,allowed,contact);
-    ++test_facts::forbidden_links;return {};
+LocalSurfaceProbe probe_local_surface_counted(const std::array<float, 3>& from, const std::array<float, 3>& to,
+                                              const LocalSurfaceQuery& query) {
+    test_facts::probe_presets.push_back(query.preset);
+    if (test_facts::probe_callback) return test_facts::probe_callback(from, to, query);
+    ++test_facts::forbidden_links;
+    return {};
 }
 namespace supported_build {
 bool running_image_matches(std::uintptr_t) noexcept {
@@ -193,7 +194,7 @@ bool body_valid_read(const NativeHandle* handle) {
     SetLastError(0xB012);
     std::uintptr_t state{}, generations{}, bits{};
     std::uint32_t limit{}, allocation{}, generation{};
-    return handle && peek(handle->world + r::world_state, state) &&
+    return handle && peek(handle->world + pb::store_offset, state) &&
         peek(state + r::body_capacity, limit) && limit && limit <= capacity && handle->index < limit &&
         peek(state + r::allocated_bits, bits) && peek(bits, allocation) &&
         (allocation & (1U << handle->index)) && peek(handle->world + r::world_body_generations, generations) &&
@@ -207,7 +208,7 @@ bool shape_valid_read(const NativeHandle* handle) {
     std::uintptr_t state{}, generations{}, bits{};
     std::uint32_t allocation{};
     std::uint8_t generation{};
-    return handle && handle->index < capacity && peek(handle->world + r::world_state, state) &&
+    return handle && handle->index < capacity && peek(handle->world + pb::store_offset, state) &&
         peek(state + r::shape_allocated_bits, bits) && peek(bits, allocation) &&
         (allocation & (1U << handle->index)) && peek(state + r::shape_generations, generations) &&
         peek(generations + handle->index, generation) && generation == handle->generation;
@@ -284,11 +285,13 @@ public:
         put(board, base + k::board_physics_vtable); put(rig_physics, base + k::rig_physics_vtable);
         put(board + k::physics_bodies_offset, board_parts); put(rig_physics + k::physics_bodies_offset, rig_parts);
         put(board_parts, k::board_body_count); put(rig_parts, k::rig_body_count);
-        for (std::size_t i = 0; i < 32; ++i) {
-            const auto part = i < 9 ? board_parts + i * k::physics_body_size : rig_parts + (i - 8) * k::physics_body_size;
-            put(part + k::body_owner_offset, i < 9 ? board : rig_physics);
+        for (std::size_t i = 0; i < wrapper_count; ++i) {
+            const bool on_board = i < k::board_body_count;
+            const auto part = on_board ? board_parts + i * k::physics_body_size :
+                rig_parts + (i - k::board_body_count + first_rig_wrapper) * k::physics_body_size;
+            put(part + k::body_owner_offset, on_board ? board : rig_physics);
         }
-        put(context + test_world_field, world); put(world + r::world_state, state);
+        put(context + test_world_field, world); put(world + pb::store_offset, state);
         put(skater_context + r::context_seconds, 1.f / 60.f);
         install_tls(context);
         setup_pool();
@@ -368,7 +371,7 @@ private:
         categories = arena.take(capacity * 4); collisions = arena.take(capacity * 4);
         put(state + r::shape_allocated_bits, shape_bits); put(shape_bits, 1U << shape_index);
         put(state + r::shape_generations, shape_generations); put(shape_generations + shape_index, std::uint8_t{shape_generation});
-        put(state + r::shape_owners, shape_owners); put(shape_owners + shape_index * 4, 0xffffffffU);
+        put(state + pb::body_owner_offset, shape_owners); put(shape_owners + shape_index * 4, 0xffffffffU);
         put(state + r::shape_categories, categories); put(categories + shape_index * 4, r::safe_categories);
         put(state + r::shape_collides, collisions); put(collisions + shape_index * 4, r::safe_world_collisions);
     }
@@ -426,7 +429,7 @@ void owner_generation_world_and_pool_failures() {
     put(f.collisions + shape_index * 4, r::safe_world_collisions);
     put(f.context + test_world_field, f.world + 64); refuses("changed native world accepted");
     put(f.context + test_world_field, f.world);
-    put(f.world + r::world_state, f.state + 64); refuses("changed native state accepted"); put(f.world + r::world_state, f.state);
+    put(f.world + pb::store_offset, f.state + 64); refuses("changed native state accepted"); put(f.world + pb::store_offset, f.state);
     put(f.entity + r::entity_teleport, std::uint8_t{1}); refuses("changed captured owner field accepted");
     put(f.entity + r::entity_teleport, std::uint8_t{0});
     SourceBorrow b;
@@ -676,23 +679,29 @@ public:
             put(generations+hit_shapes[i],hit_generations[i]);
             put(shape_bodies+hit_shapes[i]*4,foreign_index);
         }
-        test_facts::probe_callback=[&](const auto& from,const auto& to,unsigned allowed,bool contact) {
-            ++calls;contact_options.push_back(contact);
-            check(allowed>=1 && allowed<=2,"Service lost actual cast budget");
-            if(during_query) during_query(calls);
-            BoundedLocalSurfaceProbe result;
-            result.native_casts=1;auto& hit=result.surface;
-            hit.available=true;hit.hit=true;hit.context=context;hit.world=world;
-            hit.fraction=.5f;
-            for(std::size_t i=0;i<from.size();++i) hit.position[i]=(from[i]+to[i])*.5f;
-            const auto ordinal=(calls-1)%hit_shapes.size();
-            NativeHandle shape{world,hit_owned?shape_index:hit_shapes[ordinal],
-                hit_owned?shape_generation:hit_generations[ordinal]};
-            if(hit_unknown) shape.generation++;
-            std::memcpy(hit.hit_body.data(),&shape,sizeof(shape));
-            hit.normal={0,1,0};hit.normal_available=contact && normals;
-            if(hit.normal_available) hit.position[2]+=.01f;
-            return result;
+        test_facts::probe_callback = [&](const auto& from, const auto& to, const LocalSurfaceQuery& query) {
+            ++calls;
+            const bool contact = query.measure_contact;
+            contact_options.push_back(contact);
+            check(query.read_shape, "the Service did not ask for the hit's shape");
+            if (during_query) during_query(calls);
+            LocalSurfaceProbe hit;
+            hit.native_casts = 1;
+            hit.available = true;
+            hit.hit = true;
+            hit.context = context;
+            hit.world = world;
+            hit.fraction = .5f;
+            for (std::size_t i = 0; i < from.size(); ++i) hit.position[i] = (from[i] + to[i]) * .5f;
+            const auto ordinal = (calls - 1) % hit_shapes.size();
+            NativeHandle shape{world, hit_owned ? shape_index : hit_shapes[ordinal],
+                hit_owned ? shape_generation : hit_generations[ordinal]};
+            if (hit_unknown) shape.generation++;
+            std::memcpy(hit.hit_shape.data(), &shape, sizeof(shape));
+            hit.normal = {0, 1, 0};
+            hit.normal_available = contact && normals;
+            if (hit.normal_available) hit.position[2] += .01f;
+            return hit;
         };
     }
     ~ContactFixture(){test_facts::probe_callback={};}
@@ -850,7 +859,7 @@ void service_shape_categories_are_opt_in_shape_bound_and_fenced() {
             out.rays[0].in_categories_available && out.rays[0].in_categories==0x80000000U &&
             out.rays[1].in_categories_available && out.rays[1].in_categories==0xffffffffU,
             "the Service lost, mixed or body-indexed its hit shape categories");
-        check(out.rays[0].status==body_query::Status::hit && !out.rays[0].body,"categories minted a hit identity");
+        check(out.rays[0].status==body_query::Status::hit && !out.rays[0].body && !out.rays[0].owner && !out.rays[0].owner_available,"categories minted a hit identity");
         pin(f,false);out=probe_batch(owner,f.handle,request,64);
         check(out.available && out.native_casts==2 && none(out),"a getter byte mismatch refused the batch or still read categories");
         pin(f,true);request.exclude_local_actor=true;const auto calls=f.calls;
@@ -1024,7 +1033,7 @@ void service_named_actor_categories_reasons_and_hit_owners() {
         // Owner slots: read at the hit shape's own element, unassigned is not absent,
         // only an opt-in sees them, and a change before the closing fence drops one.
         ContactFixture f;auto request=f.request(2,false);request.include_hit_owner=true;
-        const auto slots=load<std::uintptr_t>(f.state+r::shape_owners);
+        const auto slots=load<std::uintptr_t>(f.state+pb::body_owner_offset);
         put(slots+ContactFixture::hit_shapes[0]*4,r::unassigned_shape_owner);
         put(slots+ContactFixture::hit_shapes[1]*4,std::uint32_t{0x2a});
         // A decoy at the mapped foreign body's own index.
@@ -1141,6 +1150,13 @@ void deferred_initialization_stays_outside_create_and_service_lock() {
     const auto no_allocation=[] {
         return std::none_of(service.slots.begin(),service.slots.end(),[](const Slot& slot){return slot.attempted;});
     };
+    // Until a plugin asks, a client tick only notes the phase: it reads no multiplayer state and
+    // does no native work.
+    test_facts::model_calls = 0;
+    tick(f.base, f.client, true);
+    check(!test_facts::model_calls && service.eligible && !service.initialization_requested && !service.hook_attempted &&
+        test_facts::forbidden_links == 0 && no_allocation(),
+        "a client tick with nothing requested read the multiplayer state or did native work");
     Handle out{77,3};
     check(create(0,definition,out)=="invalid body definition" && !out.generation && !service.initialization_requested,
         "ownerless create queued producer preparation");

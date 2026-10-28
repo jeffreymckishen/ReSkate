@@ -5,6 +5,7 @@
 #include "Engine/Game/Build/image_identity.h"
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Engine/Game/Build/20260929/no_bail.h"
+#include "Engine/Game/Build/20260929/physics_bodies.h"
 #include "Engine/Game/Build/20260929/remote_collision.h"
 #include "Engine/Game/Build/20260929/rigid_bodies.h"
 #include "Engine/Game/Build/20260929/skater_state.h"
@@ -30,6 +31,7 @@ namespace dingosdk::owned_bodies {
 namespace {
 using namespace owned_body;
 namespace r = addr::rigid_bodies;
+namespace pb = addr::physics_bodies;
 namespace c = addr::remote_collision;
 namespace e = addr::engine;
 namespace k = addr::skater_state;
@@ -57,11 +59,13 @@ struct Api {
     Valid body_valid{}, shape_valid{};
 };
 struct Watch { std::uintptr_t address{}; std::size_t size{}; std::array<unsigned char, 16> bytes{}; };
+constexpr std::size_t first_rig_wrapper = 1, wrapper_count = 32;
+static_assert(wrapper_count > k::board_body_count && wrapper_count - k::board_body_count + first_rig_wrapper <= k::rig_body_count);
 struct Anchor {
     std::uintptr_t client{}, context{}, entity{}, core{}, skater_context{}, rig{}, world{}, state{};
     std::array<Watch, 128> watches{};
     std::size_t count{};
-    std::array<std::uintptr_t, 32> wrappers{};
+    std::array<std::uintptr_t, wrapper_count> wrappers{};
     bool same(const Anchor& b) const noexcept {
         return client == b.client && context == b.context && entity == b.entity && core == b.core &&
             skater_context == b.skater_context && rig == b.rig && world == b.world && state == b.state;
@@ -141,6 +145,7 @@ Clock clock_feed;
 // Shared read-only clock setup need not install the owned-body synchronizer
 // or create a capsule. The client publishes only the checked world reader.
 std::atomic<World> clock_world{};
+bool motion_work_pending() noexcept;
 void motion_tick(std::uintptr_t base, bool ready) noexcept;
 void sync_capture_routes(SyncProbe& probe) noexcept;
 static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
@@ -259,7 +264,7 @@ bool capture(Anchor& a) noexcept {
             u8(player + r::player_local) == 1 && u8(player + r::player_remote) == 0);
         a.entity = ptr(player + r::player_entity); const auto handle = ptr(player + r::player_handle);
         require(ptr(a.entity) == service.base + e::skater_entity_vtable && ptr(a.entity + r::entity_context) == a.context &&
-            ptr(a.entity + r::entity_player) == player && ptr(handle) == a.entity + sizeof(std::uintptr_t) && u8(a.entity + r::entity_teleport) == 0);
+            ptr(a.entity + r::entity_player) == player && ptr(handle) == a.entity + r::entity_handle_target && u8(a.entity + r::entity_teleport) == 0);
         const auto collection = ptr(a.entity + r::entity_collection), component = ptr(a.entity + r::entity_component);
         require(ptr(collection) == a.entity && ptr(component) == service.base + e::skater_component_vtable && ptr(component + r::component_collection) == collection);
         a.core = ptr(component + r::component_core); a.skater_context = ptr(a.core + r::core_context); a.rig = ptr(a.core + r::core_rig);
@@ -269,11 +274,14 @@ bool capture(Anchor& a) noexcept {
         const auto board_parts = ptr(board + k::physics_bodies_offset), rig_parts = ptr(rig + k::physics_bodies_offset);
         require(u32(board_parts) == k::board_body_count && u32(rig_parts) == k::rig_body_count);
         for (std::size_t i = 0; i < a.wrappers.size(); ++i) {
-            const auto part = i < 9 ? board_parts + i * k::physics_body_size : rig_parts + (i - 8) * k::physics_body_size;
-            require(ptr(part + k::body_owner_offset) == (i < 9 ? board : rig)); a.wrappers[i] = part + k::body_owner_offset;
+            const bool on_board = i < k::board_body_count;
+            const auto part = on_board ? board_parts + i * k::physics_body_size :
+                rig_parts + (i - k::board_body_count + first_rig_wrapper) * k::physics_body_size;
+            require(ptr(part + k::body_owner_offset) == (on_board ? board : rig));
+            a.wrappers[i] = part + k::body_owner_offset;
         }
         require(client_context(a) && native_world(service.api.world, a.context, a.world));
-        require(peek(a.world + r::world_state, a.state) && pointer(a.state));
+        require(peek(a.world + pb::store_offset, a.state) && pointer(a.state));
         return watched(a) && client_context(a);
     } catch (...) { return false; }
 }
@@ -282,7 +290,7 @@ void physics_step(const NoBailSkater& owner, float seconds, bool) noexcept {
     std::uintptr_t context{}, world{}, state{};
     const auto world_call = clock_world.load(std::memory_order_acquire);
     if (!world_call || !calibrated(seconds) || !peek(owner.entity + r::entity_context, context) || !pointer(context) ||
-        !native_world(world_call, context, world) || !peek(world + r::world_state, state) || !pointer(state) ||
+        !native_world(world_call, context, world) || !peek(world + pb::store_offset, state) || !pointer(state) ||
         !TryAcquireSRWLockExclusive(&clock_feed.lock)) return;
     auto& f = clock_feed;
     if (f.owner.entity != owner.entity || f.owner.core != owner.core || f.owner.context != owner.context || f.owner.rig != owner.rig ||
@@ -324,7 +332,7 @@ bool allocated(std::uintptr_t state, std::uint32_t index, bool dynamic = false) 
 bool anchor_current(const Anchor& a) noexcept {
     std::uintptr_t world{}, state{};
     return watched(a) && client_context(a) && native_world(service.api.world, a.context, world) && world == a.world &&
-        peek(world + r::world_state, state) && state == a.state && watched(a);
+        peek(world + pb::store_offset, state) && state == a.state && watched(a);
 }
 bool body_current(const Slot& s, bool dynamic = false) noexcept {
     return s.body_observed && anchor_current(s.anchor) && s.body.world == s.anchor.world && allocated(s.anchor.state, s.body.index, dynamic) &&
@@ -351,7 +359,7 @@ bool shape_current(const Slot& s, std::size_t i, bool masks = true) noexcept {
     if (!masks) return anchor_current(s.anchor);
     std::uintptr_t owners{}, categories{}, with{}; std::uint32_t owner{}, category{}, collides{};
     const auto offset = std::uintptr_t{s.shapes[i].index} * 4;
-    return peek(s.anchor.state + r::shape_owners, owners) && pointer(owners) && peek(owners + offset, owner) && owner == 0xffffffffU &&
+    return peek(s.anchor.state + pb::body_owner_offset, owners) && pointer(owners) && peek(owners + offset, owner) && owner == r::unassigned_shape_owner &&
         peek(s.anchor.state + r::shape_categories, categories) && pointer(categories) && peek(categories + offset, category) && category == r::safe_categories &&
         peek(s.anchor.state + r::shape_collides, with) && pointer(with) && peek(with + offset, collides) &&
         (collides == 0 || collides == r::safe_world_collisions) && body_current(s);
@@ -475,20 +483,10 @@ Slot* lookup(std::uint64_t owner, const Handle& handle) noexcept {
 bool fresh(const Slot& s) noexcept {
     Anchor a; return eligible() && capture(a) && s.anchor.same(a) && pool_current(s, s.active);
 }
-struct Ring {
-    std::uintptr_t values{}; std::uint32_t elements{}; std::uint16_t current{}, planes{};
-    bool operator==(const Ring&) const = default;
-};
-static_assert(sizeof(Ring) == 16);
+using Ring = body_contact_read::Ring;
 bool ring(const Slot& s, std::uintptr_t offset, Ring& header, V4& value) noexcept {
-    if (!peek(s.anchor.state + offset, header) || !pointer(header.values) || !header.elements || header.elements > 1048576 ||
-        s.body.index >= header.elements || !header.planes || header.planes > 64 || header.current >= header.planes) return false;
-    const std::uint32_t quads = header.elements * 4;
-    const std::uint32_t bytes = (((quads & 0x7ffffffU) * 4 + 0x3cU) & 0xffffffc0U);
-    const auto at = header.values + std::uintptr_t{bytes} * header.current + std::uintptr_t{s.body.index} * sizeof(V4);
-    if (at < header.values || !peek(at, value)) return false;
-    for (float v : value) if (!std::isfinite(v) || std::abs(v) > 1000000) return false;
-    return true;
+    const auto read = [](std::uintptr_t at, auto& out) { return peek(at, out); };
+    return body_contact_read::ring_value(read, s.anchor.state, offset, s.body.index, header, value) && pointer(header.values);
 }
 // Callers select their admission edge. Both paths use the same bounded native
 // ring/layout checks; neither publishes latest or observes mailbox receipts.
@@ -538,13 +536,13 @@ bool callback_source_current(const Slot& s) noexcept {
         !s.active || s.retained || s.quarantined || s.release_requested || !producer_owner(s, s.body)) return false;
     std::uintptr_t generations{}, again{}, state{}; std::uint32_t generation{}, after{};
     const auto offset = std::uintptr_t{s.body.index} * sizeof(std::uint32_t);
-    return peek(s.body.world + r::world_state, state) && state == s.anchor.state &&
+    return peek(s.body.world + pb::store_offset, state) && state == s.anchor.state &&
         peek(s.body.world + r::world_body_generations, generations) && pointer(generations) &&
         peek(generations + offset, generation) && generation == s.body.generation &&
         producer_owner(s, s.body) &&
         peek(s.body.world + r::world_body_generations, again) && again == generations &&
         peek(generations + offset, after) && after == generation &&
-        peek(s.body.world + r::world_state, state) && state == s.anchor.state;
+        peek(s.body.world + pb::store_offset, state) && state == s.anchor.state;
 }
 bool observe_callback(const Slot& s, Sample& out) noexcept {
     return observe_checked(s, out, [](const Slot& slot) noexcept { return callback_source_current(slot); });
@@ -664,6 +662,12 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
     {
         Locked lock(service.lock);
         service.base = base; service.client = client; service.tick_at = GetTickCount64(); service.eligible = ready;
+        // PR375 keeps an unused service inert. The later read-only diagnostics
+        // also count as work: inspect their own protected state before that exit.
+        const bool motion_pending = motion_work_pending();
+        const bool sync_pending = service.probe.sequence && service.probe.result.status == body_sync_probe::Status::pending;
+        if (!service.initialization_requested && !service.hooked.load(std::memory_order_acquire) &&
+            !motion_pending && !sync_pending) return;
         motion_tick(base, eligible());
         if (service.probe.sequence && service.probe.result.status == body_sync_probe::Status::pending && service.tick_at >= service.probe.deadline) {
             const auto losses = service.probe_losses.load(std::memory_order_acquire);
@@ -1254,7 +1258,7 @@ body_query::Result probe_batch(std::uint64_t owner, const Handle& handle, const 
         // Optional owner slots under the same rules, only when asked for. resolve()
         // already compared set_shape_owner's bytes, which reach state+1008 through
         // World+28 and index it by the shape's own index.
-        body_shape_categories::Sidecars<body_query::maximum_rays> hit_owners{r::shape_owners};
+        body_shape_categories::Sidecars<body_query::maximum_rays> hit_owners{pb::body_owner_offset};
         // Around each category or owner read: the same World/state and SDK world generation,
         // the requested listener epoch and sample, and the original shape/body pair.
         const auto hit_current = [&](const NativeHandle& shape, const NativeHandle& body) {
@@ -1286,7 +1290,8 @@ body_query::Result probe_batch(std::uint64_t owner, const Handle& handle, const 
             return world_current() && clock(anchor, after) && after == requested_epoch &&
                 body_query::same_sample(canonical, selected->latest);
         };
-        const auto query = [&](const body_query::Ray& ray, unsigned permitted) {
+        // The upstream nearest-only adapter makes exactly one counted cast per entered ray.
+        const auto query = [&](const body_query::Ray& ray, unsigned) {
             body_query::Probe out;
             // execute calls this once per requested ray, in order, so the count is
             // that ray's ordinal. A category sidecar binds to it, never to a body.
@@ -1296,13 +1301,13 @@ body_query::Result probe_batch(std::uint64_t owner, const Handle& handle, const 
             ray_entered = true;
             // The preset selects the native filter only. The nearest hit it returns
             // still passes the same owned-body, identity, contact and fence checks.
-            const auto counted = probe_local_surface_geometry_bounded(ray.from, ray.to, permitted, request.require_contact, request.preset);
-            performed += counted.native_casts; out.native_casts = counted.native_casts; out.budget_exhausted = counted.budget_exhausted;
-            const auto& hit = counted.surface;
+            const auto hit = probe_local_surface_counted(ray.from, ray.to, {true, request.require_contact, request.preset});
+            performed += hit.native_casts;
+            out.native_casts = hit.native_casts;
             if (!hit.available || hit.context != anchor.context || hit.world != anchor.world) return out;
             if (!hit.hit) { out.hit.status = body_query::Status::clear; return out; }
             NativeHandle shape, body;
-            std::memcpy(&shape, hit.hit_body.data(), sizeof(shape));
+            std::memcpy(&shape, hit.hit_shape.data(), sizeof(shape));
             // Each refusal of the actual hit names why, so a caller can tell an
             // owned-body hit from a hit whose identity could not be qualified.
             if (!qualify(shape, body)) { out.failure = body_query::Failure::hit_identity_unqualified; return out; }

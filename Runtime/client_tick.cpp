@@ -43,6 +43,7 @@
 #include "Engine/Vfs/mod_merge.h"
 #include "Extension/Skater/ai_skaters.h"
 #include "Extension/World/world_entities.h"
+#include "Extension/World/owned_bodies.h"
 #include "Extension/Skater/client_source_spawn.h"
 #include "Extension/Skater/native_actions.h"
 #include "Extension/Skater/native_body_follow_service.h"
@@ -51,9 +52,9 @@
 #include "Extension/Skater/native_input_pulse.h"
 #include "Extension/Skater/native_input_pulse_environment.h"
 #include "Extension/Skater/no_bail.h"
-#include "Extension/World/owned_bodies.h"
 #include "Extension/Skater/skater_slot_override.h"
 #include "Extension/Throwdowns/native_throwdowns.h"
+#include "Extension/Localization/text_overrides.h"
 #include "Extension/Skater/bone_cam.h"
 #include "Extension/Skater/pad_flight.h"
 #include "Extension/Trainer/trainer.h"
@@ -659,15 +660,19 @@ std::optional<Budget> budget_of(const Card& card) {
         adapter->Release();
     }
     factory->Release();
-    // An integrated or unified-memory GPU's own memory is the PC's RAM, so its budget is only what
-    // the PC has free, less room for the rest of the game (under D3DMetal on macOS, DedicatedVideoMemory
-    // is reported as 11.8 GB of a 16 GB Mac and QueryVideoMemoryInfo reports a 24 GB local budget).
-    // 2.1.1's out-of-memory exits (the game's E_OUTOFMEMORY, 3,300 reports) were mostly 8 to 16 GB PCs
-    // with RAM and page file nearly full, and integrated GPUs whose custom-map pool had been set to
-    // 1.3 to 2.2 GB from that budget (2026-10-21).
+    // An integrated GPU's own memory is the PC's RAM, so its budget is only what the PC has free,
+    // less room for the rest of the game. 2.1.1's out-of-memory exits (the game's E_OUTOFMEMORY,
+    // 3,300 reports) were mostly 8 to 16 GB PCs with RAM and page file nearly full, and integrated
+    // GPUs whose custom-map pool had been set to 1.3 to 2.2 GB from that budget (2026-10-21).
+    // A translation layer (D3DMetal on macOS) can report a local budget larger than the adapter's
+    // own dedicated memory (24 GB on an 11.8 GB adapter of a 16 GB Mac) while Wine's
+    // GlobalMemoryStatusEx reports only free pages (1 to 1.8 GB, excluding macOS's inactive file
+    // cache), which would clamp room to 0 and keep every custom map at 520 MB; cap the budget at
+    // the adapter's memory instead.
     constexpr std::uint64_t integrated_below = 1ull << 30, reserve = 2ull << 30;
-    if (MEMORYSTATUSEX status{sizeof(status)};
-        result && (card.memory < integrated_below || result->budget > card.memory) && GlobalMemoryStatusEx(&status)) {
+    if (result && card.memory >= integrated_below)
+        result->budget = (std::min)(result->budget, card.memory);
+    if (MEMORYSTATUSEX status{sizeof(status)}; result && card.memory < integrated_below && GlobalMemoryStatusEx(&status)) {
         const auto spare = (std::min)(status.ullAvailPhys, status.ullAvailPageFile);
         const auto room = spare > reserve ? spare - reserve : 0;
         result->budget = (std::min)(result->budget, result->usage + room);
@@ -949,6 +954,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
     dingosdk::job_spin::apply_default();
     apply_mesh_streaming_pool(state);
     dingosdk::multiplayer::apply_throwdown_strings(r.base);
+    dingosdk::text_overrides::apply_text_overrides(r.base);
     const bool named_context_ready = (state == 13 || state == 21) && native_context_ready();
     {
         std::lock_guard lock(r.mutex);
@@ -1206,14 +1212,14 @@ void update_model(std::uintptr_t client, TickState& frame) {
             if (pressed & (0x1000 | 1u << 22)) dingosdk::map_download::answer(dingosdk::map_download::picked());
             else if (pressed & (0x2000 | 1u << 23)) dingosdk::map_download::answer(false);
         }
-        // The question: left and right pick, A takes the pick, B is its second answer.
+        // The question: left and right pick, A takes the pick, B is the answer it names for going back.
         static bool question_before{};
-        if (question_up && question_before) {
+        if (!message_up && question_up && question_before) {
             const auto pressed = buttons & ~buttons_before;
             if (pressed & (0x0004 | 1u << 20)) dingosdk::overlay::question_pick(true);
             if (pressed & (0x0008 | 1u << 21)) dingosdk::overlay::question_pick(false);
             if (pressed & (0x1000 | 1u << 22)) dingosdk::overlay::question_answer(dingosdk::overlay::question_picked());
-            else if (pressed & (0x2000 | 1u << 23)) dingosdk::overlay::question_answer(false);
+            else if (pressed & (0x2000 | 1u << 23)) dingosdk::overlay::question_answer(dingosdk::overlay::question_back());
         }
         question_before = question_up;
         // The vote's popup: left and right move the pick, A votes for it, B closes it.

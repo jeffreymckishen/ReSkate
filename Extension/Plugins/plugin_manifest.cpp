@@ -18,7 +18,10 @@ namespace {
 // trick events, the trick list's feed and flick diagrams (reskate.tricks); "throwdowns" the
 // throwdown kit (modes, documents, the native flag); "server.parks" a dedicated server's park mods
 // (reskate.server.parks, park_spawn, park_remove); "variants" choosing which of its own mod's
-// variants is in the game (reskate.package.choose). "world.physics.observe" permits bounded passive
+// variants is in the game (reskate.package.choose); "viewmodel" a model of its own drawn in front of
+// the camera (reskate.viewmodel); "strings" the text the game shows for its ids (reskate.strings).
+// "world.physics" permits native bodies the plugin owns and, with "world.raycast", measured ray
+// batches beside one. "world.physics.observe" permits bounded passive
 // synchronizer observations of an existing owned body and probe_batch's passive diagnostics, which
 // also need "world.raycast": include_shape_categories (a read-time category mask), include_hit_owner
 // (an equality-only token for a hit shape's owner slot) and query_preset "all" (a filter that tests
@@ -36,19 +39,21 @@ namespace {
 // equipment, recovery, force or new actor state.
 // A manifest's "resident" list and "variants" are
 // the merge's (Engine/Vfs/mod_list.h ResidentAssets, Variants), not the plugin host's.
-constexpr std::array<std::string_view, 59> permissions{
+constexpr std::array<std::string_view, 61> permissions{
     "console", "storage", "overlay", "menu", "ui.screen", "input", "input.control", "input.lease", "input.capture", "hud", "events.tricks", "events.skater",
     "skater.read", "skater.teleport", "skater.control", "skater.animation", "skater.input_trace", "trainer", "camera",
     "world.raycast", "world.physics", "world.physics.observe", "world.physics.follow", "world.physics.follow.renew", "world.objects", "world.entities", "world.environment", "world.ai", "travel", "session.read",
     "session.skaters", "session.nametags", "net.session", "net.http", "voice.control", "chat.read",
     "chat.send", "chat.local", "server", "server.parks", "throwdowns", "replay", "music", "progression.read", "settings.read", "audio.ui", "audio", "outfit", "board", "mods.read",
-    "events.physics", "game.speed", "files", "variants", "settings.write", "room", "capture", "effects", "events.physics.geometry"};
+    "events.physics", "game.speed", "files", "variants", "settings.write", "room", "capture", "effects", "events.physics.geometry", "viewmodel", "strings"};
 }
 
 bool known_permission(std::string_view name) noexcept {
     for (const auto known : permissions) if (known == name) return true;
     return false;
 }
+
+std::vector<std::string_view> known_permissions() { return {permissions.begin(), permissions.end()}; }
 
 std::string safe_relative_path(std::string_view path) {
     if (path.empty() || path.size() > 260 || path.front() == '/') return {};

@@ -60,14 +60,16 @@ bool resolve(std::uintptr_t world, std::uintptr_t state, const NativeHandle& sha
     std::uint32_t generation{};
     if (!element(read, again, candidate.index, generation) || generation != candidate.generation ||
         !body_current(candidate) || !world_current()) return false;
-    body = candidate; return true;
+    body = candidate;
+    return true;
 }
 template<std::size_t Capacity> struct Witnesses {
     std::array<Witness, Capacity> values{};
     std::size_t count{};
     bool add(const Witness& value) {
         if (count == values.size()) return false;
-        values[count++] = value; return true;
+        values[count++] = value;
+        return true;
     }
     template<class Current> bool current(Current&& check) const {
         // Different shapes can share a body. Every association must survive.

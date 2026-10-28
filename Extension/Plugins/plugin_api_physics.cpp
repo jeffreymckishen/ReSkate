@@ -42,25 +42,32 @@ struct HitOwnerValue { std::uint64_t owner{}, world{}, serial{}; std::uint32_t s
 int hit_owner_equal(lua_State* L) {
     const auto& a = *static_cast<const HitOwnerValue*>(luaL_checkudata(L, 1, hit_owner_type));
     const auto& b = *static_cast<const HitOwnerValue*>(luaL_checkudata(L, 2, hit_owner_type));
-    lua_pushboolean(L, a.owner == b.owner && a.world == b.world && a.serial == b.serial && a.slot == b.slot); return 1;
+    lua_pushboolean(L, a.owner == b.owner && a.world == b.world && a.serial == b.serial && a.slot == b.slot);
+    return 1;
 }
 int fail(lua_State* L, const std::string& why) { lua_pushnil(L); lua_pushlstring(L, why.data(), why.size()); return 2; }
 int result(lua_State* L, const std::string& why) {
-    lua_pushboolean(L, why.empty()); if (why.empty()) return 1;
-    lua_pushlstring(L, why.data(), why.size()); return 2;
+    lua_pushboolean(L, why.empty());
+    if (why.empty()) return 1;
+    lua_pushlstring(L, why.data(), why.size());
+    return 2;
 }
 void fields(lua_State* L, int at, std::initializer_list<const char*> names) {
-    luaL_checktype(L, at, LUA_TTABLE); at = lua_absindex(L, at); lua_pushnil(L);
+    luaL_checktype(L, at, LUA_TTABLE);
+    at = lua_absindex(L, at);
+    lua_pushnil(L);
     while (lua_next(L, at)) {
         std::size_t size{};
         const char* key = lua_type(L, -2) == LUA_TSTRING ? lua_tolstring(L, -2, &size) : nullptr;
-        bool found{}; if (key) for (const char* expected : names) found = found || std::string_view(key, size) == expected;
+        bool found{};
+        if (key) for (const char* expected : names) found = found || std::string_view(key, size) == expected;
         if (!found) luaL_error(L, "unknown native body field");
         lua_pop(L, 1);
     }
 }
 void array_fields(lua_State* L, int at, std::size_t count) {
-    at = lua_absindex(L, at); lua_pushnil(L);
+    at = lua_absindex(L, at);
+    lua_pushnil(L);
     while (lua_next(L, at)) {
         if (lua_type(L, -2) != LUA_TNUMBER) luaL_error(L, "ray batch lists have only sequential integer keys");
         const double key = lua_tonumber(L, -2);
@@ -71,11 +78,15 @@ void array_fields(lua_State* L, int at, std::size_t count) {
 }
 Vec vec_field(lua_State* L, int at, const char* name, bool optional = false) {
     lua_getfield(L, at, name);
-    Vec v{}; if (!optional || !lua_isnil(L, -1)) v = position_of(L, -1, name);
-    lua_pop(L, 1); return v;
+    Vec v{};
+    if (!optional || !lua_isnil(L, -1)) v = position_of(L, -1, name);
+    lua_pop(L, 1);
+    return v;
 }
 float number_field(lua_State* L, int at, const char* name) {
-    lua_getfield(L, at, name); const double v = luaL_checknumber(L, -1); lua_pop(L, 1);
+    lua_getfield(L, at, name);
+    const double v = luaL_checknumber(L, -1);
+    lua_pop(L, 1);
     if (!std::isfinite(v) || std::abs(v) > 1000000) luaL_error(L, "native body %s must be finite and bounded", name);
     return static_cast<float>(v);
 }
@@ -85,31 +96,47 @@ BodyValue body(lua_State* L, Plugin& p, int at) {
     return value;
 }
 void metatable(lua_State* L, const char* name) {
-    luaL_newmetatable(L, name); lua_pushstring(L, "locked"); lua_setfield(L, -2, "__metatable"); lua_setreadonly(L, -1, true); lua_pop(L, 1);
+    luaL_newmetatable(L, name);
+    lua_pushstring(L, "locked");
+    lua_setfield(L, -2, "__metatable");
+    lua_setreadonly(L, -1, true);
+    lua_pop(L, 1);
 }
 template<class T> void opaque(lua_State* L, const T& value, const char* name) {
     new (lua_newuserdata(L, sizeof(T))) T(value);
-    luaL_getmetatable(L, name); lua_setmetatable(L, -2);
+    luaL_getmetatable(L, name);
+    lua_setmetatable(L, -2);
 }
 void text_number(lua_State* L, std::uint64_t value) { const auto text = std::to_string(value); lua_pushlstring(L, text.data(), text.size()); }
 std::uint64_t sequence(lua_State* L, int at) {
     luaL_checktype(L, at, LUA_TSTRING);
-    std::size_t size{}; const char* text = luaL_checklstring(L, at, &size); std::uint64_t value{};
+    std::size_t size{};
+    const char* text = luaL_checklstring(L, at, &size);
+    std::uint64_t value{};
     const auto parsed = std::from_chars(text, text + size, value);
     if (!size || text[0] == '0' || parsed.ec != std::errc{} || parsed.ptr != text + size || !value) luaL_argerror(L, at, "a receipt's sequence string");
     return value;
 }
 void push_sample(lua_State* L, const BodyValue& b, const Sample& sample) {
     lua_createtable(L, 0, 9);
-    opaque(L, EpochValue{b.owner, b.handle, sample}, epoch_type); lua_setfield(L, -2, "epoch");
-    text_number(L, sample.epoch.serial); lua_setfield(L, -2, "serial");
-    lua_pushnumber(L, sample.epoch.time); lua_setfield(L, -2, "time");
-    lua_pushnumber(L, sample.epoch.seconds); lua_setfield(L, -2, "seconds");
-    push_position(L, sample.position); lua_setfield(L, -2, "position");
-    push_position(L, sample.velocity); lua_setfield(L, -2, "velocity");
-    push_position(L, sample.angular_velocity); lua_setfield(L, -2, "angular_velocity");
-    push_position(L, sample.inertia); lua_setfield(L, -2, "inertia");
-    lua_pushnumber(L, sample.mass); lua_setfield(L, -2, "mass");
+    opaque(L, EpochValue{b.owner, b.handle, sample}, epoch_type);
+    lua_setfield(L, -2, "epoch");
+    text_number(L, sample.epoch.serial);
+    lua_setfield(L, -2, "serial");
+    lua_pushnumber(L, sample.epoch.time);
+    lua_setfield(L, -2, "time");
+    lua_pushnumber(L, sample.epoch.seconds);
+    lua_setfield(L, -2, "seconds");
+    push_position(L, sample.position);
+    lua_setfield(L, -2, "position");
+    push_position(L, sample.velocity);
+    lua_setfield(L, -2, "velocity");
+    push_position(L, sample.angular_velocity);
+    lua_setfield(L, -2, "angular_velocity");
+    push_position(L, sample.inertia);
+    lua_setfield(L, -2, "inertia");
+    lua_pushnumber(L, sample.mass);
+    lua_setfield(L, -2, "mass");
     lua_createtable(L, 4, 0);
     for (int i = 0; i < 4; ++i) { lua_pushnumber(L, sample.rotation[static_cast<std::size_t>(i)]); lua_rawseti(L, -2, i + 1); }
     lua_setfield(L, -2, "rotation");
@@ -421,7 +448,8 @@ int follow_result(lua_State* L, bool ok, const char* why) {
 
 struct PhysicsApi {
     static Plugin& plugin(lua_State* L) {
-        auto& p = plugin_of(L); need(L, p, "world.physics", "reskate.world.physics");
+        auto& p = plugin_of(L);
+        need(L, p, "world.physics", "reskate.world.physics");
         if (p.services_.authority()) luaL_error(L, "native bodies are client phase only");
         return p;
     }
@@ -687,24 +715,34 @@ struct PhysicsApi {
         }
         lua_pop(L, 1);
         if (!valid(command)) luaL_error(L, "native body command exceeds its force, torque or one-shot impulse bound");
-        std::uint64_t assigned{}; const auto why = p.services_.game().body_submit(p.instance(), b.handle, command, assigned);
+        std::uint64_t assigned{};
+        const auto why = p.services_.game().body_submit(p.instance(), b.handle, command, assigned);
         if (!why.empty()) return result(L, why);
         if (!assigned) return result(L, "native body did not return a command sequence");
-        lua_pushboolean(L, true); lua_pushnil(L); text_number(L, assigned); return 3;
+        lua_pushboolean(L, true);
+        lua_pushnil(L);
+        text_number(L, assigned);
+        return 3;
     }
     static int probe_batch(lua_State* L) {
-        auto& p = plugin(L); need(L, p, "world.raycast", "reskate.world.physics.probe_batch");
+        auto& p = plugin(L);
+        need(L, p, "world.raycast", "reskate.world.physics.probe_batch");
         if (lua_gettop(L) < 3 || lua_gettop(L) > 4) luaL_error(L, "probe_batch takes body, measured epoch, rays and optional query options");
         const auto b = body(L, p, 1);
         const auto& epoch = *static_cast<const EpochValue*>(luaL_checkudata(L, 2, epoch_type));
         if (epoch.owner != p.instance() || epoch.handle != b.handle) luaL_error(L, "body epoch belongs to another body or plugin instance");
-        body_query::Request request; request.observation = epoch.sample;
-        luaL_checktype(L, 3, LUA_TTABLE); request.count = lua_objlen(L, 3);
+        body_query::Request request;
+        request.observation = epoch.sample;
+        luaL_checktype(L, 3, LUA_TTABLE);
+        request.count = lua_objlen(L, 3);
         if (!request.count || request.count > body_query::maximum_rays) luaL_error(L, "a ray batch has 1 to 32 rays");
         array_fields(L, 3, request.count);
         for (std::size_t i = 0; i < request.count; ++i) {
-            lua_rawgeti(L, 3, static_cast<int>(i + 1)); fields(L, -1, {"from", "to"});
-            const auto at = lua_absindex(L, -1); request.rays[i] = {vec_field(L, at, "from"), vec_field(L, at, "to")}; lua_pop(L, 1);
+            lua_rawgeti(L, 3, static_cast<int>(i + 1));
+            fields(L, -1, {"from", "to"});
+            const auto at = lua_absindex(L, -1);
+            request.rays[i] = {vec_field(L, at, "from"), vec_field(L, at, "to")};
+            lua_pop(L, 1);
         }
         bool preset_requested{}, named_requested{};
         if (!lua_isnoneornil(L, 4)) {
@@ -728,31 +766,39 @@ struct PhysicsApi {
             }
             lua_pop(L, 1);
             lua_getfield(L, 4, "require_contact");
-            if (!lua_isnil(L,-1)) { luaL_checktype(L,-1,LUA_TBOOLEAN); request.require_contact=lua_toboolean(L,-1)!=0; }
-            lua_pop(L,1);
+            if (!lua_isnil(L, -1)) { luaL_checktype(L, -1, LUA_TBOOLEAN); request.require_contact = lua_toboolean(L, -1) != 0; }
+            lua_pop(L, 1);
             lua_getfield(L, 4, "exclude_local_actor");
             if (!lua_isnil(L, -1)) { luaL_checktype(L, -1, LUA_TBOOLEAN); request.exclude_local_actor = lua_toboolean(L, -1) != 0; }
-            lua_pop(L, 1); lua_getfield(L, 4, "exclude_bodies");
+            lua_pop(L, 1);
+            lua_getfield(L, 4, "exclude_bodies");
             if (!lua_isnil(L, -1)) {
-                luaL_checktype(L, -1, LUA_TTABLE); request.exclusions = lua_objlen(L, -1);
+                luaL_checktype(L, -1, LUA_TTABLE);
+                request.exclusions = lua_objlen(L, -1);
                 if (request.exclusions > body_query::maximum_exclusions) luaL_error(L, "a ray batch excludes at most 8 additional owned bodies");
                 array_fields(L, -1, request.exclusions);
                 for (std::size_t i = 0; i < request.exclusions; ++i) {
-                    lua_rawgeti(L, -1, static_cast<int>(i + 1)); request.excluded[i] = body(L, p, -1).handle; lua_pop(L, 1);
+                    lua_rawgeti(L, -1, static_cast<int>(i + 1));
+                    request.excluded[i] = body(L, p, -1).handle;
+                    lua_pop(L, 1);
                 }
             }
-            lua_pop(L, 1); lua_getfield(L, 4, "include_shape_categories");
+            lua_pop(L, 1);
+            lua_getfield(L, 4, "include_shape_categories");
             // Passive hit metadata: only an actual boolean, and true also needs the
             // observation permission before any ray counter or backend work.
             if (!lua_isnil(L, -1)) { luaL_checktype(L, -1, LUA_TBOOLEAN); request.include_shape_categories = lua_toboolean(L, -1) != 0; }
-            lua_pop(L, 1); lua_getfield(L, 4, "require_named_actor_categories_absent");
+            lua_pop(L, 1);
+            lua_getfield(L, 4, "require_named_actor_categories_absent");
             // A refusal-only check: it adds one batch fact and shows no category, so
             // world.physics and world.raycast are enough.
             if (!lua_isnil(L, -1)) {
-                luaL_checktype(L, -1, LUA_TBOOLEAN); request.require_named_actor_categories_absent = lua_toboolean(L, -1) != 0;
+                luaL_checktype(L, -1, LUA_TBOOLEAN);
+                request.require_named_actor_categories_absent = lua_toboolean(L, -1) != 0;
                 named_requested = true;
             }
-            lua_pop(L, 1); lua_getfield(L, 4, "include_hit_owner");
+            lua_pop(L, 1);
+            lua_getfield(L, 4, "include_hit_owner");
             if (!lua_isnil(L, -1)) { luaL_checktype(L, -1, LUA_TBOOLEAN); request.include_hit_owner = lua_toboolean(L, -1) != 0; }
             lua_pop(L, 1);
             if (request.include_shape_categories) need(L, p, "world.physics.observe", "reskate.world.physics.probe_batch include_shape_categories");
@@ -769,7 +815,8 @@ struct PhysicsApi {
         else out = p.services_.game().body_probe_batch(p.instance(), b.handle, request, allowed);
         const bool accounted = out.accounting_valid && p.native_casts_.consume(out.native_casts, allowed);
         if (!accounted) {
-            p.native_casts_.poison(); out.available = false;
+            p.native_casts_.poison();
+            out.available = false;
             if (out.accounting_valid || out.failure != body_query::Failure::query_backend_exception)
                 out.failure = body_query::Failure::backend;
         }
@@ -822,7 +869,8 @@ struct PhysicsApi {
                 // Absent when the slot could not be read. An assigned slot becomes an
                 // equality token; the slot itself never reaches Lua.
                 if (request.include_hit_owner && hit.owner_available) {
-                    lua_pushboolean(L, hit.owner_assigned); lua_setfield(L, -2, "owner_assigned");
+                    lua_pushboolean(L, hit.owner_assigned);
+                    lua_setfield(L, -2, "owner_assigned");
                     if (hit.owner_assigned) {
                         opaque(L, HitOwnerValue{p.instance(), request.observation.epoch.world, request.observation.epoch.serial, hit.owner}, hit_owner_type);
                         lua_setfield(L, -2, "owner");
@@ -857,11 +905,13 @@ struct PhysicsApi {
         return 1;
     }
     static int acknowledge(lua_State* L) {
-        auto& p = plugin(L); const auto b = body(L, p, 1);
+        auto& p = plugin(L);
+        const auto b = body(L, p, 1);
         return result(L, p.services_.game().body_acknowledge(p.instance(), b.handle, sequence(L, 2)));
     }
     static int release(lua_State* L) {
-        auto& p = plugin(L); const auto b = body(L, p, 1);
+        auto& p = plugin(L);
+        const auto b = body(L, p, 1);
         return result(L, p.services_.game().body_release(p.instance(), b.handle));
     }
 };

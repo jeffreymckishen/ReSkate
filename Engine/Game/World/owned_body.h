@@ -85,7 +85,8 @@ inline bool finite(const Vec& value, float bound) noexcept {
     return true;
 }
 inline double length(const Vec& value) noexcept {
-    double sum{}; for (float v : value) sum += static_cast<double>(v) * v;
+    double sum{};
+    for (float v : value) sum += static_cast<double>(v) * v;
     return std::sqrt(sum);
 }
 inline bool calibrated(float seconds) noexcept {
@@ -134,7 +135,8 @@ struct Mailbox {
             const auto& record = receipts[(head + i) % receipts.size()];
             if (record.sequence == selected) { out = record; return true; }
         }
-        out = {}; return false;
+        out = {};
+        return false;
     }
     bool needs_successor() const noexcept {
         for (std::size_t i = 0; i < count; ++i) {
@@ -154,31 +156,48 @@ struct Mailbox {
                 value.epoch.time <= last_requested.time || value.epoch.seconds != last_requested.seconds))) return false;
         if (!assigned) assigned = sequence + 1;
         if (assigned <= sequence) return false;
-        command = value; deadline = now + command_lifetime_ms; pending = true;
-        last_submitted = value.epoch.serial; last_requested = value.epoch; sequence = assigned;
-        inbox = (head + count) % receipts.size(); ++count;
-        auto& record = receipts[inbox]; record = {}; record.outcome = Outcome::queued;
-        record.sequence = sequence; record.requested = value.epoch;
+        command = value;
+        deadline = now + command_lifetime_ms;
+        pending = true;
+        last_submitted = value.epoch.serial;
+        last_requested = value.epoch;
+        sequence = assigned;
+        inbox = (head + count) % receipts.size();
+        ++count;
+        auto& record = receipts[inbox];
+        record = {};
+        record.outcome = Outcome::queued;
+        record.sequence = sequence;
+        record.requested = value.epoch;
         return true;
     }
     bool consume(const Epoch& current, std::uint64_t now, Command& out) noexcept {
         if (!pending || failed) return false;
         auto& record = receipts[inbox];
-        Epoch target = command.epoch; ++target.serial; target.time += target.seconds;
+        Epoch target = command.epoch;
+        ++target.serial;
+        target.time += target.seconds;
         if (now >= deadline || current.serial > target.serial) {
-            pending = false; record.outcome = Outcome::expired; return false;
+            pending = false;
+            record.outcome = Outcome::expired;
+            return false;
         }
         if (current == command.epoch) return false;
         if (current != target) { pending = false; record.outcome = Outcome::rejected; return false; }
-        out = command; pending = false; producing = true; last_serial = command.epoch.serial;
+        out = command;
+        pending = false;
+        producing = true;
+        last_serial = command.epoch.serial;
         record.produced = current;
         if (command.impulse_id) last_impulse = command.impulse_id;
         return true;
     }
     bool finish(bool force_attempted, bool torque_attempted, bool complete) noexcept {
         if (!producing) return false;
-        producing = false; auto& record = receipts[inbox];
-        record.force_attempted = force_attempted; record.torque_attempted = torque_attempted;
+        producing = false;
+        auto& record = receipts[inbox];
+        record.force_attempted = force_attempted;
+        record.torque_attempted = torque_attempted;
         record.outcome = complete ? Outcome::applied : force_attempted || torque_attempted ? Outcome::partial : Outcome::rejected;
         if (!complete) { failed = true; cancel(); }
         return true;
@@ -199,9 +218,6 @@ struct Mailbox {
         }
         return attached;
     }
-    // Trusted World service only, after exact stopped/drained retained park.
-    // This seals cleanup ACK eligibility, not a measured successor or model result.
-    // Validate the bounded ring fully before changing any record.
     bool seal_parked_without_successor(const Epoch& floor, const Epoch& observed) noexcept {
         if (!failed || pending || producing || head >= receipts.size() || count > receipts.size() ||
             !floor.world || !floor.body || !floor.serial || !std::isfinite(floor.time) || floor.time < 0 ||

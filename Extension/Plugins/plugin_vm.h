@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -130,6 +131,7 @@ struct HttpResponse {
 struct ModInfo {
     std::string folder, title;
     bool on{};
+    std::string author; // empty when it names none
 };
 
 // What a plugin's VM can reach outside itself. The host implements it.
@@ -184,7 +186,8 @@ enum class State { loading, running, stopped };
 class Plugin {
 public:
     // `directory` is the mod folder; `id` its folder name.
-    Plugin(std::string id, std::filesystem::path directory, Manifest manifest, Services& services, Limits limits);
+    Plugin(std::string id, std::filesystem::path directory, Manifest manifest, Services& services, Limits limits,
+           std::shared_ptr<const PluginSources> sources = {});
     ~Plugin();
     Plugin(const Plugin&) = delete;
     Plugin& operator=(const Plugin&) = delete;
@@ -256,6 +259,7 @@ public:
     void save_storage();
 
     const std::string& id() const noexcept { return id_; }
+    // This VM's instance, new at each load: what owns its native bodies, never its plugin name.
     std::uint64_t instance() const noexcept { return instance_; }
     const std::filesystem::path& directory() const noexcept { return directory_; }
     const Manifest& manifest() const noexcept { return manifest_; }
@@ -288,6 +292,7 @@ private:
     friend struct InputPulseApi;
     friend struct InputLeaseApi;
     friend struct EffectsApi;
+    friend struct ViewmodelApi;
     std::uint64_t instance_{};
     struct Subcommand { std::string name, args, help; };
     struct Command { std::string help; int function{}; std::vector<Subcommand> subcommands; };
@@ -316,6 +321,7 @@ private:
     std::string id_;
     std::filesystem::path directory_;
     std::string code_root_; // the entry's folder in the package: where require looks
+    std::shared_ptr<const PluginSources> sources_; // absent only for direct test/legacy candidates
     Manifest manifest_;
     Services& services_;
     Limits limits_;

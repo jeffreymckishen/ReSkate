@@ -23,6 +23,12 @@ struct MotionProbe {
 };
 MotionProbe motion_probe;
 
+bool motion_work_pending() noexcept {
+    Locked lock(motion_probe.lock);
+    return motion_probe.requested ||
+        (motion_probe.sequence && motion_probe.result.status == mp::Status::pending);
+}
+
 std::uint32_t motion_route_count(std::uint64_t sequence, MotionRoute route) noexcept {
     const auto word = motion_probe.routes[static_cast<std::size_t>(route)].load(std::memory_order_acquire);
     return (word >> 32) == sequence ? static_cast<std::uint32_t>(word) : 0;

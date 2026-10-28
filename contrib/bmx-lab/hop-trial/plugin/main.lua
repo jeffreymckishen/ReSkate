@@ -84,12 +84,11 @@ local function record_status(snapshot,on_unload)
     context:after_step(snapshot)
     request_stop_once()
     if on_unload then
-        -- No normal chunk is written first. A terminal lifecycle can still
-        -- have an unsaved evidence tail; preserve that loss explicitly too.
-        local checked,current=pcall(recorder.status,recorder)
-        if not terminal_witness(snapshot) or not checked or type(current)~="table" or current.flushed~=true then
-            pcall(context.interrupt,context,snapshot)
-        end
+        -- Only an already drained, actually clean owner may save its changed
+        -- final summary. The recorder refuses chunks and shares one unload I/O.
+        local witnessed=terminal_witness(snapshot)
+        local ok,accepted=pcall(context.finish_unload,context,snapshot,{inactive=witnessed,terminal=witnessed})
+        if not ok or accepted~=true then detail="Final evidence incomplete; actual cleanup duty remains visible." end
     elseif terminal_witness(snapshot) then
         -- inactive means this trial can issue no new commands. It does not
         -- mean retained native debt was cleared or an allocation was retired.
@@ -208,8 +207,10 @@ reskate.menu.page("Private BMX hop trial",function(ui)
     end
 end)
 reskate.on("unload",function()
+    if unloaded then return end
     unloaded=true;intent=false
     if not bike then return end
+    context:begin_unload()
     context:request_stop("Trial unload");stop_sent=true
     -- Unload is the facade's existing cleanup path, not an evidence shortcut.
     pcall(bike.unload,bike)

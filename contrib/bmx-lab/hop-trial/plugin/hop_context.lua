@@ -295,6 +295,14 @@ function Object:flush(witness)
     local s=states[self]
     return s.recorder:flush(witness)
 end
+function Object:begin_unload()
+    local s=states[self]
+    return s.recorder:begin_unload()
+end
+function Object:finish_unload(snapshot,witness)
+    local s=states[self]
+    return s.recorder:finish_unload(snapshot,witness)
+end
 function Object:interrupt(snapshot)
     local s=states[self]
     return s.recorder:interrupt(snapshot)

@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "status": "DATA_ONLY_PORTABLE_TEST_FACTORY_RECIPES_NEVER_STAGE_OR_RUNTIME",
+  "source_root": "TRIAL_DIRECTORY",
+  "approved_probe_recipe_sha256": "517F93C31B1F71D915E177CBEB26CD44DC8E9522C1B08D91729E6EEE888EC6BE",
+  "unit_file_count": 4,
+  "fresh_external_unit_required": true,
+  "verify_all_input_and_generated_pins_before_writes": true,
+  "codec_path": "plugin/hop_evidence_codec.lua",
+  "codec_destination": "hop_evidence_codec.lua",
+  "codec_sha256": "0DBDEC3FCBEDE4C47A5E4B063DAD833F67919B2BFE19BBDCFB680F99182B47F8",
+  "factories": [
+    {
+      "variant": "baseline",
+      "source": "Test/sanitizer-count/hop_recorder_before_count.lua",
+      "source_sha256": "69751C4679D53D8212B371EBAC12846DAEDB9A8CC9F90575F26D573FE9393477",
+      "output_module": "hop_sanitizer_baseline_factory.lua",
+      "before": "return table.freeze(Recorder)",
+      "after": "return table.freeze({Recorder=table.freeze(Recorder),state=function(self) return get(self) end,\n    probe=function(kind,payload,limit)\n        local shape=assert(event_schemas[kind],\"unknown sanitizer schema\")\n        return sanitized(payload,shape,limit or LIMITS.row_bytes-384)\n    end})",
+      "occurrences": 1,
+      "must_be_final_statement": true,
+      "expected_bytes": 37224,
+      "expected_sha256": "525A075DE181A1BA8925FF88E56B04580B2E43480A61A0B87F6643C14085EACF",
+      "inverse_byte_exact": true,
+      "generated_source_written": false,
+      "test_only": true
+    },
+    {
+      "variant": "candidate",
+      "source": "plugin/hop_recorder.lua",
+      "source_sha256": "F484AB3188AD47136124EFD61B5C6F70BF3898E6EB8B8465BF3055BF7501D4F2",
+      "output_module": "hop_sanitizer_candidate_factory.lua",
+      "before": "return table.freeze(Recorder)",
+      "after": "return table.freeze({Recorder=table.freeze(Recorder),state=function(self) return get(self) end,\n    probe=function(kind,payload,limit)\n        local shape=assert(event_schemas[kind],\"unknown sanitizer schema\")\n        return sanitized(payload,shape,limit or LIMITS.row_bytes-384)\n    end})",
+      "occurrences": 1,
+      "must_be_final_statement": true,
+      "expected_bytes": 38148,
+      "expected_sha256": "5B3DA4F963D2EDFBD3B2A4CA16EE9577F6E451170E8B4FF67D7E1B75475173C0",
+      "inverse_byte_exact": true,
+      "generated_source_written": false,
+      "test_only": true
+    }
+  ],
+  "test_suite": {
+    "source": "Test/sanitizer-count/hop_sanitizer_count_tests.lua",
+    "destination": "hop_sanitizer_count_tests.lua",
+    "sha256": "F57C9813B2C14229BE294F13D56067AF0D9C8724A7B4E1B0F2096416B84EE3D3"
+  },
+  "shared_codec_module_name": "hop_evidence_codec.lua",
+  "run_suite": "hop_sanitizer_count_tests",
+  "expected_authored_groups": 24,
+  "generated_sources_written": false,
+  "code_or_tests_executed": false,
+  "native_qualified": false
+}

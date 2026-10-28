@@ -1,0 +1,77 @@
+{
+  "schema": 1,
+  "status": "DATA_ONLY_PORTABLE_TEST_RECIPES_NEVER_STAGE_OR_RUNTIME",
+  "source_root": "TRIAL_DIRECTORY",
+  "unit_file_count": 7,
+  "fresh_external_unit_required": true,
+  "verify_all_input_and_generated_pins_before_writes": true,
+  "codec_path": "plugin/hop_evidence_codec.lua",
+  "codec_destination": "hop_evidence_codec.lua",
+  "codec_sha256": "0DBDEC3FCBEDE4C47A5E4B063DAD833F67919B2BFE19BBDCFB680F99182B47F8",
+  "h1_transforms": "Test/clean-unload/H1-TRANSFORMS.json",
+  "h1_transforms_sha256": "F28BE918841A075D1E5B03B64CB380A04AE01591EAE6F9DF9A56180E024AA805",
+  "recorder": {
+    "source": "plugin/hop_recorder.lua",
+    "source_sha256": "F484AB3188AD47136124EFD61B5C6F70BF3898E6EB8B8465BF3055BF7501D4F2",
+    "destination": "hop_recorder_private_test_factory.lua",
+    "before": "return table.freeze(Recorder)",
+    "after": "return table.freeze({Recorder=table.freeze(Recorder),state=function(self) return get(self) end})",
+    "occurrences": 1,
+    "must_be_final_statement": true,
+    "inverse_byte_exact": true,
+    "generated_sha256": "03FF8EED29F0088EFC53AD56803C1CAEC49881BA819CF3B3632C4002882CB277",
+    "generated_bytes": 37955
+  },
+  "main": {
+    "source": "plugin/main.lua",
+    "source_sha256": "34F5D5D7DFEBE2C709849CD6242EAD57CD6D1696838EEC4BB3F6E2EF3FC75E1F",
+    "source_transforms": "Test/clean-unload/H1-TRANSFORMS.json",
+    "source_transforms_sha256": "F28BE918841A075D1E5B03B64CB380A04AE01591EAE6F9DF9A56180E024AA805",
+    "derived_sha256": "64C2BF2A1F2C819A278186CB2B6DCBD86FB2A8AD16A7160177F326C70927DF09",
+    "destination": "hop_main_unload_fixture.lua",
+    "prefix": "return function(reskate, require)\n",
+    "suffix": "\nend\n",
+    "inverse_byte_exact": true,
+    "generated_sha256": "79571B574BA605E21760CEE93D7B027F9808A739DF582E91610EA5F539E85EE2",
+    "generated_bytes": 12654
+  },
+  "p0_main": {
+    "source": "plugin/main.lua",
+    "source_sha256": "34F5D5D7DFEBE2C709849CD6242EAD57CD6D1696838EEC4BB3F6E2EF3FC75E1F",
+    "destination": "hop_main_unload_p0_fixture.lua",
+    "prefix": "return function(reskate, require)\n",
+    "suffix": "\nend\n",
+    "inverse_byte_exact": true,
+    "generated_sha256": "57E4C575C7478D24B2AF3BE7F790A473D80A301129CEB61CF022E0EE58B72240",
+    "generated_bytes": 12494
+  },
+  "ordinary_files": [
+    {
+      "source": "plugin/hop_context.lua",
+      "source_sha256": "76A64A9630AB909722FA43FF1BCBCF5246862C69FB39689BB62DADE670A622C1",
+      "source_transforms": "Test/clean-unload/H1-TRANSFORMS.json",
+      "source_transforms_sha256": "F28BE918841A075D1E5B03B64CB380A04AE01591EAE6F9DF9A56180E024AA805",
+      "destination": "hop_context.lua",
+      "sha256": "71114DBB4FF1475AE366440367338FB62F78CBD8F0091C9B8E9178ED1D2F4C13",
+      "bytes": 18068
+    },
+    {
+      "source": "plugin/hop_context.lua",
+      "source_sha256": "76A64A9630AB909722FA43FF1BCBCF5246862C69FB39689BB62DADE670A622C1",
+      "destination": "hop_context_p0.lua",
+      "sha256": "76A64A9630AB909722FA43FF1BCBCF5246862C69FB39689BB62DADE670A622C1",
+      "bytes": 16683
+    },
+    {
+      "source": "Test/clean-unload/hop_unload_finalization_tests.lua",
+      "destination": "hop_unload_finalization_tests.lua",
+      "sha256": "F2E85328F5EFCAE41113F231CEDED346354613F8FA31BEF704272D10C41DAFAA"
+    }
+  ],
+  "generated_sources_committed": false,
+  "generated_sources_written": false,
+  "code_or_tests_executed": false,
+  "run_suite": "hop_unload_finalization_tests",
+  "expected_authored_groups": 26,
+  "native_qualified": false
+}

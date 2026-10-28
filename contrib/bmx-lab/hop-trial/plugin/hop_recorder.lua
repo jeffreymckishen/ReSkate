@@ -123,15 +123,18 @@ local function string_cost(v)
     end
     return n
 end
+-- All numeric output keys are vectors or schema lists bounded to32. Count
+-- canonical DATA keys, independently of the unchanged legacy spend below.
+local function canonical_index_bytes(index) return index<10 and 5 or 6 end
 local copy
 copy=function(value,shape,b)
     if value==nil or b.full then return nil end
     if shape=="number" then
         if not finite(value) then return bad(b) end
-        if spend(b,32) then return value end
+        if spend(b,32) then return value,32 end
     elseif shape=="boolean" then
         if type(value)~="boolean" then return bad(b) end
-        if spend(b,5) then return value end
+        if spend(b,5) then return value,5 end
     elseif shape=="text" or shape=="id" then
         if type(value)~="string" then return bad(b) end
         if shape=="id" then
@@ -139,13 +142,15 @@ copy=function(value,shape,b)
         elseif #value>LIMITS.text_bytes then
             b.lost=true;value=string.sub(value,1,LIMITS.text_bytes)
         end
-        if spend(b,string_cost(value)) then return value end
+        local bytes=string_cost(value)
+        if spend(b,bytes) then return value,bytes end
     elseif shape=="vec3" or shape=="vec4" then
         local count=shape=="vec3" and 3 or 4
         local native=typeof(value)=="vector"
         if not native and not plain(value) or native and count~=3 then return bad(b) end
         local out={}
         if not spend(b,2) then return nil end
+        local canonical=2
         for i=1,count do
             local v
             if native then v=(i==1 and value.x or i==2 and value.y or value.z)
@@ -154,39 +159,45 @@ copy=function(value,shape,b)
                 if v==nil and count==3 then v=rawget(value,({"x","y","z"})[i]) end
             end
             if not finite(v) or not spend(b,33) then return bad(b) end
-            out[i]=v
+            out[i]=v;canonical+=canonical_index_bytes(i)+32
         end
-        return table.freeze(out)
+        return table.freeze(out),canonical
     else
         if not plain(value) then return bad(b) end
         if not spend(b,2) then return nil end
         local out={}
+        local canonical=2
         if shape.item then
             local count=#value
             if count>shape.limit then b.lost=true;count=shape.limit end
             for i=1,count do
                 local item=rawget(value,i)
                 if item==nil then b.lost=true;break end
-                local v=copy(item,shape.item,b)
+                local v,bytes=copy(item,shape.item,b)
                 if v==nil then break end
-                out[#out+1]=v
+                local index=#out+1;out[index]=v
+                canonical+=canonical_index_bytes(index)+bytes
                 if not spend(b,1) then break end
             end
         else
             for name,kind in pairs(shape) do
                 if b.full then break end
                 local raw=rawget(value,name)
-                if raw~=nil and spend(b,#name+4) then out[name]=copy(raw,kind,b) end
+                if raw~=nil and spend(b,#name+4) then
+                    local v,bytes=copy(raw,kind,b)
+                    out[name]=v
+                    if v~=nil then canonical+=#name+4+bytes end
+                end
             end
         end
-        return table.freeze(out)
+        return table.freeze(out),canonical
     end
     return nil
 end
 local function sanitized(value,shape,limit)
     local b={bytes=0,nodes=0,limit=limit}
-    local out=copy(value,shape,b)
-    return out,b
+    local out,canonical=copy(value,shape,b)
+    return out,b,canonical
 end
 -- Both arguments are our bounded, detached plain copies, never caller tables.
 local function same(a,b)
@@ -198,8 +209,24 @@ local function same(a,b)
     return true
 end
 local function fault(s,why)
+    if s.unload_scope and s.unload_writer_spent and not s.interrupted then
+        s.interrupted=true;s.version+=1
+    end
     if not s.observation_loss or not s.stop_requested or not s.first_fault then s.version+=1 end
     s.observation_loss=true;s.stop_requested=true;s.first_fault=s.first_fault or why
+end
+-- A spent unload writer cannot certify facts that arrived after its snapshot.
+-- Retention still records them; only completion is revoked, without another I/O.
+local function unload_tail_changed(s)
+    if s.unload_scope and s.unload_writer_spent then fault(s,"unload_tail_changed") end
+end
+local function begin_unload(s)
+    if s.unload_scope then return end
+    s.unload_scope=true
+    if s.busy then
+        -- The already entered normal writer consumes this same lifecycle budget.
+        s.unload_writer_spent=true;fault(s,"unload_writer_in_flight")
+    end
 end
 local function get(self) return assert(states[self],"unknown hop recorder") end
 local function known_identity(kind,row)
@@ -225,8 +252,8 @@ local function retained_row(s,entry)
     end
     return Codec.decode_row(entry.wire)
 end
-local function retain(s,kind,data,_bytes,critical,at_ms,incomplete)
-    s.calls+=1;s.version+=1
+local function retain(s,kind,data,canonical_bytes,critical,at_ms,incomplete)
+    s.calls+=1;s.version+=1;unload_tail_changed(s)
     local slot=kind=="lease" and (data.call=="input.lease_state" and 1 or data.call=="input.lease_capture_state" and 2) or nil
     local eligible=slot and not critical and not incomplete and Codec.pair_data_known(data)
     local prior=s.last[kind]
@@ -317,9 +344,11 @@ local function retain(s,kind,data,_bytes,critical,at_ms,incomplete)
     if critical then
         if s.critical_bytes+size>LIMITS.critical_bytes then return capacity_fault(s,true) end
     else
-        local expanded=Codec.data_bytes(data)
-        if not expanded then return capacity_fault(s,false,"invalid_encoding") end
-        state_size=expanded+64+string_cost(kind)+string_cost(call)
+        -- encode_row has already fully validated the same copied DATA. The
+        -- count comes only from our private sanitizer/transition construction.
+        if not finite(canonical_bytes) or canonical_bytes%1~=0 or canonical_bytes<2
+            or canonical_bytes>LIMITS.row_bytes-384 then return capacity_fault(s,false,"invalid_encoding") end
+        state_size=canonical_bytes+64+string_cost(kind)+string_cost(call)
         local projected=s.regular_bytes+size+state_size-(s.base_bytes[key] or 0)
         if projected>LIMITS.regular_bytes or not base and s.base_count>=64 then return capacity_fault(s,false) end
     end
@@ -355,12 +384,13 @@ function Object:append(kind,payload)
     local s=get(self)
     local shape=type(kind)=="string" and event_schemas[kind]
     if not shape or not plain(payload) then fault(s,"invalid_event");return false,"invalid_event" end
-    local data,b=sanitized(payload,shape,LIMITS.row_bytes-384)
+    local data,b,canonical_bytes=sanitized(payload,shape,LIMITS.row_bytes-384)
     local at_ms=rawget(payload,"at_ms")
     if at_ms~=nil and not finite(at_ms) then b.lost=true;at_ms=nil end
     if b.lost or not data then fault(s,"invalid_observation") end
     local critical=s.stopping or s.stop_requested or (data and (data.unknown==true or data.quarantined==true or data.terminal==true or data.call_ok==false))
-    return retain(s,kind,data or table.freeze({}),math.min(b.bytes,LIMITS.row_bytes-384),critical,at_ms,b.lost==true)
+    if data==nil then data=table.freeze({});canonical_bytes=2 end
+    return retain(s,kind,data,canonical_bytes,critical,at_ms,b.lost==true)
 end
 local function board_debt(board)
     return board~=nil and (board.restore_pending==true or board.drop_inflight==true or board.restore_inflight==true
@@ -398,7 +428,7 @@ function Object:terminal(snapshot)
     s.latest=row or table.freeze({});s.cleanup_observed=true
     -- Repeated cached terminal ticks update the latest wall time in memory,
     -- without making an already saved semantic snapshot perpetually dirty.
-    if changed then s.latest_revision+=1;s.version+=1 end
+    if changed then s.latest_revision+=1;s.version+=1;unload_tail_changed(s) end
     s.unresolved_debt=b.lost==true or debt(s.latest)
     local board=s.latest.board_drop
     s.board_restore_unresolved=board_debt(board);s.pose_release_unresolved=pose_debt(s.latest.mounted_pose)
@@ -420,7 +450,7 @@ function Object:terminal(snapshot)
     s.last_terminal=transition
     local transition_bytes=2
     for name,value in pairs(transition) do
-        transition_bytes+=#name+4+(type(value)=="string" and string_cost(value) or 5)
+        transition_bytes+=#name+4+(type(value)=="string" and string_cost(value) or type(value)=="number" and 32 or 5)
     end
     return retain(s,"terminal",transition,transition_bytes,s.stopping,t.wall_ms,b.lost==true)
 end
@@ -462,6 +492,7 @@ end
 function Object:flush(gate)
     local s=get(self)
     if not plain(gate) or rawget(gate,"inactive")~=true or rawget(gate,"terminal")~=true then return false,"active" end
+    if s.unload_scope then return false,"unload" end
     if s.busy then return false,"busy" end
     if s.storage_fault then return false,"storage_fault" end
     if s.interrupted then return false,"interrupted" end
@@ -503,6 +534,10 @@ function Object:flush(gate)
             or "storage call failed or returned an unexpected result"
         return false,"storage_fault"
     end
+    if s.unload_scope then
+        fault(s,"unload_writer_in_flight")
+        return false,"interrupted"
+    end
     if revision then s.saved_revision=revision
     else
         for _,entry in ipairs(picked) do entry.flushed=true end
@@ -510,39 +545,98 @@ function Object:flush(gate)
     end
     return true,revision and "summary_cached" or "chunk_cached"
 end
--- Explicit unload only, after the wrapper revokes ordinary submission and calls
--- Core unload/Stop. This one exceptional summary records a partial run even if
--- the real terminal/watchdog witness cannot arrive, or chunks remain unsaved.
--- A failed final status read preserves the last actual snapshot as historical.
--- It neither invents that witness nor advances the normal persistence cursors.
-function Object:interrupt(snapshot)
-    local s=get(self)
-    if s.emergency_attempted then return false,"already_interrupted" end
-    s.emergency_attempted=true -- consume before copying or any writer callback
+-- Begin before Core cleanup can reenter a writer. This is a pure scope signal;
+-- no snapshot copy, storage call, physical cleanup or permission is added here.
+function Object:begin_unload()
+    begin_unload(get(self));return true
+end
+local function clean_unload(s,witnessed)
+    local t=s.latest
+    return witnessed and s.cleanup_observed and t and t.phase=="done"
+        and t.stop_latched==true and t.unloaded==true and t.bike_cleanup_complete==true
+        and t.bike_authority==false and t.cleanup_pending==false and t.cleanup_unknown==false
+        and not s.unresolved_debt and not s.cleanup_unknown_seen and not s.observation_loss
+        and not s.storage_fault and not s.interrupted and not s.busy
+        and s.regular_next>#s.regular and s.critical_next>#s.critical
+end
+local function unload_failed(s,why)
+    if not s.interrupted then s.interrupted=true;s.version+=1 end
+    fault(s,why)
+    s.unload_success=false
+end
+local function unload_storage_failed(s,result,why)
+    s.storage_fault=true
+    s.storage_error=not result[1] and type(result[2])=="string" and string.sub(result[2],1,LIMITS.text_bytes)
+        or "storage call failed or returned an unexpected result"
+    unload_failed(s,why)
+    return false,"storage_fault"
+end
+local function observe_unload(self,s,snapshot)
     if plain(snapshot) then self:terminal(snapshot)
     else
         s.final_snapshot_unavailable=true;s.unresolved_debt=true;s.cleanup_unknown_seen=true
         fault(s,"final_snapshot_unavailable")
     end
-    s.interrupted=true;s.version+=1
-    fault(s,"explicit_unload_incomplete")
+end
+local function finalize_unload(self,snapshot,gate,incomplete_only)
+    local s=get(self)
+    begin_unload(s)
+    local first=not s.unload_attempted
+    s.unload_attempted=true -- Shared finish/interrupt claim, before copying/callbacks.
+    observe_unload(self,s,snapshot)
+    local witnessed=plain(gate) and rawget(gate,"inactive")==true and rawget(gate,"terminal")==true
+    if not first then
+        -- A former success is never a memoized certificate for later facts.
+        if s.unload_success and clean_unload(s,true) and s.saved_revision==s.version then
+            if incomplete_only then return false,"already_finalized" end
+            return witnessed,witnessed and "complete" or "active"
+        end
+        if s.unload_success then unload_failed(s,"unload_tail_changed") end
+        return false,s.busy and "busy" or "already_interrupted"
+    end
+    local clean=not incomplete_only and clean_unload(s,witnessed)
+    if not clean then
+        s.emergency_attempted=true
+        unload_failed(s,"explicit_unload_incomplete")
+    end
     if s.busy then return false,"busy" end
-    local value={}
-    for name,item in pairs(summary(s)) do value[name]=item end
-    value.interrupted=true;value.complete=false
-    table.freeze(value)
+    if s.unload_writer_spent then return false,"already_interrupted" end
+    s.unload_writer_spent=true -- One writer budget, including failures/reentry.
+    local revision=s.version
+    local key,value
+    if clean then
+        key="hop."..s.run_id..".summary";value=summary(s)
+    else
+        key="hop."..s.run_id..".incomplete";value={}
+        for name,item in pairs(summary(s)) do value[name]=item end
+        value.interrupted=true;value.complete=false;table.freeze(value)
+    end
     s.busy=true
-    local result=table.pack(pcall(s.writer,"hop."..s.run_id..".incomplete",value))
+    local result=table.pack(pcall(s.writer,key,value))
     s.busy=false
     if not result[1] or result.n~=1 then
-        s.storage_fault=true;s.first_fault=s.first_fault or "emergency_storage_failure"
-        s.storage_error=not result[1] and type(result[2])=="string" and string.sub(result[2],1,LIMITS.text_bytes)
-            or "emergency storage failed or returned an unexpected result"
-        return false,"storage_fault"
+        return unload_storage_failed(s,result,clean and "storage_failure" or "emergency_storage_failure")
+    end
+    if clean then
+        if s.version~=revision or not clean_unload(s,witnessed) then
+            unload_failed(s,"unload_tail_changed")
+            return false,"unload_tail_changed"
+        end
+        -- Summary only: row/chunk cursors never advance during unload.
+        s.saved_revision=revision;s.unload_success=true
+        return true,"summary_cached"
     end
     s.emergency_cached=true
-    -- A prior failed chunk remains failed; this is a distinct incomplete key,
-    -- not a retry, a row ACK, or a claim that any native cleanup completed.
     return true,"incomplete_cached"
+end
+-- Only an actual clean unloaded snapshot with drained own cursors can replace
+-- the summary. Any real pending/unknown tail keeps the old incomplete record.
+function Object:finish_unload(snapshot,witness)
+    return finalize_unload(self,snapshot,witness,false)
+end
+-- Existing explicit interruption shares the same scope/claim with clean finish
+-- and ordinary flush. It cannot spend a second writer after another path won.
+function Object:interrupt(snapshot)
+    return finalize_unload(self,snapshot,nil,true)
 end
 return table.freeze(Recorder)

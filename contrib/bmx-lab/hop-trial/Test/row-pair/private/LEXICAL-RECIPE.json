@@ -1,10 +1,10 @@
 {
   "schema": 1,
   "status": "TEST_ONLY_NEVER_STAGE_OR_RUNTIME",
-  "production_recorder_path": "E:\\RESKATE DEV\\hop-row-pair-producer-source-20261028-code-v2\\plugin\\hop_recorder.lua",
-  "production_recorder_sha256": "116FE2AA7F708DCE2DA28745535A89F75766CD85074113C4253AD3737C6039AA",
+  "production_recorder_path": "plugin/hop_recorder.lua",
+  "production_recorder_sha256": "F484AB3188AD47136124EFD61B5C6F70BF3898E6EB8B8465BF3055BF7501D4F2",
   "production_codec_sha256": "0DBDEC3FCBEDE4C47A5E4B063DAD833F67919B2BFE19BBDCFB680F99182B47F8",
-  "factory_sha256": "D8CFF34CA53F064395D98110D218B90F7A904648C26E538C4873B7155E15F9F1",
+  "factory_sha256": "03FF8EED29F0088EFC53AD56803C1CAEC49881BA819CF3B3632C4002882CB277",
   "only_transform": "Final return statement; original EOF/newlines preserved",
   "before": "return table.freeze(Recorder)",
   "after": "return table.freeze({Recorder=table.freeze(Recorder),state=function(self) return get(self) end})",

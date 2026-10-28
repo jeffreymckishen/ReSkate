@@ -150,6 +150,23 @@ prior snapshot and marks that loss. An early unload cannot wait for later native
 receipts. Wait for the normal evidence-flushed indicator before ending a trial;
 cache acceptance still does not promise persistence through a crash.
 
+A clean explicit unload also has one shared private writer budget. Main opens a
+pure Recorder-local scope before actual Core cleanup, then finalizes only after
+actual final status. Only a previously fully flushed, done/unloaded, no-authority,
+cleanup-complete run with no current or historical uncertainty/loss/fault may
+replace its existing summary key. Pending or uncertain tails keep the distinct
+incomplete summary; normal chunk/row cursors never advance during finalization.
+Busy/reentrant writers, later semantic changes and repeated finalizers cannot
+spend a second write or return stale clean success. The legacy interrupt path
+still records incomplete evidence.
+
+Recorder canonical DATA size is computed while its existing schema copy builds
+the frozen DTO; full Codec validation still precedes use. Legacy sanitization,
+refusal/truncation, exact values/records/charges and all budgets remain unchanged.
+The portable [pure regression runbook](Test/row-pair/README.md) covers231 unique
+cases, but the actual29E9 Host attempt failed its clean-positive assertion because
+historical cleanup uncertainty was already latched. No performance, full-window,
+actual20ms unload, durability or native qualification follows from this checkpoint.
 Core treats pose refusal as optional. This trial's observer must explicitly
 request ordinary Stop when the SDK pose fails. Stop also on Source/focus/menu,
 owner, body, contact, caps, unexpected input, second-hop, receipt or deadline

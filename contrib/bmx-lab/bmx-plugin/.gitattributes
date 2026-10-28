@@ -1,0 +1,3 @@
+# Preserve exact hash-pinned Core and private regression recipes.
+plugin/bike_runtime_core.lua -text
+Test/known-pending/** -text

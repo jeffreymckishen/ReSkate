@@ -1,0 +1,154 @@
+{
+  "schema": 1,
+  "status": "DATA_ONLY_TEST_RECIPES_NOT_RUNTIME_OR_STAGE",
+  "source_root": "BMX_PLUGIN_DIRECTORY",
+  "fresh_external_test_root_required": true,
+  "verify_before_any_import": true,
+  "preserve_utf8_bom_newlines_eof_byte_exact": true,
+  "core": {
+    "source": "plugin/bike_runtime_core.lua",
+    "sha256": "AD8E3446A32FFEAAA55B818A88C8BCB677474930A2323A6523D358B6E7010CD8",
+    "bytes": 151638,
+    "baseline_sha256": "C3BD7813F3AEBDBDB42D1C7515CC2D14C9B49F75B60D6DAF48B4EC504CDE24C6",
+    "baseline_bytes": 146156
+  },
+  "helper": {
+    "start_inclusive": "-- Reporting alone may distinguish a known pending transport from uncertainty.",
+    "end_exclusive": "snapshot=function(report_public,identity)",
+    "occurrences_each": 1,
+    "sha256": "6076EF011AED583DB5AF76E787C5380CDD81807B9792F00AA87FC4CDEE45F49A",
+    "bytes": 5307
+  },
+  "baseline_inverse": [
+    {
+      "operation": "remove_exact_helper_span",
+      "occurrences": 1
+    },
+    {
+      "before": "snapshot=function(report_public,identity)",
+      "after": "snapshot=function()",
+      "occurrences": 1
+    },
+    {
+      "before": "    local record={schema=1,kind=\"bike-lifecycle-v1\",storage_key=KEY,",
+      "after": "    return copied({schema=1,kind=\"bike-lifecycle-v1\",storage_key=KEY,",
+      "occurrences": 1
+    },
+    {
+      "before": "        evidence_scope=\"Host storage cache acceptance only; no disk durability, native consumption or mounted success inferred\"}\r\n    if report_public==true and known_pending_report(record,s,b,e,identity) then record.cleanup_unknown=false end\r\n    return copied(record)",
+      "after": "        evidence_scope=\"Host storage cache acceptance only; no disk durability, native consumption or mounted success inferred\"})",
+      "occurrences": 1
+    },
+    {
+      "before": "    local ok,result=pcall(snapshot,true,Identity)",
+      "after": "    local ok,result=pcall(snapshot)",
+      "occurrences": 1
+    }
+  ],
+  "baseline_reverse_byte_equal_required": true,
+  "predicate_factory": {
+    "destination": "known_pending_predicate_fixture.lua",
+    "prefix": "-- TEST ONLY: exact private predicate text extracted from the proposed Core; no runtime export.\r\nreturn function(state,subordinate,binding)\r\nlocal T,ride,ride_binding=state,subordinate,binding\r\nlocal MAX,CLEANUP_WATCHDOG_MS,FORCE_PIPELINE_CAPACITY=9007199254740991,20000,3\r\nlocal function finite(v) return type(v)==\"number\" and v==v and math.abs(v)<math.huge end\r\n",
+    "suffix": "return known_pending_report\r\nend\r\n",
+    "source_body": "exact helper extraction",
+    "generated_sha256": "E5441624FAE385F07715E95294C80C49E5282B292A111BC61FAF98F634E8B749",
+    "generated_bytes": 5705,
+    "reverse_extraction_byte_equal_required": true
+  },
+  "qualified_core_transforms": [
+    {
+      "before": "local RIDE_COMPOSITION_QUALIFIED=false",
+      "after": "local RIDE_COMPOSITION_QUALIFIED=true",
+      "occurrences": 1
+    },
+    {
+      "before": "local Ride=require(\"./ride_runtime\")",
+      "after": "local Ride=require(\"./ride_runtime_tricks_qualified_fixture\")",
+      "occurrences": 1
+    },
+    {
+      "before": "local TrickRuntime=require(\"./trick_runtime\")",
+      "after": "local TrickRuntime=require(\"./trick_runtime_ride_support_qualified_fixture\")",
+      "occurrences": 1
+    },
+    {
+      "before": "MountedPose=require(\"./mounted_pose\")",
+      "after": "MountedPose=require(\"./mounted_pose_qualified_fixture\")",
+      "occurrences": 1
+    }
+  ],
+  "qualified_baseline": {
+    "destination": "core_baseline_fixture.lua",
+    "generated_sha256": "BA5ED0359E96010E5BF21EFDF4C288A3A067D8DCD5E80B917EDCC7E216F7B21D",
+    "generated_bytes": 146229
+  },
+  "qualified_proposed": {
+    "destination": "core_proposed_fixture.lua",
+    "generated_sha256": "247021AE8DF035F800C0CD0B4A684DFAC9CD6E5802388423A5A888018769478E",
+    "generated_bytes": 151711
+  },
+  "entry_templates": [
+    {
+      "destination": "known_pending_predicate_entry.lua",
+      "text": "local Tests=require(\"./known_pending_predicate_tests\")\r\nreturn {run=function() return Tests.run({PredicateFactory=require(\"./known_pending_predicate_fixture\"),Identity=require(\"./lease_identity\")}) end}\r\n",
+      "sha256": "72777E8DD7AA23908BA11628DBC99B36C06375699CC7AF2A12B110A37BAF8F5A",
+      "expected_cases": 80,
+      "run_suite": "known_pending_predicate_entry"
+    },
+    {
+      "destination": "json_encoding_tests.lua",
+      "text": "local Tests=require(\"./core_known_pending_report_regression_tests\")\r\nreturn {run=function(helper)\r\n    return Tests.run({variant=\"current_recovery\",baseline_source_sha256=\"C3BD7813F3AEBDBDB42D1C7515CC2D14C9B49F75B60D6DAF48B4EC504CDE24C6\",\r\n        proposed_source_sha256=\"AD8E3446A32FFEAAA55B818A88C8BCB677474930A2323A6523D358B6E7010CD8\",\r\n        CoreBaseline=require(\"./core_baseline_fixture\"),CoreProposed=require(\"./core_proposed_fixture\"),\r\n        Services=require(\"./core_ride_staging_tests\"),Geometry=require(\"./bike_geometry\"),\r\n        Identity=require(\"./lease_identity\"),encode=helper.json_encode})\r\nend}\r\n",
+      "sha256": "C6EA264A4D5F7E9B4CDC2F2D467C9545718DEC64EFD8CEFB5350402D1EDF4304",
+      "expected_cases": 8,
+      "run_suite": "json_encoding_tests",
+      "original_json_suite_credit": false
+    }
+  ],
+  "minimum_current_dependency_pins": [
+    {
+      "source": "plugin/current_recovery.lua",
+      "sha256": "808448B99EEBDC100BDC3FA5FF33FDB45DD84C34899246AB48AFFA9751E2CC49"
+    },
+    {
+      "source": "plugin/core_ride_staging_tests.lua",
+      "sha256": "22A62C6600CE6D79B1FCCE000F22F28D8482CE5947E2E0E39C853FD3306FAF2A"
+    }
+  ],
+  "generated_factories_committed": false,
+  "generated_factories_in_runtime": false,
+  "new_native_or_host_qualification": false,
+  "complete_flat_lua_donor_manifest_required": true,
+  "dependency_closure_policy": "minimum_current_dependency_pins is not a complete inventory; independently pin one complete same-current-repository flat plugin Lua closure and all generated/copied unit leaves before every import. No frozen E donor dependency is used.",
+  "ordinary_test_files": [
+    {
+      "source": "Test/known-pending/known_pending_predicate_tests.lua",
+      "destination": "known_pending_predicate_tests.lua",
+      "unit": "predicate",
+      "sha256": "C74A7D39F826E9BED4B133C86BCDB866384E0E3167FBC7B966C26797C6CC2F45",
+      "bytes": 8838
+    },
+    {
+      "source": "Test/known-pending/core_known_pending_report_regression_tests.lua",
+      "destination": "core_known_pending_report_regression_tests.lua",
+      "unit": "integrated",
+      "sha256": "9B9F9E431171EFA69BD86873CDAF989AFF872FEED09D847BC85647B0003AB471",
+      "bytes": 23533
+    },
+    {
+      "source": "plugin/lease_identity.lua",
+      "destination": "lease_identity.lua",
+      "unit": "predicate",
+      "sha256": "FD25C1230EB5D9C52CF23CD8521DCDE007D749B39E2C36426ADDD67EC93B3F8C",
+      "bytes": 2751
+    }
+  ],
+  "integrated_assembly_exclusions": [
+    {
+      "qualified_source": "json_encoding_tests.lua",
+      "source_sha256": "9F2ADAA814D02D831311603D81AD6DAD8A1BD3C46F71A1D301293120418BBA02",
+      "source_bytes": 6021,
+      "required_before_exclusion": true,
+      "reason": "Original JSON suite donor is retained/pinned but omitted from NEW integrated assembly so new pinned json_encoding_tests entry destination is absent; no old JSON suite credit."
+    }
+  ]
+}

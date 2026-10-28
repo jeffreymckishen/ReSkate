@@ -854,7 +854,74 @@ local function stock_blocked(read_status)
     if T.used and T.phase~="done" and not T.startup_handoff then return true end
     return false
 end
-snapshot=function()
+-- Reporting alone may distinguish a known pending transport from uncertainty.
+-- Controls and persisted markers retain unknown_duty's conservative union.
+local function known_pending_report(record,s,b,e,identity)
+    if type(identity)~="table" or type(identity.is_nonzero_u64)~="function" or type(identity.compare)~="function"
+        or record.cleanup_unknown~=true or record.force_cleanup_clear~=false
+        or T.stop_latched~=true or T.bike_cleanup_complete==true or T.unloaded==true
+        or T.busy==true or T.saving==true or T.source_inflight==true then return false end
+    local start=T.stop_at or T.effect_at
+    if not finite(T.now) or T.now>MAX or not finite(start) or start<0 or start>MAX or T.now<start
+        or T.now-start>=CLEANUP_WATCHDOG_MS then return false end
+    if T.reload_blocked==true or T.marker_unknown==true or T.storage_fault==true or T.clock_unknown==true
+        or T.handoff_unknown==true or T.reserve_unknown==true or T.gear_unknown==true
+        or T.cleanup_expired==true or T.protocol_unknown==true or T.ride_unknown==true or T.follow_unknown==true
+        or T.ack_attempted==true and T.acknowledged~=true
+        or T.release_attempted==true and T.release_accepted~=true or T.removal_unknown==true then return false end
+    if type(s)~="table" or getmetatable(s)~=nil or s.cleanup_unknown~=false
+        or type(b)~="table" or getmetatable(b)~=nil or b.cleanup_unknown~=false or b.creation_unknown~=false
+        or type(e)~="table" or getmetatable(e)~=nil or type(e.outcome)~="string" or e.outcome=="unresolved" then return false end
+    local binding=ride_binding
+    if T.ride_construct_attempted~=true or type(ride)~="table" or type(binding)~="table"
+        or getmetatable(binding)~=nil or binding.inflight~=false
+        or not (binding.unknown==nil or binding.unknown==false) then return false end
+    local owner=binding.owner
+    if type(owner)~="table" or getmetatable(owner)~=nil or not table.isfrozen(owner)
+        or typeof(owner.body)~="userdata" or typeof(owner.follow)~="userdata" or not finite(owner.generation)
+        or owner.generation<0 or owner.generation>MAX or owner.generation%1~=0
+        or type(owner.incarnation)~="table" or getmetatable(owner.incarnation)~=nil or not table.isfrozen(owner.incarnation)
+        or next(owner.incarnation)~=nil or type(owner.source)~="table" or getmetatable(owner.source)~=nil
+        or not table.isfrozen(owner.source) or typeof(owner.source.lease_handle)~="userdata"
+        or not finite(owner.source.generation) or owner.source.generation<0 or owner.source.generation>MAX or owner.source.generation%1~=0
+        or not finite(owner.source.user) or owner.source.user<0 or owner.source.user>3 or owner.source.user%1~=0
+        or not identity.is_nonzero_u64(owner.source.sequence) or not identity.is_nonzero_u64(owner.source.source_epoch)
+        or not identity.is_nonzero_u64(owner.source.context_generation) then return false end
+    local pending=binding.pending;local row=T.ride_status
+    if type(pending)~="table" or getmetatable(pending)~=nil or type(row)~="table" or getmetatable(row)~=nil
+        or row.stop_requested~=true or row.force_pending~=true or row.unknown~=false
+        or row.pending_limit~=FORCE_PIPELINE_CAPACITY or not finite(row.pending_count)
+        or row.pending_count%1~=0 or row.pending_count<1 or row.pending_count>FORCE_PIPELINE_CAPACITY
+        or not finite(row.submitted) or row.submitted<0 or row.submitted%1~=0 or row.submitted>MAX
+        or not finite(row.acknowledged) or row.acknowledged<0 or row.acknowledged%1~=0
+        or row.acknowledged>row.submitted or row.submitted-row.acknowledged~=row.pending_count then return false end
+    local commands=row.pending_commands;local n=row.pending_count
+    if type(commands)~="table" or getmetatable(commands)~=nil then return false end
+    -- Inspect only the current three-slot ledger; never scan retained history.
+    local function dense(array)
+        local count=0
+        for key in pairs(array) do
+            count+=1
+            if count>FORCE_PIPELINE_CAPACITY or type(key)~="number" or key%1~=0 or key<1 or key>n then return false end
+        end
+        return count==n
+    end
+    if not dense(pending) or not dense(commands) then return false end
+    local previous_sequence,previous_serial
+    for index=1,n do
+        local actual,diagnostic=pending[index],commands[index]
+        if type(actual)~="table" or getmetatable(actual)~=nil or actual.ack_attempted~=false
+            or type(diagnostic)~="table" or getmetatable(diagnostic)~=nil
+            or diagnostic.ack_attempted~=false or diagnostic.acknowledged~=false or diagnostic.unknown~=false
+            or not identity.is_nonzero_u64(actual.sequence) or not identity.is_nonzero_u64(actual.serial)
+            or diagnostic.sequence~=actual.sequence or diagnostic.serial~=actual.serial
+            or previous_sequence and identity.compare(actual.sequence,previous_sequence)~=1
+            or previous_serial and identity.compare(actual.serial,previous_serial)~=1 then return false end
+        previous_sequence,previous_serial=actual.sequence,actual.serial
+    end
+    return row.pending_sequence==pending[1].sequence and binding.sequence==pending[1].sequence
+end
+snapshot=function(report_public,identity)
     -- These dependency status methods read only local cached state. Reuse one
     -- detached observation inside this diagnostic copy, never across a call,
     -- tick or actuator callback. Authority helpers keep their ordinary reader.
@@ -865,7 +932,7 @@ snapshot=function()
         if object==equipment then return e end
         return nil
     end
-    return copied({schema=1,kind="bike-lifecycle-v1",storage_key=KEY,
+    local record={schema=1,kind="bike-lifecycle-v1",storage_key=KEY,
         mount_enabled=false,qualification_only=qualification_only,used=T.used==true,
         bike_authority=T.active==true or T.follow~=nil or T.body~=nil or T.handoff_unknown==true or T.reserve_unknown==true,
         cleanup_pending=T.stop_latched==true and not T.bike_cleanup_complete or T.gear_requested==true
@@ -928,7 +995,9 @@ snapshot=function()
             source_instances=T.source_instances or 0,spawn_instances=T.spawn_instances or 0,
             pose_instances=T.pose_instances or 0,board_instances=T.board_instances or 0,trick_instances=T.trick_instances or 0},
         geometry_scope="Original actor+3m/+0.5m spawn; COM attachment and anchor remain unqualified",
-        evidence_scope="Host storage cache acceptance only; no disk durability, native consumption or mounted success inferred"})
+        evidence_scope="Host storage cache acceptance only; no disk durability, native consumption or mounted success inferred"}
+    if report_public==true and known_pending_report(record,s,b,e,identity) then record.cleanup_unknown=false end
+    return copied(record)
 end
 -- Tick-end saves are throttled: every 200 ms, and every second while
 -- following (S1b in game: a save and its encode took 1.6 ms, five times a
@@ -2095,7 +2164,7 @@ end
 function object:status()
     -- All three dependency status methods are local cached reads. Detached
     -- copying strips private epochs/handles and refuses opaque nested values.
-    local ok,result=pcall(snapshot)
+    local ok,result=pcall(snapshot,true,Identity)
     if ok then return result end
     return {phase="retained_unknown",detail="Diagnostic copy refused; preserve SDK cleanup duty.",
         mount_enabled=false,qualification_only=qualification_only,bike_authority=true,

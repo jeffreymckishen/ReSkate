@@ -42,6 +42,7 @@ constexpr Capability capabilities[] = {
     {"outfit", "SKATER", Risk::red, "Change what your skater wears"},
     {"board", "SKATER", Risk::amber, "Change how your board is drawn"},
     {"skater.read", "SKATER", Risk::grey, "Read your skater's position, speed, state and physics"},
+    {"skater.input_trace", "SKATER", Risk::grey, "Read bounded samples of your skater's input callbacks"},
     {"events.tricks", "SKATER", Risk::grey, "Follow your tricks, lines and trick score"},
     {"events.skater", "SKATER", Risk::grey, "Follow your skater's state, bails and launches"},
     {"events.physics", "SKATER", Risk::grey, "Follow your skater's physics every step"},
@@ -50,6 +51,8 @@ constexpr Capability capabilities[] = {
     // Red: real bodies in your game's physics world, pushed with forces, which the game cannot free until it restarts.
     {"world.physics", "WORLD", Risk::red, "Create physical bodies in your world and push them around"},
     {"world.physics.observe", "WORLD", Risk::red, "See what its rays hit, other skaters' shapes included"},
+    {"world.physics.follow", "WORLD", Risk::red, "Move your skater with a physical body the plugin owns"},
+    {"world.physics.follow.renew", "WORLD", Risk::red, "Extend that skater-follow movement using renewable leases"},
     {"travel", "WORLD", Risk::red, "Travel to locations and levels"},
     {"world.environment", "WORLD", Risk::red, "Change the time of day, world controls and parks"},
     {"world.entities", "WORLD", Risk::amber, "Spawn objects that only you see"},
@@ -58,6 +61,9 @@ constexpr Capability capabilities[] = {
     {"world.raycast", "WORLD", Risk::grey, "Cast rays and pick objects in the world"},
     {"camera", "CAMERA", Risk::amber, "Control the camera"},
     {"input", "INPUT", Risk::amber, "Bind your keys, pads and mouse, and read text input"},
+    {"input.control", "INPUT", Risk::red, "Control your game's controller input"},
+    {"input.lease", "INPUT", Risk::amber, "Observe and reserve a controller input stream with a bounded lease"},
+    {"input.capture", "INPUT", Risk::amber, "Consume selected controller inputs while holding an input lease"},
     // Red: it can relabel anything the game shows, its store's buttons and prices included.
     {"strings", "SCREEN", Risk::red, "Change the text the game shows, in its menus and its store"},
     {"capture", "SCREEN", Risk::amber, "Record your screen"},

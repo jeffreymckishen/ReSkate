@@ -144,6 +144,49 @@ function Tests.run()
         check(#late.steps==1 and late.steps[1].terminal.outcome=="interrupted", "physical credit after terminal within a batch is refused atomically")
     end)
     scenario(function()
+        local failed=event("landed");failed.failed,failed.failure=true,"uncaught"
+        failed.sequence={malformed=true}
+        local invalid_h=row(3,1.2,event());invalid_h.h=-1
+        local invalid_mode=row(3,1.2,event());invalid_mode.mode="unknown"
+        local tails={
+            {row=invalid_h,issue="invalid_observation"},
+            {row=row(2,1.2,event()),issue="invalid_ride_row"},
+            {row={n=3,control="ended",reason="explicit menu stop",seconds=1.2},issue="invalid_terminal_row"},
+            {row=invalid_mode,issue="invalid_ride_row"},
+            {issue="incomplete_ride_log"},
+        }
+        for _,tail in ipairs(tails) do
+            local line=Line.new();credit(line)
+            local rows={row(2,1.1,copy(failed))}
+            if tail.row then table.insert(rows,copy(tail.row)) end
+            local b=Feed.ride(log(rows,3),1,{after_seconds=1,previous_mode="rolling"})
+            check(b.issue==tail.issue and #b.steps==1 and b.cursor==1,
+                "malformed tail remains diagnosed without consuming partial cursor")
+            local t=b.steps[1].terminal
+            check(t and t.outcome=="lost" and t.reason=="uncaught" and b.steps[1].feed==nil,
+                "an admitted failure wins over a later malformed or missing row")
+            local out=line:finish(t.reason,t.outcome)
+            check(out.closed and out.closed.outcome=="lost" and out.closed.points==240
+                and out.closed.score==0 and #out.credits==0,
+                "no coincident landing or retained payout survives malformed-tail failure")
+        end
+    end)
+    scenario(function()
+        local invalid=row(3,1.2,event());invalid.h=-1
+        local b=Feed.ride(log({row(2,1.1,event(),"bailed"),invalid},3),1,
+            {after_seconds=1,previous_mode="rolling"})
+        check(b.steps[1].terminal.outcome=="lost" and b.steps[1].terminal.reason=="bailed",
+            "an admitted bailed endpoint also survives malformed-tail rejection")
+        local ordinary=Feed.ride(log({row(2,1.1,event("landed")),invalid},3),1,
+            {after_seconds=1,previous_mode="rolling"})
+        check(ordinary.steps[1].terminal.outcome=="interrupted" and ordinary.steps[1].terminal.reason=="invalid_observation",
+            "malformation without a recognized bail still interrupts without partial awards")
+        local stale=Feed.ride(log({row(1,1.1,event(),"bailed")},1),1,
+            {after_seconds=1,previous_mode="rolling"})
+        check(stale.steps[1].terminal.outcome=="interrupted" and stale.issue=="invalid_ride_row",
+            "a stale unadmitted bail cannot forfeit current-cycle credit")
+    end)
+    scenario(function()
         local b=Feed.ride(log({row(2,1.1,event("landed")),{n=3,control="ended",reason="measured tilt 18.2 deg over the 15 deg Ride stop"}},3,true),0,{})
         check(#b.steps==1 and b.steps[1].terminal.outcome=="lost", "measured terminal bail wins over gap and coincident landed credit")
         local failed=event("landed");failed.failed,failed.failure=true,"uncaught"

@@ -61,8 +61,8 @@ local function interrupted_feed(seconds,speed,mode,why,air)
     return {h=0,feed={seconds=seconds,speed=speed,mode=mode or "rolling",gap=true,
         interrupted=why,air=air and air.failed and air or nil}}
 end
-local function invalid_batch(batch,why)
-    batch.steps={terminal(why,"interrupted")};batch.issue=why
+local function invalid_batch(batch,why,failed)
+    batch.steps={terminal(failed or why,failed and "lost" or "interrupted")};batch.issue=why
     return batch
 end
 
@@ -83,23 +83,28 @@ function Feed.ride(log,after_n,context)
     local gap=log.gap or count==0 and log.n~=after_n
     local previous_n,seconds,mode=after_n,context.after_seconds,context.previous_mode
     local latest,failed,last_terminal
+    local function reject(why)
+        -- A later malformed row cannot turn an already admitted bail into a
+        -- retained interruption. Drop the whole batch and preserve its loss.
+        return invalid_batch(batch,why,failed)
+    end
     for i=1,count do
         local row=log.rows[i]
-        if not plain(row) or not integer(row.n) or row.n<=previous_n or row.n>log.n then return invalid_batch(batch,"invalid_ride_row") end
+        if not plain(row) or not integer(row.n) or row.n<=previous_n or row.n>log.n then return reject("invalid_ride_row") end
         if row.n~=previous_n+1 then gap=true end
         previous_n=row.n
         if row.control~=nil then
             if row.control~="ended" or i~=count or type(row.reason)~="string" or #row.reason==0 or #row.reason>180
                 or row.seconds~=nil or row.h~=nil or row.events~=nil or row.mode~=nil or row.speed~=nil then
-                return invalid_batch(batch,"invalid_terminal_row")
+                return reject("invalid_terminal_row")
             end
             last_terminal=terminal(row.reason)
             if last_terminal.terminal.outcome=="lost" then failed=last_terminal.terminal.reason end
             table.insert(batch.steps,last_terminal)
         else
-            if not modes[row.mode] or type(row.landing_pending)~="boolean" then return invalid_batch(batch,"invalid_ride_row") end
+            if not modes[row.mode] or type(row.landing_pending)~="boolean" then return reject("invalid_ride_row") end
             local why=observation(row.seconds,row.h,row.speed,seconds)
-            if why=="invalid_observation" or why=="stale_observation" then return invalid_batch(batch,why) end
+            if why=="invalid_observation" or why=="stale_observation" then return reject(why) end
             if why then gap=true end
             local air,refusal=air_event(row.events)
             local interrupted=row.interrupted~=nil and reason(row.interrupted,"invalid_trick_refusal") or refusal
@@ -112,7 +117,7 @@ function Feed.ride(log,after_n,context)
             seconds,mode=row.seconds,row.mode;latest=feed
         end
     end
-    if previous_n~=log.n then return invalid_batch(batch,"incomplete_ride_log") end
+    if previous_n~=log.n then return reject("incomplete_ride_log") end
     batch.cursor,batch.mode=log.n,mode
     if gap then
         batch.issue="feed_gap";batch.steps={}

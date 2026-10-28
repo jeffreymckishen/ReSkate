@@ -196,6 +196,29 @@ function Tests.run(progress)
         check(after.cursor==before.cursor and after.last_seconds==before.last_seconds,"error invented no sample/cursor")
         check(#f.writes==0,"adapter interruption stays memory only")
     end)
+    case("admitted bail survives a malformed later Ride row",function()
+        local f=fixture();f.runtime:ride(ride_log())
+        local failed=landed_event();failed.failed,failed.failure=true,"uncaught"
+        local rows={
+            {n=2,seconds=1.1,h=.1,speed=1,mode="rolling",landing_pending=false,events=failed},
+            {n=3,seconds=1.2,h=-.1,speed=1,mode="rolling",landing_pending=false,events=landed_event()},
+        }
+        f.runtime:ride({generation=1,n=3,gap=false,rows=rows})
+        local s=f.runtime:status();local closed=f.runtime:view().closed
+        check(s.terminal and s.issue=="invalid_observation" and s.cursor==1 and s.last_seconds==1,
+            "malformed tail terminates without advancing to an unaccepted sample")
+        check(closed and closed.outcome=="lost" and closed.reason=="uncaught" and closed.points==240 and closed.score==0,
+            "known bail forfeits existing credit despite later malformed observation")
+        check(s.stats.session_total==0 and s.stats.best_line==0 and #f.writes==0,
+            "failed line neither counts as interrupted credit nor persists")
+        check(f.runtime:ride({generation=1,n=3,gap=false,rows=rows})==false
+            and f.runtime:status().stats.session_total==0,
+            "replaying the refused batch cannot recover or duplicate forfeited credit")
+        local fresh=ride_log();fresh.generation=2;f.runtime:ride(fresh)
+        f.runtime:ride({generation=2,n=2,gap=false,rows={{n=2,control="ended",reason="explicit menu stop"}}})
+        check(#f.writes==1 and f.record.session_total==360 and f.record.best_line==360,
+            "next normal bank persists only the new line, with no deferred bail payout")
+    end)
     case("idle generation zero differs from Core read failure",function()
         local f=fixture();f.runtime:ride(ride_log())
         f.runtime:ride({generation=0,n=0,gap=false,rows={}})

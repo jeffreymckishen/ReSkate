@@ -6,6 +6,10 @@ local Runtime=require("./bike_runtime")
 local Survey=require("./ride_r1_record")
 local Entry=require("./bmx_playable_entry")
 local bike=Entry.new(reskate,Runtime,Survey,{admitted=EXPERIMENTAL_ADMITTED,slot=SLOT,experimental_two_cycle=true,session_renewable=SESSION_RENEWABLE})
+reskate.input.bind("bmx_return","F8")
+reskate.on("action",function(name)
+    if name=="bmx_return" then bike:return_to_skateboard() end
+end)
 reskate.on("tick",function(dt_ms) bike:step(dt_ms) end)
 reskate.menu.page("BMX experimental",function(ui)
     local s=bike:status()
@@ -17,6 +21,7 @@ reskate.menu.page("BMX experimental",function(ui)
     s=bike:status()
     ui:info("State",s.phase)
     ui:note(s.detail)
+    ui:note("F8: return to skateboard (remappable in Binds).")
     if s.phase=="blocked" or s.phase=="stopped" then ui:note(s.lifecycle_detail) end
     ui:note("First Mount requires on-foot504. Second Mount requires current stock100 after clean Return, then visibly obtains504 before a NEW survey. Stay still and neutral.")
     if SESSION_RENEWABLE then

@@ -6,7 +6,7 @@ function Tests.run()
     local function check(ok,why) assertions+=1;assert(ok,why) end
     local function case(name,fn) cases+=1;local ok,why=pcall(fn);assert(ok,name..": "..tostring(why)) end
     local function setup()
-        local f={new_calls=0,callbacks={},buttons={},mounts=0,returns=0,cancels=0,steps=0,unloads=0,requires={}}
+        local f={new_calls=0,callbacks={},buttons={},mounts=0,returns=0,cancels=0,steps=0,unloads=0,requires={},binds={},notes={}}
         local Runtime,Survey={},{}
         local controller={}
         function controller:mount() f.mounts+=1;return false,"closed" end
@@ -15,7 +15,8 @@ function Tests.run()
         function controller:step(dt) f.steps+=1;f.last_dt=dt end
         function controller:unload() f.unloads+=1 end
         function controller:status() return {phase="idle",detail="closed",admitted=false,core_phase="idle",cleanup_pending=false,cleanup_unknown=false} end
-        local R={menu={}}
+        local R={menu={},input={}}
+        function R.input.bind(name,key) f.binds[#f.binds+1]={name=name,key=key};return true end
         function R.on(event,fn) check(f.callbacks[event]==nil,"one callback per event");f.callbacks[event]=fn end
         function R.menu.page(name,fn) f.page=name;f.menu=fn end
         local E={}
@@ -28,13 +29,13 @@ function Tests.run()
         local function require_one(name) check(modules[name]~=nil,"no undeclared main dependency");f.requires[#f.requires+1]=name;return modules[name] end
         Main(R,require_one)
         local ui={}
-        function ui:warn(_) end;function ui:note(_) end;function ui:info(_,_) end
+        function ui:warn(_) end;function ui:note(text) f.notes[#f.notes+1]=text end;function ui:info(_,_) end
         function ui:button(id,_) return f.buttons[id]==true end
         f.ui=ui;return f
     end
     case("one inert controller and three declared Lua dependencies",function()
         local f=setup();check(f.new_calls==1 and #f.requires==3,"main creates one owner coordinator once")
-        check(type(f.callbacks.tick)=="function" and type(f.callbacks.unload)=="function" and type(f.menu)=="function","entry binds normal events/menu")
+        check(type(f.callbacks.tick)=="function" and type(f.callbacks.unload)=="function" and type(f.callbacks.action)=="function" and type(f.menu)=="function","entry binds normal events/menu")
     end)
     case("explicit Mount Return Cancel reach the same controller",function()
         local f=setup();f.menu(f.ui);check(f.mounts==0 and f.returns==0 and f.cancels==0,"draw alone dispatches no command")
@@ -46,6 +47,22 @@ function Tests.run()
     case("tick and unload delegate without constructing sessions",function()
         local f=setup();for _=1,20 do f.callbacks.tick(16) end;f.callbacks.unload()
         check(f.steps==20 and f.last_dt==16 and f.unloads==1 and f.new_calls==1,"same controller receives ordinary ticks/unload")
+    end)
+    case("F8 action uses the guarded Return path without opening the menu",function()
+        local f=setup()
+        check(#f.binds==1 and f.binds[1].name=="bmx_return" and f.binds[1].key=="F8","one keyboard-only default, remapping belongs to Binds")
+        check(f.returns==0 and f.mounts==0 and f.cancels==0 and f.steps==0 and #f.notes==0,"registration dispatches no lifecycle command or menu draw")
+        f.callbacks.action("another_action");f.callbacks.action(nil);f.callbacks.action({name="bmx_return"})
+        check(f.returns==0 and f.mounts==0 and f.cancels==0,"only the exact action name selects Return")
+        f.callbacks.action("bmx_return")
+        check(f.returns==1 and f.new_calls==1 and #f.notes==0,"action reaches the existing controller without menu interaction")
+        f.callbacks.action("bmx_return")
+        check(f.returns==2 and f.mounts==0 and f.cancels==0 and f.steps==0,"guarded refusal is not converted into Mount, Cancel, input or a replacement owner")
+        f.buttons.bmx_play_return=true;f.menu(f.ui)
+        check(f.returns==3 and f.new_calls==1,"menu and action use the exact same Return method")
+        local noted=false
+        for _,note in ipairs(f.notes) do if note=="F8: return to skateboard (remappable in Binds)." then noted=true end end
+        check(noted,"menu documents the normal gameplay action and remapping")
     end)
     return {cases=cases,assertions=assertions,game_evidence=false,native_actions=0}
 end

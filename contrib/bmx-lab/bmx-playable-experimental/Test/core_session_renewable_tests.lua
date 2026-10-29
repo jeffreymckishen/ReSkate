@@ -349,7 +349,7 @@ function Tests.run()
                 check(r==Runtime and s==Survey,"same Main dependencies")
                 options_seen=opts;return object
             end}}
-        Main({on=function()end,menu={page=function(_,fn)menu=fn end}},function(name)return modules[name]end)
+        Main({input={bind=function(name,key)check(name=="bmx_return" and key=="F8","closed Main registers only the keyboard Return action");return true end},on=function()end,menu={page=function(_,fn)menu=fn end}},function(name)return modules[name]end)
         local ui={warn=function()end,info=function()end,button=function()return false end,
             note=function(_,text)notes[#notes+1]=text end}
         menu(ui)

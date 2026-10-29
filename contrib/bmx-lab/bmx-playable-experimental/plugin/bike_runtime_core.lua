@@ -1645,7 +1645,7 @@ function object:prepare_backend()
             return table.unpack(r,2,r.n)
         end
     end
-    spawn=BikeSpawn.new(spawn_api)
+    spawn=BikeSpawn.new(spawn_api,{session_renewable=session_renewable})
     T.spawn_instances=(T.spawn_instances or 0)+1
     return true
 end

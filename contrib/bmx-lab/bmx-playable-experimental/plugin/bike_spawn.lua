@@ -5,8 +5,8 @@ local M=require("./force_math")
 local G=require("./bike_geometry")
 local Visual=require("./bike_visual")
 local S={} local Runtime={} Runtime.__index=Runtime
--- Bound travel from the original spawn COM for the 60 s ride. 512 m allows
--- the kernel's 8 m/s cutoff without the old 8.5 m lab stop.
+-- Legacy and unmounted visuals stay within 512 m of the original spawn COM.
+-- Explicit session Follow visuals bound each step from the last accepted sample.
 local ENVELOPE_M=512
 -- LUA-5(a) never ships without the measured provisional Follow offset. Only a
 -- reviewed trial copy changes this literal; the tracked spawn stays airborne.
@@ -93,8 +93,9 @@ local function floor_root(api,root,actor_y)
     end
     return placed,nil,hit.y
 end
-function S.new(api)
-    return setmetatable({api=api or reskate,phase="idle",detail="No Lua bike spawned.",used=false,
+function S.new(api,options)
+    local session_renewable=type(options)=="table" and options.session_renewable==true
+    return setmetatable({api=api or reskate,phase="idle",detail="No Lua bike spawned.",used=false,session_renewable=session_renewable,
         wall=0,phase_wall=0,read_wall=0,updates=0,body_release_attempted=false,
         visual_remove_requested=false,body_release_accepted=false,cleanup_unknown=false,posed_updates=0,
         creation_attempts=0,creation_unknown=false,clock_retried=false,asset_part=1},Runtime)
@@ -191,8 +192,13 @@ function Runtime:_follow_visual(sample,now_ms,pose)
         or (order==0 and not same(sample,self.sample)) then
         return false,"Body observation regressed or changed within its epoch"
     end
-    local delta=M.sub(xyz(sample.position),M.add(self.root,M.turn(self.rotation,G.com)))
-    if M.length(delta)>ENVELOPE_M then return false,"Body left the "..ENVELOPE_M.." m spawn envelope" end
+    local anchor=self.session_renewable and xyz(self.sample.position)
+        or M.add(self.root,M.turn(self.rotation,G.com))
+    local delta=M.sub(xyz(sample.position),anchor)
+    if M.length(delta)>ENVELOPE_M then
+        return false,self.session_renewable and "Body moved beyond the "..ENVELOPE_M.." m accepted follow sample envelope"
+            or "Body left the "..ENVELOPE_M.." m spawn envelope"
+    end
     if order==0 then
         -- The first explicit call establishes a Lua wall baseline, not native freshness.
         local observed=self.follow_observed_at or now_ms

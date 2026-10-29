@@ -251,8 +251,11 @@ local function drain(s, now, reconcile)
         if checked then
             s.capture_state = checked
             if checked.phase == "capturing" then s.capture_seen = true end
-            if checked.phase == "complete" and not checked.report_debt and not checked.quarantined and
-                (not s.capture_seen or checked.neutral_releases ~= "0") then
+            -- A lost stream can finish native release quarantined, with no
+            -- neutral witness. Retain that diagnostic and let the exact native
+            -- ACK prove the key and its in-flight polls are retired.
+            if checked.phase == "complete" and not checked.report_debt and
+                (checked.quarantined or not s.capture_seen or checked.neutral_releases ~= "0") then
                 local ack_called, accepted = invoke(s, "lease_acknowledge_capture", s.handle)
                 if ack_called and accepted == true then s.capture_acknowledged = true end
             end

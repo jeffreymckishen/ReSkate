@@ -163,8 +163,10 @@ local function fixture(options)
     end
     f.api.lease_acknowledge_capture = function(handle)
         call("lease_acknowledge_capture", handle)
+        -- Native ACK accepts a debt-free terminal lost-stream receipt even
+        -- when its quarantine witness remains; live polls still refuse it.
         if not owns(handle) or not f.capture or not f.capture.terminal or f.capture.report_debt or
-            f.capture.quarantined or f.in_flight then return false, "busy" end
+            f.in_flight then return false, "busy" end
         f.capture = nil
         sync()
         return true
@@ -315,6 +317,61 @@ function Tests.run()
         check(row.cleanup_unknown and f.count("lease_acknowledge")==0,"capture ACK throw remains retained")
         f.api.lease_acknowledge_capture=real
         check(f.source:step(f.now+32,gate).phase=="complete","a later actual ACK can resolve the same stopped handle")
+    end
+    -- R16 disconnect: native lost-release completion is quarantined and has no
+    -- neutral witness. Only a successful native ACK may retire that old key.
+    do
+        cases+=1
+        local f=fixture();local active,stop,handle=unknown(f)
+        local renewals=f.count("lease_renew")
+        f.passive.status,f.passive.reason="revoked","source_unavailable"
+        f.capture.reason,f.capture.quarantined="authority_lost",true
+
+        f.now=stop+5000
+        local row=f.source:step(f.now,gate)
+        check(row.cleanup_unknown and not row.input_ok and f.capture.phase=="releasing" and f.capture.report_debt,
+            "nonterminal quarantined release debt stays retained")
+        check(f.count("lease_acknowledge_capture")==0 and f.count("lease_acknowledge")==0,
+            "nonterminal release cannot reach either native ACK")
+
+        f.capture.phase,f.capture.terminal,f.capture.capturing="complete",true,false
+        f.capture.generation,f.capture.revision=increment(f.capture.generation),increment(f.capture.revision)
+        f.now+=4;row=f.source:step(f.now,gate)
+        check(row.cleanup_unknown and row.cleanup_pending and f.count("lease_acknowledge_capture")==0,
+            "malformed terminal receipt with report debt cannot reach native ACK")
+
+        f.capture.report_debt=false
+        f.capture.neutral_releases="0" -- end_lost_release never invents a neutral witness.
+        f.capture.sequence="7"
+        f.now+=4;row=f.source:step(f.now,gate)
+        check(row.cleanup_unknown and f.count("lease_acknowledge_capture")==0 and f.count("lease_acknowledge")==0,
+            "foreign terminal lost-stream identity cannot reach either ACK")
+        f.capture.sequence=f.sequence
+
+        f.in_flight=true
+        f.now+=8;row=f.source:step(f.now,gate)
+        check(row.cleanup_unknown and row.cleanup_pending and row.lease_handle==handle and not row.input_ok,
+            "native capture ACK refusal retains the exact stopped handle")
+        check(f.count("lease_acknowledge_capture")==1 and f.count("lease_acknowledge")==0,
+            "debt-free quarantined zero-witness completion attempts capture ACK but does not skip its refusal")
+        check(row.capture_state.phase=="complete" and row.capture_state.quarantined and
+            row.capture_state.reason=="authority_lost" and row.capture_state.neutral_releases=="0",
+            "refused ACK retains honest quarantine and zero neutral-witness diagnostics")
+
+        f.in_flight=false
+        f.now+=16;row=f.source:step(f.now,gate)
+        check(row.phase=="complete" and row.lease_handle==nil and not row.cleanup_pending and
+            not row.cleanup_unknown and not row.input_ok,"later actual native capture and passive ACKs resolve only cleanup")
+        check(f.count("lease_acknowledge_capture")==2 and f.count("lease_acknowledge")==1,
+            "passive source ACK follows the successful capture ACK exactly once")
+        check(row.lease_state.terminal and row.lease_state.source_released and
+            not row.lease_state.capture_reserved,"passive source release must be observed before its ACK")
+        check(row.capture_state.quarantined and row.capture_state.neutral_releases=="0" and
+            row.capture_state.reason=="authority_lost","cleanup never erases quarantine or manufactures a neutral handoff")
+        check(f.count("lease_renew")==renewals,"disconnect cleanup never renews input authority")
+        no_resurrection(f,active,handle)
+        local count=#f.calls;f.now+=16;f.source:step(f.now,gate)
+        check(#f.calls==count,"retired disconnect key is never queried again")
     end
     local bad_capture={
         {"terminal debt",function(f) f.capture.report_debt=true end},

@@ -20,10 +20,10 @@ Assert-PlainPath $Package
 Assert-PlainPath $TestRoot
 $manifestPath=Join-Path $PSScriptRoot 'two_cycle_tests.json'
 Assert-PlainPath $manifestPath
-if((Get-FileHash -LiteralPath $manifestPath).Hash -cne 'F7BCBE5566FF50D13F09CAEDEEAF4BF0C6C8CF797B64D1C6124E5A1A7CE141C4'){throw 'Exact matrix manifest changed'}
+if((Get-FileHash -LiteralPath $manifestPath).Hash -cne '3C328C30324E70CF39F72FD3DD213922348518D3266EA62FE4AB2AAD87C83233'){throw 'Exact matrix manifest changed'}
 $plan=Get-Content -LiteralPath $manifestPath -Raw|ConvertFrom-Json
-if($plan.schema -ne 1 -or $plan.flat_file_count -ne 56 -or $plan.quota_file_count -ne 57 -or
-    @($plan.files).Count -ne 56 -or @($plan.runtime_files).Count -ne 32 -or @($plan.suites).Count -ne 22){throw 'Unexpected matrix shape'}
+if($plan.schema -ne 1 -or $plan.flat_file_count -ne 57 -or $plan.quota_file_count -ne 58 -or
+    @($plan.files).Count -ne 57 -or @($plan.runtime_files).Count -ne 32 -or @($plan.suites).Count -ne 23){throw 'Unexpected matrix shape'}
 function Assert-Source($Row){
     if($Row.source -notmatch '^(plugin|Test)/[A-Za-z0-9_-]+\.lua$' -and $Row.source -notin @('README.md','reskate-plugin.json')){throw 'Non-relative matrix input refused'}
     $source=Join-Path $Package $Row.source

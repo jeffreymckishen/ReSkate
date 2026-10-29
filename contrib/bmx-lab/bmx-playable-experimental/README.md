@@ -9,7 +9,7 @@ Use only Root's separately reviewed compatible ReSkate/SDK binding and the suppo
 Once Root validates and admits a local playtest build:
 
 1. Start on foot, upright and still, in a flat area with10m clear all round. This profile preserves Root3's on-foot-only Mount; direct skateboard-to-bike and repeat mounting are not enabled.
-2. Open BMX experimental and choose Mount bike. The entry performs bounded native preparation and the original full survey. Stay still; when prompted, close menus and release every control. The lifecycle owns all input/physics/pose work.
+2. Open BMX experimental and choose Mount bike. The entry performs bounded native preparation and a fresh survey of the bike-sized 1.25 m spawn clearance. Stay still; when prompted, close menus and release every control. The lifecycle owns all input/physics/pose work.
 3. Ride within the existing bounded profile. The pinned runtime keeps its60s window, force/speed/tilt/envelope/lease/watchdog/cleanup limits and existing hop policy.
 4. Choose Return to skateboard. This requests Stop first and waits for actual done/no-authority/no-pending/no-unknown cleanup. Only then, with closed menus and fresh stock telemetry, may one existing equipment transition be requested. Already observed skateboard state needs no input pulse. Release controls and wait for the observed skateboard.
 5. Cancel revokes a pending entry or equipment transaction and leaves the lifecycle ticking cleanup. Refusal, uncertainty and failure are shown; no retry is hidden. Unload never requests a stock switch.

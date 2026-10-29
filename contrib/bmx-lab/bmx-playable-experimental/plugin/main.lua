@@ -8,7 +8,7 @@ local bike=Entry.new(reskate,Runtime,Survey,{admitted=EXPERIMENTAL_ADMITTED,slot
 reskate.on("tick",function(dt_ms) bike:step(dt_ms) end)
 reskate.menu.page("BMX experimental",function(ui)
     local s=bike:status()
-    ui:warn("Experimental: at most TWO attempts; each uses a new retained body slot. Start on foot in a flat area with 10 m clear around you.")
+    ui:warn("Experimental: at most TWO attempts; each uses a new retained body slot. Start on foot on flat ground with 1.25 m clear around you for spawning.")
     if not s.admitted then ui:note("This reviewed source build is inactive; no Mount action is admitted.") end
     if ui:button("bmx_play_mount","Mount bike") then bike:mount() end
     if ui:button("bmx_play_return","Return to skateboard") then bike:return_to_skateboard() end

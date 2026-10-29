@@ -1,6 +1,6 @@
--- Private BMX Ride S2c recorder (S2b's, which is S2's sized to the Hedgemont box junction: full-lock circles at about
--- 1.0 m/s, an 8.5 m envelope and a 10.0 m all-round survey; S1's recorder, for a 60 s free ride with the rider's mounted
--- pose; S2c adds the rider's board, informational only: Rec.board). It
+-- Private BMX ride recorder with local spawn-clearance sampling. The survey
+-- covers the authored bike/rider footprint and margin, not the future route.
+-- The recorder retains the historical ride/pose evidence format and
 -- hooks nothing inside Core: each tick it reads the status DTO Core already returns from step (Ride's
 -- status, Spawn's last measured body sample, the selected Source sample, the Follow receipts and lease,
 -- and S2's pose status), one skater.get, on every JOINT_EVERY-th following tick the five skater.joint
@@ -58,15 +58,27 @@ Rec.JOINTS=table.freeze({
     table.freeze({id=343,field="jla",group="ankles",side=1,limit_mm=40}),
     table.freeze({id=10,field="jra",group="ankles",side=2,limit_mm=40}),
 })
--- S2b clear-area survey (the operator rule, measured before Arm; main.lua casts the rays).
--- S2b sizing (runner-receipts\sizing.txt): the full-lock path's farthest point from the start is 5.36 m
--- in the fixture (5.44 m dead-reckoned). Over yaw x0.9..x1.1 and S2's speed band it is at most 6.95 m in the
--- fixture and 7.18 m dead-reckoned on a flat floor, but the band was sized flat and the floor is not (review
--- finding 2): on any floor up to 0.055 deg (the most a page reading of 0.05 can be; Hedgemont logged 0.0525)
--- in any downhill direction it is at most 7.39 m in the fixture (sizing-band-slope.txt, 16 directions) and
--- 7.50 m dead-reckoned with gravity along the heading (dead-reckoning-slope.txt, 72 directions); ENVELOPE_M is
--- the larger plus 1 m, rounded up: 8.5 m.
-Rec.SURVEY_R=10.0 -- ENVELOPE_M 8.5 plus 1.5 m
+-- Spawn at the actor, so preflight covers the authored footprint and a margin,
+-- not the old low-speed lab route. A capsule's horizontal reach is bounded by
+-- each endpoint's radius from the origin plus its own radius. Include the
+-- wheel's full outer radius as well, then round clearance up to a quarter metre.
+local footprint=0
+local function include_footprint(point,radius)
+    assert(type(point)=="table" and M.finite(point[1]) and M.finite(point[3])
+        and M.finite(radius) and radius>=0,"invalid spawn footprint")
+    footprint=math.max(footprint,math.sqrt(point[1]^2+point[3]^2)+radius)
+end
+for _,capsule in ipairs(G.capsules) do
+    include_footprint(capsule.a,capsule.radius)
+    include_footprint(capsule.b,capsule.radius)
+end
+include_footprint(G.front_axle,G.wheel_radius)
+include_footprint(G.rear_axle,G.wheel_radius)
+assert(footprint<=.75,"spawn footprint exceeds the local survey sizing")
+Rec.SURVEY_FOOTPRINT_M=footprint
+Rec.SURVEY_CLEARANCE_MARGIN_M=.5
+Rec.SURVEY_R=math.ceil((footprint+Rec.SURVEY_CLEARANCE_MARGIN_M)*4)/4
+assert(Rec.SURVEY_R==1.25,"spawn clearance no longer matches the sampled rings")
 Rec.SURVEY_RESIDUAL_M=.04
 -- Skeptic fix 2: a coast at 1.52 m/s climbs only v^2/2g = 0.118 m, reached at 0.92 deg across the 7.36 m
 -- circle, and at 0.5 deg a released bike gains 0.086 m/s^2; so at most 0.5 deg in any direction.
@@ -82,10 +94,9 @@ Rec.SURVEY_UPHILL_DEG=.75
 -- Obstacle ray heights over the fitted plane. The combined body spans about 0.03-1.66 m over the floor
 -- (bike_geometry.lua capsules, origin 2 cm above the hit), so the steps are at most 0.35 m from 0.12 m.
 Rec.SURVEY_HEIGHTS=table.freeze({.12,.45,.80,1.10,1.40,1.65})
--- S2: the full ring. S2b scales S2's rings (3, 6, 9, 12 and 13.5 m of 13.5) to SURVEY_R: floor rays every
--- 10 deg on rings at 2.2, 4.4, 6.7, 8.9 and 10.0 m (180); obstacle rays every 2 deg all round from 0.75 m to
--- SURVEY_R at each height (1080), as S2: skeptic fix 4; at 2 deg the gaps are 0.19 m at 5.4 m, 0.35 m at 10 m.
-Rec.SURVEY_FLOOR_RINGS=table.freeze({2.2,4.4,6.7,8.9,10.0})
+-- Retain all 180 floor samples and 1080 obstacle samples in the local area.
+-- The inner 0.75 m avoids the current rider without adding query exclusions.
+Rec.SURVEY_FLOOR_RINGS=table.freeze({.75,.875,1,1.125,1.25})
 Rec.SURVEY_FLOOR_STEP_DEG=10
 Rec.SURVEY_OBSTACLE_STEP_DEG=2
 Rec.SURVEY_MAX_AGE_MS=45000
@@ -896,8 +907,8 @@ function Rec.survey_floor_rays(p,heading)
     end
     return out
 end
--- The check ray that closes every obstacle tick: the first ring's floor ray straight ahead (S2's 3 m; S2b's
--- 2.2 m). It must report a hit on the fitted plane, a second guard beside counting every obstacle ray that
+-- The check ray that closes every obstacle tick is 0.75 m straight ahead.
+-- It must report a hit on the fitted plane, beside counting every obstacle ray that
 -- is not "clear" as blocked.
 function Rec.survey_check_ray(p,heading)
     local ux,uz=survey_dir(heading,0)

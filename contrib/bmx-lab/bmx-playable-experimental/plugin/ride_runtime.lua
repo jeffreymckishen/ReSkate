@@ -15,31 +15,12 @@ local MAX_PENDING = 3
 local TRIPWIRE_EVERY = 2
 local METRIC_SAMPLE_LIMIT, METRIC_TRANSITION_LIMIT = 24, 16
 local METRIC_STOP_REASON_LIMIT, METRIC_STOP_KEY_BYTES = 8, 1024
--- Ride stops on a measured body past either bound, before any query or
--- command: Core's readiness and the Follow lease see only actor state, so
--- nothing else stops a tipping bike. 15 deg from world up is S1's tilt stop
--- (S1's verdict wants under 10 on every row; S1c rode at most 3.0). It counts
--- pitch too, and the kernel leans up to 27 deg in a turn (lean_limit), so it
--- also ends a manual past 15 deg and a hard turn at speed: in the offline sim
--- (sim_world) one full-lock turn at 4.5 to 7.5 m/s passes 15 deg 0.9 to 1.1 s
--- after the steer starts. 1 rad/s of roll about the bike's own forward axis
--- is above every lean the kernel makes inside S1's 3 m/s speed cap: S1c
--- measured at most 0.24 rad/s in game, and in the sim full-lock steer
--- reversals at 2.5 to 2.9 m/s, held there by pedaling, reach at most 0.51
--- rad/s and 11 deg. Coasting from 3 m/s, where the reversals carry the bike
--- past the cap, one reversal a second reaches 0.75 rad/s by 4.9 m/s, still
--- under 15 deg. It is also above what gravity alone gives the authored body
--- (106 kg, its COM 0.9 m over the tyre line, 10 kg m^2 of roll inertia)
--- falling from upright by the time it reaches the 15 deg stop, 0.82 rad/s. So
--- inside the cap a faster roll is the body being thrown, by a knock, a
--- contact or a command, which the tilt stop would see only later: the command
--- this sample would make acts over the next two steps, 1.9 deg more of roll
--- at 1 rad/s. Above the cap it is not: full pedal with a full-lock reversal
--- every 1/3 to 1/2 s from 3 m/s reaches 1.09 to 1.57 rad/s by 6.4 to 6.6 m/s,
--- under 5 deg of tilt, so a stage that lifts the cap past 3 m/s must revisit
--- this bound.
-local TILT_STOP_DEG = 15
-local ROLL_STOP_RATE = 1
+-- Stop measured bodies outside playable tilt or local-roll bounds before
+-- any query or command. The old 15 deg/1 rad/s lab bounds clipped normal
+-- kernel lean (about 27 deg) and steering reversals (about 1.6 rad/s).
+-- These fixed limits retain a measured-body stop beyond ordinary riding.
+local TILT_STOP_DEG = 55
+local ROLL_STOP_RATE = 8
 -- Authored display gearing for the drawn cranks: ride_composer's
 -- Composer.crank_ratio (a 25/9 BMX drive), written here so Ride does not load
 -- the composer; ride_runtime_presentation_tests pins the two together. Only

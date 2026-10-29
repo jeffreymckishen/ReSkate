@@ -33,6 +33,28 @@ function Entry.new(R,Runtime,Survey,options)
     local generation,latest,known=0,nil,false
     local prep_at,prep_last,prep_calls,last_clock,survey=nil,nil,0,nil,nil
     local object={}
+    local MAX_TERRAIN_REFUSALS=8
+    local terrain_refusals={}
+    -- These exact fields exist in the pinned facade's pre-admission status.
+    -- No Core, Source, body, Follow or equipment owner exists in this state.
+    local function inert(s)
+        return plain(s) and s.schema==1 and s.kind=="bike-lifecycle-v1" and s.phase=="idle"
+            and s.qualification_only==true and s.mount_enabled==false and s.used==false
+            and s.bike_authority==false and s.cleanup_pending==false and s.cleanup_unknown==false
+            and s.stock_toggle_blocked==false and s.unloaded==false
+            and plain(s.equipment) and s.equipment.phase=="idle"
+            and s.equipment.retained==false and s.equipment.unloaded==false
+            and plain(s.startup) and s.startup.pending==false and s.startup.loaded==0
+            and s.startup.core_ready==false and s.startup.backend_ready==false
+    end
+    local function preflight_clear()
+        if attempts_used~=1 or not used or mount_issued or return_pending or stock_attempted
+            or stopped or cancel_sent or cancelled or unloaded or not known or not inert(latest) then return false end
+        local out=call(owner.status,owner)
+        if not out[1] or out.n~=2 or not inert(out[2]) then return false end
+        local keys=call(R.storage and R.storage.keys)
+        return keys[1] and keys.n==2 and plain(keys[2]) and next(keys[2])==nil
+    end
     local function stop_once(why,cancel)
         if cancel then if cancel_sent then return end;cancel_sent=true
         else if stopped then return end;stopped=true end
@@ -98,6 +120,35 @@ function Entry.new(R,Runtime,Survey,options)
             rays=Survey.survey_floor_rays(p,a.heading)}
         phase,detail="surveying","Checking the full clear area; stay still."
     end
+    local function terrain_only(verdict,displayed)
+        if not plain(verdict) or type(verdict.pass)~="boolean" or not survey
+            or survey.misses~=0 or survey.hits~=0 or survey.unavailable~=0
+            or verdict.floor_misses~=0 or verdict.floor_rays~=#survey.floor or verdict.blocked~=0
+            or not plain(survey.plane) or not finite(survey.plane.residual) or survey.plane.residual<0
+            or not finite(verdict.slope_deg) or verdict.slope_deg<0
+            or not finite(verdict.downhill_deg) or not finite(verdict.downhill_dir_deg)
+            or not finite(verdict.residual_mm) or verdict.residual_mm<0 then return false end
+        if verdict.pass then return displayed~=nil and displayed>.05 end
+        return survey.plane.residual>Survey.SURVEY_RESIDUAL_M
+            or verdict.slope_deg>Survey.SURVEY_SLOPE_DEG
+            or verdict.downhill_deg>Survey.SURVEY_DOWNHILL_DEG
+            or -verdict.downhill_deg>Survey.SURVEY_UPHILL_DEG
+    end
+    local function terrain_refused(verdict,now,displayed,why)
+        if not terrain_only(verdict,displayed) then return false end
+        local version=generation
+        local clear=preflight_clear()
+        if generation~=version or cancelled or unloaded then return true end
+        if not clear then return false end
+        local count=#terrain_refusals+1
+        terrain_refusals[count]=table.freeze({index=count,at=now,reason=why,
+            residual_mm=verdict.residual_mm,slope_deg=verdict.slope_deg,downhill_deg=verdict.downhill_deg})
+        if count>=MAX_TERRAIN_REFUSALS then return false end
+        generation+=1
+        phase,detail="preflight_refused","Terrain preflight "..tostring(count)..": "..why
+            ..". No mount requested. Move to a flat clear area, then choose Mount again."
+        return true
+    end
     local function survey_finish(verdict,now)
         -- S2d's operator rule required the displayed two-decimal slope <=0.05.
         local slope=plain(verdict) and verdict.slope_deg
@@ -105,8 +156,10 @@ function Entry.new(R,Runtime,Survey,options)
         survey.state="done";survey.verdict=verdict;survey.at=now
         survey.pass=plain(verdict) and verdict.pass==true and displayed~=nil and displayed<=.05
         if not survey.pass then
-            fail(plain(verdict) and verdict.pass==true and "Survey slope must display 0.05 degrees or less for this profile."
-                or plain(verdict) and verdict.why or "Clear-area survey refused.");return
+            local why=text(plain(verdict) and verdict.pass==true and "Survey slope must display 0.05 degrees or less for this profile."
+                or plain(verdict) and verdict.why,"Clear-area survey refused.")
+            if not terrain_refused(verdict,now,displayed,why) then fail(why) end
+            return
         end
         phase,detail="awaiting_mount","Survey passed. Close menus and release all controls."
     end
@@ -229,6 +282,23 @@ function Entry.new(R,Runtime,Survey,options)
     end
     function object:mount()
         if not admitted then return false,"Experimental source admission is closed." end
+        if phase=="preflight_refused" then
+            if unloaded or ticking or cancelled or not namespace_clear then return false,"Preflight retry unavailable." end
+            local version=generation
+            local clear=preflight_clear()
+            if generation~=version or cancelled or unloaded then return false,detail end
+            if not clear then fail("Preflight owner or storage proof lost; no retry.");return false,detail end
+            local current=state()
+            if generation~=version or cancelled or unloaded then return false,detail end
+            if current~=504 then fail("Preflight retry requires on-foot504; no retry.");return false,detail end
+            local now=clock()
+            if not now or generation~=version or cancelled or unloaded then return false,detail end
+            -- A new explicit terrain survey gets the original prepare bounds.
+            -- Neither the reserved attempt nor any lifecycle/native state is reset.
+            generation+=1;prep_at=now;prep_last=nil;prep_calls=0;survey=nil
+            phase,detail="preparing","Retrying terrain preflight; stay on foot and still. Prior refusals remain recorded."
+            return true
+        end
         if unloaded or ticking or cancelled or not namespace_clear or attempts_used>=attempt_limit
             or used and (not two_cycle or phase~="skateboard") then return false,"Consumed, busy or retained attempt; not available." end
         attempts_used+=1;used=true;generation+=1
@@ -302,7 +372,10 @@ function Entry.new(R,Runtime,Survey,options)
         if not advanced then known=false;fail("Entry step failed; cleanup remains required.") end
     end
     function object:status()
+        local history=table.clone(terrain_refusals);table.freeze(history)
         return table.freeze({phase=phase,detail=detail,admitted=admitted,slot=slot,mount_intent_used=used,
+            terrain_refusal_count=#history,terrain_refusal_limit=MAX_TERRAIN_REFUSALS,terrain_refusals=history,
+            preflight_retry_available=phase=="preflight_refused" and not cancelled and not unloaded,
             mount_requested=mount_issued,return_requested=return_pending,stock_attempted=stock_attempted,cancelled=cancelled,
             prepare_calls=prep_calls,survey_state=survey and survey.state or "not_started",
             core_phase=known and latest.phase or "unknown",

@@ -20,10 +20,10 @@ Assert-PlainPath $Package
 Assert-PlainPath $TestRoot
 $manifestPath=Join-Path $PSScriptRoot 'two_cycle_tests.json'
 Assert-PlainPath $manifestPath
-if((Get-FileHash -LiteralPath $manifestPath).Hash -cne 'F7CA43F177EB266C9E1A0BBA85D1D2F93C9A234E03A453692396457C0532F0A6'){throw 'Exact matrix manifest changed'}
+if((Get-FileHash -LiteralPath $manifestPath).Hash -cne 'A4D4B474F1B6F8621F3CBE6DEA6C77919B81BE1BD0BD352C58255AC6649DB66C'){throw 'Exact matrix manifest changed'}
 $plan=Get-Content -LiteralPath $manifestPath -Raw|ConvertFrom-Json
-if($plan.schema -ne 1 -or $plan.flat_file_count -ne 53 -or $plan.quota_file_count -ne 54 -or
-    @($plan.files).Count -ne 53 -or @($plan.runtime_files).Count -ne 32 -or @($plan.suites).Count -ne 20){throw 'Unexpected matrix shape'}
+if($plan.schema -ne 1 -or $plan.flat_file_count -ne 56 -or $plan.quota_file_count -ne 57 -or
+    @($plan.files).Count -ne 56 -or @($plan.runtime_files).Count -ne 32 -or @($plan.suites).Count -ne 22){throw 'Unexpected matrix shape'}
 function Assert-Source($Row){
     if($Row.source -notmatch '^(plugin|Test)/[A-Za-z0-9_-]+\.lua$' -and $Row.source -notin @('README.md','reskate-plugin.json')){throw 'Non-relative matrix input refused'}
     $source=Join-Path $Package $Row.source
@@ -76,6 +76,6 @@ if($Matrix -ceq 'entry'){
     if((Get-FileHash -LiteralPath $alias).Hash -cne $plan.quota.sha256){throw 'Quota alias differs; preserve partials'}
     foreach($run in $plan.suites){$invocations+=[ordered]@{directory=(Join-Path $TestRoot $run.context);module=$run.invoked;suite=$run.suite;expected_cases=$run.expected_cases;expected_assertions=$run.expected_assertions}}
 }
-$result=[ordered]@{matrix=$Matrix;flat_files=$files.Count;quota_files=$(if($Matrix -ceq 'two-cycle'){54}else{0});destination=$TestRoot;source_admission='UNCHANGED_FALSE';executed=$false;invocations=$invocations}
+$result=[ordered]@{matrix=$Matrix;flat_files=$files.Count;quota_files=$(if($Matrix -ceq 'two-cycle'){55}else{0});destination=$TestRoot;source_admission='UNCHANGED_FALSE';executed=$false;invocations=$invocations}
 [IO.File]::WriteAllText((Join-Path $TestRoot 'preparation.json'),($result|ConvertTo-Json -Depth 8),$utf)
 $result|ConvertTo-Json -Depth 8 -Compress

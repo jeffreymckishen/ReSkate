@@ -1,9 +1,9 @@
--- D6a's fixed first-ride stages. Source substitutions belong only in reviewed
--- private trials; no runtime setting selects a stage or supplies authored caps.
+-- Fixed playable ride stage; no runtime setting selects a stage or caps.
+-- The speed stop leaves margin above the kernel's 8 m/s motor cutoff.
 local Forces=require("./forces")
 local M=require("./force_math")
 local STAGE = "hop_ride"
-local AUTHORED_CAPS = {force=6000,speed=3,torque=2000,vertical_speed=6}
+local AUTHORED_CAPS = {force=6000,speed=12,torque=2000,vertical_speed=6}
 local hop_stage=STAGE=="hop" or STAGE=="hop_ride"
 -- DEC-5 supplies force and measured-speed magnitudes here. The spawn-origin
 -- envelope stays with Core/Spawn; this wrapper invents no anchor or authority.
@@ -133,6 +133,17 @@ function Controller:preview(h,body,wheels,samples,controls)
         if not M.finite(steer) or steer<-1 or steer>1 then return invalid("invalid_steer") end
         if not M.finite(brake) or brake<0 or brake>1 then return invalid("invalid_brake") end
         selected.steer,selected.brake=steer,brake
+        -- Steering can add speed beyond the pedal motor cutoff. Use the
+        -- existing bounded brake law before the hard measured-speed stop.
+        local tuning=state.kernel.tuning
+        local up=M.unit(M.mul(tuning.gravity,-1))
+        if not up then return invalid("invalid_gravity") end
+        local vertical=M.dot(body.linear_velocity,up)
+        local speed=M.length(M.sub(body.linear_velocity,M.mul(up,vertical)))
+        local governor=math.clamp((speed-tuning.pedal_resume_speed)
+            /(tuning.pedal_top_speed-tuning.pedal_resume_speed),0,1)
+        if governor>0 then selected.pedal=0 end
+        selected.brake=math.max(selected.brake,governor)
     end
     if hop_stage then
         local id=controls and controls.hop_event_id

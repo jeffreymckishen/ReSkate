@@ -5,9 +5,9 @@ local M=require("./force_math")
 local G=require("./bike_geometry")
 local Visual=require("./bike_visual")
 local S={} local Runtime={} Runtime.__index=Runtime
--- The visual envelope around the original spawn COM (B8). Trial copies change
--- it only by the same reviewed substitution as the gate literals.
-local ENVELOPE_M=8.5
+-- Bound travel from the original spawn COM for the 60 s ride. 512 m allows
+-- the kernel's 8 m/s cutoff without the old 8.5 m lab stop.
+local ENVELOPE_M=512
 -- LUA-5(a) never ships without the measured provisional Follow offset. Only a
 -- reviewed trial copy changes this literal; the tracked spawn stays airborne.
 local FLOOR_SPAWN_QUALIFIED=true

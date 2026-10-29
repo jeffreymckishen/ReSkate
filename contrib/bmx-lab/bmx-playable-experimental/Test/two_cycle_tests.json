@@ -17,8 +17,8 @@
     {
       "source": "Test/two_cycle_entry_tests.lua",
       "destination": "two_cycle_entry_tests.lua",
-      "bytes": 14028,
-      "sha256": "CA0CD739881C00EBC137832CE4A642DFDD02B4D089C21C24B4E7A3C8C9C1868A"
+      "bytes": 18588,
+      "sha256": "33B919C6A7155139A6310FC8EC6A521D4398D2DBC069EC010E7E42C6AF6092D9"
     },
     {
       "source": "Test/two_cycle_handoff_tests.lua",
@@ -131,8 +131,8 @@
     {
       "source": "plugin/bmx_playable_entry.lua",
       "destination": "bmx_playable_entry.lua",
-      "bytes": 24606,
-      "sha256": "7C4421C834605D4F3067EFAC51C5E0F48DDB7A5D6C866756FD2922C611E46A46"
+      "bytes": 25619,
+      "sha256": "A8066DC2B735458A8A530E26A8EA834132BD1E525B8F6137476EFB7394A9DF3E"
     },
     {
       "source": "plugin/ride_r1_record.lua",
@@ -384,8 +384,8 @@
     },
     {
       "source": "plugin/bmx_playable_entry.lua",
-      "bytes": 24606,
-      "sha256": "7C4421C834605D4F3067EFAC51C5E0F48DDB7A5D6C866756FD2922C611E46A46"
+      "bytes": 25619,
+      "sha256": "A8066DC2B735458A8A530E26A8EA834132BD1E525B8F6137476EFB7394A9DF3E"
     },
     {
       "source": "plugin/board_drop.lua",
@@ -541,8 +541,8 @@
       "suite": "two_cycle_entry_tests",
       "invoked": "two_cycle_entry_tests",
       "context": "flat",
-      "expected_cases": 14,
-      "expected_assertions": 154
+      "expected_cases": 21,
+      "expected_assertions": 246
     },
     {
       "suite": "two_cycle_handoff_tests",

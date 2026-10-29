@@ -28,6 +28,7 @@ function Entry.new(R,Runtime,Survey,options)
     local phase,detail="idle",admitted and "On foot, choose Mount in a flat clear area." or "This experimental source build is closed."
     local used,mount_issued,return_pending,stock_attempted=false,false,false,false
     local attempts_used=0
+    local second_prepare_pending=false
     local attempt_limit=two_cycle and 2 or 1
     local stopped,cancel_sent,cancelled,unloaded,ticking=false,false,false,false,false
     local generation,latest,known=0,nil,false
@@ -63,7 +64,7 @@ function Entry.new(R,Runtime,Survey,options)
     end
     local function fail(why)
         phase,detail="blocked",text(why,"Operation failed; no retry in this session.")
-        return_pending=false;generation+=1
+        return_pending=false;second_prepare_pending=false;generation+=1
         -- A later equipment transaction has independent authority from the ride stop.
         stop_once("experimental entry: "..detail,stock_attempted)
     end
@@ -266,6 +267,22 @@ function Entry.new(R,Runtime,Survey,options)
     end
     local function step_off(now)
         local version=generation
+        if second_prepare_pending then
+            if not environment(false) then return end
+            if generation~=version or cancelled or unloaded then return end
+            if not known or not clean(latest) then fail("Previous Return is no longer fully clean.");return end
+            local current=state()
+            if generation~=version or cancelled or unloaded then return end
+            if current~=100 then fail("Attempt two still requires current stock100 before step-off.");return end
+            -- Consume the deferred request before any owner callback can reenter.
+            -- The menu click spends the intent; only a closed-menu tick sends it.
+            second_prepare_pending=false
+            local prepared=call(owner.prepare_next_mount,owner,slot)
+            if generation~=version or cancelled or unloaded then return end
+            if not prepared[1] or prepared[2]~=true then fail(text(prepared[3],"Second preparation refused."));return end
+            detail="Step-off armed once. Keep menus closed and controls released for the504 ACK."
+            return
+        end
         local out=call(owner.next_mount_ready,owner)
         if generation~=version or cancelled or unloaded then return end
         if not out[1] or out.n~=3 or type(out[2])~="boolean" then fail("On-foot preparation status unavailable.");return end
@@ -306,7 +323,7 @@ function Entry.new(R,Runtime,Survey,options)
         if attempts_used==2 then
             -- Burn the second intent before ALL fallible callbacks. Return's
             -- old stock100 history is archived by the private owner first.
-            phase,detail="stepping_off","Attempt two: archiving Return, then one guarded stock100 to on-foot504 transition. Close menus."
+            phase,detail="stepping_off","Attempt two is spent. Close menus and release controls before the guarded stock100 to on-foot504 transition."
             mount_issued=false;return_pending=false;stock_attempted=false;stopped=false;cancel_sent=false
             if not known or not clean(latest) then fail("Previous Return is not fully clean.");return false,detail end
             local current=state()
@@ -315,9 +332,7 @@ function Entry.new(R,Runtime,Survey,options)
                 fail("Attempt two requires current stock100 after Return. Already on foot or unreadable state spends this intent.")
                 return false,detail
             end
-            local out=call(owner.prepare_next_mount,owner,slot)
-            if generation~=version or cancelled or unloaded then return false,detail end
-            if not out[1] or out[2]~=true then fail(text(out[3],"Second preparation refused."));return false,detail end
+            second_prepare_pending=true
             return true
         end
         phase,detail="preparing","Preparing, then surveying the clear area. Stay on foot and still."
@@ -335,7 +350,7 @@ function Entry.new(R,Runtime,Survey,options)
     end
     function object:cancel()
         if unloaded then return false,"Entry is unloaded." end
-        cancelled=true;return_pending=false;generation+=1
+        cancelled=true;return_pending=false;second_prepare_pending=false;generation+=1
         phase,detail="cancelled","Cancelled. The lifecycle continues cleanup; this session cannot remount."
         stop_once("explicit playable cancel",true)
         return true
@@ -388,7 +403,7 @@ function Entry.new(R,Runtime,Survey,options)
     end
     function object:unload()
         if unloaded then return end
-        unloaded=true;cancelled=true;return_pending=false;generation+=1
+        unloaded=true;cancelled=true;return_pending=false;second_prepare_pending=false;generation+=1
         local out=call(owner.unload,owner)
         if out[1] and out.n==2 and plain(out[2]) then latest=out[2];known=true else known=false end
         phase,detail="unloaded","Unloaded; native cleanup remains with the lifecycle and SDK."

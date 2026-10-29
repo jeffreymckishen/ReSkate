@@ -126,7 +126,8 @@ function Tests.run()
         check(f.experimental_factory and f.new_calls==1,"one private manager, never a replacement Runtime.new")
         local before=f.probes
         check(f.entry:mount(),"second intent is accepted once")
-        check(f.entry:status().attempts_used==2 and f.stepoffs==1,"intent2 burned before one old-owner504 request")
+        check(f.entry:status().attempts_used==2 and f.stepoffs==nil,"intent2 burned before the deferred old-owner504 request")
+        f.tick();check(f.stepoffs==1,"closed-menu tick sends one old-owner504 request")
         f.tick(10);check(f.probes==before,"pending504 must never take a new survey")
         f.latest=cleaned();f.stock=504;f.on_ready504=function()return true,2 end
         f.tick();check(f.entry:status().phase=="preparing","only acknowledged504 begins preparation")
@@ -146,29 +147,34 @@ function Tests.run()
         local f=fixture({two=true});first_return(f)
         f.on_prepare504=function()return false,"archive refused"end
         local before=f.probes
-        check(not f.entry:mount(),"failure is visible to caller")
-        check(f.entry:status().attempts_used==2 and f.entry:status().phase=="blocked","failed intent remains spent")
+        check(f.entry:mount(),"intent is accepted before its deferred callback")
+        f.tick()
+        check(f.entry:status().attempts_used==2 and f.entry:status().phase=="blocked","deferred refusal remains visible and spent")
         check(not f.entry:mount() and f.probes==before and f.mounts==1,"no hidden allocation or survey retry")
     end)
     case("old sampled504 cannot replace private newer equipment ACK",function()
         local f=fixture({two=true});first_return(f);check(f.entry:mount(),"intent2 accepted")
+        f.tick();check(f.stepoffs==1,"old-owner504 request starts before readiness check")
         f.stock=504;f.latest=cleaned();f.on_ready504=function()return false,"stale old ACK"end
         local before=f.probes;f.tick()
         check(f.entry:status().phase=="blocked" and f.probes==before,"private proof refusal blocks survey despite504 sample")
     end)
     case("private ready504 but wrong sampled state is refused",function()
         local f=fixture({two=true});first_return(f);check(f.entry:mount(),"intent2 accepted")
+        f.tick()
         f.latest=cleaned();f.stock=100;f.on_ready504=function()return true,2 end
         f.tick();check(f.entry:status().phase=="blocked" and f.mounts==1,"fresh state check prevents premature survey/mount")
     end)
     case("Cancel during second archive/preparation callback cannot restart",function()
         local f=fixture({two=true});first_return(f)
         f.on_prepare504=function()f.entry:cancel();return true end
-        check(not f.entry:mount(),"reentrant Cancel invalidates returned acceptance")
+        check(f.entry:mount(),"intent accepted before deferred callback")
+        f.tick();check(f.stepoffs==1 and f.entry:status().cancelled,"reentrant Cancel invalidates deferred acceptance")
         f.tick(20);check(f.entry:status().cancelled and f.mounts==1,"no second body after cancellation")
     end)
     case("Cancel during acknowledged504 callback cannot start prepare",function()
         local f=fixture({two=true});first_return(f);check(f.entry:mount(),"intent2 accepted")
+        f.tick()
         f.latest=cleaned();f.stock=504
         f.on_ready504=function()f.entry:cancel();return true,2 end
         local before=f.prepares;f.tick()
@@ -176,6 +182,7 @@ function Tests.run()
     end)
     case("unload during second preparation cannot start prepare",function()
         local f=fixture({two=true});first_return(f);check(f.entry:mount(),"intent2 accepted")
+        f.tick()
         f.latest=cleaned();f.stock=504
         f.on_ready504=function()f.entry:unload();return true,2 end
         local before=f.prepares;f.tick();check(f.entry:status().phase=="unloaded" and f.prepares==before,"unload remains terminal")
@@ -183,7 +190,8 @@ function Tests.run()
     case("Return unavailable during step-off cannot send a second transaction",function()
         local f=fixture({two=true});first_return(f);check(f.entry:mount(),"intent2 accepted")
         local before=f.toggles;check(not f.entry:return_to_skateboard(),"old mount proof does not authorize Return during504 setup")
-        check(f.toggles==before and f.stepoffs==1,"no pulse from premature Return")
+        check(f.toggles==before and f.stepoffs==nil,"no pulse from premature Return while deferred")
+        f.tick();check(f.stepoffs==1,"only the following closed-menu tick starts step-off")
     end)
     case("prior namespace blocks experimental factory acquisition",function()
         local f=fixture({two=true,keys={"old_marker"}})
@@ -193,6 +201,7 @@ function Tests.run()
     case("new survey expiry remains unchanged for second mount",function()
         local f=fixture({two=true});first_return(f);f.overlay=true
         check(f.entry:mount(),"intent2 accepted")
+        f.overlay=false;f.tick();check(f.stepoffs==1,"closed-menu tick starts step-off");f.overlay=true
         f.latest=cleaned();f.stock=504;f.on_ready504=function()return true,2 end
         for _=1,200 do f.tick();if f.entry:status().phase=="awaiting_mount" then break end end
         check(f.entry:status().phase=="awaiting_mount","fresh second survey waits behind overlay")
@@ -202,6 +211,7 @@ function Tests.run()
     case("second survey movement failure remains terminal",function()
         local f=fixture({two=true});first_return(f);f.overlay=true
         check(f.entry:mount(),"intent2 accepted")
+        f.overlay=false;f.tick();check(f.stepoffs==1,"closed-menu tick starts step-off");f.overlay=true
         f.latest=cleaned();f.stock=504;f.on_ready504=function()return true,2 end
         for _=1,200 do f.tick();if f.entry:status().phase=="awaiting_mount" then break end end
         f.position=vector.create(1,.5,0);f.overlay=false;f.tick()
@@ -218,6 +228,66 @@ function Tests.run()
         check(not f.entry:mount(),"second intent is not an optional manual504 rearm")
         check(f.entry:status().attempts_used==2 and f.entry:status().phase=="blocked","narrower intent is consumed and explained")
         check(f.stepoffs==nil and f.mounts==1 and not f.entry:mount(),"no archive/stock/body retry from already504")
-    end)    return {cases=cases,assertions=assertions,constructed=true,native_authority=false,gameplay=false}
+    end)
+    case("second Mount waits for both menus to close and sends once",function()
+        local f=fixture({two=true});first_return(f);f.overlay=true
+        local before=f.probes
+        check(f.entry:mount(),"second intent armed in overlay")
+        check(f.entry:status().attempts_used==2 and f.stepoffs==nil,"intent spent without menu callback pulse")
+        check(not f.entry:mount(),"duplicate pending intent refused")
+        f.tick(10);check(f.stepoffs==nil and f.probes==before,"overlay-open ticks send no step-off or survey")
+        f.overlay=false;f.game_menu=true;f.tick(10)
+        check(f.stepoffs==nil,"game menu also blocks step-off")
+        f.game_menu=false;f.tick();check(f.stepoffs==1,"first closed-menu tick sends exactly once")
+        f.tick(10);check(f.stepoffs==1 and f.probes==before,"pending504 status cannot resend or survey")
+        check(not f.entry:mount() and f.entry:status().attempts_used==2,"pending readiness never rearms intent")
+    end)
+    case("Cancel before closing menus suppresses deferred second request",function()
+        local f=fixture({two=true});first_return(f);f.overlay=true
+        check(f.entry:mount(),"second intent armed")
+        f.entry:cancel();f.overlay=false;f.tick(10)
+        check(f.entry:status().cancelled and f.stepoffs==nil and f.mounts==1,"cancel suppresses pending request permanently")
+        check(not f.entry:mount() and f.entry:status().attempts_used==2,"cancel does not refund second intent")
+    end)
+    case("unload before closing menus suppresses deferred second request",function()
+        local f=fixture({two=true});first_return(f);f.overlay=true
+        check(f.entry:mount(),"second intent armed")
+        f.entry:unload();f.overlay=false;f.tick(10)
+        check(f.entry:status().phase=="unloaded" and f.stepoffs==nil and f.mounts==1,"unload suppresses pending request")
+        check(not f.entry:mount() and f.entry:status().attempts_used==2,"unload leaves intent spent")
+    end)
+    case("lost old-owner cleanup proof while pending refuses without request",function()
+        local f=fixture({two=true});first_return(f);f.overlay=true
+        check(f.entry:mount(),"second intent armed")
+        f.latest.cleanup_unknown=true;f.overlay=false;f.tick()
+        check(f.entry:status().phase=="blocked" and f.stepoffs==nil,"fresh old-owner proof required on request tick")
+        check(not f.entry:mount() and f.mounts==1,"proof failure is not a retry")
+    end)
+    case("changed stock100 while pending refuses without request",function()
+        local f=fixture({two=true});first_return(f);f.overlay=true
+        check(f.entry:mount(),"second intent armed")
+        f.stock=504;f.overlay=false;f.tick()
+        check(f.entry:status().phase=="blocked" and f.stepoffs==nil,"fresh100 still required after menus close")
+        check(not f.entry:mount() and f.entry:status().attempts_used==2,"state failure remains spent")
+    end)
+    case("request callback reentry cannot resend deferred step-off",function()
+        local f=fixture({two=true});first_return(f)
+        f.on_prepare504=function()
+            check(not f.entry:mount(),"reentrant Mount refused after intent burn")
+            f.entry:step(16)
+            return true
+        end
+        check(f.entry:mount(),"second intent armed")
+        f.tick(10)
+        check(f.stepoffs==1 and f.entry:status().cancelled and f.mounts==1,"reentrant tick cancels without duplicate request/body")
+    end)
+    case("Cancel during fresh menu proof suppresses deferred request",function()
+        local f=fixture({two=true});first_return(f)
+        check(f.entry:mount(),"second intent armed")
+        f.on_focus=function()f.on_focus=nil;f.entry:cancel()end
+        f.tick(10)
+        check(f.entry:status().cancelled and f.stepoffs==nil,"cancel during environment read wins before owner callback")
+    end)
+    return {cases=cases,assertions=assertions,constructed=true,native_authority=false,gameplay=false}
 end
 return Tests

@@ -340,7 +340,13 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     local launch=c.rotation_reserved or c.manual~=0 or c.nose_manual~=0 or c.brake>0
     local neutral=reservation(air,c.recovery_step_verified,c.enabled,false,intent,launch)
     out.air_rotation_reserved=air.reserved==true
-    if neutral and contacts[1].status=="clear" and contacts[2].status=="clear" then
+    -- Long landing rays may hit while neither tyre supports the bike. Keep
+    -- ordinary steering from leaving that unsupported angular motion undamped.
+    -- This is passive torque only, outside impact recovery; it grants no support
+    -- and leaves explicit air rotations and the existing damping cap unchanged.
+    local passive_landing=landing_selected and c.enabled and support_mask==0 and out.landing_recovery_mask==0
+        and not c.rotation_reserved and c.manual==0 and c.nose_manual==0 and c.air_yaw==0
+    if (neutral and contacts[1].status=="clear" and contacts[2].status=="clear") or passive_landing then
         local rate=t.neutral_air_damping_rate local cap=math.min(t.air_pitch_torque,t.air_yaw_torque)
         if rate>0 and cap>0 then out.air_damping_torque=M.limited(M.mul(M.tensor(measured,measured.angular_velocity,false),-rate/(1+rate*h)),cap) end
         out.neutral_air_damping_active=M.length(out.air_damping_torque)>0 assist=M.add(assist,out.air_damping_torque)

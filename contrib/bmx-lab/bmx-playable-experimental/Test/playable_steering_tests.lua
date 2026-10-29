@@ -175,6 +175,34 @@ function T.run()
  local refused=Stage.new():preview(Forces.native_seconds,too_deep,impact_wheels,
   impact_contacts(too_deep,support_planes),{pedal=0,steer=0,brake=0})
  check(not refused.valid,"gross penetration still refuses instead of being swallowed")
- return{cases=7,assertions=n,native_qualified=false}
+ -- R12's right-turn sample has long-ray hits but neither wheel eligible for
+ -- support. Ground steering is not an authored air-rotation request in Stage.
+ local curb_body,curb_wheels=World.place(terrain,{speed=0})
+ curb_body.orientation={.1326754093170166,.5308188199996948,-.4389405846595764,.7127130627632141}
+ curb_body.linear_velocity={.7513578534126282,-.12699398398399353,-.42990657687187195}
+ curb_body.angular_velocity={-1.3182944059371948,-.4027436673641205,-.7296744585037231}
+ curb_wheels[1].angular_speed=2.4387068851439575;curb_wheels[2].angular_speed=14.976072191547267
+ local gaps={.022167586578274445,.6324604365056077}
+ local curb_samples={};local curb_forward=M.turn(M.normalized(curb_body.orientation),{0,0,1})
+ for i,hub in ipairs(World.hubs(curb_body))do
+  local point={hub[1],hub[2]-World.wheel_radius-gaps[i],hub[3]}
+  local basis=M.basis({0,1,0},curb_forward)
+  curb_samples[i]={contact={status="hit",point=point,normal=basis.normal,forward=basis.forward,surface_velocity={0,0,0}},
+   separation=gaps[i],wheel_center=M.copy(hub),wheel_radius=World.wheel_radius,verified_plane=false,balance_normal_available=false}
+ end
+ local curb_stage=Stage.new()
+ local curb=curb_stage:preview(Forces.native_seconds,curb_body,curb_wheels,curb_samples,{pedal=0,steer=.8000122074037904,brake=0})
+ check(curb.valid,"recorded unsupported right-turn sample produces a bounded packet: "..tostring(curb.issue))
+ check(not curb.grounded and curb.balance_support_mask==0 and curb.normal_load[1]==0 and curb.normal_load[2]==0,
+  "long query hits never invent support")
+ check(curb.neutral_air_damping_active and M.length(curb.air_damping_torque)>0 and M.length(curb.air_damping_torque)<=160,
+  "unsupported ground steering retains bounded passive angular damping")
+ check(M.dot(curb.air_damping_torque,curb_body.angular_velocity)<0,"unsupported damping removes angular energy")
+ check(M.length(curb.force)<=6000 and M.length(curb.torque)<=2000,"unsupported correction retains packet caps")
+ local air_controls=Forces.controls({steer=.8,air_yaw=.8,rotation_reserved=true,
+  contact_compliance_available=true,landing_contact_compliance_selected=true})
+ local reserved=Forces.new():preview(Forces.native_seconds,curb_body,curb_wheels,curb_samples,air_controls)
+ check(reserved.valid and not reserved.neutral_air_damping_active,"explicit air rotation still suppresses passive damping")
+ return{cases=8,assertions=n,native_qualified=false}
 end
 return T

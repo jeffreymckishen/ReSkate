@@ -21,7 +21,8 @@ function Entry.new(R,Runtime,Survey,options)
     local slot=type(options)=="table" and options.slot or 0
     assert(finite(slot) and slot%1==0 and slot>=0 and slot<=3,"controller slot required")
     local two_cycle=type(options)=="table" and options.experimental_two_cycle==true
-    local made=call(two_cycle and Runtime.new_experimental_two_cycle or Runtime.new,R,{qualification_only=true})
+    local session_renewable=type(options)=="table" and options.session_renewable==true
+    local made=call(two_cycle and Runtime.new_experimental_two_cycle or Runtime.new,R,{qualification_only=true,session_renewable=session_renewable})
     assert(made[1] and made.n==2 and type(made[2])=="table","one inert lifecycle owner required")
     local owner=made[2] -- Constructed exactly once; never replaced or rearmed here.
     local admitted=type(options)=="table" and options.admitted==true

@@ -19,6 +19,10 @@ local function valid_slot(v) return finite(v) and v>=0 and v<=3 and v%1==0 end
 local function new_runtime(services,options,two_cycle)
     local R=services or reskate
     local qualification_only=type(options)=="table" and options.qualification_only==true
+    local session_renewable=type(options)=="table" and options.session_renewable==true
+    local function core_options()
+        return {qualification_only=qualification_only,session_renewable=session_renewable}
+    end
     local T={phase="idle",detail="Stock switching and inspection only; native bike qualification unavailable.",
         generation=0,cancel_version=0,calls={},counts={},receipts={},omitted_calls=0,omitted_receipts=0,
         remove_attempted={},remove_accepted={},experimental_attempt_limit=two_cycle and 2 or nil}
@@ -134,7 +138,7 @@ local function new_runtime(services,options,two_cycle)
                 local next_state={phase="idle",detail="Second bounded fresh-allocation session.",generation=0,cancel_version=0,
                     calls={},counts={},receipts={},omitted_calls=0,omitted_receipts=0,remove_attempted={},remove_accepted={},
                     experimental_session=2,experimental_attempt_limit=2}
-                local successor,why=session_owner:successor(R,{qualification_only=qualification_only},next_state)
+                local successor,why=session_owner:successor(R,core_options(),next_state)
                 if not successor then running=false;T.startup_closed=true;return false,why end
                 T=next_state;core=successor;api=Admission.bind(T,R,qualification_only)
                 T.core_ready=true;T.backend_ready=false;next_preparation=false
@@ -220,9 +224,9 @@ local function new_runtime(services,options,two_cycle)
                             session_owner=value.experimental_two_cycle_owner()
                             if not session_owner then cancel("private two-cycle owner unavailable");return end
                             T.experimental_session=1
-                            core=session_owner:first(R,{qualification_only=qualification_only},T)
+                            core=session_owner:first(R,core_options(),T)
                             if not core then cancel("first private Core unavailable");return end
-                        else core=value.new(R,{qualification_only=qualification_only},T) end
+                        else core=value.new(R,core_options(),T) end
                         T.core_ready=true
                         T.core_instances=(T.core_instances or 0)+1
                     end

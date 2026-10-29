@@ -131,8 +131,8 @@
     {
       "source": "plugin/bmx_playable_entry.lua",
       "destination": "bmx_playable_entry.lua",
-      "bytes": 25619,
-      "sha256": "A8066DC2B735458A8A530E26A8EA834132BD1E525B8F6137476EFB7394A9DF3E"
+      "bytes": 25742,
+      "sha256": "9466A686603FBB9C41300E21641BBE4389BB724C80379A2C84F1BAFFCA74B38C"
     },
     {
       "source": "plugin/ride_r1_record.lua",
@@ -155,8 +155,8 @@
     {
       "source": "Test/playable_main_fixture.lua",
       "destination": "playable_main_fixture.lua",
-      "bytes": 2045,
-      "sha256": "964098FDBE3270CDC2F4478CF2ED01B6C09BB87347882F74BC58E9E9C95A669B"
+      "bytes": 2401,
+      "sha256": "6FEFA7626FF2783EE2C5F843EEBFF82892C064836F53A6260D61777521D91D59"
     },
     {
       "source": "plugin/lease_source.lua",
@@ -173,8 +173,8 @@
     {
       "source": "plugin/bike_runtime_core.lua",
       "destination": "bike_runtime_core.lua",
-      "bytes": 118323,
-      "sha256": "1E18C985A3FF2BC3B98F45C5A53BFD77A8E8792C22A639DB507E5CA86D3F6DAE"
+      "bytes": 120323,
+      "sha256": "4A112B421191227E393DFCFB5A0BCA8A4973B00350B0FCD9ABFCA76819BB04B7"
     },
     {
       "source": "plugin/force_math.lua",
@@ -191,14 +191,14 @@
     {
       "source": "Test/two_cycle_facade_fixture.lua",
       "destination": "two_cycle_facade_fixture.lua",
-      "bytes": 16663,
-      "sha256": "A5DE4CB9DF92B7DF740CAA36E77A20F8D0C7257E626BA59FCCFB8B6BB6442A49"
+      "bytes": 16808,
+      "sha256": "1D091ABCA95A6D0AC965B8C795D8CA0D892C7DF0C450F7437C9D0D0B97E3D886"
     },
     {
       "source": "plugin/bike_runtime.lua",
       "destination": "bike_runtime.lua",
-      "bytes": 16633,
-      "sha256": "29376361A11262E2F540213BF678CAF67ED68B972138EA0A74D4955A63FF2CB7"
+      "bytes": 16778,
+      "sha256": "77932740518EEB6808A68497711A58AA2AA73499EF56F92B45D32B9A4F5084F9"
     },
     {
       "source": "plugin/equipment_runtime.lua",
@@ -364,13 +364,13 @@
     },
     {
       "source": "plugin/bike_runtime_core.lua",
-      "bytes": 118323,
-      "sha256": "1E18C985A3FF2BC3B98F45C5A53BFD77A8E8792C22A639DB507E5CA86D3F6DAE"
+      "bytes": 120323,
+      "sha256": "4A112B421191227E393DFCFB5A0BCA8A4973B00350B0FCD9ABFCA76819BB04B7"
     },
     {
       "source": "plugin/bike_runtime.lua",
-      "bytes": 16633,
-      "sha256": "29376361A11262E2F540213BF678CAF67ED68B972138EA0A74D4955A63FF2CB7"
+      "bytes": 16778,
+      "sha256": "77932740518EEB6808A68497711A58AA2AA73499EF56F92B45D32B9A4F5084F9"
     },
     {
       "source": "plugin/bike_spawn.lua",
@@ -384,8 +384,8 @@
     },
     {
       "source": "plugin/bmx_playable_entry.lua",
-      "bytes": 25619,
-      "sha256": "A8066DC2B735458A8A530E26A8EA834132BD1E525B8F6137476EFB7394A9DF3E"
+      "bytes": 25742,
+      "sha256": "9466A686603FBB9C41300E21641BBE4389BB724C80379A2C84F1BAFFCA74B38C"
     },
     {
       "source": "plugin/board_drop.lua",
@@ -464,8 +464,8 @@
     },
     {
       "source": "plugin/main.lua",
-      "bytes": 2006,
-      "sha256": "0FACD8707F7767CAEA5FD7415FBE808958FA50A76604B4474B620E87427345E7"
+      "bytes": 2362,
+      "sha256": "DE168AAB0C6638605D1B6D0D4649D06C638390E0711873DC13D604AF5A4C4CEF"
     },
     {
       "source": "plugin/mounted_pose.lua",
@@ -517,16 +517,16 @@
     {
       "source": "plugin/main.lua",
       "fixture": "Test/playable_main_fixture.lua",
-      "source_sha256": "0FACD8707F7767CAEA5FD7415FBE808958FA50A76604B4474B620E87427345E7",
-      "fixture_sha256": "964098FDBE3270CDC2F4478CF2ED01B6C09BB87347882F74BC58E9E9C95A669B",
+      "source_sha256": "DE168AAB0C6638605D1B6D0D4649D06C638390E0711873DC13D604AF5A4C4CEF",
+      "fixture_sha256": "6FEFA7626FF2783EE2C5F843EEBFF82892C064836F53A6260D61777521D91D59",
       "prefix": "return function(reskate, require)\n",
       "suffix": "\nend\n"
     },
     {
       "source": "plugin/bike_runtime.lua",
       "fixture": "Test/two_cycle_facade_fixture.lua",
-      "source_sha256": "29376361A11262E2F540213BF678CAF67ED68B972138EA0A74D4955A63FF2CB7",
-      "fixture_sha256": "A5DE4CB9DF92B7DF740CAA36E77A20F8D0C7257E626BA59FCCFB8B6BB6442A49",
+      "source_sha256": "77932740518EEB6808A68497711A58AA2AA73499EF56F92B45D32B9A4F5084F9",
+      "fixture_sha256": "1D091ABCA95A6D0AC965B8C795D8CA0D892C7DF0C450F7437C9D0D0B97E3D886",
       "prefix": "return function(require)\n",
       "suffix": "\nend\n"
     }

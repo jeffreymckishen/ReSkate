@@ -20,7 +20,7 @@ Assert-PlainPath $Package
 Assert-PlainPath $TestRoot
 $manifestPath=Join-Path $PSScriptRoot 'two_cycle_tests.json'
 Assert-PlainPath $manifestPath
-if((Get-FileHash -LiteralPath $manifestPath).Hash -cne 'A3DC9497BB926DDF567910711C1F4D6EFCF51D42514C64D148F8181C45211AD1'){throw 'Exact matrix manifest changed'}
+if((Get-FileHash -LiteralPath $manifestPath).Hash -cne '745648B38B1675BDE54923C330522CA2AFA2C82A5395D377DF8783E1E1910E28'){throw 'Exact matrix manifest changed'}
 $plan=Get-Content -LiteralPath $manifestPath -Raw|ConvertFrom-Json
 if($plan.schema -ne 1 -or $plan.flat_file_count -ne 57 -or $plan.quota_file_count -ne 58 -or
     @($plan.files).Count -ne 57 -or @($plan.runtime_files).Count -ne 32 -or @($plan.suites).Count -ne 23){throw 'Unexpected matrix shape'}
@@ -76,6 +76,6 @@ if($Matrix -ceq 'entry'){
     if((Get-FileHash -LiteralPath $alias).Hash -cne $plan.quota.sha256){throw 'Quota alias differs; preserve partials'}
     foreach($run in $plan.suites){$invocations+=[ordered]@{directory=(Join-Path $TestRoot $run.context);module=$run.invoked;suite=$run.suite;expected_cases=$run.expected_cases;expected_assertions=$run.expected_assertions}}
 }
-$result=[ordered]@{matrix=$Matrix;flat_files=$files.Count;quota_files=$(if($Matrix -ceq 'two-cycle'){55}else{0});destination=$TestRoot;source_admission='UNCHANGED_FALSE';executed=$false;invocations=$invocations}
+$result=[ordered]@{matrix=$Matrix;flat_files=$files.Count;quota_files=$(if($Matrix -ceq 'two-cycle'){58}else{0});destination=$TestRoot;source_admission='UNCHANGED_FALSE';executed=$false;invocations=$invocations}
 [IO.File]::WriteAllText((Join-Path $TestRoot 'preparation.json'),($result|ConvertTo-Json -Depth 8),$utf)
 $result|ConvertTo-Json -Depth 8 -Compress

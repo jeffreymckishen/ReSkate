@@ -100,9 +100,9 @@ function BikeRuntime.renew_admitted(tick_renewals)
 end
 
 -- One window check for publication, the following tick and every force guard.
-function BikeRuntime.lease_live(now,publish_at,lease_until)
+function BikeRuntime.lease_live(now,publish_at,lease_until,session_renewable)
     return wall(now) and wall(publish_at) and wall(lease_until) and now>=publish_at
-        and now-publish_at<RIDE_WINDOW_MS and now<lease_until-LEASE_MARGIN_MS
+        and (session_renewable==true or now-publish_at<RIDE_WINDOW_MS) and now<lease_until-LEASE_MARGIN_MS
 end
 -- The only lease fact before a report: three seconds from the last clock read
 -- before reserve_follow. That read precedes the native reserve, so it errs early.
@@ -113,6 +113,8 @@ end
 
 local lease_report_fields={sequence=true,renewable=true,active=true,renewals=true,last_serial=true,remaining_ms=true,
     lifetime_remaining_ms=true,base_ms=true,renewal_ms=true,lifetime_ms=true,revocation=true,dispatch_busy=true}
+local session_lease_report_fields=table.clone(lease_report_fields)
+session_lease_report_fields.session_renewable=true
 local lease_revocations={none=true,deadline=true,lifetime=true,clock=true,client_not_ready=true,focus_lost=true,
     menu_open=true,pause_menu_open=true,debug_control=true,actor_state=true,other=true}
 -- S2's read_follow_lease report against Core's single lease source. Returns
@@ -120,24 +122,37 @@ local lease_revocations={none=true,deadline=true,lifetime=true,clock=true,client
 -- earlier, or later only when the report shows more accepted renewals than
 -- the last one used. "ignored" leaves both unchanged: a malformed report never
 -- extends anything. "stop" is a native lease that is no longer active.
-function BikeRuntime.lease_from_report(identity,lease_until,renewals,row,before,sequence,renewable)
+function BikeRuntime.lease_from_report(identity,lease_until,renewals,row,before,sequence,renewable,session_renewable)
     local function ignored(why) return lease_until,renewals,"ignored",why end
     if not wall(lease_until) or not identity.is_u64(renewals) or not identity.is_nonzero_u64(sequence)
         or type(renewable)~="boolean" then return ignored("lease_state_invalid") end
+    local is_session=session_renewable==true
+    if is_session and renewable~=true then return ignored("lease_state_invalid") end
     if not wall(before) then return ignored("lease_clock_invalid") end
     if type(row)~="table" or getmetatable(row)~=nil then return ignored("lease_report_malformed") end
+    -- New SDKs also label finite leases false; old12-field finite DTOs remain valid.
+    local session_field=is_session or row.session_renewable==false
     local n=0
     for key in pairs(row) do
-        if not lease_report_fields[key] then return ignored("lease_report_malformed") end
+        if not (session_field and session_lease_report_fields or lease_report_fields)[key] then return ignored("lease_report_malformed") end
         n+=1
     end
     local function whole(v,most) return type(v)=="number" and v==v and v%1==0 and v>=0 and v<=most end
-    if n~=12 or row.sequence~=sequence or row.renewable~=renewable or type(row.active)~="boolean"
+    -- Session reports explicitly remove only the absolute lifetime. The same
+    -- native base/renewal windows and positive active lease remain mandatory.
+    local lifetime_ok
+    if is_session then
+        lifetime_ok=row.session_renewable==true and row.lifetime_ms==0 and row.lifetime_remaining_ms==0
+            and whole(row.remaining_ms,BASE_LEASE_MS)
+    else
+        lifetime_ok=row.lifetime_ms==(renewable and LIFETIME_CEILING_MS or BASE_LEASE_MS)
+            and whole(row.lifetime_remaining_ms,row.lifetime_ms) and whole(row.remaining_ms,row.lifetime_remaining_ms)
+    end
+    if n~=(session_field and 13 or 12) or row.sequence~=sequence or row.renewable~=renewable or type(row.active)~="boolean"
         or not identity.is_u64(row.renewals) or not identity.is_u64(row.last_serial) or not identity.is_u64(row.dispatch_busy)
         or (row.renewals=="0")~=(row.last_serial=="0") or type(row.revocation)~="string" or not lease_revocations[row.revocation]
         or row.base_ms~=BASE_LEASE_MS or row.renewal_ms~=RENEWAL_WINDOW_MS
-        or row.lifetime_ms~=(renewable and LIFETIME_CEILING_MS or BASE_LEASE_MS)
-        or not whole(row.lifetime_remaining_ms,row.lifetime_ms) or not whole(row.remaining_ms,row.lifetime_remaining_ms)
+        or not lifetime_ok
         or not renewable and (row.renewals~="0" or row.remaining_ms~=row.lifetime_remaining_ms)
         or row.active and (row.revocation~="none" or row.remaining_ms==0)
         or row.revocation~="none" and (row.remaining_ms~=0 or row.lifetime_remaining_ms~=0) then
@@ -165,11 +180,11 @@ local renewal_refusals={expired="stop",not_following="stop",client_not_ready="st
 -- single lease source. Returns lease_until, verdict and why. Only "renewed"
 -- changes the deadline: the native milliseconds left, from the clock read
 -- before the call, so call time can only shorten it.
-function BikeRuntime.renewal_outcome(lease_until,before,r)
+function BikeRuntime.renewal_outcome(lease_until,before,r,session_renewable)
     if not wall(lease_until) or not wall(before) or type(r)~="table" then return lease_until,"wait","renewal_state_invalid" end
     if not r[1] then return lease_until,"off","renewal raised; the lease runs down unrenewed" end
     local v=r[3]
-    if r.n==3 and r[2]==true and type(v)=="number" and v%1==0 and v>=1 and v<=LIFETIME_CEILING_MS then
+    if r.n==3 and r[2]==true and type(v)=="number" and v%1==0 and v>=1 and v<=(session_renewable==true and BASE_LEASE_MS or LIFETIME_CEILING_MS) then
         if before+v>MAX then return lease_until,"wait","lease_clock_invalid" end
         return before+v,"renewed",before+v<lease_until and "renewed_earlier" or "renewed"
     end
@@ -425,6 +440,7 @@ local function new_core(services,options,shared_state,session)
 local supplied=services or reskate
 local R=type(supplied)=="table" and supplied or {}
 local qualification_only=type(options)=="table" and options.qualification_only==true
+local session_renewable=type(options)=="table" and options.session_renewable==true
 local T=shared_state or {phase="idle",detail="Stock switching and inspection only; native bike qualification unavailable.",
     generation=0,cancel_version=0,calls={},counts={},receipts={},omitted_calls=0,omitted_receipts=0,
     remove_attempted={},remove_accepted={}}
@@ -671,7 +687,8 @@ snapshot=function()
         retained_reload_marker=T.reload_blocked==true,marker_unknown=T.marker_unknown==true,
         bike_cleanup_complete=T.bike_cleanup_complete==true,
         stock_requested=T.gear_requested==true,equipment_purpose=T.gear_purpose,
-        native_follow_lease_ms=BASE_LEASE_MS,qualification_ms=RIDE_WINDOW_MS,ride_window_ms=RIDE_WINDOW_MS,
+        native_follow_lease_ms=BASE_LEASE_MS,qualification_ms=session_renewable and 0 or RIDE_WINDOW_MS,ride_window_ms=session_renewable and 0 or RIDE_WINDOW_MS,
+        session_renewable=session_renewable or nil,
         lease_margin_ms=LEASE_MARGIN_MS,reserve_ms=T.reserve_at,publish_ms=T.publish_at,lease_until_ms=T.lease_until,
         lease_renewals=T.lease_renewals,lease_reports=T.lease_reports or 0,lease_report_last=T.lease_report_last,
         lease_report_refused=T.lease_report_refused==true,
@@ -1172,30 +1189,40 @@ local function read_follow(force)
     if dto.terminal then accept_terminal(dto) end
     return true
 end
-local function lease_live(now) return BikeRuntime.lease_live(now,T.publish_at,T.lease_until) end
+local function session_following() return session_renewable and T.phase=="following" and T.published_seen==true end
+local function lease_live(now) return BikeRuntime.lease_live(now,T.publish_at,T.lease_until,session_following()) end
 local function read_lease()
     -- Optional, feature-detected by lookup like the required list: SDKs before
     -- S2 lack it, and without world.physics.follow.renew it raises. Either way
     -- the reserve seed alone bounds the ride; a raise is not retried.
     local report=lookup(LEASE_REPORT)
-    if not report or T.lease_report_refused or not T.follow or T.ack_attempted
-        or not BikeRuntime.lease_read_admitted(T.lease_reads_tick or 0) then return end
+    if not report or T.lease_report_refused then
+        if session_renewable then stop_all("session Follow lease report unavailable") end
+        return
+    end
+    if not T.follow or T.ack_attempted or not BikeRuntime.lease_read_admitted(T.lease_reads_tick or 0) then return end
     T.lease_reads_tick=(T.lease_reads_tick or 0)+1
     local before=clock() -- Before the call, so call time can only shorten the lease.
     if not before then return end
     local r=call("follow.lease",report,T.follow)
-    if not r[1] then T.lease_report_refused=true;T.lease_report_last="lease report raised; reserve seed only";return end
+    if not r[1] then
+        T.lease_report_refused=true;T.lease_report_last="lease report raised; reserve seed only"
+        if session_renewable then stop_all("session Follow lease report raised") end
+        return
+    end
     if r.n~=2 then
         T.lease_report_last=r.n==3 and r[2]==nil and reason(r[3]) and short(r[3]) or "lease report returned malformed results"
+        if session_renewable then stop_all("session Follow lease report malformed") end
         return
     end
     -- The report must match the lifetime Core reserved. Only an accepted
     -- renewal moves the deadline later (LUA-12); a report can only shorten it,
     -- which for a fixed lease is all lease_from_report can return anyway.
     local until_ms,renewals,verdict,why=BikeRuntime.lease_from_report(Identity,T.lease_until,T.lease_renewals or "0",
-        r[2],before,T.sequence,T.lease_renewable==true)
+        r[2],before,T.sequence,T.lease_renewable==true,session_renewable)
     T.lease_report_last=why
     if verdict=="stop" then stop_all(why);return end
+    if session_renewable and verdict=="ignored" then stop_all("session Follow lease report invalid: "..short(why));return end
     if verdict=="refined" then
         T.lease_until=math.min(until_ms,T.lease_until);T.lease_renewals=renewals;T.lease_reports=(T.lease_reports or 0)+1
     end
@@ -1237,7 +1264,7 @@ local function renew_follow_once(sample,generation)
     if not lease_live(before) then stop_all("ride window or Follow lease ended before renewal");return false end
     T.lease_renew_calls=(T.lease_renew_calls or 0)+1
     local r=call("follow.renew",renew,T.follow,sample.epoch)
-    local until_ms,verdict,why=BikeRuntime.renewal_outcome(T.lease_until,before,r)
+    local until_ms,verdict,why=BikeRuntime.renewal_outcome(T.lease_until,before,r,session_renewable)
     T.lease_renew_last=short(why)
     if verdict=="renewed" then T.lease_until=until_ms;T.lease_renew_accepted=(T.lease_renew_accepted or 0)+1
     elseif verdict=="off" then T.lease_renew_off=true
@@ -1427,6 +1454,7 @@ local function handoff_and_follow()
     end
     -- A renewable lease starts from the same three-second floor as the fixed one.
     T.lease_renewable=FOLLOW_RENEWAL_QUALIFIED and renewal_available()
+    if session_renewable and not T.lease_renewable then stop_all("session Follow renewal unavailable");return end
     T.reserve_attempted=true;T.reserve_unknown=true;T.reserve_at=T.now
     -- The single lease source starts here, from the clock read before reserve.
     T.lease_until=BikeRuntime.lease_seed(T.reserve_at);T.lease_renewals="0"
@@ -1437,7 +1465,7 @@ local function handoff_and_follow()
             -- the measured two-tick lag (33 ms) at 1.06 m/s; within 5 cm of P from 0 to 2.57 m/s.
             and vector.create(-G.com[1],.95-G.com[2],-.065-G.com[3])
             or vector.create(-G.com[1],-G.com[2],-G.com[3]),root_in_body={0,0,0,1},cleanup="owned_body",motion_policy="callback_entry"}
-    if T.lease_renewable then attachment.lifetime="renewable" end
+    if T.lease_renewable then attachment.lifetime=session_renewable and "session_renewable" or "renewable" end
     local reserved=call("follow.reserve",lookup("world.physics.reserve_follow"),T.body,attachment)
     -- Adopt any returned userdata BEFORE inspecting why or cancellation.
     if reserved[1] and typeof(reserved[2])=="userdata" then T.follow=reserved[2];T.reserve_unknown=false end
@@ -1747,7 +1775,7 @@ local function tick(dt)
             else T.ready_since=nil;T.ready_ticks=0;T.ready_last=nil end
         elseif not closed_ready(f,T.phase~="following") then stop_all("fresh menu/input/grounded acquisition gate lost") end
         -- S2 declared change: the 60 s window needs the effect watchdog past it (65 s from source Arm).
-        if T.effect_at and now-T.effect_at>=65000 then stop_all("total effect watchdog expired") end
+        if T.effect_at and now-T.effect_at>=65000 and not session_following() then stop_all("total effect watchdog expired") end
     end
     if T.source_armed and not source_clean() then
         local generation=T.generation

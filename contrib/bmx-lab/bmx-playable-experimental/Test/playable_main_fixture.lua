@@ -1,11 +1,12 @@
 return function(reskate, require)
 -- Separate experimental TWO-attempt package; Root owns review and deployment.
 local EXPERIMENTAL_ADMITTED=false
+local SESSION_RENEWABLE=false
 local SLOT=0
 local Runtime=require("./bike_runtime")
 local Survey=require("./ride_r1_record")
 local Entry=require("./bmx_playable_entry")
-local bike=Entry.new(reskate,Runtime,Survey,{admitted=EXPERIMENTAL_ADMITTED,slot=SLOT,experimental_two_cycle=true})
+local bike=Entry.new(reskate,Runtime,Survey,{admitted=EXPERIMENTAL_ADMITTED,slot=SLOT,experimental_two_cycle=true,session_renewable=SESSION_RENEWABLE})
 reskate.on("tick",function(dt_ms) bike:step(dt_ms) end)
 reskate.menu.page("BMX experimental",function(ui)
     local s=bike:status()
@@ -19,7 +20,11 @@ reskate.menu.page("BMX experimental",function(ui)
     ui:note(s.detail)
     if s.phase=="blocked" or s.phase=="stopped" then ui:note(s.lifecycle_detail) end
     ui:note("First Mount requires on-foot504. Second Mount requires current stock100 after clean Return, then visibly obtains504 before a NEW survey. Stay still and neutral.")
-    ui:note("Each ride is bounded to60s. After clean stock Return, Mount once more first obtains on-foot504. Slots are never reclaimed. Only proven first preflight terrain refusals can retry; other failures end the attempt.")
+    if SESSION_RENEWABLE then
+        ui:note("Ride continues until Return or stop. After clean stock Return, Mount once more first obtains on-foot504. Slots are never reclaimed. Only proven first preflight terrain refusals can retry; other failures end the attempt.")
+    else
+        ui:note("Each ride is bounded to60s. After clean stock Return, Mount once more first obtains on-foot504. Slots are never reclaimed. Only proven first preflight terrain refusals can retry; other failures end the attempt.")
+    end
     ui:info("Attempts used / limit",tostring(s.attempts_used).." / "..tostring(s.attempt_limit))
     ui:info("Terrain refusals / limit",tostring(s.terrain_refusal_count).." / "..tostring(s.terrain_refusal_limit))
     ui:info("Lifecycle",tostring(s.core_phase))

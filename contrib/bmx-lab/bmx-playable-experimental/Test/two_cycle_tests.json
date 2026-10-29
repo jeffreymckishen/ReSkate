@@ -269,8 +269,8 @@
     {
       "source": "plugin/forces.lua",
       "destination": "forces.lua",
-      "bytes": 37162,
-      "sha256": "AB9991D5FA3E7106669A471C44CCACC676C6F06F38223629815A7BB7B725356E"
+      "bytes": 39027,
+      "sha256": "3678733E93F6169BC6F482BA5FEC6A8EC6F519D37AD3C93ACC99F805AC027113"
     },
     {
       "source": "plugin/ride_inflight.lua",
@@ -335,8 +335,8 @@
     {
       "source": "Test/playable_steering_tests.lua",
       "destination": "playable_steering_tests.lua",
-      "bytes": 4461,
-      "sha256": "3E8C0FA7573FFBB55D767DB66BDF69391315758D231720FD6E41145C3D42DD52"
+      "bytes": 12055,
+      "sha256": "424048B311848F9D45DFDD290A08E5C99A61460D89990EE186FFA64DD08EE12B"
     },
     {
       "source": "Test/sim_world.lua",
@@ -439,8 +439,8 @@
     },
     {
       "source": "plugin/forces.lua",
-      "bytes": 37162,
-      "sha256": "AB9991D5FA3E7106669A471C44CCACC676C6F06F38223629815A7BB7B725356E"
+      "bytes": 39027,
+      "sha256": "3678733E93F6169BC6F482BA5FEC6A8EC6F519D37AD3C93ACC99F805AC027113"
     },
     {
       "source": "plugin/frame_identity.lua",

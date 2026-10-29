@@ -11,7 +11,7 @@ local steering_axis={0,.9601196050643921,-.2795896530151367} -- the source float
 -- Hop-only authored landing policy. The compliance arithmetic comes from our
 -- native contact_compliance.h; earlier braking from a fresh measured ray is a
 -- separate policy, not a native collision or a claim that a clear wheel rests.
-local landing={stiffness=100000,maximum_deflection=.015,deflection_tolerance=1e-8,contact_gap=.005,
+local landing={stiffness=100000,impact_stiffness=10000,maximum_deflection=.015,deflection_tolerance=1e-8,contact_gap=.005,
     approach_gap=.65,approach_acceleration=25,floor_cosine=.95,stationary_speed=.0001}
 local defaults={gravity={0,-9.8,0},wheelbase=1.203956057050485*scale,steer_limit=.4,steer_speed_scale=8,
     pedal_torque=75,front_brake_torque=60,rear_brake_torque=45,friction={longitudinal_friction=1,lateral_friction=1},
@@ -41,7 +41,7 @@ local function result(issue)
         balance_reference_up={0,0,0},desired_balance_up={0,0,0},balance_torque={0,0,0},air_control_torque={0,0,0},
         motor_torque={0,0,0},contact_torque={0,0,0},pre_contact_prediction_available=false,pump_force={0,0,0},
         air_damping_torque={0,0,0},air_rotation_reserved=false,neutral_air_damping_active=false,pedaling=false,
-        landing_approach_mask=0,compliant_normal_mask=0,approach_normal_impulse={0,0},approach_normal_force={0,0}}
+        landing_approach_mask=0,compliant_normal_mask=0,landing_recovery_mask=0,approach_normal_impulse={0,0},approach_normal_force={0,0}}
 end
 local function tuning_valid(t)
     if not M.vec(t.gravity,100) or M.length(t.gravity)<.1 then return false end
@@ -115,11 +115,11 @@ end
 -- reset clears the pedal latch with the rest. invalidate_continuity and a
 -- refused step keep it: it holds no derivative, and outside the band this
 -- step's speed decides it alone.
-function Controller:reset() self.last_hop_event=0 self.normals={{},{}} self.travel_direction=0 self.air={} self.steering={} self.pump=Pump.new() self.pump:reset() self.pedal_latch=F.pedal_state() end
+function Controller:reset() self.last_hop_event=0 self.normals={{},{}} self.landing_impact={false,false} self.travel_direction=0 self.air={} self.steering={} self.pump=Pump.new() self.pump:reset() self.pedal_latch=F.pedal_state() end
 function Controller:invalidate_continuity()
     -- A missed command breaks one-step derivative and state-machine history.
     -- Accepted hop consumption and authored tuning remain authoritative.
-    self.normals={{},{}} self.travel_direction=0 self.air={} self.steering={}
+    self.normals={{},{}} self.landing_impact={false,false} self.travel_direction=0 self.air={} self.steering={}
     self.pump=Pump.new() self.pump:reset()
 end
 function Controller:clone()
@@ -134,7 +134,8 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     local out=result() local t=self.tuning
     local prior_normals,prior_direction,air,prior_steering,pump=M.copy(self.normals),self.travel_direction,M.copy(self.air),M.copy(self.steering),M.copy(self.pump)
     setmetatable(pump,getmetatable(self.pump)) local prior_latch=M.copy(self.pedal_latch)
-    self.normals={{},{}} self.travel_direction=0 self.air={} self.steering={} self.pump:reset()
+    local prior_impact=M.copy(self.landing_impact)
+    self.normals={{},{}} self.landing_impact={false,false} self.travel_direction=0 self.air={} self.steering={} self.pump:reset()
     if not M.finite(h) or math.abs(h-F.native_seconds)>1e-8 then out.issue="unsupported_step" return out end
     if not tuning_valid(t) or not M.valid_body(measured) or not M.vec(measured.linear_velocity,50) or not M.vec(measured.angular_velocity,40) or
         not M.valid_wheel(wheels[1]) or not M.valid_wheel(wheels[2]) then return out end
@@ -154,7 +155,7 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
         local s=samples[i] if type(s)~="table" or type(s.contact)~="table" then return out end
         contacts[i]=M.copy(s.contact) local contact=contacts[i]
         -- Only this step's selected law may create solver policy fields.
-        contact.normal_only,contact.normal_softness,contact.normal_floor_delta=nil,nil,nil
+        contact.normal_only,contact.normal_softness,contact.normal_floor_delta,contact.normal_deflection_limit=nil,nil,nil,nil
         if contact.status=="unavailable" then out.issue="unavailable_contact" return out end
         if contact.status~="hit" and contact.status~="clear" then return out end
         if contact.status=="hit" then
@@ -162,13 +163,30 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
             if not M.finite(s.separation) or not basis or not M.vec(contact.point) or not M.vec(contact.surface_velocity,50) then return out end
             contact.normal=basis.normal contact.forward=basis.forward
             if s.separation < -t.maximum_penetration then out.issue="penetration_limit" return out end
-            -- A supported rolling tyre uses ordinary contact recovery over road
-            -- steps. The softer landing law remains for unsupported touchdown.
+            -- Recovery policy is separate from loaded-support history. An
+            -- opening wheel can lose eligibility before its penetration recovers.
+            -- Keep the admitted envelope until back inside 15 mm or clear;
+            -- this state never claims ground or a positive normal load.
+            local closing=-M.dot(M.sub(M.point_velocity(measured,contact.point),contact.surface_velocity),basis.normal)
+            local prior=prior_normals[i]
+            local supported=prior.valid and prior.normal_load>0
+            local recovering=prior_impact[i] and s.separation < -landing.maximum_deflection
             local landing_plane=landing_selected and c.enabled
-                and not (prior_normals[i].valid and prior_normals[i].normal_load>0)
+                and (not supported or recovering or prior_impact[i] and closing>t.recovery_speed_limit)
                 and M.dot(basis.normal,gravity_up)>=landing.floor_cosine
                 and M.length(contact.surface_velocity)<=landing.stationary_speed
-            if landing_plane and s.separation < -landing.maximum_deflection-landing.deflection_tolerance then out.issue="landing_deflection_limit" return out end
+            -- A distant approach ray does not arm impact recovery. Start only
+            -- inside the existing contact band, not at the rear floor far below.
+            local impact=landing_plane and s.separation<=landing.contact_gap and closing>t.recovery_speed_limit
+            local impact_envelope=landing_plane and (impact or recovering)
+            self.landing_impact[i]=impact_envelope==true
+            if impact_envelope then out.landing_recovery_mask=bit32.bor(out.landing_recovery_mask,2^(i-1)) end
+            -- Late one-wheel impacts cannot stop within 15 mm in one packet.
+            -- Use softer finite compliance inside the unchanged gross-penetration
+            -- bound; the packet's force/torque limits still decide admission.
+            local deflection_limit=impact_envelope and t.maximum_penetration or landing.maximum_deflection
+            if landing_plane then contact.normal_deflection_limit=deflection_limit end
+            if landing_plane and s.separation < -deflection_limit-landing.deflection_tolerance then out.issue="landing_deflection_limit" return out end
             local approach=landing_plane and s.separation>landing.contact_gap and s.separation<=landing.approach_gap
             if approach then
                 -- A gravity ray hits downslope from the tyre's normal projection.
@@ -224,10 +242,12 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
                 local target=bias-math.max(0,s.separation)/h
                 contact.surface_velocity=M.add(contact.surface_velocity,M.mul(basis.normal,target))
                 if landing_plane and s.separation<=landing.contact_gap then
-                    -- Keep the original recovery target. The independent hard
-                    -- floor protects 15 mm of linear predicted deflection.
-                    contact.normal_softness=t.recovery_fraction/(landing.stiffness*h*h)
-                    contact.normal_floor_delta=(-landing.maximum_deflection-s.separation)/h-target
+                    -- The implicit normal spring absorbs the impact without a
+                    -- one-frame velocity reset. The independent floor still
+                    -- rejects a packet that would cross its penetration bound.
+                    local stiffness=impact and landing.impact_stiffness or landing.stiffness
+                    contact.normal_softness=t.recovery_fraction/(stiffness*h*h)
+                    contact.normal_floor_delta=(-deflection_limit-s.separation)/h-target
                     out.compliant_normal_mask=bit32.bor(out.compliant_normal_mask,2^(i-1))
                 end
             end
@@ -379,7 +399,7 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
                 local sample=samples[i]
                 local velocity=M.sub(M.point_velocity(bounded,contacts[i].point),sample.contact.surface_velocity)
                 local gap=sample.separation+M.dot(velocity,contacts[i].normal)*h
-                if not M.finite(gap) or gap < -landing.maximum_deflection-landing.deflection_tolerance then return result("landing_deflection_limit") end
+                if not M.finite(gap) or gap < -contacts[i].normal_deflection_limit-landing.deflection_tolerance then return result("landing_deflection_limit") end
             end
         end
     end
@@ -421,7 +441,7 @@ function Controller:_recovery_mask(h,body,samples,c,baseline)
     if self.travel_direction~=0 and speed*self.travel_direction<0 then return 0 end return mask
 end
 function Controller:_adopt(other)
-    self.last_hop_event=other.last_hop_event self.normals=other.normals self.travel_direction=other.travel_direction
+    self.last_hop_event=other.last_hop_event self.normals=other.normals self.landing_impact=other.landing_impact self.travel_direction=other.travel_direction
     self.air=other.air self.steering=other.steering self.pump=other.pump self.pedal_latch=other.pedal_latch
 end
 function Controller:step(h,body,wheels,samples,controls,speculative)

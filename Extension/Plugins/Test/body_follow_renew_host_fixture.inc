@@ -15,6 +15,7 @@ void body_follow_renew_host_fixture_v1() {
         local body=make_body()
         local attachment={offset_from_com=v(0,.4,0),root_in_body={0,0,0,1},cleanup='owned_body',lifetime='renewable'}
     )";
+    const std::string session_permissions = permissions + R"(,"world.physics.follow.session")";
     unsigned cases{};
     const auto id = [&] { return "body-follow-renew-" + std::to_string(++cases); };
     const auto no_unrelated_effects = [](const TestEnvironment& e) {
@@ -23,6 +24,7 @@ void body_follow_renew_host_fixture_v1() {
             "follow renewal invoked forces, queries, input, equipment, recovery or teleport");
     };
     check(known_permission("world.physics.follow.renew"), "the renewal permission is in the manifest registry");
+    check(known_permission("world.physics.follow.session"), "the session permission is in the manifest registry");
 
     // Each missing permission is named before any argument is read, and a
     // denied renewable reserve spends no reserve quota.
@@ -86,21 +88,22 @@ void body_follow_renew_host_fixture_v1() {
     // exact "renewable" with owned-body cleanup opts in. Bad values raise before the backend.
     struct LifetimeCase { const char* source; f::Lifetime expected; };
     for (const auto& lifetime : {LifetimeCase{"attachment.lifetime=nil\n", f::Lifetime::fixed},
-        LifetimeCase{"attachment.lifetime='fixed'\n", f::Lifetime::fixed}, LifetimeCase{"", f::Lifetime::renewable}}) {
+        LifetimeCase{"attachment.lifetime='fixed'\n", f::Lifetime::fixed}, LifetimeCase{"", f::Lifetime::renewable},
+        LifetimeCase{"attachment.lifetime='session_renewable'\n", f::Lifetime::session_renewable}}) {
         TestEnvironment e; Host host(e,Side::client); const auto name=id();
         host.apply({script(name,setup+lifetime.source+R"(
-            for _,bad in {'Renewable','renewable ','renewable\0x','',true,7,{},function()end} do
+            for _,bad in {'Renewable','renewable ','renewable\0x','Session_renewable','session_renewable ','session_renewable\0x','',false,true,7,{},function()end} do
                 local saved=attachment.lifetime
                 attachment.lifetime=bad
                 local ok,why=pcall(P.reserve_follow,body,attachment)
                 assert(not ok and why:find('lifetime',1,true),tostring(why))
                 attachment.lifetime=saved
             end
-            if attachment.lifetime=='renewable' then
+            if attachment.lifetime=='renewable' or attachment.lifetime=='session_renewable' then
                 for _,cleanup in {false,true} do
                     attachment.cleanup=if cleanup then 'actor_lifetime' else nil
                     local ok,why=pcall(P.reserve_follow,body,attachment)
-                    assert(not ok and why:find('lifetime=renewable requires explicit cleanup=owned_body',1,true),why)
+                    assert(not ok and why:find('lifetime='..attachment.lifetime..' requires explicit cleanup=owned_body',1,true),why)
                 end
                 attachment.cleanup='owned_body'
             end
@@ -110,7 +113,7 @@ void body_follow_renew_host_fixture_v1() {
             local n=0 for _ in pairs(r) do n+=1 end
             assert(n==14 and r.lifetime==nil,'the receipt keeps its fourteen fields and echoes no lifetime')
             reskate.log('lifetime parsed')
-        )",permissions)}); running(host,name,e);
+        )",session_permissions)}); running(host,name,e);
         check(e.logged("lifetime parsed") && e.fake.follow_reserves==1 &&
             e.fake.follow_fixture.attachment.lifetime==lifetime.expected &&
             e.fake.follow_fixture.attachment.cleanup==f::CleanupPolicy::owned_body,
@@ -122,6 +125,10 @@ void body_follow_renew_host_fixture_v1() {
         check(!f::valid(attachment),"C++ renewable lifetime accepted the default actor-lifetime cleanup");
         attachment.cleanup=f::CleanupPolicy::owned_body;
         check(f::valid(attachment),"C++ renewable lifetime refused owned-body cleanup");
+        attachment.lifetime=f::Lifetime::session_renewable; attachment.cleanup=f::CleanupPolicy::actor_lifetime;
+        check(!f::valid(attachment),"C++ session lifetime accepted actor-lifetime cleanup");
+        attachment.cleanup=f::CleanupPolicy::owned_body;
+        check(f::valid(attachment),"C++ session lifetime refused owned-body cleanup");
         attachment.lifetime=static_cast<f::Lifetime>(255);
         check(!f::valid(attachment),"C++ unknown lifetime accepted");
     }
@@ -260,7 +267,7 @@ void body_follow_renew_host_fixture_v1() {
             "a fixed Follow's renewal or lease report changed\n"+e.all());
     }
 
-    // The lease report: a freshly copied twelve-field table, and malformed
+    // The lease report: a freshly copied thirteen-field table, and malformed
     // backend facts refused rather than passed on.
     {
         TestEnvironment e; Host host(e,Side::client); const auto name=id();
@@ -270,7 +277,7 @@ void body_follow_renew_host_fixture_v1() {
             assert(P.renew_follow(h,assert(P.read(body)).epoch))
             local l=assert(P.read_follow_lease(h))
             local n=0 for _ in pairs(l) do n+=1 end
-            assert(n==12,'twelve lease fields')
+            assert(n==13 and l.session_renewable==false,'thirteen lease fields; legacy mode remains explicit')
             assert(l.sequence=='9007199254740995' and l.renewable==true and l.active==true and l.renewals=='1' and
                 l.last_serial=='9007199254740991' and l.remaining_ms==1500 and l.lifetime_remaining_ms==90000 and
                 l.base_ms==3000 and l.renewal_ms==500 and l.lifetime_ms==120000 and l.revocation=='none' and
@@ -289,7 +296,7 @@ void body_follow_renew_host_fixture_v1() {
         )",permissions)}); running(host,name,e);
         check(e.logged("lease report copied"),"the lease report fields\n"+e.all());
         const std::string refused = "lease nil follow lease returned invalid observations";
-        for (unsigned corruption = 1; corruption <= 13; ++corruption) {
+        for (unsigned corruption = 1; corruption <= 19; ++corruption) {
             e.fake.follow_lease_corruption = corruption; e.logs.clear();
             ticks(host,e,1); running(host,name,e);
             check(e.logged(refused),"malformed lease corruption "+std::to_string(corruption)+" was passed on\n"+e.all());
@@ -335,6 +342,129 @@ void body_follow_renew_host_fixture_v1() {
             reskate.log('busy reads spend the read quota')
         )",permissions)}); running(host,name,e);
         check(e.logged("busy reads spend the read quota") && e.fake.follow_reads==8,"a busy read did not spend a read\n"+e.all());
+    }
+    // Session reserve adds a permission before quota/backend. The old renewable
+    // mode remains available without it; no denied call can spend that reserve.
+    for (const bool grant_renew : {false, true}) {
+        TestEnvironment e; Host host(e,Side::client); const auto name=id();
+        const auto granted = grant_renew ? permissions :
+            std::string(R"("world.physics","world.physics.follow","world.physics.follow.session")");
+        const auto missing = grant_renew ? "world.physics.follow.session" : "world.physics.follow.renew";
+        host.apply({script(name,setup+"local missing='"+missing+"'\n"+R"(
+            attachment.lifetime='session_renewable'
+            for i=1,3 do
+                local ok,why=pcall(P.reserve_follow,body,attachment)
+                assert(not ok and why:find(missing,1,true),why)
+            end
+            reskate.log('session reserve permission refused')
+            local done=false
+            reskate.on('tick',function()
+                if done then return end
+                for i=1,3 do
+                    local ok,why=pcall(P.reserve_follow,body,attachment)
+                    assert(not ok and why:find(missing,1,true),why)
+                end
+                attachment.lifetime=if missing=='world.physics.follow.session' then 'renewable' else 'fixed'
+                local h,why=P.reserve_follow(body,attachment);assert(h and why==nil)
+                done=true;reskate.log('denied session spent no reserve')
+            end)
+        )",granted)}); running(host,name,e);
+        check(e.logged("session reserve permission refused") && !e.fake.follow_reserves && !e.fake.follow_renewals &&
+            !e.fake.follow_lease_reads && !e.fake.follow_publishes,
+            "a denied session request reached the native backend\n"+e.all());
+        ticks(host,e,1); running(host,name,e);
+        check(e.logged("denied session spent no reserve") && e.fake.follow_reserves==1 &&
+            e.fake.follow_fixture.attachment.lifetime==(grant_renew?f::Lifetime::renewable:f::Lifetime::fixed),
+            "session permission denial consumed authority or changed a legacy mode\n"+e.all());
+        no_unrelated_effects(e);
+    }
+
+    // A session's copied DTO has no absolute lifetime. It still carries a
+    // positive short deadline, and an invalid combination is never a lease.
+    {
+        TestEnvironment e; Host host(e,Side::client); const auto name=id();
+        host.apply({script(name,setup+R"(
+            attachment.lifetime='session_renewable'
+            local h,why=P.reserve_follow(body,attachment);assert(h and why==nil)
+            attachment.lifetime='fixed'
+            assert(P.publish_follow(h))
+            local other=make_body()
+            local epoch=assert(P.read(body)).epoch
+            local wrong=assert(P.read(other)).epoch
+            local ok,refused=pcall(P.renew_follow,h,wrong)
+            assert(not ok and refused:find('another body',1,true),refused)
+            for _,bad in {{},false,body,epoch} do
+                assert(not pcall(P.renew_follow,bad,epoch))
+                assert(not pcall(P.read_follow_lease,bad))
+            end
+            reskate.log('session foreign authority refused')
+            local done=false
+            reskate.on('tick',function()
+                local ok2,v=P.renew_follow(h,assert(P.read(body)).epoch)
+                local l,why2=P.read_follow_lease(h)
+                if not done then
+                    assert(ok2 and v==500)
+                    assert(l and l.session_renewable==true and l.renewable==true and l.active==true and
+                        l.lifetime_ms==0 and l.lifetime_remaining_ms==0 and l.remaining_ms==1500 and
+                        l.base_ms==3000 and l.renewal_ms==500 and l.renewals=='1',why2)
+                    local count=0 for _ in pairs(l) do count+=1 end
+                    assert(count==13)
+                    done=true;reskate.log('session lease copied')
+                end
+                reskate.log('session renew '..tostring(ok2)..' '..tostring(v))
+                reskate.log('session lease '..(if l then 'table' else 'nil')..' '..tostring(why2))
+            end)
+        )",session_permissions)}); running(host,name,e);
+        check(e.logged("session foreign authority refused") && !e.fake.follow_renewals && !e.fake.follow_lease_reads &&
+            e.fake.follow_reserves==1 && e.fake.follow_fixture.attachment.lifetime==f::Lifetime::session_renewable,
+            "foreign session authority reached renewal/lease backend or attachment mutation changed its lifetime\n"+e.all());
+        ticks(host,e,1); running(host,name,e);
+        check(e.logged("session lease copied"),"session DTO lost its explicit lifetime semantics\n"+e.all());
+        for (unsigned corruption=1;corruption<=19;++corruption) {
+            e.fake.follow_lease_corruption=corruption;e.logs.clear();
+            ticks(host,e,1);running(host,name,e);
+            check(e.logged("session lease nil follow lease returned invalid observations"),
+                "malformed session lease "+std::to_string(corruption)+" reached Lua\n"+e.all());
+        }
+        no_unrelated_effects(e);
+    }
+    // Each bound gets a fresh VM and environment. Clearing captured logs does
+    // not reset the VM's real 50-lines-per-second allowance from the DTO cases.
+    for (const auto remaining : {std::uint64_t{1},std::uint64_t{2900},std::uint64_t{3000},std::uint64_t{0},std::uint64_t{3001}}) {
+        TestEnvironment e; Host host(e,Side::client); const auto name=id();
+        e.fake.follow_renew_remaining=remaining;
+        const std::string expected = remaining && remaining<=3000 ?
+            "assert(ok==true and value=="+std::to_string(remaining)+")\n" :
+            "assert(ok==false and value=='follow renewal returned invalid observations')\n";
+        host.apply({script(name,setup+R"(
+            attachment.lifetime='session_renewable'
+            local h,why=P.reserve_follow(body,attachment);assert(h and why==nil)
+            assert(P.publish_follow(h))
+            local ok,value=P.renew_follow(h,assert(P.read(body)).epoch)
+        )"+expected+R"(
+            reskate.log('session renewal bound checked')
+        )",session_permissions)});running(host,name,e);
+        check(e.logged("session renewal bound checked") && e.fake.follow_renewals==1 &&
+            e.fake.follow_fixture.attachment.lifetime==f::Lifetime::session_renewable,
+            "session renewal bound "+std::to_string(remaining)+" was not checked exactly once\n"+e.all());
+        no_unrelated_effects(e);
+    }
+    {
+        TestEnvironment e; Host host(e,Side::client); const auto name=id();
+        host.apply({script(name,setup+R"(
+            attachment.lifetime='session_renewable'
+            local h,why=P.reserve_follow(body,attachment);assert(h and why==nil)
+            assert(P.publish_follow(h));assert(P.stop_follow(h))
+            local l=assert(P.read_follow_lease(h))
+            assert(l.session_renewable and l.renewable and not l.active and l.remaining_ms==0 and
+                l.lifetime_remaining_ms==0 and l.lifetime_ms==0 and l.revocation=='other')
+            local ok,refused=P.renew_follow(h,assert(P.read(body)).epoch)
+            assert(not ok and refused=='not_following')
+            reskate.log('stopped session stays stopped')
+        )",session_permissions)});running(host,name,e);
+        check(e.logged("stopped session stays stopped") && e.fake.follow_stops==1 && e.fake.follow_renewals==1,
+            "a stopped session hid cleanup or revived\n"+e.all());
+        no_unrelated_effects(e);
     }
     std::cout << "Body follow renewal Lua: " << cases << " constructed Host scenarios; native Service not executed\n";
 }

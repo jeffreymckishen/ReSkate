@@ -249,7 +249,7 @@ bool valid_attachment(const body_follow_native::Attachment& value) noexcept {
     // A renewable lease holds the body for longer, so only the owned-body
     // cleanup path that completed in game may carry it.
     if (!body_follow_api::valid_lifetime(value.lifetime) ||
-        (value.lifetime == body_follow_native::Lifetime::renewable &&
+        (body_follow_api::renewable_lifetime(value.lifetime) &&
             value.cleanup != body_follow_native::CleanupPolicy::owned_body)) return false;
     if (!body_follow_api::valid_lead(value.lead) || !owned_body::finite(value.offset_from_com, 10)) return false;
     double norm{};
@@ -295,7 +295,8 @@ bool reserve(std::uint64_t owner, const owned_body::Handle& body,
     if (s.occupied || s.next_sequence == std::numeric_limits<std::uint64_t>::max()) {
         reason = actor_control_native::Reason::receipt_capacity; return false;
     }
-    const bool renewable = attachment.lifetime == body_follow_native::Lifetime::renewable;
+    const bool renewable = body_follow_api::renewable_lifetime(attachment.lifetime);
+    const bool session_renewable = attachment.lifetime == body_follow_native::Lifetime::session_renewable;
     if (renewable) {
         // A renewable lease starts only with every revocation fact clear, and
         // refuses before any claim: nothing is occupied and no cleanup is owed.
@@ -326,9 +327,9 @@ bool reserve(std::uint64_t owner, const owned_body::Handle& body,
         reason = actor_control_native::Reason::motion_owned;
         stop_locked(s, reason, StopOrigin::reserve_hold); return false;
     }
-    // A fixed lease ends at reservation + 3000. A renewable one has the same
-    // floor and a 120 s ceiling, both from this one reading of the clock.
-    if (!body_follow_lease::start(s.lease, GetTickCount64(), renewable)) {
+    // Every mode starts with three seconds. The legacy renewable mode keeps
+    // its 120 s ceiling; an explicit session keeps only the rolling deadline.
+    if (!body_follow_lease::start(s.lease, GetTickCount64(), renewable, session_renewable)) {
         reason = actor_control_native::Reason::expired;
         stop_locked(s, reason, StopOrigin::reserve_clock); return false;
     }
@@ -476,15 +477,17 @@ body_follow_api::ReadStatus read_lease(std::uint64_t owner, Handle handle, body_
     const bool live = !stopped && body_follow_lease::remaining(lease, now) != 0;
     out.handle = {handle.sequence};
     out.renewable = lease.renewable;
+    out.session_renewable = lease.session_renewable;
     out.active = live && s.binding.published;
     out.renewals = lease.renewals;
     out.last_serial = lease.last_serial;
     out.dispatch_busy = s.dispatch_busy.load(std::memory_order_relaxed);
     out.remaining_ms = live ? lease.deadline - now : 0;
-    out.lifetime_remaining_ms = live ? lease.ceiling - now : 0;
+    out.lifetime_remaining_ms = live && !lease.session_renewable ? lease.ceiling - now : 0;
     out.base_ms = body_follow_lease::base_ms;
     out.renewal_ms = body_follow_lease::renewal_ms;
-    out.lifetime_ms = lease.renewable ? body_follow_lease::maximum_lifetime_ms : body_follow_lease::base_ms;
+    out.lifetime_ms = lease.session_renewable ? 0 :
+        lease.renewable ? body_follow_lease::maximum_lifetime_ms : body_follow_lease::base_ms;
     out.revocation = lease.revocation != Revocation::none ? lease.revocation : stopped ? Revocation::other : Revocation::none;
     return body_follow_api::ReadStatus::ok;
 }

@@ -53,6 +53,7 @@ constexpr Capability capabilities[] = {
     {"world.physics.observe", "WORLD", Risk::red, "See what its rays hit, other skaters' shapes included"},
     {"world.physics.follow", "WORLD", Risk::red, "Move your skater with a physical body the plugin owns"},
     {"world.physics.follow.renew", "WORLD", Risk::red, "Extend that skater-follow movement using renewable leases"},
+    {"world.physics.follow.session", "WORLD", Risk::red, "Renew skater-follow movement without a fixed lifetime"},
     {"travel", "WORLD", Risk::red, "Travel to locations and levels"},
     {"world.environment", "WORLD", Risk::red, "Change the time of day, world controls and parks"},
     {"world.entities", "WORLD", Risk::amber, "Spawn objects that only you see"},
@@ -280,6 +281,7 @@ std::string approval_prompt(const std::vector<PermissionGroup>& groups) {
             if (has("world.physics.observe")) actions.push_back("see what its rays hit, other skaters' shapes included");
             if (has("world.physics.follow")) actions.push_back("move your skater with a physical body the plugin owns");
             if (has("world.physics.follow.renew")) actions.push_back("extend skater-follow movement using renewable leases");
+            if (has("world.physics.follow.session")) actions.push_back("renew skater-follow movement without a fixed lifetime");
             if (has("travel")) actions.push_back("travel to locations and levels");
             if (has("world.environment")) actions.push_back("change parks, world controls, and time of day");
             if (has("world.entities")) actions.push_back("spawn objects visible only to you");

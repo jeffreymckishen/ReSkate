@@ -1311,6 +1311,105 @@ void lead_fallback() {
         complete_and_acknowledge(handle);
     }
 }
+void session_renewable_continuation() {
+    reset("session_renewable_continuation");
+    using body_follow_lease::Refusal;
+    using body_follow_lease::Revocation;
+    body_follow_api::Attachment api;
+    api.cleanup = body_follow_api::CleanupPolicy::owned_body;
+    api.lifetime = body_follow_api::Lifetime::session_renewable;
+    body_follow_native::Attachment native;
+    check(body_follow_native::attachment_from_api(api, native) && native.lifetime == api.lifetime,
+        "the session opt-in survives the runtime conversion");
+    const auto handle = reserve_attachment(native);
+    const auto reserved = lease_one(handle);
+    check(reserved.session_renewable && reserved.renewable && !reserved.active && reserved.remaining_ms == 3000 &&
+        !reserved.lifetime_ms && !reserved.lifetime_remaining_ms && !service().lease.ceiling,
+        "the Service reports an explicit session with the original base and no absolute lifetime");
+    Reason reason{};
+    check(publish(owner, handle, reason) && reason == Reason::none, "the session publishes normally");
+    std::uint64_t serial = 40, remaining{}; auto refusal = Refusal::none;
+    at(start_ms + 100); tick(clear_guard());
+    check(renew_one(handle, ++serial, remaining, refusal) && remaining == 2900,
+        "an early renewal does not shorten the session's three-second base");
+    for (std::uint64_t elapsed = 200; elapsed <= 180000; elapsed += 200) {
+        at(start_ms + elapsed); tick(clear_guard());
+        check(renew_one(handle, ++serial, remaining, refusal) && refusal == Refusal::none &&
+            remaining > 0 && remaining <= body_follow_lease::base_ms && dispatch_one(),
+            "the real Service keeps renewing and dispatching beyond 120 seconds");
+    }
+    const auto live = lease_one(handle);
+    check(live.session_renewable && live.renewable && live.active && live.remaining_ms == 500 &&
+        !live.lifetime_ms && !live.lifetime_remaining_ms && leaf.reserve_bindings == 1 && leaf.holds == 1,
+        "three minutes use the same binding and hold, with only a short rolling deadline");
+    const auto accepted = service().lease.renewals;
+    const auto checks_before = leaf.proof_checks;
+    check(!renew_one(handle, serial, remaining, refusal) && refusal == Refusal::sample_not_advanced &&
+        leaf.proof_checks == checks_before, "a session replay reaches no World proof work");
+    for (const auto stale : {owned_bodies::RenewalProof::not_latest, owned_bodies::RenewalProof::clock_stale}) {
+        leaf.proof_result = stale;
+        check(!renew_one(handle, serial + 1, remaining, refusal) && refusal == Refusal::sample_stale &&
+            service().lease.renewals == accepted && !remaining, "latest-issued and 100 ms proof refusals still apply");
+    }
+    leaf.proof_result = owned_bodies::RenewalProof::current;
+    leaf.proof_current_serial = serial + 8;
+    check(!renew_one(handle, serial + 1, remaining, refusal) && refusal == Refusal::sample_stale,
+        "a session proof seven steps behind is stale");
+    leaf.proof_current_serial = serial + 7;
+    check(renew_one(handle, ++serial, remaining, refusal) && remaining == 500, "six steps behind remains admissible");
+    leaf.proof_current_serial = 0;
+    const auto foreign_checks = leaf.proof_checks;
+    check(!renew(owner + 1, handle, body, proof(serial + 1), remaining, refusal) && refusal == Refusal::not_following &&
+        !renew(owner, Handle{handle.sequence + 1}, body, proof(serial + 1), remaining, refusal) &&
+        !renew(owner, handle, owned_body::Handle{18, 1}, proof(serial + 1), remaining, refusal) &&
+        leaf.proof_checks == foreign_checks, "foreign session owner, handle and body reach no World proof work");
+    at(service().lease.deadline); store_guard(clear_guard());
+    check(!renew_one(handle, serial + 1, remaining, refusal) && refusal == Refusal::expired && !remaining &&
+        leaf.proof_checks == foreign_checks, "the session expires before proof work when renewal misses its deadline");
+    const auto stopped = first_stop();
+    check(stopped.origin == StopOrigin::renew_expired && stopped.state.revocation == Revocation::deadline &&
+        read_one(handle).reason == Reason::expired, "the ordinary stop path records the session's deadline lapse");
+    const auto ended = lease_one(handle);
+    check(ended.session_renewable && !ended.active && !ended.remaining_ms && !ended.lifetime_ms &&
+        !ended.lifetime_remaining_ms && ended.revocation == Revocation::deadline, "a stopped session has no remaining authority");
+    check(!renew_one(handle, serial + 2, remaining, refusal) && refusal == Refusal::not_following,
+        "fresh proof cannot revive a stopped session");
+    complete_and_acknowledge(handle);
+}
+
+void session_renewable_guard_stops() {
+    using body_follow_lease::Revocation;
+    struct Case { bool LeaseGuard::*fact; Revocation cause; Reason reason; };
+    for (const auto& item : {Case{&LeaseGuard::focused, Revocation::focus_lost, Reason::focus_changed},
+        Case{&LeaseGuard::menu_closed, Revocation::menu_open, Reason::focus_changed},
+        Case{&LeaseGuard::pause_menu_closed, Revocation::pause_menu_open, Reason::focus_changed},
+        Case{&LeaseGuard::actor_upright, Revocation::actor_state, Reason::unsupported_state}}) {
+        reset("session_renewable_guard_stops");
+        body_follow_native::Attachment attachment;
+        attachment.cleanup = body_follow_native::CleanupPolicy::owned_body;
+        attachment.lifetime = body_follow_native::Lifetime::session_renewable;
+        const auto handle = reserve_attachment(attachment);
+        Reason reason{};
+        check(publish(owner, handle, reason), "the session publishes");
+        at(start_ms + 100);
+        auto guard = clear_guard(); guard.*item.fact = false;
+        tick(guard);
+        const auto stopped = first_stop();
+        const auto receipt = read_one(handle);
+        check(stopped.origin == StopOrigin::lease_guard && stopped.state.revocation == item.cause &&
+            stopped.reason == item.reason && receipt.phase == Phase::completed && receipt.reason == item.reason,
+            "session guards retain the exact ordinary stop cause and completed receipt");
+        // lease_stop revokes once, then this same tick retries revoke before
+        // capturing the fence, releasing the body and proving its retained park.
+        check(leaf.binding_stops == 2 && leaf.fences == 1 && leaf.parks == 1 && leaf.completions == 1 &&
+            leaf.hold_releases == 1 && leaf.body_releases == 1 && completed_ack_ready(service()),
+            "session guard cleanup retries revoke, parks and releases exactly once, then proves ACK readiness");
+        const auto ended = lease_one(handle);
+        check(ended.session_renewable && !ended.active && !ended.remaining_ms && !ended.lifetime_ms &&
+            !ended.lifetime_remaining_ms && ended.revocation == item.cause, "the stopped session DTO retains its mode and cause");
+        check(acknowledge_completed(owner, handle), "session cleanup still requires and permits the ordinary ACK");
+    }
+}
 struct Scenario { const char* name; void (*run)(); };
 constexpr Scenario scenarios[] = {
     {"fixed_unchanged", fixed_unchanged}, {"renew_deadline", renew_deadline}, {"renew_windows", renew_windows},
@@ -1322,6 +1421,8 @@ constexpr Scenario scenarios[] = {
     {"extended_deadline_lapse", extended_deadline_lapse}, {"tick_ready_only", tick_ready_only},
     {"dispatch_entry", dispatch_entry},
     {"lead_attachment", lead_attachment}, {"lead_dispatch", lead_dispatch}, {"lead_fallback", lead_fallback},
+    {"session_renewable_continuation", session_renewable_continuation},
+    {"session_renewable_guard_stops", session_renewable_guard_stops},
 };
 } // namespace dingosdk::body_follow_service::test
 

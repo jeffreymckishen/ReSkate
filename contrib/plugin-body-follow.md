@@ -21,6 +21,7 @@ refuses unknown pending duties rather than silently translating their meaning.
 Every method needs both `world.physics` and `world.physics.follow`.
 `renew_follow`, `read_follow_lease` and a reserve with `lifetime="renewable"` also
 need `world.physics.follow.renew` (see [Sustained Follow](#sustained-follow)).
+`lifetime="session_renewable"` additionally needs `world.physics.follow.session`.
 Every method is client phase only, including receipt reads and cleanup requests.
 The dedicated permission is warranted because ordinary body creation/forces do
 not authorize replacing the local actor's root transform. It grants no input
@@ -280,9 +281,14 @@ end
 fixed three-second lease and need no new permission. The exact string
 `"renewable"` needs `cleanup="owned_body"` (either motion policy) and the
 permission `world.physics.follow.renew`, which also requires `world.physics` and
-`world.physics.follow`. Any other value raises before the backend, including
+`world.physics.follow`. The exact string `"session_renewable"` also needs
+`cleanup="owned_body"` and all those permissions, plus
+`world.physics.follow.session`. It keeps a short renewable deadline without an
+absolute lifetime. It grants no body reuse or additional actor authority.
+Any other value raises before the backend, including
 another type, a case or whitespace change and a NUL suffix. The attachment is
-parsed first, then the renewal permission is checked, then the reserve quota: a
+parsed first, then the renewal and optional session permissions are checked, then
+the reserve quota: a
 malformed attachment raises its own error, and a denied renewable reserve raises
 without spending the tick's reserve. The lifetime is copied at reserve; editing
 the table afterwards changes nothing, and the receipt does not echo it.
@@ -305,17 +311,21 @@ at most six physics steps behind the body's current step, with that step
 observed less than 100 ms ago. A timer, a counter, an old or replayed sample or
 repeated publication never renews. An accepted renewal moves the deadline to
 `max(deadline, min(now + 500 ms, reservation + 120 s))`; it never shortens it,
-and a lease that has lapsed is never revived.
+and a lease that has lapsed is never revived. For `"session_renewable"` the
+formula is `max(deadline, now + 500 ms)`, with the same initial 3000 ms deadline.
+Early renewals never shorten that base: a successful session renewal can return
+up to 3000 ms, then naturally settles to a 500 ms window. Native clock or
+renewal-count exhaustion fails closed through the ordinary expired stop path.
 
 | `why` | Meaning | The Follow stops? | Try again later? |
 | --- | --- | --- | --- |
-| `not_renewable` | Reserved without `lifetime="renewable"` | no | no |
+| `not_renewable` | Reserved with a fixed lifetime | no | no |
 | `not_following` | Not published, already stopped, or the receipt changed during the renewal | no (already) | no |
 | `sample_not_advanced` | The epoch is not newer than the last accepted one, for example no new physics step this tick | no | yes |
 | `sample_stale` | Not the body's latest issued sample, more than 6 steps behind, or the current step is 100 ms old or more | no | yes |
 | `body_unavailable` | The body is released, retained, quarantined or no longer the reserved allocation | no; World's release stops it on the next client tick | yes |
 | `busy` | A lock was busy: the Follow's, World's, or the physics clock's while a step wrote it | no | yes |
-| `lifetime_exhausted` | The deadline already equals the 120 s ceiling | no; it ends at the ceiling | not useful |
+| `lifetime_exhausted` | A bounded renewable deadline already equals the 120 s ceiling; sessions never return this | no; it ends at the ceiling | not useful |
 | `expired` | The deadline passed before or during this renewal, so the renewal stopped the Follow | yes | no |
 | `client_not_ready`, `focus_lost`, `menu_open`, `pause_menu_open`, `debug_control`, `actor_state` | A revocation fact (below) | yes | no |
 | `asked to renew follow more than once in one tick` | Quota | no | no |
@@ -329,7 +339,7 @@ observations"`, never `true`.
 | --- | --- |
 | Base lease from reservation, also the floor of a renewable lease | 3000 ms |
 | Window after an accepted renewal | 500 ms |
-| Ceiling from reservation | 120000 ms |
+| Ceiling from reservation | 120000 ms for `"renewable"`; none for explicit `"session_renewable"` |
 | Renewals per plugin tick per VM | 1 |
 | Proof age | at most 6 steps behind the current step, observed under 100 ms ago |
 | Revocation facts' age | under 250 ms |
@@ -337,8 +347,11 @@ observations"`, never `true`.
 | Slots | one process-wide Follow, unchanged |
 
 A plugin that stops renewing is released at `max(reservation + 3000,
-last renewal + 500)`. Each renewable Follow still spends one of the eight
-owned-body slots that are never reused.
+last renewal + 500)` (also capped by the ceiling for `"renewable"`). A session
+can continue past two minutes only while fresh proofs and all guards remain
+valid; it does not reserve another body or actor. Every mode still spends one
+of the eight owned-body slots that are never reused. Stop, park, release and ACK
+obligations are unchanged.
 
 ### Revocation
 
@@ -381,34 +394,42 @@ so it always describes the same stop as `reason`.
 
 `read_follow_lease(follow)` returns a freshly copied table, or `nil, why`
 (`"follow lease busy"`, `"follow lease unavailable"` after ACK or for a foreign
-handle, or `"follow lease returned invalid observations"`). It works for either
-lifetime.
+handle, or `"follow lease returned invalid observations"`). It works for all three
+lifetime modes.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `sequence` | u64 string | The Follow sequence, as in `read_follow` |
-| `renewable` | boolean | A renewable lease started at reserve |
+| `renewable` | boolean | Either renewable mode started at reserve |
+| `session_renewable` | boolean | True only for the explicitly selected session mode; false for both legacy modes |
 | `active` | boolean | Published, not stopped, and before the deadline now |
 | `renewals` | u64 string | Accepted renewals |
 | `last_serial` | u64 string | Body serial of the last accepted proof; `"0"` before any |
 | `remaining_ms` | number | Native milliseconds to the deadline; 0 once passed or stopped |
-| `lifetime_remaining_ms` | number | Native milliseconds to the ceiling; equal to `remaining_ms` for a fixed lease; 0 once passed or stopped |
-| `base_ms`, `renewal_ms`, `lifetime_ms` | number | 3000, 500, and 120000 (3000 for a fixed lease) |
+| `lifetime_remaining_ms` | number | Native milliseconds to the ceiling; equal to `remaining_ms` for a fixed lease; always 0 for a session; 0 once passed or stopped |
+| `base_ms`, `renewal_ms`, `lifetime_ms` | number | 3000, 500, and 120000 (3000 for a fixed lease; 0 for a session) |
 | `revocation` | string | One of the names in the table above, or `none` |
 | `dispatch_busy` | u64 string | Native callbacks since reserve that found the Follow lock busy and were not followed |
+
+This additive report has thirteen fields. Zero absolute-lifetime fields are
+valid only when `session_renewable=true` and `renewable=true` for a Follow that
+was explicitly reserved in session mode. An active session still requires
+positive `remaining_ms <= 3000`; zero lifetime fields never mean an expired
+deadline may be revived. Both legacy modes keep their original strict time
+validation.
 
 The times are milliseconds left, never deadlines: the native clock is not
 `reskate.time.now`, so compare them only with a plugin clock read before the call.
 
 ### Not established
 
-These are constructed tests and source reading only. Nobody has observed a
-published Follow longer than about half a second in game, so whether the
-callback continuation, the actor root and the body stay coherent for ten or
-thirty seconds, whether the body parks after sustained motion, and which thread
-runs the motion callbacks are open. The window, ceiling, proof age and guard age
-are authored values, not measured ones. A callback that meets a client-thread
-exclusive World window still stops the Follow at provider stage `measure`.
+The new session mode has source-only policy, Host and constructed Service
+regressions; these must be run before claiming an offline pass. They do not
+execute native actor or body admission, and they do not qualify continuous
+in-game riding. Native results from another built runtime do not qualify this
+mode. The window, proof age and guard age are authored values. A callback that
+meets a client-thread exclusive World window still stops the Follow at provider
+stage `measure`.
 
 ## Internal failure diagnostics
 

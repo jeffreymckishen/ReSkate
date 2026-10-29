@@ -303,6 +303,76 @@ void one_per_step_for_two_minutes() {
     check(lease::check(state, reserved_at + 120000, clear_word(reserved_at + 120000)) == Revocation::lifetime,
         "the lease ends at the ceiling");
 }
+void session_continues_without_an_absolute_ceiling() {
+    start("session_continues_without_an_absolute_ceiling");
+    lease::State state;
+    check(lease::start(state, reserved_at, true, true) && state.session_renewable && state.renewable &&
+        !state.ceiling && state.deadline == reserved_at + 3000, "an explicit session keeps the original three-second base");
+    std::uint64_t remaining{};
+    check(renew_at(state, reserved_at + 100, remaining) == Refusal::none && remaining == 2900 &&
+        state.deadline == reserved_at + 3000, "the first session renewal does not shorten the base");
+    std::uint64_t previous = state.deadline;
+    for (std::uint64_t elapsed = 200; elapsed <= 180000; elapsed += 200) {
+        const auto now = reserved_at + elapsed;
+        check(renew_at(state, now, remaining) == Refusal::none, "fresh proof keeps a session alive beyond 120 seconds");
+        check(state.deadline >= previous && remaining > 0 && remaining <= lease::base_ms &&
+            !state.ceiling && lease::check(state, now, clear_word(now)) == Revocation::none,
+            "a session keeps only a bounded rolling deadline");
+        previous = state.deadline;
+    }
+    check(state.deadline == reserved_at + 180500 && remaining == 500, "the session rolls at three minutes");
+    const auto before = state;
+    check(lease::renew(state, reserved_at + 180100, state.last_serial, state.last_serial + 1,
+        clear_word(reserved_at + 180100), remaining) == Refusal::sample_not_advanced,
+        "a session cannot replay its accepted proof");
+    check(lease::renew(state, reserved_at + 180100, state.last_serial + 1, state.last_serial + 8,
+        clear_word(reserved_at + 180100), remaining) == Refusal::sample_stale,
+        "a session still refuses proof seven steps old");
+    check(state.deadline == before.deadline && state.last_serial == before.last_serial &&
+        state.renewals == before.renewals, "refused session proofs do not extend or consume proof");
+    for (const auto now : {before.deadline, before.deadline + 1}) {
+        check(lease::check(state, now, clear_word(now)) == Revocation::deadline &&
+            lease::renew(state, now, state.last_serial + 1, state.last_serial + 1, clear_word(now), remaining) ==
+                Refusal::expired && !remaining, "a session deadline cannot be revived");
+    }
+}
+
+void session_guards_and_overflow_fail_closed() {
+    start("session_guards_and_overflow_fail_closed");
+    lease::State state;
+    check(!lease::start(state, reserved_at, false, true) && !state.deadline && !state.session_renewable,
+        "a session without renewal is not a lifetime mode");
+    check(lease::start(state, reserved_at, true, true), "session starts");
+    const auto now = reserved_at + 100;
+    struct Case { bool lease::Guard::*fact; Revocation cause; };
+    for (const auto& item : {Case{&lease::Guard::focused, Revocation::focus_lost},
+        Case{&lease::Guard::menu_closed, Revocation::menu_open},
+        Case{&lease::Guard::pause_menu_closed, Revocation::pause_menu_open},
+        Case{&lease::Guard::ready, Revocation::client_not_ready},
+        Case{&lease::Guard::actor_upright, Revocation::actor_state},
+        Case{&lease::Guard::debug_control_clear, Revocation::debug_control}}) {
+        auto guard = clear_guard(now); guard.*item.fact = false;
+        std::uint64_t remaining{};
+        check(lease::check(state, now, lease::pack(guard)) == item.cause &&
+            lease::renew(state, now, 1, 1, lease::pack(guard), remaining) == lease::refusal(item.cause) && !remaining &&
+            state.deadline == reserved_at + 3000 && !state.renewals, "a session keeps each revocation guard");
+    }
+    check(lease::check(state, now + 250, clear_word(now)) == Revocation::client_not_ready,
+        "a session cannot keep stale guard facts");
+    constexpr auto top = (std::numeric_limits<std::uint64_t>::max)();
+    check(lease::start(state, top - lease::base_ms, true, true) && state.deadline == top && !state.ceiling,
+        "the last representable session base starts");
+    check(lease::expiry(state, top - lease::renewal_ms + 1) == Revocation::clock,
+        "a rolling deadline that would overflow is a clock lapse");
+    check(!lease::start(state, top - lease::base_ms + 1, true, true) && !state.deadline && !state.session_renewable,
+        "an overflowing session base leaves no lease");
+    check(lease::start(state, reserved_at, true, true), "session restarts for the constructed counter edge");
+    state.renewals = top; state.last_serial = 1;
+    std::uint64_t remaining{};
+    check(lease::renew(state, now, 2, 2, clear_word(now), remaining) == Refusal::expired && !remaining &&
+        state.renewals == top && state.last_serial == 1 && state.deadline == reserved_at + 3000,
+        "a saturated session renewal counter cannot wrap or extend");
+}
 } // namespace
 
 int main() {
@@ -316,6 +386,8 @@ int main() {
     receipt_reasons_are_existing_names();
     clock_regression_and_overflow();
     one_per_step_for_two_minutes();
+    session_continues_without_an_absolute_ceiling();
+    session_guards_and_overflow_fail_closed();
     std::cout << "body_follow_lease cases=" << cases << " checks=" << checks << '\n';
     return 0;
 }

@@ -168,23 +168,29 @@ struct State {
     std::uint64_t renewals{}, last_serial{}; // last_serial is the proof of the last accepted renewal
     bool renewable{};
     Revocation revocation{Revocation::none};  // latched by the Service at the receipt's first stop
+    bool session_renewable{};
 };
-// Refuses a clock so near its maximum that the ceiling could not be represented.
+// Refuses a clock so near its maximum that the initial deadline or ceiling cannot be represented.
 // A refusal leaves the state empty, so every later edge sees a lapsed lease.
-constexpr bool start(State& state, std::uint64_t now, bool renewable) noexcept {
+constexpr bool start(State& state, std::uint64_t now, bool renewable, bool session_renewable = false) noexcept {
     state = {};
-    const auto span = renewable ? maximum_lifetime_ms : base_ms;
+    if (session_renewable && !renewable) return false;
+    const auto span = renewable && !session_renewable ? maximum_lifetime_ms : base_ms;
     if (now > (std::numeric_limits<std::uint64_t>::max)() - span) return false;
     state.started = now;
     state.deadline = now + base_ms;
-    state.ceiling = now + span; // a fixed lease's ceiling is its deadline
+    state.ceiling = session_renewable ? 0 : now + span; // a fixed lease ends at its ceiling
     state.renewable = renewable;
+    state.session_renewable = session_renewable;
     return true;
 }
 constexpr Revocation expiry(const State& state, std::uint64_t now) noexcept {
     if (now < state.started) return Revocation::clock;
+    // A session may keep rolling, but neither its deadline nor its count may wrap.
+    if (state.session_renewable && (now > (std::numeric_limits<std::uint64_t>::max)() - renewal_ms ||
+        state.renewals == (std::numeric_limits<std::uint64_t>::max)())) return Revocation::clock;
     if (now >= state.deadline)
-        return state.renewable && state.deadline == state.ceiling ? Revocation::lifetime : Revocation::deadline;
+        return state.renewable && !state.session_renewable && state.deadline == state.ceiling ? Revocation::lifetime : Revocation::deadline;
     return Revocation::none;
 }
 // A fixed lease ignores the guard, so a Follow that did not opt in keeps the
@@ -198,13 +204,14 @@ constexpr Revocation check(const State& state, std::uint64_t now, std::uint64_t 
 constexpr Refusal precheck(const State& state, std::uint64_t proof_serial) noexcept {
     if (!state.renewable) return Refusal::not_renewable;
     if (proof_serial <= state.last_serial) return Refusal::sample_not_advanced;
-    if (state.deadline >= state.ceiling) return Refusal::lifetime_exhausted;
+    if (!state.session_renewable && state.deadline >= state.ceiling) return Refusal::lifetime_exhausted;
     return Refusal::none;
 }
 // proof_serial is the body serial of the sample the plugin presented, already
 // shown by World to be that body's latest issued sample; current_serial is the
 // body's current physics step, observed under 100 ms ago. The deadline becomes
-// max(deadline, min(now + renewal_ms, ceiling)) and is never shortened.
+// max(deadline, min(now + renewal_ms, ceiling)), or max(deadline, now + renewal_ms)
+// for a session, and is never shortened.
 constexpr Refusal renew(State& state, std::uint64_t now, std::uint64_t proof_serial, std::uint64_t current_serial,
     std::uint64_t guard_word, std::uint64_t& remaining_ms) noexcept {
     remaining_ms = 0;
@@ -212,8 +219,9 @@ constexpr Refusal renew(State& state, std::uint64_t now, std::uint64_t proof_ser
     if (const auto cause = check(state, now, guard_word); cause != Revocation::none) return refusal(cause);
     if (const auto refused = precheck(state, proof_serial); refused != Refusal::none) return refused;
     if (proof_serial > current_serial || current_serial - proof_serial > proof_steps) return Refusal::sample_stale;
-    // now < deadline <= ceiling here, so neither sum can overflow.
-    const auto window = state.ceiling - now > renewal_ms ? now + renewal_ms : state.ceiling;
+    // expiry checked the session sum; a bounded lease stays at or below its ceiling.
+    const auto window = state.session_renewable ? now + renewal_ms :
+        state.ceiling - now > renewal_ms ? now + renewal_ms : state.ceiling;
     if (window > state.deadline) state.deadline = window;
     state.last_serial = proof_serial;
     ++state.renewals;

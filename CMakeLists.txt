@@ -550,7 +550,8 @@ if(DINGOSDK_BUILD_PLUGIN_TESTS)
         foreach(scenario fixed_unchanged renew_deadline renew_windows renew_proof guard_tick_order guard_atomic
                 guard_reserve_publish dispatch_guard_busy revision_exhausted revocation_first_only ack_reset read_busy
                 renew_expired_windows renew_guard_windows extended_deadline_lapse tick_ready_only dispatch_entry
-                lead_attachment lead_dispatch lead_fallback)
+                lead_attachment lead_dispatch lead_fallback
+                session_renewable_continuation session_renewable_guard_stops)
             add_test(NAME body_follow_service_${scenario} COMMAND dingosdk_body_follow_service_tests ${scenario})
             set_tests_properties(body_follow_service_${scenario} PROPERTIES TIMEOUT 15)
         endforeach()

@@ -87,7 +87,7 @@
         ++follow_renewals; remaining_ms = 0; refusal = FollowRefusal::not_following; follow_renew_epoch = proof;
         if (!follows(owner, handle) || !(follow_fixture.body == body) ||
             follow_fixture.receipt.phase != FollowPhase::following) return false;
-        if (follow_fixture.attachment.lifetime != dingosdk::body_follow_api::Lifetime::renewable) {
+        if (!dingosdk::body_follow_api::renewable_lifetime(follow_fixture.attachment.lifetime)) {
             refusal = FollowRefusal::not_renewable; return false;
         }
         if (follow_renew_refusal != FollowRefusal::none) { refusal = follow_renew_refusal; return false; }
@@ -99,13 +99,16 @@
         if (follow_lease_busy) return FollowReadStatus::busy;
         if (!follows(owner, handle)) return FollowReadStatus::unavailable;
         const auto phase = follow_fixture.receipt.phase;
-        const bool renewable = follow_fixture.attachment.lifetime == dingosdk::body_follow_api::Lifetime::renewable;
+        const bool renewable = dingosdk::body_follow_api::renewable_lifetime(follow_fixture.attachment.lifetime);
+        const bool session = follow_fixture.attachment.lifetime == dingosdk::body_follow_api::Lifetime::session_renewable;
         const bool live = phase == FollowPhase::reserved || phase == FollowPhase::following;
         out.handle = handle; out.renewable = renewable; out.active = phase == FollowPhase::following;
+        out.session_renewable = session;
         out.renewals = renewable ? follow_renewed : 0; out.last_serial = out.renewals ? 9007199254740990ULL + out.renewals : 0;
         out.dispatch_busy = 9007199254740993ULL;
-        out.base_ms = 3000; out.renewal_ms = 500; out.lifetime_ms = renewable ? 120000 : 3000;
-        out.remaining_ms = live ? 1500 : 0; out.lifetime_remaining_ms = live ? (renewable ? 90000 : 1500) : 0;
+        out.base_ms = 3000; out.renewal_ms = 500; out.lifetime_ms = session ? 0 : renewable ? 120000 : 3000;
+        out.remaining_ms = live ? 1500 : 0;
+        out.lifetime_remaining_ms = live && !session ? (renewable ? 90000 : 1500) : 0;
         out.revocation = live ? FollowRevocation::none : FollowRevocation::other;
         switch (follow_lease_corruption) {
         case 1: ++out.handle.sequence; break;
@@ -113,7 +116,7 @@
         case 3: out.base_ms = 2999; break;
         case 4: out.renewal_ms = 0; break;
         case 5: out.lifetime_ms = 3000; break;
-        case 6: out.remaining_ms = out.lifetime_remaining_ms + 1; break;
+        case 6: out.remaining_ms = session ? out.base_ms + 1 : out.lifetime_remaining_ms + 1; break;
         case 7: out.lifetime_remaining_ms = out.lifetime_ms + 1; break;
         case 8: out.renewals = 1; out.last_serial = 0; break;
         case 9: out.renewable = false; out.lifetime_ms = 3000; out.remaining_ms = out.lifetime_remaining_ms = 1500;
@@ -123,6 +126,12 @@
         case 12: out.active = false; out.revocation = FollowRevocation::deadline; break;
         case 13: out.renewable = false; out.lifetime_ms = 3000; out.lifetime_remaining_ms = 2000; out.renewals = 0;
             out.last_serial = 0; break;
+        case 14: out.session_renewable = !session; break;
+        case 15: out.session_renewable = false; out.lifetime_ms = out.lifetime_remaining_ms = 0; break;
+        case 16: out.session_renewable = true; out.renewable = false; break;
+        case 17: out.session_renewable = true; out.lifetime_ms = 120000; break;
+        case 18: out.session_renewable = true; out.lifetime_remaining_ms = 1; break;
+        case 19: out.session_renewable = true; out.remaining_ms = 3001; break;
         }
         return FollowReadStatus::ok;
     }

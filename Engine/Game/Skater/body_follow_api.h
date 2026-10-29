@@ -22,9 +22,14 @@ constexpr bool valid_motion_policy(MotionPolicy policy) noexcept {
 // Opt-in only. The default keeps the fixed three-second lease from reservation.
 // A renewable lease (body_follow_lease.h) needs owned-body cleanup and its own
 // permission, and is extended only by proof from a newly issued body sample.
-enum class Lifetime : std::uint8_t { fixed, renewable };
+// Session mode additionally opts out of the absolute ceiling; its short deadline,
+// proof, guard and cleanup requirements remain the same.
+enum class Lifetime : std::uint8_t { fixed, renewable, session_renewable };
 constexpr bool valid_lifetime(Lifetime lifetime) noexcept {
-    return lifetime == Lifetime::fixed || lifetime == Lifetime::renewable;
+    return lifetime == Lifetime::fixed || lifetime == Lifetime::renewable || lifetime == Lifetime::session_renewable;
+}
+constexpr bool renewable_lifetime(Lifetime lifetime) noexcept {
+    return lifetime == Lifetime::renewable || lifetime == Lifetime::session_renewable;
 }
 // Pose lead uses only the followed body's current measured motion. It neither
 // accepts a plugin velocity nor writes momentum into the actor.
@@ -65,6 +70,8 @@ struct LeaseReceipt {
     std::uint64_t renewals{}, last_serial{}, dispatch_busy{};
     std::uint64_t remaining_ms{}, lifetime_remaining_ms{}, base_ms{}, renewal_ms{}, lifetime_ms{};
     body_follow_lease::Revocation revocation{body_follow_lease::Revocation::none};
+    // Only this explicit mode has no absolute lifetime; its rolling deadline remains bounded.
+    bool session_renewable{};
 };
 constexpr bool terminal(Phase phase) noexcept {
     return phase == Phase::abandoned || phase == Phase::completed;
@@ -84,7 +91,7 @@ inline bool valid(const Attachment& attachment) noexcept {
     if (!valid_cleanup(attachment.cleanup) || !valid_motion_policy(attachment.motion_policy) ||
         (attachment.motion_policy == MotionPolicy::callback_entry && attachment.cleanup != CleanupPolicy::owned_body)) return false;
     if (!valid_lifetime(attachment.lifetime) ||
-        (attachment.lifetime == Lifetime::renewable && attachment.cleanup != CleanupPolicy::owned_body)) return false;
+        (renewable_lifetime(attachment.lifetime) && attachment.cleanup != CleanupPolicy::owned_body)) return false;
     if (!valid_lead(attachment.lead) || !owned_body::finite(attachment.offset_from_com, 10)) return false;
     double norm{};
     for (const float lane : attachment.root_in_body) {

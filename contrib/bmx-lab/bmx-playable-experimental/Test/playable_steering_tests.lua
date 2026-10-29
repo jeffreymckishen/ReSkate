@@ -39,6 +39,30 @@ function T.run()
  check(maximum_distance>8.5,"replay leaves the original tiny spawn envelope")
  print(string.format("steering_replay steps=1800 max_speed=%.6f max_tilt=%.6f max_roll=%.6f max_distance=%.6f",maximum_speed,maximum_tilt,maximum_roll,maximum_distance))
  check(maximum_speed<8,"governor must bound repeated steering speed")
- return{cases=5,assertions=n,native_qualified=false}
+ -- First establish actual accepted wheel support, then roll the front tyre
+ -- onto an 8.5 mm road step while turning at the recorded failure velocity.
+ local road_stage=Stage.new()
+ local road_body,road_wheels=World.place(terrain,{speed=4.04})
+ local seed,seed_candidate=road_stage:preview(Forces.native_seconds,road_body,road_wheels,
+  World.contacts(terrain,road_body,Forces.tuning().gravity),{pedal=0,steer=0,brake=0})
+ check(seed.valid and seed.normal_load[1]>0 and seed.normal_load[2]>0,"road-step fixture needs accepted support")
+ check(seed.compliant_normal_mask~=0,"unsupported first touchdown retains landing compliance")
+ road_stage:_adopt(seed_candidate)
+ road_body=World.integrate(road_body,seed,Forces.tuning().gravity,Forces.native_seconds);road_wheels=seed.wheels
+ road_body.linear_velocity={.89,-.01,4.04};road_body.angular_velocity={.02,-.88,.06}
+ local hubs=World.hubs(road_body)
+ local edge=(hubs[1][3]+hubs[2][3])/2
+ local road={height=function(z)return z>=edge and .0084716 or 0 end,slope=function()return 0 end}
+ local road_samples=World.contacts(road,road_body,Forces.tuning().gravity)
+ check(road_samples[1].contact.status=="hit" and road_samples[1].separation<-.008
+  and road_samples[1].separation>-.015,"small front road step is within the old landing allowance")
+ local crossing,crossing_candidate=road_stage:preview(Forces.native_seconds,road_body,road_wheels,road_samples,
+  {pedal=1,steer=-1,brake=0})
+ check(crossing.valid,"supported road step must recover instead of stopping: "..tostring(crossing.issue))
+ check(crossing.grounded and crossing.normal_load[1]>0,"road step produces real supporting normal response")
+ check(crossing.compliant_normal_mask==0,"supported rolling does not re-enter the landing-only deflection law")
+ check(M.length(crossing.force)<=6000 and M.length(crossing.torque)<=2000,"road response retains native force and torque caps")
+ road_stage:_adopt(crossing_candidate)
+ return{cases=6,assertions=n,native_qualified=false}
 end
 return T

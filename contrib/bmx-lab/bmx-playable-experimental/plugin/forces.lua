@@ -162,7 +162,11 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
             if not M.finite(s.separation) or not basis or not M.vec(contact.point) or not M.vec(contact.surface_velocity,50) then return out end
             contact.normal=basis.normal contact.forward=basis.forward
             if s.separation < -t.maximum_penetration then out.issue="penetration_limit" return out end
-            local landing_plane=landing_selected and c.enabled and M.dot(basis.normal,gravity_up)>=landing.floor_cosine
+            -- A supported rolling tyre uses ordinary contact recovery over road
+            -- steps. The softer landing law remains for unsupported touchdown.
+            local landing_plane=landing_selected and c.enabled
+                and not (prior_normals[i].valid and prior_normals[i].normal_load>0)
+                and M.dot(basis.normal,gravity_up)>=landing.floor_cosine
                 and M.length(contact.surface_velocity)<=landing.stationary_speed
             if landing_plane and s.separation < -landing.maximum_deflection-landing.deflection_tolerance then out.issue="landing_deflection_limit" return out end
             local approach=landing_plane and s.separation>landing.contact_gap and s.separation<=landing.approach_gap

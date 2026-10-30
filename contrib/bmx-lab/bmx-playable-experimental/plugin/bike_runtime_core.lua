@@ -707,7 +707,7 @@ snapshot=function()
         stop_latched=T.stop_latched==true,unloaded=T.unloaded==true,clock_unknown=T.clock_unknown==true,
         storage_fault=T.storage_fault==true,readiness=T.facts,initial_readiness=T.initial_facts,
         capture_attempted=T.capture_attempted==true,source=source_record(s,true),last_source_step=T.source_record,
-        spawn=b,equipment=e,
+        spawn=b,equipment=e,return_position_plan=T.return_position_plan,return_capture_issue=T.return_capture_issue,
         ride_composition_qualified=RIDE_COMPOSITION_QUALIFIED,ride=T.ride_status,
         pose=T.pose_status, -- S2 declared change: the Poser's status and the last sent plan's targets
         board=T.board_status, -- S2c declared change: the Dropper's status, the floor read and the drop and restore times
@@ -1471,6 +1471,8 @@ local function handoff_and_follow()
             and vector.create(-G.com[1],.95-G.com[2],-.065-G.com[3])
             or vector.create(-G.com[1],-G.com[2],-G.com[3]),root_in_body={0,0,0,1},cleanup="owned_body",motion_policy="callback_entry"}
     if T.lease_renewable then attachment.lifetime=session_renewable and "session_renewable" or "renewable" end
+    -- Retain requested geometry only, not a native target or authority proof.
+    T.follow_offset_from_com=table.freeze({attachment.offset_from_com.x,attachment.offset_from_com.y,attachment.offset_from_com.z})
     local reserved=call("follow.reserve",lookup("world.physics.reserve_follow"),T.body,attachment)
     -- Adopt any returned userdata BEFORE inspecting why or cancellation.
     if reserved[1] and typeof(reserved[2])=="userdata" then T.follow=reserved[2];T.reserve_unknown=false end
@@ -1714,6 +1716,121 @@ function object:request_mount(slot,admitted,grade)
     T.intent_inflight=false;T.busy=false
     if not accepted then return false,short(T.detail) end
     return true
+end
+-- Return captures a NEW current owned-body sample before stop can park it.
+-- The old spawn measurement supplies root-height calibration only, never XY.
+local function capture_return_position()
+    local version,body=T.generation,T.body
+    if not qualification_only or not session_renewable or not G or not Identity or not body or not T.follow
+        or T.phase~="following" or T.stop_latched or T.unloaded or not T.published_seen
+        or not lookup("skater.teleport") then return nil,"Live permissioned Return capture unavailable" end
+    local at=clock()
+    local f=at and facts() or nil
+    if not at or not current(version) or not lease_live(at) or not closed_ready(f,false) then
+        return nil,"Current Return context or Follow lease unavailable"
+    end
+    local authorized=source and selected_source_frame and call("return.source.authorize",source.authorize,source,selected_source_frame)
+    if not authorized or not yes(authorized) or not current(version) then return nil,"Current selected Source authorization unavailable" end
+    local measured=call("return.body.read",lookup("world.physics.read"),body)
+    local now=clock()
+    if not now or now-at>100 or not current(version) or T.body~=body or not lease_live(now)
+        or not measured[1] or measured.n~=2 or type(measured[2])~="table" then
+        return nil,"Fresh live Return body read unavailable"
+    end
+    local sample=measured[2]
+    local function v3(v) return typeof(v)=="vector" and finite(v.x) and finite(v.y) and finite(v.z)
+        and math.abs(v.x)<=99900 and math.abs(v.y)<=99900 and math.abs(v.z)<=99900 end
+    if typeof(sample.epoch)~="userdata" or not Identity.is_nonzero_u64(sample.serial) or not v3(sample.position)
+        or not finite(sample.time) or sample.time<0 or not finite(sample.seconds) or math.abs(sample.seconds-1/60)>1e-7
+        or type(sample.rotation)~="table" then return nil,"Malformed current Return measurement" end
+    local norm=0
+    for i=1,4 do if not finite(sample.rotation[i]) then return nil,"Malformed Return rotation" end;norm+=sample.rotation[i]^2 end
+    if math.abs(norm-1)>.001 then return nil,"Unqualified Return rotation" end
+    local offset=T.follow_offset_from_com
+    local M=require("./force_math") -- already in the mounted module graph
+    if not M.vec(offset,10) or not spawn or type(spawn.actor_floor_clearance)~="function" then
+        return nil,"Measured actor root height or requested attachment unavailable"
+    end
+    local height=call("spawn.actor_floor_clearance",spawn.actor_floor_clearance,spawn)
+    if not current(version) or not height[1] or height.n~=2 or not finite(height[2]) or height[2]<0 or height[2]>2 then
+        return nil,"Measured spawn actor-root clearance unavailable"
+    end
+    local point=M.add({sample.position.x,sample.position.y,sample.position.z},M.turn(sample.rotation,offset))
+    local forward=M.turn(sample.rotation,{0,0,1})
+    if not M.vec(point,99900) or forward[1]^2+forward[3]^2<1e-9 then return nil,"Return root basis unavailable" end
+    local from=vector.create(point[1],point[2]+.5,point[3])
+    local to=vector.create(point[1],point[2]-3,point[3])
+    local plan={{from=from,to=to}}
+    local lateral=M.mul(M.turn(sample.rotation,{1,0,0}),.6)
+    for _,anchor in ipairs({{0,.89,-.305},{0,1.085,-.225},{0,1.40,.135}}) do
+        local center=M.add({sample.position.x,sample.position.y,sample.position.z},M.turn(sample.rotation,M.sub(anchor,G.com)))
+        local a,b=M.sub(center,lateral),M.add(center,lateral)
+        plan[#plan+1]={from=vector.create(a[1],a[2],a[3]),to=vector.create(b[1],b[2],b[3])}
+    end
+    -- The same qualified camera/contact/category lane and three authored
+    -- rider crossings as Ride; never call this universal static/actor proof.
+    if not ride_models or not ride_models.contact or ride_models.contact.CATEGORY_WHEEL_LANE_QUALIFIED~=true then
+        return nil,"Return qualified ray-support lane unavailable"
+    end
+    local hit=call("return.floor.batch",lookup("world.physics.probe_batch"),body,sample.epoch,plan,
+        {require_contact=true,query_preset="camera",require_named_actor_categories_absent=true})
+    now=clock()
+    if not now or now-at>100 or not current(version) or T.body~=body or not lease_live(now) then
+        return nil,"Return measurement cancelled, stale or expired"
+    end
+    local batch=hit[2]
+    if not hit[1] or hit.n~=2 or type(batch)~="table" or batch.status~="available" or batch.epoch~=sample.epoch
+        or batch.budget_exhausted~=false or batch.owned_bodies_excluded~=true or batch.local_actor_excluded~=false
+        or batch.requested_query_preset~="camera" or batch.named_actor_categories_absent~=true
+        or not finite(batch.native_casts) or batch.native_casts%1~=0 or batch.native_casts<4 or batch.native_casts>8
+        or type(batch.rays)~="table" or #batch.rays~=4 then return nil,"Return support batch or exclusions unavailable" end
+    for i=2,4 do if type(batch.rays[i])~="table" or batch.rays[i].status~="clear" then return nil,"Return rider crossing not clear" end end
+    local row=batch.rays[1]
+    if type(row)~="table" or row.status~="hit" or row.normal_available~=true or row.surface_velocity_available~=true
+        or row.motion~="measured" or not v3(row.position) or not v3(row.normal) or not v3(row.surface_velocity)
+        or not finite(row.fraction) or row.fraction<0 or row.fraction>1 then return nil,"Return measured support unavailable" end
+    local ground=row.position
+    local normal={row.normal.x,row.normal.y,row.normal.z}
+    local velocity={row.surface_velocity.x,row.surface_velocity.y,row.surface_velocity.z}
+    -- Existing stationary-floor predicates, not a new collision/filter claim.
+    if math.abs(M.length(normal)-1)>.001 or normal[2]<.95 or M.length(velocity)>.0001
+        or math.abs(ground.x-point[1])>.025 or math.abs(ground.z-point[3])>.025
+        or math.abs(ground.y-(from.y+(to.y-from.y)*row.fraction))>.025
+        or ground.y<to.y or ground.y>from.y or point[2]-ground.y>2 or ground.y-point[2]>.02 then
+        return nil,"Return support outside unchanged measured floor bounds"
+    end
+    authorized=call("return.source.authorize",source.authorize,source,selected_source_frame)
+    now=clock()
+    if not yes(authorized) or not now or now-at>100 or not current(version) or T.body~=body or not lease_live(now) then
+        return nil,"Return Source changed during measured support query"
+    end
+    if ground.y+height[2]>99900 or ground.y+height[2]<-99900 then return nil,"Return root outside bounds" end
+    return {schema="measured_return_position_v1",source_serial=sample.serial,source_time=sample.time,captured_ms=now,
+        ground=table.freeze({ground.x,ground.y,ground.z}),actor_floor_clearance_m=height[2],
+        heading=math.atan2(forward[1],forward[3]),level=T.level,wipeouts=T.wipeouts,
+        normal=table.freeze(normal),surface_velocity=table.freeze(velocity),
+        source="fresh_live_owned_body_qualified_ray_support_measured_spawn_root_clearance",
+        support_scope="qualified_camera_named_categories_owned_exclusions_rider_crossings; universal_static_actor_exclusion_unknown"}
+end
+function object:request_return()
+    if T.session_retired or T.unloaded then return false,"Runtime retired or unloaded" end
+    -- A previously stopped fall has no live body to recapture. Keep its existing
+    -- cleanup/stock recovery path separate; no position continuity is claimed.
+    if T.stop_latched then return self:request_stop("explicit return to skateboard") end
+    if T.busy or T.return_capture_attempted then return false,"Return capture already attempted or busy" end
+    T.return_capture_attempted=true;T.busy=true;T.intent_inflight=true
+    local result=table.pack(pcall(capture_return_position))
+    local plan=result[1] and result[2] or nil
+    T.return_capture_issue=not plan and short(result[1] and result[3] or "Return capture raised") or nil
+    stop_all("explicit return to skateboard") -- always stop; failure never keeps riding
+    if plan and finite(T.stop_at) then
+        plan.stop_ms=T.stop_at;plan.expires_ms=T.stop_at+CLEANUP_WATCHDOG_MS
+        T.return_position_plan=table.freeze(plan)
+    end
+    T.intent_inflight=false;T.busy=false
+    if T.ledger_owned then persist(true) end
+    if not T.return_position_plan then return false,T.return_capture_issue or "Return capture unavailable" end
+    return true,T.return_position_plan
 end
 function object:request_stop(why)
     if T.session_retired or T.unloaded then return false,"Runtime is retired or unloaded; SDK retains cleanup" end

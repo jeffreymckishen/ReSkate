@@ -8,6 +8,7 @@
     "input.lease",
     "input.capture",
     "skater.read",
+    "skater.teleport",
     "skater.animation",
     "menu",
     "storage",

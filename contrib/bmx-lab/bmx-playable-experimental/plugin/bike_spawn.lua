@@ -264,6 +264,14 @@ function Runtime:owned_measurement() return self.body,self.sample end
 -- caller that lays something on the floor reads it (board_drop.lua, the
 -- rider's dropped board); nothing infers a floor from it.
 function Runtime:floor_height() return self.floor_y end
+-- Historical root-height calibration from the exact actor/floor transaction.
+-- It supplies no current position, contact, or authority after Follow stops.
+function Runtime:actor_floor_clearance()
+    if not FLOOR_SPAWN_QUALIFIED or not self.floor_query_attempted or not M.finite(self.floor_actor_y)
+        or not M.finite(self.floor_y) then return nil end
+    local height=self.floor_actor_y-self.floor_y
+    return height>=0 and height<=FLOOR_MAX_DROP_M and height or nil
+end
 function Runtime:handoff_follow()
     if self.phase~="spawned" or self.follow_handed_off or self.body_release_attempted
         or self.creation_unknown or typeof(self.body)~="userdata" or not valid(self.sample) then

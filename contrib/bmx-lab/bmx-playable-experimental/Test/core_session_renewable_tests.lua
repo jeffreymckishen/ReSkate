@@ -126,6 +126,7 @@ local function fixture(session,options)
     function spawn:handoff_follow() self.phase="follow_owned";return f.body,{serial="1"},nil end
     function spawn:follow_visual() return true end
     function spawn:floor_height() return 0 end
+    function spawn:actor_floor_clearance() return f.return_height end
     function spawn:stop() self.phase="closed";return true end
     local FakeRide={}
     function FakeRide.new(api)
@@ -166,6 +167,7 @@ local function fixture(session,options)
         ["./bike_spawn"]={new=function()return spawn end,floor_spawn_qualified=function()return false end},
         ["./ride_runtime"]=FakeRide,["./mounted_pose"]=FakePose,["./board_drop"]=FakeBoard,
     }
+    f.R=R
     f.Core=BuildCore(function(name) return overrides[name] or require(name) end)
     local state={phase="spawning",generation=1,cancel_version=1,counts={},calls={},receipts={},
         omitted_calls=0,omitted_receipts=0,remove_attempted={},remove_accepted={},used=true,
@@ -349,7 +351,13 @@ function Tests.run()
                 check(r==Runtime and s==Survey,"same Main dependencies")
                 options_seen=opts;return object
             end}}
-        Main({input={bind=function(name,key)check(name=="bmx_return" and key=="F8","closed Main registers only the keyboard Return action");return true end},on=function()end,menu={page=function(_,fn)menu=fn end}},function(name)return modules[name]end)
+        local binds={bmx_return="F8",bmx_recover="F9",bmx_recover_pad="Pad.LB+Pad.RB+Pad.L3",
+            bmx_return_pad="Pad.LB+Pad.RB+Pad.R3",bmx_mount_pad="Pad.LB+Pad.A"}
+        Main({input={bind=function(name,key)
+            check(binds[name]==key,"closed Main registers only the five existing remappable actions")
+            binds[name]=nil;return true
+        end},on=function()end,menu={page=function(_,fn)menu=fn end}},function(name)return modules[name]end)
+        check(next(binds)==nil,"all five existing bindings registered exactly once")
         local ui={warn=function()end,info=function()end,button=function()return false end,
             note=function(_,text)notes[#notes+1]=text end}
         menu(ui)
@@ -424,6 +432,39 @@ function Tests.run()
         for _=1,80 do manager:step(16)end
         check(f.count==2 and f.seen[2].session_renewable==true,"same opt-in reaches only the bounded successor")
         check(not manager:request_mount(0) and f.count==2,"two-attempt policy remains")
+    end)
+    case("Return captures a new live qualified ray and measured root height before park",function()
+        local f=fixture(true);f.start()
+        function f.R.skater.teleport() error("Core must not teleport before cleanup") end
+        local reads=f.body_reads
+        function f.P.read(body)
+            check(body==f.body,"Return reads the same still-owned live body")
+            f.body_reads+=1;f.epoch=newproxy()
+            return {serial=tostring(f.body_reads+1),epoch=f.epoch,time=f.now/1000,seconds=1/60,
+                position=vector.create(55,6,80),rotation={0,0,0,1},velocity=vector.create(0,0,0),
+                angular_velocity=vector.create(0,0,0),mass=106,inertia=vector.create(26,32,10)}
+        end
+        function f.P.probe_batch(body,epoch,rays,options)
+            check(body==f.body and epoch==f.epoch and #rays==4,"floor and three existing rider crossings use the NEW body epoch")
+            check(options.require_contact and options.query_preset=="camera" and options.require_named_actor_categories_absent
+                and options.exclude_local_actor==nil,"existing qualified lane retained without fabricated actor exclusion")
+            local a,b=rays[1].from,rays[1].to
+            local fraction=(a.y-5)/(a.y-b.y)
+            return {status="available",epoch=epoch,native_casts=4,budget_exhausted=false,
+                owned_bodies_excluded=true,local_actor_excluded=false,requested_query_preset="camera",named_actor_categories_absent=true,
+                rays={{status="hit",position=vector.create(a.x,5,a.z),fraction=fraction,
+                    normal_available=true,surface_velocity_available=true,motion="measured",normal=vector.create(0,1,0),surface_velocity=vector.create(0,0,0)},
+                    {status="clear"},{status="clear"},{status="clear"}}}
+        end
+        -- This accessor stands for the actual .8m measured at pre-mount spawn,
+        -- not a general guessed convention or a final park position.
+        f.return_height=.8
+        local accepted,plan=f.core:request_return()
+        check(accepted and table.isfrozen(plan) and f.body_reads==reads+1,"exactly one new live capture precedes stop")
+        check(plan.ground[1]>54 and plan.ground[3]>79 and plan.ground[2]==5 and plan.actor_floor_clearance_m==.8,
+            "target uses NEW55m-away body+ground and measured root clearance, never old origin or COM height")
+        check(plan.expires_ms-plan.stop_ms==20000 and f.stops==1,"normal Follow stop and original20s cleanup deadline preserved")
+        check(not f.core:request_return() or f.body_reads==reads+1,"stopped Return does not recapture or replay a body query")
     end)
     return {cases=cases,assertions=assertions,constructed=true,native_authority=false}
 end

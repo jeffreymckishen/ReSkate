@@ -201,6 +201,14 @@ local function new_runtime(services,options,two_cycle)
         end
         return admission("stock",slot)
     end
+    function object:request_return()
+        if T.unloaded or running or pending or not core or type(core.request_return)~="function" then
+            return false,"Live Return owner unavailable"
+        end
+        running=true;local result=table.pack(pcall(core.request_return,core));running=false
+        if not result[1] then return false,"Live Return raised; ordinary cleanup is still required" end
+        return table.unpack(result,2,result.n)
+    end
     function object:request_stop(why)
         if next_preparation and session_owner then session_owner:abort_preparation() end
         if T.unloaded then return false,"Runtime is unloaded; SDK retains cleanup" end

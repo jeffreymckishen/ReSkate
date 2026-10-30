@@ -266,7 +266,71 @@ function Tests.run()
             end
         end
     end)
-    check(cases==21,"exactly21 focused entry groups authored")
+    case("22 measured Return waits for queued placement convergence before stock",function()
+        local function prepared(options)
+            options=options or {}
+            local f=fixture();f.riding();f.placements=0;f.pending=false
+            function f.R.input.allowed() return true end
+            f.R.level={current=function()return{name="constructed"}end}
+            function f.R.skater.get()return{position=f.position,heading=f.heading,airborne=false}end
+            function f.R.skater.telemetry()return{skater=true,airborne=false,teleport_pending=f.pending,
+                watch={valid=true,state=f.stock,ragdoll_known=true,ragdoll=false,wipeouts=0}}end
+            function f.owner:request_return()
+                self:request_stop("explicit return to skateboard")
+                local stop=f.now
+                return true,table.freeze({schema="measured_return_position_v1",ground=table.freeze({55,5,80}),
+                    actor_floor_clearance_m=.8,heading=.2,level="constructed",wipeouts=0,stop_ms=stop,expires_ms=stop+20000})
+            end
+            function f.R.skater.teleport(at,heading)
+                f.placements+=1;f.placed_at=f.now
+                check(f.latest.bike_cleanup_complete and f.stops==1 and f.toggles==0,"full cleanup precedes exactly one placement and all stock input")
+                check(at==vector.create(55,5.8,80) and heading==.2,"root height retains measured clearance in the exact native-vector representation")
+                if options.refuse then return false,"host disabled" end
+                if options.raise then error("constructed unknown queued result") end
+                f.pending=true;return true
+            end
+            check(f.entry:return_to_skateboard(),"one explicit Return starts the position transaction")
+            f.tick(2);check(f.placements==0 and f.toggles==0,"retained bike cleanup blocks placement and stock")
+            return f
+        end
+        local f=prepared();f.latest=cleaned();f.tick()
+        check(f.placements==1 and f.pending and f.toggles==0,"sent means queued only; no stock action")
+        f.pending=false;f.tick(12)
+        check(f.toggles==0,"pending cleared alone does not prove the new position")
+        f.position=vector.create(55,5.8,80);f.heading=.2;f.tick(12)
+        check(f.placements==1 and f.toggles==1 and f.entry:status().return_position.observed,
+            "actual grounded root/heading convergence spanning100ms unlocks only one existing stock transaction")
+        f.latest=cleaned();f.stock=100;f.tick()
+        check(f.entry:status().phase=="skateboard","stock100 observation remains independently required after convergence")
+        for _,options in ipairs({{refuse=true},{raise=true}})do
+            local g=prepared(options);g.latest=cleaned();g.tick(5)
+            check(g.placements==1 and g.toggles==0 and g.entry:status().phase=="blocked","refusal/unknown is sticky with no retry or stock input")
+        end
+        local late=prepared();late.now+=14900;late.latest=cleaned();late.tick(3)
+        check(late.placements==0 and late.toggles==0 and late.entry:status().phase=="blocked",
+            "native5s queue plus100ms observation must fit original20s before enqueue")
+        local lost=prepared();lost.latest=cleaned();lost.tick();lost.now+=20001;lost.tick()
+        check(lost.placements==1 and lost.toggles==0 and lost.entry:status().phase=="blocked",
+            "no convergence by original deadline never fabricates observed placement or stock")
+        local cancelled=prepared();cancelled.latest=cleaned();cancelled.tick()
+        check(cancelled.entry:cancel(),"explicit cancel after queued placement is accepted")
+        cancelled.tick(10)
+        check(cancelled.placements==1 and cancelled.toggles==0 and cancelled.entry:status().return_position.unknown,
+            "cancel never retries or claims to cancel/complete the generic queued placement")
+        for _,raises in ipairs({false,true}) do
+            local refused=fixture();refused.riding()
+            function refused.owner:request_return()
+                if raises then error("constructed cold Return failure") end
+                return false,"constructed cold Return refusal"
+            end
+            check(not refused.entry:return_to_skateboard(),"cold/raised Return refuses position authority")
+            check(refused.stops==1 and refused.toggles==0 and refused.entry:status().phase=="blocked",
+                "refused Return still requests exactly one ordinary cleanup stop")
+        end
+        local legacy=fixture();legacy.riding();check(legacy.entry:return_to_skateboard(),"legacy stopped recovery path remains available")
+        legacy.latest=cleaned();legacy.tick();check(legacy.toggles==1,"legacy owner without measured Return method retains its existing transaction")
+    end)
+    check(cases==22,"exactly22 focused entry groups authored")
     return {cases=cases,assertions=assertions,game_evidence=false,native_actions=0}
 end
 return table.freeze(Tests)

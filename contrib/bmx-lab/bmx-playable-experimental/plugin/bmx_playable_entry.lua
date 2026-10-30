@@ -52,6 +52,7 @@ function Entry.new(R,Runtime,Survey,options)
     local generation,latest,known=0,nil,false
     local prep_at,prep_last,prep_calls,last_clock,survey=nil,nil,0,nil,nil
     local object={}
+    local return_plan,return_position
     local MAX_TERRAIN_REFUSALS=8
     local terrain_refusals={}
     -- These exact fields exist in the pinned facade's pre-admission status.
@@ -275,9 +276,97 @@ function Entry.new(R,Runtime,Survey,options)
         if not out[1] or out[2]~=true then fail(text(out[3],"Mount refused; no retry in this session."));return end
         phase,detail="mounting","Mount armed. Keep controls released while the lifecycle takes ownership."
     end
+    local function handback_step(version)
+        if not return_plan or return_position.observed and stock_attempted then return true end
+        local function live() return generation==version and not cancelled and not unloaded and return_pending end
+        local now=clock();if not live() then return false,"cancelled" end
+        if not now or now<return_plan.stop_ms or now>=return_plan.expires_ms then return false,"Return position deadline expired; no stock input" end
+        if not environment(false) or not live() then return false,"Return position context lost" end
+        if return_position.last_poll and now-return_position.last_poll<50 then return false,"pending" end
+        return_position.last_poll=now
+        local allowed=call(R.input and R.input.allowed);if not live() then return false,"cancelled" end
+        local level=call(R.level and R.level.current);if not live() then return false,"cancelled" end
+        if not allowed[1] or allowed.n~=2 or allowed[2]~=true or not level[1] or level.n~=2
+            or not plain(level[2]) or level[2].name~=return_plan.level then return false,"Return permission or level changed" end
+        if return_position.observed then
+            -- A queued stock transaction gets its independent original bounds;
+            -- before it starts, keep checking the actually converged root.
+            if stock_attempted then return true end
+        end
+        if not return_position.attempted then
+            -- Reserve the existing native5s queue lifetime plus100ms observed
+            -- convergence INSIDE the original stop+20s window, never after it.
+            if now+5100>=return_plan.expires_ms then return false,"Too little original cleanup time for one queued Return" end
+            local p=return_plan.ground
+            -- This location came from the live epoch-bound qualified batch,
+            -- not a post-park or unclassified ray and not a static-world pin.
+            local watch=call(R.skater and R.skater.telemetry);if not live() then return false,"cancelled" end
+            local w=watch[2]
+            if not watch[1] or watch.n~=2 or not plain(w) or w.skater~=true or w.teleport_pending~=false
+                or not plain(w.watch) or w.watch.valid~=true or w.watch.state~=504 or w.watch.ragdoll_known~=true
+                or w.watch.ragdoll~=false or w.watch.wipeouts~=return_plan.wipeouts then return false,"Fresh on-foot Return context unavailable" end
+            now=clock();if not live() then return false,"cancelled" end
+            if not now or now+5100>=return_plan.expires_ms then return false,"Return queue no longer fits original deadline" end
+            return_position.attempted=true;return_position.unknown=true -- burn before callback; never retry
+            return_position.target=table.freeze({p[1],p[2]+return_plan.actor_floor_clearance_m,p[3]})
+            return_position.sent_ms=now
+            local q=return_position.target
+            local sent=call(R.skater and R.skater.teleport,vector.create(q[1],q[2],q[3]),return_plan.heading)
+            if not live() then return false,"cancelled" end
+            if not sent[1] or sent.n~=2 or sent[2]~=true then
+                local refused=sent[1] and sent.n==3 and sent[2]==false and type(sent[3])=="string"
+                return_position.unknown=not refused;return_position.phase=refused and "refused" or "unknown"
+                return false,refused and "Return placement refused: "..text(sent[3],"refused") or "Return placement result unknown; no retry or stock input"
+            end
+            return_position.unknown=false;return_position.queued=true;return_position.phase="queued"
+            now=clock();if not live() then return false,"cancelled" end
+            if not now or now>=return_plan.expires_ms then return_position.unknown=true;return false,"Return request crossed original deadline" end
+            detail="Return placement queued; waiting for actual grounded position before stock input."
+            return false,"pending"
+        end
+        local watch=call(R.skater and R.skater.telemetry);if not live() then return false,"cancelled" end
+        local actor=call(R.skater and R.skater.get);if not live() then return false,"cancelled" end
+        now=clock();if not live() then return false,"cancelled" end
+        if not now or now>=return_plan.expires_ms then return false,"Return position observation crossed original deadline" end
+        local w,a=watch[2],actor[2]
+        if watch[1] and watch.n==2 and plain(w) and w.skater==true and type(w.teleport_pending)=="boolean"
+            and plain(w.watch) and w.watch.valid==true and w.watch.ragdoll_known==true and w.watch.ragdoll==false
+            and w.watch.wipeouts==return_plan.wipeouts and w.watch.state==504
+            and actor[1] and actor.n==2 and plain(a) and typeof(a.position)=="vector"
+            and finite(a.position.x) and finite(a.position.y) and finite(a.position.z) and finite(a.heading) then
+            local p=return_position.target
+            local dx,dy,dz=a.position.x-p[1],a.position.y-p[2],a.position.z-p[3]
+            local turn=(a.heading-return_plan.heading+math.pi)%(2*math.pi)-math.pi
+            local matched=w.teleport_pending==false and a.airborne==false and w.airborne==false
+                and dx*dx+dz*dz<=.25*.25 and math.abs(dy)<=.25 and math.abs(turn)<=math.rad(5)
+            if matched then
+                return_position.first_match=return_position.first_match or now
+                return_position.samples=(return_position.samples or 0)+1
+                if now-return_position.first_match>=100 and return_position.samples>=3 then
+                    return_position.observed=true;return_position.phase="observed"
+                    return_position.observed_ms=now;return_position.position=table.freeze({a.position.x,a.position.y,a.position.z})
+                    detail="Grounded Return position observed; stock equipment still needs its own transaction."
+                    return true
+                end
+            else return_position.first_match=nil;return_position.samples=0 end
+        else return_position.first_match=nil;return_position.samples=0 end
+        return false,"pending"
+    end
     local function return_step()
         local version=generation
         if not known or not clean(latest) then detail="Returning: waiting for confirmed cleanup; no stock input sent.";return end
+        if return_plan then
+            local ready,why=handback_step(version)
+            if generation~=version or cancelled or unloaded then return end
+            if not ready then
+                if why~="pending" then
+                    return_position.phase="blocked";return_position.reason=why
+                    return_position.unknown=return_position.unknown or return_position.queued and not return_position.observed
+                    fail(why)
+                end
+                return
+            end
+        end
         local observed=state();if observed==nil or generation~=version or cancelled or unloaded then return end
         if observed==100 then
             return_pending=false
@@ -381,8 +470,29 @@ function Entry.new(R,Runtime,Survey,options)
         if unloaded or ticking or cancelled or not mount_issued or return_pending or stock_attempted then
             return false,"Return is unavailable; Cancel may stop an unfinished preparation."
         end
-        return_pending=true;generation+=1;phase,detail="returning","Stopping the bike before returning to the skateboard."
-        stop_once("explicit return to skateboard",false)
+        return_pending=true;return_plan=nil;return_position=nil;generation+=1;phase,detail="returning","Stopping the bike before returning to the skateboard."
+        if type(owner.request_return)=="function" then
+            stopped=true -- one capture/stop callback, even if it refuses or raises
+            local version=generation
+            local out=call(owner.request_return,owner)
+            if generation~=version or cancelled or unloaded then return false,"Return cancelled" end
+            if not out[1] or out[2]~=true or out.n~=2 and out.n~=3 then
+                -- The cold/busy facade may refuse before it reaches Core stop.
+                -- Reissue the ordinary idempotent stop rather than suppress cleanup.
+                stopped=false;fail(text(out[3],"Live Return capture failed; cleanup continues."));return false,detail
+            end
+            local p=out[3]
+            if p~=nil then
+                if not plain(p) or not table.isfrozen(p) or p.schema~="measured_return_position_v1"
+                    or not plain(p.ground) or not table.isfrozen(p.ground) or not finite(p.ground[1]) or not finite(p.ground[2]) or not finite(p.ground[3])
+                    or not finite(p.actor_floor_clearance_m) or p.actor_floor_clearance_m<0 or p.actor_floor_clearance_m>2
+                    or not finite(p.heading) or not finite(p.stop_ms) or not finite(p.expires_ms)
+                    or p.expires_ms-p.stop_ms~=20000 or type(p.level)~="string" or not finite(p.wipeouts) then
+                    fail("Malformed measured Return handoff; no stock input.");return false,detail
+                end
+                return_plan=p;return_position={phase="prepared",attempted=false,queued=false,observed=false,unknown=false}
+            end
+        else stop_once("explicit return to skateboard",false) end
         return true
     end
     local function recoverable()
@@ -403,6 +513,9 @@ function Entry.new(R,Runtime,Survey,options)
     end
     function object:cancel()
         if unloaded then return false,"Entry is unloaded." end
+        if return_position and return_position.queued and not return_position.observed then
+            return_position.unknown=true;return_position.phase="interrupted"
+        end
         cancelled=true;return_pending=false;second_prepare_pending=false;recover_pending=false;generation+=1
         phase,detail="cancelled","Cancelled. The lifecycle continues cleanup; this session cannot remount."
         stop_once("explicit playable cancel",true)
@@ -461,7 +574,7 @@ function Entry.new(R,Runtime,Survey,options)
             mount_requested=mount_issued,return_requested=return_pending,stock_attempted=stock_attempted,cancelled=cancelled,
             fall_reason=fallen,recovery_pending=recover_pending,recovery_available=recoverable(),
             prepare_calls=prep_calls,survey_state=survey and survey.state or "not_started",
-            core_phase=known and latest.phase or "unknown",
+            core_phase=known and latest.phase or "unknown",return_position=return_position and table.freeze(table.clone(return_position)) or nil,
             lifecycle_detail=known and (plain(latest.spawn) and text(latest.spawn.detail,nil) or text(latest.detail,nil)
                 or text(latest.stop_reason,"Lifecycle status observed.")) or "Lifecycle status is unknown; no stock switch is allowed.",
             bike_authority=not known or latest.bike_authority~=false,
@@ -471,6 +584,9 @@ function Entry.new(R,Runtime,Survey,options)
     end
     function object:unload()
         if unloaded then return end
+        if return_position and return_position.queued and not return_position.observed then
+            return_position.unknown=true;return_position.phase="interrupted"
+        end
         unloaded=true;cancelled=true;return_pending=false;second_prepare_pending=false;recover_pending=false;generation+=1
         local out=call(owner.unload,owner)
         if out[1] and out.n==2 and plain(out[2]) then latest=out[2];known=true else known=false end

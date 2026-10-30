@@ -66,7 +66,7 @@ void run_bmx_first_ride_import_fixture(const std::filesystem::path& plugin_direc
         bool builtin_command(std::string_view) override { return false; }
         Game& game() override { ++game_accesses; return fake; }
         std::optional<SkaterState> skater() override { ++world_callbacks; return std::nullopt; }
-        Teleport teleport(std::string_view, const Vec3&, float) override {
+        Teleport teleport(std::string_view, const Vec3&, float, std::optional<bool> = std::nullopt) override {
             ++world_callbacks; return Teleport::unavailable;
         }
         std::optional<Vec3> raycast(const Vec3&, const Vec3&) override { ++world_callbacks; return std::nullopt; }

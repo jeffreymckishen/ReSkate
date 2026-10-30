@@ -1,5 +1,6 @@
 -- Decode copied query facts only. Ride owns every query, clock and effect.
 local Frame = require("./frame_identity")
+local M = require("./force_math")
 local Contact = {}
 -- Only an owner-qualified private trial copy may change this literal.
 local CATEGORY_WHEEL_LANE_QUALIFIED=true
@@ -192,6 +193,82 @@ function Contact.decode(frame,ray_plan,batch)
     return reject(out,"malformed_input")
 end
 
+-- A bounded lower-arc stencil, not a shape sweep. Every selected point must
+-- have a current measured ray hit. Its normal remains that surface's normal.
+-- The central rays retain the original spherical-radius contact convention.
+function Contact.wheel_plan(frame,geometry,gravity,probe_extra)
+    if type(frame)~="table" or not M.valid_body(frame.body) or type(geometry)~="table"
+        or not M.vec(geometry.com,10) or not M.vec(geometry.front_axle,10)
+        or not M.vec(geometry.rear_axle,10) or not M.finite(geometry.wheel_radius)
+        or geometry.wheel_radius<.01 or geometry.wheel_radius>2
+        or not M.finite(probe_extra) or probe_extra<.15 or probe_extra>.75 then return nil end
+    local down=M.unit(gravity)
+    local heading=down and M.turn(frame.body.orientation,{0,0,1})
+    heading=heading and M.unit(M.sub(heading,M.mul(down,M.dot(heading,down))))
+    if not down or not heading then return nil end
+    local radius=geometry.wheel_radius
+    local rays,centers,rims={},{},{}
+    local function native(p)return vector.create(p[1],p[2],p[3])end
+    for i,axle in ipairs({geometry.front_axle,geometry.rear_axle})do
+        local center=M.add(frame.body.center_of_mass,M.turn(frame.body.orientation,M.sub(axle,geometry.com)))
+        if not M.vec(center,100000) then return nil end
+        centers[i]=center
+        -- Quarter-radius spacing keeps the last rim-to-central height
+        -- change about8mm, rather than the old89mm late curb step.
+        for _,offset in ipairs({0,.25,.5,.75,-.25,-.5,-.75})do
+            local rim=offset~=0 and M.add(center,M.add(M.mul(heading,offset*radius),
+                M.mul(down,math.sqrt(1-offset*offset)*radius))) or nil
+            local from=rim and M.sub(rim,M.mul(down,radius)) or center
+            local to=rim and M.add(rim,M.mul(down,probe_extra))
+                or M.add(center,M.mul(down,radius+probe_extra))
+            if not M.vec(from,100000) or not M.vec(to,100000) then return nil end
+            rays[#rays+1]={from=native(from),to=native(to)}
+            rims[#rims+1]=rim or false
+        end
+    end
+    return freeze(rays),centers,rims
+end
+
+-- This pure projection grants no epoch, ownership or actor authority. Ride
+-- validates the complete decoded batch binding before calling it.
+function Contact.wheel_samples(frame,rays,centers,rims,geometry)
+    if type(rays)~="table" or #rays~=14 or type(centers)~="table" or #centers~=2
+        or type(rims)~="table" or #rims~=14 then return nil,"wheel arc batch shape unavailable" end
+    local samples={}
+    local forward=M.turn(frame.body.orientation,{0,0,1})
+    for i=1,2 do
+        local selected
+        for j=1,7 do
+            local index=(i-1)*7+j
+            local ray,rim=rays[index],rims[index]
+            if type(ray)~="table" then return nil,"measured wheel surface unavailable" end
+            if ray.status~="clear" then
+                if ray.status~="hit" or ray.normal_available~=true or ray.surface_velocity_available~=true
+                    or ray.motion~="measured" or not M.vec(ray.position,100000)
+                    or not M.vec(ray.normal,1) or not M.vec(ray.surface_velocity,50)
+                    or math.abs(M.length(ray.normal)-1)>.001 then
+                    return nil,"measured wheel surface unavailable"
+                end
+                local basis=M.basis(ray.normal,forward)
+                if not basis then return nil,"measured wheel tangent unavailable" end
+                local separation=rim and M.dot(M.sub(rim,ray.position),basis.normal)
+                    or M.dot(M.sub(centers[i],ray.position),basis.normal)-geometry.wheel_radius
+                if not M.finite(separation) or separation<-.10 then
+                    return nil,"wheel penetration unavailable or excessive"
+                end
+                if not selected or separation<selected.separation then
+                    selected={contact={status="hit",point=M.copy(ray.position),normal=basis.normal,
+                        forward=basis.forward,surface_velocity=M.copy(ray.surface_velocity)},
+                        separation=separation,wheel_center=M.copy(centers[i]),wheel_radius=geometry.wheel_radius,
+                        verified_plane=false,balance_normal_available=false}
+                    if rim then selected.wheel_rim=M.copy(rim) end
+                end
+            end
+        end
+        samples[i]=selected or {contact={status="clear"}}
+    end
+    return samples
+end
 -- This projection is for storage/display, never for effect or identity gates.
 function Contact.public_snapshot(value)
     local budget=0

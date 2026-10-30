@@ -7,6 +7,7 @@ local M = require("./force_math")
 local Identity = require("./lease_identity")
 local Geometry = require("./bike_geometry")
 local InFlight = require("./ride_inflight")
+local WheelGeometry = require("./contact_runtime")
 local Ride, Object = {}, {}
 local states = setmetatable({}, {__mode="k"})
 local MAX_SAFE = 9007199254740991
@@ -625,23 +626,6 @@ local function companion_result(s,frame,contact,actions)
     end
     return out
 end
-local function wheel_plan(frame,geometry,gravity,probe_extra)
-    if type(geometry)~="table" or not M.vec(geometry.com,10) or not M.vec(geometry.front_axle,10)
-        or not M.vec(geometry.rear_axle,10) or not M.finite(geometry.wheel_radius)
-        or geometry.wheel_radius<.01 or geometry.wheel_radius>2
-        or not M.finite(probe_extra) or probe_extra<.15 or probe_extra>.75 then return nil end
-    local down=M.unit(gravity)
-    if not down then return nil end
-    local rays,centers={},{}
-    for i,axle in ipairs({geometry.front_axle,geometry.rear_axle}) do
-        local center=M.add(frame.body.center_of_mass,M.turn(frame.body.orientation,M.sub(axle,geometry.com)))
-        local target=M.add(center,M.mul(down,geometry.wheel_radius+probe_extra))
-        if not M.vec(center,100000) or not M.vec(target,100000) then return nil end
-        centers[i]=center
-        rays[i]={from=native(center),to=native(target)}
-    end
-    return freeze(rays),centers
-end
 local function contact_binding(s,frame,decoded,count)
     if type(decoded)~="table" or decoded.valid~=true or type(decoded.binding)~="table"
         or decoded.binding.body_handle~=frame.body_handle or decoded.binding.physics_epoch~=frame.physics_epoch
@@ -662,35 +646,16 @@ local function contact_binding(s,frame,decoded,count)
         or decoded.query.actor_lane~=expected then return nil,"contact actor lane unavailable" end
     return true
 end
-local function wheel_contacts(s,frame,decoded,centers,geometry)
-    local bound,why=contact_binding(s,frame,decoded,2)
+local function wheel_contacts(s,frame,decoded,centers,rims,geometry)
+    local bound,why=contact_binding(s,frame,decoded,14)
     if not bound then return nil,why end
-    local samples,grounded={},false
-    local forward=M.turn(frame.body.orientation,{0,0,1})
-    for i,ray in ipairs(decoded.rays) do
-        if ray.status=="clear" then
-            -- The paired clear-aware Forces/Solver accepts this absence.
-            samples[i]={contact={status="clear"}}
-        elseif ray.status=="hit" and ray.normal_available==true and ray.surface_velocity_available==true
-            and ray.motion=="measured" and M.vec(ray.position,100000) and M.vec(ray.normal,1)
-            and M.vec(ray.surface_velocity,50) then
-            if math.abs(M.length(ray.normal)-1)>.001 then return nil,"measured normal is not unit" end
-            local basis=M.basis(ray.normal,forward)
-            if not basis then return nil,"measured wheel tangent unavailable" end
-            local separation=M.dot(M.sub(centers[i],ray.position),basis.normal)-geometry.wheel_radius
-            if not M.finite(separation) or separation<-.10 then return nil,"wheel penetration unavailable or excessive" end
-            samples[i]={contact={status="hit",point=copy(ray.position),normal=basis.normal,
-                forward=basis.forward,surface_velocity=copy(ray.surface_velocity)},separation=separation,
-                wheel_center=copy(centers[i]),wheel_radius=geometry.wheel_radius,
-                verified_plane=false,balance_normal_available=false}
-            grounded=grounded or Forces.eligible_support(frame.body,samples[i],.005,.10)
-        else return nil,"measured wheel surface unavailable" end
-    end
-    -- Contact.decode returns a new table frozen all through: kept as it is,
-    -- where detaching copied it. Anything else is detached as before.
+    local samples,issue=WheelGeometry.wheel_samples(frame,decoded.rays,centers,rims,geometry)
+    if not samples then return nil,issue end
+    local grounded=false
+    for _,sample in ipairs(samples)do grounded=grounded or Forces.eligible_support(frame.body,sample,.005,.10)end
     return {samples=samples,grounded=grounded,decoded=frozen_whole(decoded) or detached(decoded),
         support={known=true,grounded_known=true,grounded=grounded,epoch=frame.physics_epoch,
-            provenance="measured_rays_authored_wheel_geometry",native_collision_contact=false,
+            provenance="measured_rays_authored_wheel_arc",native_collision_contact=false,
             actor_lane=decoded.query.actor_lane,
             actor_tripwire=decoded.query.actor_lane=="identity" and "not_required_identity_lane" or nil,
             landing_quality_available=false,reason="landing_quality_not_qualified"}}
@@ -825,7 +790,7 @@ local function observe(s,source_frame,raw,context)
         serial=sample.serial,time=sample.time,seconds=sample.seconds,body=body,sample=sample,source=model_source,
         owner={body_handle=s.body,lease_handle=model_source.lease_handle},gates={focused=true,menu_open=false},
         now_ms=s.now,active=true,loaded=true,telemetry=copy(context.telemetry),observed=copy(context.observed)})
-    local plan,centers=wheel_plan(frame,s.geometry,s.force.tuning.gravity,s.wheel_probe_extra)
+    local plan,centers,rims=WheelGeometry.wheel_plan(frame,s.geometry,s.force.tuning.gravity,s.wheel_probe_extra)
     if not plan then stop(s,"authored wheel geometry unavailable");return end
     local category_lane=s.contact.CATEGORY_WHEEL_LANE_QUALIFIED==true
     local query_options=category_lane
@@ -835,7 +800,7 @@ local function observe(s,source_frame,raw,context)
     if not probed[1] or probed.n~=2 or not probed.current or s.stopped then stop(s,"native contact batch unavailable");return end
     local contacted=invoke(s,s.contact.decode,frame,plan,probed[2])
     if not contacted[1] or contacted.n~=2 or not contacted.current or s.stopped then stop(s,"contact decode unavailable");return end
-    local contact,issue=wheel_contacts(s,frame,contacted[2],centers,s.geometry)
+    local contact,issue=wheel_contacts(s,frame,contacted[2],centers,rims,s.geometry)
     if not contact then stop(s,issue);return end
     if category_lane then
         -- The tripwire is cast on the first wheel batch and then every

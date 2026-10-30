@@ -72,7 +72,8 @@ end
 -- the same event cannot appear in two accepted commands. Even ignored ages are
 -- validated. No missing force, torque or contact fact is replaced by zero.
 -- Returns fresh mutable body and contact tables, or nil/reason; inputs stay intact.
--- Optional hit wheel_center/wheel_radius must describe the measured gravity ray.
+-- Optional hit wheel_center/wheel_radius describe the measured central ray;
+-- wheel_rim selects an actual radius point for a measured lower-arc ray.
 -- Their rigid forecast retains a consistent ray/plane/gap tuple. Without this
 -- pair, legacy point prediction remains available but is explicitly unsuitable
 -- for geometry-dependent approach braking (forecast_geometry_unavailable=true).
@@ -126,28 +127,39 @@ function I.fold(h,gravity,inflight,body,samples)
         local contact=sample.contact
         if contact.status=="hit" then
             local center,radius=sample.wheel_center,sample.wheel_radius
+            local rim=sample.wheel_rim
+            if rim~=nil and (center==nil or radius==nil) then return nil,"fold contact geometry invalid" end
             if center~=nil or radius~=nil then
-                -- This optional pair is authored wheel geometry attached to a
+                -- This optional hub/radius/rim geometry is attached to a
                 -- measured gravity ray. It grants no native contact authority.
                 if not vector(center) or not M.finite(radius) or radius<1e-6 or radius>10 or not down then
                     return nil,"fold contact geometry invalid"
                 end
                 local dn=M.dot(down,contact.normal)
-                local gap=M.dot(M.sub(center,contact.point),contact.normal)
+                if rim~=nil and (not vector(rim) or math.abs(M.length(M.sub(rim,center))-radius)>1e-6) then
+                    return nil,"fold contact geometry invalid"
+                end
+                local query_center=rim or center
+                local query_radius=rim and 0 or radius
+                local gap=M.dot(M.sub(query_center,contact.point),contact.normal)
                 -- Native ray coordinates are single precision; allow their
                 -- rounding error without accepting a displaced near-origin ray.
                 local tolerance=1e-5+1e-7*math.max(M.length(center),M.length(contact.point))
-                if dn>=-1e-6 or math.abs(gap-radius-sample.separation)>tolerance
-                    or M.length(M.sub(M.add(center,M.mul(down,gap/-dn)),contact.point))>tolerance then
+                if dn>=-1e-6 or math.abs(gap-query_radius-sample.separation)>tolerance
+                    or M.length(M.sub(M.add(query_center,M.mul(down,gap/-dn)),contact.point))>tolerance then
                     return nil,"fold contact geometry invalid"
                 end
                 local local_center=M.turn(inverse,M.sub(center,old_center))
                 local next_center=M.add(b.center_of_mass,M.turn(b.orientation,local_center))
                 local plane_point=M.add(contact.point,M.mul(contact.surface_velocity,h))
-                local next_gap=M.dot(M.sub(next_center,plane_point),contact.normal)
+                local next_rim=rim and M.add(b.center_of_mass,M.turn(b.orientation,
+                    M.turn(inverse,M.sub(rim,old_center)))) or nil
+                local next_query=next_rim or next_center
+                local next_gap=M.dot(M.sub(next_query,plane_point),contact.normal)
                 sample.wheel_center=next_center
-                sample.separation=next_gap-radius
-                contact.point=M.add(next_center,M.mul(down,next_gap/-dn))
+                sample.wheel_rim=next_rim
+                sample.separation=next_gap-query_radius
+                contact.point=M.add(next_query,M.mul(down,next_gap/-dn))
                 sample.forecast_geometry_unavailable=false
             else
                 -- Legacy generic samples lack the hub/radius needed to move a

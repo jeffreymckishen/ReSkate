@@ -191,7 +191,22 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
             -- A distant approach ray does not arm impact recovery. Start only
             -- inside the existing contact band, not at the rear floor far below.
             local impact=landing_plane and s.separation<=landing.contact_gap and closing>t.recovery_speed_limit
-            local impact_envelope=landing_plane and (impact or recovering)
+            -- A loaded tyre may admit rim compression inside the existing
+            -- gross envelope before its elastic response starts opening.
+            -- Keep that admitted compression until it recovers inside15mm;
+            -- losing balance eligibility does not make it a new landing.
+            -- This state grants neither support nor a positive normal load.
+            local loaded_rim_compression=false
+            if floor_plane and supported and s.wheel_rim~=nil and s.separation < -landing.maximum_deflection then
+                if not M.vec(s.wheel_center) or not M.finite(s.wheel_radius)
+                    or math.abs(s.wheel_radius-wheels[i].radius)>1e-8 or not M.vec(s.wheel_rim)
+                    or math.abs(M.length(M.sub(s.wheel_rim,s.wheel_center))-s.wheel_radius)>1e-6
+                    or math.abs(M.dot(M.sub(s.wheel_rim,contact.point),basis.normal)-s.separation)>1e-6 then
+                    return result("landing_geometry_unavailable")
+                end
+                loaded_rim_compression=true
+            end
+            local impact_envelope=floor_plane and (impact or recovering or loaded_rim_compression)
             self.landing_impact[i]=impact_envelope==true
             if impact_envelope then out.landing_recovery_mask=bit32.bor(out.landing_recovery_mask,2^(i-1)) end
             -- Late one-wheel impacts cannot stop within 15 mm in one packet.
@@ -213,10 +228,16 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
                 if s.wheel_center~=nil or s.wheel_radius~=nil then
                     if not M.vec(s.wheel_center) or not M.finite(s.wheel_radius)
                         or math.abs(s.wheel_radius-wheels[i].radius)>1e-8
-                        or math.abs(M.dot(M.sub(s.wheel_center,contact.point),basis.normal)-s.wheel_radius-s.separation)>1e-6 then
+                        or s.wheel_rim~=nil and (not M.vec(s.wheel_rim)
+                            or math.abs(M.length(M.sub(s.wheel_rim,s.wheel_center))-s.wheel_radius)>1e-6) then
                         return result("landing_geometry_unavailable")
                     end
-                    contact.point=M.sub(s.wheel_center,M.mul(basis.normal,s.separation+s.wheel_radius))
+                    local query_center=s.wheel_rim or s.wheel_center
+                    local query_radius=s.wheel_rim and 0 or s.wheel_radius
+                    if math.abs(M.dot(M.sub(query_center,contact.point),basis.normal)-query_radius-s.separation)>1e-6 then
+                        return result("landing_geometry_unavailable")
+                    end
+                    contact.point=M.sub(query_center,M.mul(basis.normal,s.separation+query_radius))
                 else
                     local down=M.mul(gravity_up,-1) local dn=M.dot(down,basis.normal)
                     contact.point=M.sub(contact.point,M.mul(M.sub(down,M.mul(basis.normal,dn)),(s.separation+wheels[i].radius)/-dn))

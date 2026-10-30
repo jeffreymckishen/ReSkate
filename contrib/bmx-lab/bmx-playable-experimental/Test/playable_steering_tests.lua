@@ -2,6 +2,9 @@ local Stage=require("./force_stage")
 local Forces=require("./forces")
 local World=require("./sim_world")
 local M=require("./force_math")
+local Contact=require("./contact_runtime")
+local InFlight=require("./ride_inflight")
+local G=require("./bike_geometry")
 local T={}
 function T.run()
  local n=0
@@ -266,6 +269,115 @@ function T.run()
   "joint continuity neither filters explicit air yaw/manual torque nor adds upright assistance")
  check(not air_joint.grounded and air_joint.balance_support_mask==0 and M.length(air_joint.torque)<=2000,
   "explicit airborne channels preserve support and torque contracts")
- return{cases=9,assertions=n,native_qualified=false}
+ -- R28: the old central-only query discovered a curb only after the wheel
+ -- entered it, while still upright. Exercise the actual bounded arc plan
+ -- and accepted-command fold across a 120 mm step at a modest entry speed.
+ -- This authored heightfield has no native collision impulses.
+ local curb_stage=Stage.new()
+ local curb_body,curb_wheels=World.place(terrain,{speed=1.25})
+ local curb_edge=World.hubs(curb_body)[1][3]+.5
+ local curb_height=.12
+ local curb={height=function(z)return z>=curb_edge and curb_height or 0 end,slope=function()return 0 end}
+ local previous
+ local saw_arc,saw_early,fully_crossed=false,false,false
+ local peak_force,peak_torque,deepest=0,0,0
+ local function vec(v)return {v.x,v.y,v.z}end
+ local function query(body)
+  local frame={body=body}
+  local plan,centers,rims=Contact.wheel_plan(frame,G,Forces.tuning().gravity,.75)
+  check(plan and #plan==14 and #rims==14,"curb fixture uses the actual fourteen-ray bounded plan")
+  local rays={}
+  for i,ray in ipairs(plan)do
+   local from,to=vec(ray.from),vec(ray.to)
+   local status,point,normal=World.ray(curb,from,from[2]-to[2])
+   if status=="hit"then
+    rays[i]={status="hit",position=point,normal=normal,normal_available=true,
+     surface_velocity={0,0,0},surface_velocity_available=true,motion="measured"}
+   else rays[i]={status=status=="clear"and"clear"or"unavailable"}end
+  end
+  local samples,why=Contact.wheel_samples(frame,rays,centers,rims,G)
+  check(samples~=nil,"measured curb contacts refused: "..tostring(why))
+  return samples,plan,centers,rims,rays
+ end
+ -- A verified compressed rim without accepted loaded history is still a
+ -- new landing. Forged geometry must not arm the carried-compression state.
+ local proof_body,proof_wheels=World.place(terrain,{speed=0})
+ proof_body.center_of_mass[2]-=.005
+ local function compressed_samples(body)
+  local samples=World.contacts(terrain,body,Forces.tuning().gravity)
+  local hub=World.hubs(body)[1]
+  samples[1].wheel_center=M.copy(hub);samples[1].wheel_radius=G.wheel_radius
+  samples[1].wheel_rim=M.add(hub,{0,-G.wheel_radius,0})
+  samples[1].contact.point=M.add(samples[1].wheel_rim,{0,.035,0})
+  samples[1].separation=-.035
+  return samples
+ end
+ local opening=M.copy(proof_body);opening.linear_velocity[2]=.1
+ local orphan=Stage.new():preview(Forces.native_seconds,opening,proof_wheels,compressed_samples(opening),
+  {pedal=0,steer=0,brake=0})
+ check(not orphan.valid and orphan.issue=="landing_deflection_limit","orphan compressed rim retains the15mm landing refusal")
+ local loaded=Stage.new()
+ local loaded_seed,loaded_token=loaded:preview(Forces.native_seconds,proof_body,proof_wheels,
+  World.contacts(terrain,proof_body,Forces.tuning().gravity),{pedal=0,steer=0,brake=0})
+ check(loaded_seed.valid and loaded_seed.normal_load[1]>0,"negative geometry tests begin with accepted positive load")
+ loaded:_adopt(loaded_token)
+ for _,fault in ipairs({"radius","rim","gap"})do
+  local forged=compressed_samples(opening)
+  if fault=="radius"then forged[1].wheel_radius=G.wheel_radius*.9
+  elseif fault=="rim"then forged[1].wheel_rim[3]+=.01
+  else forged[1].separation=-.040 end
+  local refused=loaded:preview(Forces.native_seconds,opening,proof_wheels,forged,{pedal=0,steer=0,brake=0})
+  check(not refused.valid and refused.issue=="landing_geometry_unavailable","forged negative rim cannot arm recovery: "..fault)
+ end
+ loaded:invalidate_continuity()
+ local cleared=loaded:preview(Forces.native_seconds,opening,proof_wheels,compressed_samples(opening),
+  {pedal=0,steer=0,brake=0})
+ check(not cleared.valid and cleared.issue=="landing_deflection_limit","invalidation clears loaded-rim recovery authority")
+ for step=1,300 do
+  local samples,plan,centers,rims,rays=query(curb_body)
+  for i,sample in ipairs(samples)do
+   if sample.contact.status=="hit"then
+    deepest=math.min(deepest,sample.separation)
+    if sample.wheel_rim then
+     saw_arc=true
+     if centers[i][3]<curb_edge and sample.contact.point[3]>=curb_edge then saw_early=true end
+    end
+   end
+  end
+  local commands=previous and {{age=1,force=previous.force,torque=previous.torque}}or{}
+  local forecast,folded=InFlight.fold(Forces.native_seconds,Forces.tuning().gravity,commands,curb_body,samples)
+  check(forecast~=nil,"curb forecast preserves the selected rim geometry: "..tostring(folded))
+  local hubs=World.hubs(curb_body)
+  if hubs[2][3]>curb_edge+.15 then fully_crossed=true end
+  local out,candidate=curb_stage:preview(Forces.native_seconds,forecast,curb_wheels,folded,
+   {pedal=fully_crossed and 0 or .25,steer=0,brake=fully_crossed and .1 or 0})
+  check(out.valid,"delayed curb packet refused at step"..step..":"..tostring(out.issue))
+  peak_force=math.max(peak_force,M.length(out.force));peak_torque=math.max(peak_torque,M.length(out.torque))
+  check(peak_force<=6000 and peak_torque<=2000 and deepest>=-.10,"curb keeps force torque and penetration bounds")
+  curb_stage:_adopt(candidate)
+  local applied=previous or {force={0,0,0},torque={0,0,0},hop_impulse={0,0,0}}
+  curb_body=World.integrate(curb_body,applied,Forces.tuning().gravity,Forces.native_seconds)
+  previous=out;curb_wheels=out.wheels
+  local up=M.turn(M.normalized(curb_body.orientation),{0,1,0})
+  local roll=math.abs(M.dot(curb_body.angular_velocity,M.turn(curb_body.orientation,{0,0,1})))
+  check(math.deg(math.acos(math.clamp(up[2],-1,1)))<55 and roll<8
+   and math.abs(curb_body.linear_velocity[2])<6,"curb keeps existing measured tilt roll and vertical limits")
+ end
+ check(saw_arc and saw_early,"a measured leading rim hit must precede the central hub crossing")
+ check(fully_crossed and World.hubs(curb_body)[2][3]>curb_edge,"both wheels actually cross the authored curb")
+ check(curb_body.center_of_mass[2]>.98,"measured chassis rises onto the 120 mm deck")
+ -- Do not cherry-pick a safe neighbouring ray when any current sample is unknown
+ -- or the actual tyre already penetrates beyond the unchanged gross bound.
+ local samples,plan,centers,rims,rays=query(curb_body)
+ rays[2]={status="unavailable"}
+ check(Contact.wheel_samples({body=curb_body},rays,centers,rims,G)==nil,"unknown arc contact still refuses")
+ local fresh
+ fresh,plan,centers,rims,rays=query(curb_body)
+ rays[1]={status="hit",position={centers[1][1],centers[1][2]-.01,centers[1][3]},
+  normal={0,1,0},normal_available=true,surface_velocity={0,0,0},surface_velocity_available=true,motion="measured"}
+ check(Contact.wheel_samples({body=curb_body},rays,centers,rims,G)==nil,"excessive central penetration still refuses")
+ print(string.format("round_wheel_curb steps=300 height=.12 early=%s crossed=%s min_gap=%.6f F=%.3f T=%.3f",
+  tostring(saw_early),tostring(fully_crossed),deepest,peak_force,peak_torque))
+ return{cases=10,assertions=n,native_qualified=false}
 end
 return T

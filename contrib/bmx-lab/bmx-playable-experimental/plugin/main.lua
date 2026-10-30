@@ -10,19 +10,21 @@ local unloaded=false
 reskate.input.bind("bmx_return","F8")
 reskate.input.bind("bmx_recover","F9")
 reskate.input.bind("bmx_recover_pad","Pad.LB+Pad.RB+Pad.L3")
+reskate.input.bind("bmx_return_pad","Pad.LB+Pad.RB+Pad.R3")
+reskate.input.bind("bmx_mount_pad","Pad.LB+Pad.A")
 reskate.on("action",function(name)
-    if name=="bmx_return" then bike:return_to_skateboard()
+    if name=="bmx_return" or name=="bmx_return_pad" then bike:return_to_skateboard()
     elseif (name=="bmx_recover" or name=="bmx_recover_pad") and not unloaded then
         local s=bike:status()
         if s.recovery_available==true then bike:recover() end
-    end
+    elseif name=="bmx_mount_pad" then bike:mount() end
 end)
 reskate.on("tick",function(dt_ms) bike:step(dt_ms) end)
 reskate.menu.page("BMX experimental",function(ui)
     local s=bike:status()
     ui:warn("Experimental: at most TWO attempts; each uses a new retained body slot. Start on foot on flat ground with 1.25 m clear around you for spawning.")
     if not s.admitted then ui:note("This reviewed source build is inactive; no Mount action is admitted.") end
-    ui:warn("Opening Insert ends an active ride. F8 returns; F9 or LB + RB + L3 recovers after a fall.")
+    ui:warn("Opening Insert ends an active ride. F8 or LB + RB + R3 returns; F9 or LB + RB + L3 recovers after a fall.")
     if ui:button("bmx_play_mount","Mount bike") then bike:mount() end
     if ui:button("bmx_play_return","Return to skateboard") then bike:return_to_skateboard() end
     if ui:button("bmx_play_cancel","Cancel / stop and keep cleanup") then bike:cancel() end
@@ -38,7 +40,9 @@ reskate.menu.page("BMX experimental",function(ui)
     s=bike:status()
     ui:info("State",s.phase)
     ui:note(s.detail)
+    ui:note("Hold LB, then press A to request Mount. Start on foot and release all controls while preparing (remappable in Binds).")
     ui:note("F8: return to skateboard (remappable in Binds).")
+    ui:note("Hold LB + RB, then click R3 to return to skateboard. Release all controls while Return runs (remappable in Binds).")
     ui:note("F9: recover bike after a fall (remappable in Binds).")
     ui:note("LB + RB + L3: recover after a fall; release all controls while recovery runs (remappable in Binds).")
     if s.phase=="blocked" or s.phase=="stopped" then ui:note(s.lifecycle_detail) end

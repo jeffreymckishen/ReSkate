@@ -12,6 +12,20 @@ end
 function Admission.ready(f)
     return f and f.focused and f.gameplay and f.upright_stock and f.grounded
 end
+local function copy_diagnostic(row)
+    if type(row)~="table" then return nil end
+    local out={}
+    local function scalar(v) return type(v)=="boolean" or finite(v) or type(v)=="string" and #v<=200 end
+    for key,value in pairs(row) do
+        if scalar(value) then out[key]=value
+        elseif type(value)=="table" then
+            local fields={}
+            for name,v in pairs(value) do if scalar(v) then fields[name]=v end end
+            out[key]=fields
+        end
+    end
+    return out
+end
 function Admission.snapshot(T,qualification_only)
     -- Fresh nested tables: pristine/startup diagnostics never expose owner state.
     return {schema=1,kind="bike-lifecycle-v1",storage_key=KEY,mount_enabled=false,
@@ -26,7 +40,8 @@ function Admission.snapshot(T,qualification_only)
         experimental_attempt_limit=T.experimental_attempt_limit,
         equipment={phase="idle",retained=false,unloaded=false},
         startup={pending=T.startup_pending==true,loaded=T.startup_loaded or 0,last_module=T.startup_last,
-            core_ready=T.core_ready==true,backend_ready=T.backend_ready==true}}
+            core_ready=T.core_ready==true,backend_ready=T.backend_ready==true,
+            admission=copy_diagnostic(T.startup_admission)}}
 end
 function Admission.bind(T,R,qualification_only)
     local api={}
@@ -83,7 +98,12 @@ function Admission.bind(T,R,qualification_only)
         end
         return true
     end
-    function api.facts() return Admission.facts(call,lookup) end
+    function api.facts()
+        local diagnostic={}
+        local facts=Admission.facts(call,lookup,diagnostic)
+        T.startup_fact_read=diagnostic
+        return facts
+    end
     function api.available()
         for _,path in ipairs(Admission.required) do if not lookup(path) then return false,path end end
         for _,name in ipairs(Admission.input_methods) do if not lookup("input."..name) then return false,"input."..name end end
@@ -91,21 +111,49 @@ function Admission.bind(T,R,qualification_only)
     end
     return api
 end
-function Admission.facts(call,lookup)
+function Admission.facts(call,lookup,diagnostic)
     local f=call("input.focus",lookup("input.focus"))
     local a=call("input.allowed",lookup("input.allowed"))
     local m=call("menu.game",lookup("menu.game"))
     local p=call("skater.get",lookup("skater.get"))
     local w=call("skater.telemetry",lookup("skater.telemetry"))
     local l=call("level.current",lookup("level.current"))
+    if diagnostic then
+        diagnostic.stage="return_contract"
+        diagnostic.focus_return=f[1] and f.n==2;diagnostic.allowed_return=a[1] and a.n==2
+        diagnostic.menu_return=m[1] and m.n==2;diagnostic.skater_return=p[1] and p.n==2
+        diagnostic.telemetry_return=w[1] and w.n==2;diagnostic.level_return=l[1] and l.n==2
+    end
     -- The six results checked in order, without a list made for the loop.
     if not f[1] or f.n~=2 or not a[1] or a.n~=2 or not m[1] or m.n~=2 or not p[1] or p.n~=2
         or not w[1] or w.n~=2 or not l[1] or l.n~=2 then return nil end
     f,a,m,p,w,l=f[2],a[2],m[2],p[2],w[2],l[2]
+    if diagnostic then
+        diagnostic.stage="shape_contract"
+        diagnostic.focus_table=type(f)=="table";diagnostic.allowed_boolean=type(a)=="boolean"
+        diagnostic.menu_table=type(m)=="table"
+        diagnostic.menu_open_boolean=type(m)=="table" and type(m.open)=="boolean"
+        diagnostic.skater_table=type(p)=="table";diagnostic.telemetry_table=type(w)=="table"
+        diagnostic.watch_table=type(w)=="table" and type(w.watch)=="table"
+        diagnostic.level_table=type(l)=="table"
+        diagnostic.level_name_valid=type(l)=="table" and type(l.name)=="string" and #l.name>0 and #l.name<=200
+    end
     if type(f)~="table" or type(a)~="boolean" or type(m)~="table" or type(m.open)~="boolean"
         or type(p)~="table" or type(w)~="table" or type(w.watch)~="table" or type(l)~="table"
         or type(l.name)~="string" or #l.name==0 or #l.name>200 then return nil end
     local watch=w.watch
+    if diagnostic then
+        diagnostic.stage="decoded"
+        diagnostic.skater=w.skater==true;diagnostic.watch_valid=watch.valid==true
+        diagnostic.state_allowed=watch.state==100 or watch.state==504
+        diagnostic.state=finite(watch.state) and watch.state or nil;diagnostic.state_type=type(watch.state)
+        diagnostic.ragdoll_known=watch.ragdoll_known==true;diagnostic.ragdoll_false=watch.ragdoll==false
+        diagnostic.teleport_clear=w.teleport_pending==false
+        diagnostic.position_airborne=p.airborne;diagnostic.position_airborne_type=type(p.airborne)
+        diagnostic.telemetry_airborne=w.airborne;diagnostic.telemetry_airborne_type=type(w.airborne)
+        diagnostic.position_vector=typeof(p.position)=="vector";diagnostic.heading_finite=finite(p.heading)
+        diagnostic.position_finite=typeof(p.position)=="vector" and finite(p.position.x) and finite(p.position.y) and finite(p.position.z)
+    end
     local upright=w.skater==true and watch.valid==true and (watch.state==100 or watch.state==504)
         and watch.ragdoll_known==true and watch.ragdoll==false and w.teleport_pending==false
         and type(p.airborne)=="boolean" and type(w.airborne)=="boolean"

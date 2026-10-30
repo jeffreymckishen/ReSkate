@@ -12,7 +12,19 @@ local steering_axis={0,.9601196050643921,-.2795896530151367} -- the source float
 -- native contact_compliance.h; earlier braking from a fresh measured ray is a
 -- separate policy, not a native collision or a claim that a clear wheel rests.
 local landing={stiffness=100000,impact_stiffness=10000,maximum_deflection=.015,deflection_tolerance=1e-8,contact_gap=.005,
-    approach_gap=.65,approach_acceleration=25,floor_cosine=.95,stationary_speed=.0001}
+    approach_gap=.65,approach_acceleration=25,floor_cosine=.95,stationary_speed=.0001,settle_speed=.4,soften_speed=3}
+-- Keep the firm static spring (about 5.2 mm sag for 106 kg on two wheels),
+-- and soften only closing impacts continuously across 0.4..3 m/s. Ordinary
+-- rolling, lateral motion and opening retain the firm spring; loaded history
+-- never removes this impedance.
+local function floor_softness(h,body,contact,basis,fraction)
+    local v=M.sub(M.point_velocity(body,contact.point),contact.surface_velocity)
+    local closing=-M.dot(v,basis.normal)
+    local u=math.clamp((closing-landing.settle_speed)/(landing.soften_speed-landing.settle_speed),0,1)
+    u=u*u*(3-2*u)
+    local stiffness=landing.stiffness+(landing.impact_stiffness-landing.stiffness)*u
+    return fraction/(stiffness*h*h)
+end
 local defaults={gravity={0,-9.8,0},wheelbase=1.203956057050485*scale,steer_limit=.4,steer_speed_scale=8,
     pedal_torque=75,front_brake_torque=60,rear_brake_torque=45,friction={longitudinal_friction=1,lateral_friction=1},
     balance_stiffness=1600,balance_damping=360,balance_torque_limit=1200,lean_limit=.47,manual_pitch=.4,
@@ -171,10 +183,11 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
             local prior=prior_normals[i]
             local supported=prior.valid and prior.normal_load>0
             local recovering=prior_impact[i] and s.separation < -landing.maximum_deflection
-            local landing_plane=landing_selected and c.enabled
-                and (not supported or recovering or prior_impact[i] and closing>t.recovery_speed_limit)
+            local floor_plane=landing_selected and c.enabled
                 and M.dot(basis.normal,gravity_up)>=landing.floor_cosine
                 and M.length(contact.surface_velocity)<=landing.stationary_speed
+            local landing_plane=floor_plane
+                and (not supported or recovering or prior_impact[i] and closing>t.recovery_speed_limit)
             -- A distant approach ray does not arm impact recovery. Start only
             -- inside the existing contact band, not at the rear floor far below.
             local impact=landing_plane and s.separation<=landing.contact_gap and closing>t.recovery_speed_limit
@@ -184,10 +197,10 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
             -- Late one-wheel impacts cannot stop within 15 mm in one packet.
             -- Use softer finite compliance inside the unchanged gross-penetration
             -- bound; the packet's force/torque limits still decide admission.
-            local deflection_limit=impact_envelope and t.maximum_penetration or landing.maximum_deflection
-            if landing_plane then contact.normal_deflection_limit=deflection_limit end
+            local deflection_limit=(impact_envelope or supported) and t.maximum_penetration or landing.maximum_deflection
+            if floor_plane then contact.normal_deflection_limit=deflection_limit end
             if landing_plane and s.separation < -deflection_limit-landing.deflection_tolerance then out.issue="landing_deflection_limit" return out end
-            local approach=landing_plane and s.separation>landing.contact_gap and s.separation<=landing.approach_gap
+            local approach=floor_plane and s.separation>landing.contact_gap and s.separation<=landing.approach_gap
             if approach then
                 -- A gravity ray hits downslope from the tyre's normal projection.
                 -- Apply the approach impulse through that projection so a distant
@@ -213,6 +226,16 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
                 -- instead of demanding a full landing stop in one 60 Hz step.
                 local ah=landing.approach_acceleration*h
                 local allowed=math.sqrt(ah*ah+2*landing.approach_acceleration*s.separation)-ah
+                -- Preserve distant unilateral anticipation. Across the last
+                -- contact band its impedance joins the tyre law continuously,
+                -- rather than changing from rigid to soft in one delayed step.
+                local band=math.max(t.contact_gap,2*landing.contact_gap)
+                local blend=math.clamp((band-s.separation)/(band-landing.contact_gap),0,1)
+                blend=blend*blend*(3-2*blend)
+                contact.normal_softness=blend*floor_softness(h,measured,contact,basis,t.recovery_fraction)
+                if contact.normal_softness>0 then
+                    out.compliant_normal_mask=bit32.bor(out.compliant_normal_mask,2^(i-1))
+                end
                 contact.surface_velocity=M.sub(contact.surface_velocity,M.mul(basis.normal,allowed))
                 contact.normal_only=true
                 out.landing_approach_mask=bit32.bor(out.landing_approach_mask,2^(i-1))
@@ -240,16 +263,14 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
                     history.recovery_seeded=c.recovery_step_verified and s.verified_plane and s.separation<0 and (actual or prior_normals[i].recovery_seeded)
                 end
                 local target=bias-math.max(0,s.separation)/h
-                contact.surface_velocity=M.add(contact.surface_velocity,M.mul(basis.normal,target))
-                if landing_plane and s.separation<=landing.contact_gap then
-                    -- The implicit normal spring absorbs the impact without a
-                    -- one-frame velocity reset. The independent floor still
-                    -- rejects a packet that would cross its penetration bound.
-                    local stiffness=impact and landing.impact_stiffness or landing.stiffness
-                    contact.normal_softness=t.recovery_fraction/(stiffness*h*h)
+                if floor_plane then
+                    -- Supported rolling keeps its original gross envelope,
+                    -- with the same finite impedance as touchdown/recovery.
+                    contact.normal_softness=floor_softness(h,measured,contact,basis,t.recovery_fraction)
                     contact.normal_floor_delta=(-deflection_limit-s.separation)/h-target
                     out.compliant_normal_mask=bit32.bor(out.compliant_normal_mask,2^(i-1))
                 end
+                contact.surface_velocity=M.add(contact.surface_velocity,M.mul(basis.normal,target))
             end
         end
     end

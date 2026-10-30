@@ -60,7 +60,7 @@ function T.run()
   {pedal=1,steer=-1,brake=0})
  check(crossing.valid,"supported road step must recover instead of stopping: "..tostring(crossing.issue))
  check(crossing.grounded and crossing.normal_load[1]>0,"road step produces real supporting normal response")
- check(crossing.compliant_normal_mask==0,"supported rolling does not re-enter the landing-only deflection law")
+ check(crossing.compliant_normal_mask~=0,"supported rolling retains finite normal compliance across the road step")
  check(M.length(crossing.force)<=6000 and M.length(crossing.torque)<=2000,"road response retains native force and torque caps")
  road_stage:_adopt(crossing_candidate)
  -- R11: a hop arrives on a raised front lip while the rear wheel is still

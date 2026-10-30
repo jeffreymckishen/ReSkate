@@ -660,7 +660,7 @@ void update_position_teleport() {
                 NoBailSkater owner;
                 std::uintptr_t client{};
                 const auto match = dingosdk::throwdowns::kit::match();
-                const bool offboard = !match.input_lock && (throwdown_relay_waits_offboard() || match.offboard);
+                const bool offboard = !match.input_lock && (multiplayer::throwdown_relay_waits_offboard() || match.offboard);
                 if ((match.input_lock && !*on_board) || (offboard && *on_board) ||
                     !try_no_bail_skater(0, owner, client) ||
                     !prepare_teleport_equipment(client, owner, *on_board)) {

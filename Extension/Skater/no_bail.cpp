@@ -3157,7 +3157,7 @@ bool prepare_teleport_equipment(std::uintptr_t client, const NoBailSkater& expec
     // Keep all existing protection/board-lock publications stable through the
     // byte write. A pending board-preference restoration owns this byte too.
     if (!p.ready.load(std::memory_order_acquire) || p.board_rearm ||
-        action_protection_locked(opening, GetTickCount64()) ||
+        action_protection_locked(opening, GetTickCount64()) || dark_pop_protecting(GetTickCount64()) ||
         !resolve(client, expected.entity, closing) || closing != opening) return false;
     std::uint8_t board{};
     if (!read(opening.component + addr::no_bail::teleport_on_board_option, board) || board > 1) return false;

@@ -3,6 +3,7 @@ local M=require("./force_math")
 local Tire=require("./tire")
 local Pump=require("./pump")
 local Solver=require("./force_solver")
+local Contact=require("./contact_runtime")
 local F={native_seconds=.01666666567325592}
 local Controller={} Controller.__index=Controller
 local scale=.7737670588235294
@@ -48,6 +49,7 @@ local function result(issue)
     return {valid=false,grounded=false,hop_applied=false,issue=issue or "invalid_sample",force={0,0,0},torque={0,0,0},
         linear_impulse={0,0,0},angular_impulse={0,0,0},hop_impulse={0,0,0},hop_event_id=0,wheels={},
         normal_load={0,0},normal_impulse={0,0},longitudinal_impulse={0,0},lateral_impulse={0,0},recovery_velocity={0,0},
+        patch_count={1,1},edge_normal_impulse={0,0},edge_normal_load={0,0},
         front_steer_angle=0,requested_front_steer_angle=0,turning_lean_angle=0,steering_limited=false,contact_scale=1,
         desired_support_angular_velocity={0,0,0},balance_support_mask=0,balance_continuation_mask=0,brake_impulse={0,0},
         balance_reference_up={0,0,0},desired_balance_up={0,0,0},balance_torque={0,0,0},air_control_torque={0,0,0},
@@ -163,11 +165,13 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     local body_up,body_forward,body_left=M.turn(q,{0,1,0}),M.turn(q,{0,0,1}),M.turn(q,{1,0,0})
     local steer=c.enabled and math.clamp(c.steer,-1,1) or 0
     local contacts,next_normals={},{{},{}} local support_sum,surface_sum={0,0,0},{0,0,0} local surface_count=0
+    local edge_samples={false,false}
     for i=1,2 do
         local s=samples[i] if type(s)~="table" or type(s.contact)~="table" then return out end
         contacts[i]=M.copy(s.contact) local contact=contacts[i]
         -- Only this step's selected law may create solver policy fields.
         contact.normal_only,contact.normal_softness,contact.normal_floor_delta,contact.normal_deflection_limit=nil,nil,nil,nil
+        contact.secondary=nil -- Only the validated optional edge may create this solver row.
         if contact.status=="unavailable" then out.issue="unavailable_contact" return out end
         if contact.status~="hit" and contact.status~="clear" then return out end
         if contact.status=="hit" then
@@ -295,6 +299,84 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
             end
         end
     end
+    -- An optional second patch is reconstructed from the current measured
+    -- static facets. Its radial normal is authored wheel geometry, never a
+    -- fabricated measured wall normal or an extra wheel/rotor.
+    for i=1,2 do
+        local edge=samples[i].edge
+        if edge~=nil then
+            if type(edge)~="table" or type(edge.contact)~="table" or type(edge.edge_feature)~="table"
+                or not M.vec(edge.wheel_center) or not M.finite(edge.wheel_radius)
+                or math.abs(edge.wheel_radius-wheels[i].radius)>1e-8 then return result("edge_geometry_unavailable") end
+            if samples[i].wheel_center and (not M.vec(samples[i].wheel_center)
+                or M.length(M.sub(edge.wheel_center,samples[i].wheel_center))>1e-5) then
+                return result("edge_hub_mismatch")
+            end
+            local rebuilt,why=Contact.edge_sample(edge.wheel_center,edge.wheel_radius,edge.edge_feature,body_forward)
+            if not rebuilt or rebuilt.contact.status~=edge.contact.status then return result("edge_geometry_unavailable") end
+            if edge.contact.status=="hit" then
+                if not M.finite(edge.separation) or not M.vec(edge.contact.point) or not M.vec(edge.contact.normal,1.001)
+                    or not M.vec(edge.contact.surface_velocity,50) then return result("edge_geometry_unavailable") end
+                local tolerance=1e-5+1e-7*math.max(M.length(edge.wheel_center),M.length(edge.contact.point))
+                if math.abs(edge.separation-rebuilt.separation)>tolerance
+                    or M.length(M.sub(edge.contact.point,rebuilt.contact.point))>tolerance
+                    or M.length(M.sub(edge.contact.normal,rebuilt.contact.normal))>1e-5
+                    or M.length(M.sub(edge.contact.surface_velocity,rebuilt.contact.surface_velocity))>1e-6 then
+                    return result("edge_geometry_unavailable")
+                end
+                if edge.separation < -t.maximum_penetration then return result("penetration_limit") end
+                if edge.forecast_geometry_unavailable~=nil and edge.forecast_geometry_unavailable~=false then
+                    return result("edge_forecast_unavailable")
+                end
+                if edge.separation<=t.contact_gap then
+                    local patch=M.copy(rebuilt.contact)
+                    local basis=M.basis(patch.normal,patch.forward)
+                    if not basis then return result("edge_geometry_unavailable") end
+                    local closing=-M.dot(M.sub(M.point_velocity(measured,patch.point),patch.surface_velocity),basis.normal)
+                    local supported=prior_normals[i].valid and prior_normals[i].normal_load>0
+                    local recovering=prior_impact[i] and edge.separation < -landing.maximum_deflection
+                    local impact=edge.separation<=landing.contact_gap and closing>t.recovery_speed_limit
+                    local compressed=supported and edge.separation < -landing.maximum_deflection
+                    if recovering or impact or compressed then
+                        self.landing_impact[i]=true
+                        out.landing_recovery_mask=bit32.bor(out.landing_recovery_mask,2^(i-1))
+                    end
+                    local floor_plane=landing_selected and c.enabled and M.dot(basis.normal,gravity_up)>=landing.floor_cosine
+                    local limit=(supported or recovering or impact) and t.maximum_penetration or landing.maximum_deflection
+                    if floor_plane and edge.separation < -limit-landing.deflection_tolerance then return result("landing_deflection_limit") end
+                    local bias=math.min(t.recovery_speed_limit,t.recovery_fraction*math.max(0,-edge.separation)/h)
+                    local target=bias-math.max(0,edge.separation)/h
+                    patch.normal_only=edge.separation>landing.contact_gap
+                    if floor_plane then
+                        patch.normal_softness=floor_softness(h,measured,patch,basis,t.recovery_fraction)
+                        patch.normal_deflection_limit=limit
+                        patch.normal_floor_delta=(-limit-edge.separation)/h-target
+                        out.compliant_normal_mask=bit32.bor(out.compliant_normal_mask,2^(i-1))
+                    end
+                    patch.surface_velocity=M.add(patch.surface_velocity,M.mul(basis.normal,target))
+                    contacts[i].secondary=patch
+                    edge_samples[i]=rebuilt
+                    out.patch_count[i]=2
+                    if not patch.normal_only then
+                        surface_sum=M.add(surface_sum,rebuilt.contact.surface_velocity);surface_count+=1
+                        if F.eligible_support(measured,rebuilt,.005,t.maximum_penetration) then
+                            out.grounded=true
+                            if not next_normals[i].valid then
+                                -- Balance references the actually measured top
+                                -- facet, separately from the radial constraint.
+                                local balance=M.unit(rebuilt.edge_feature.top_normal)
+                                if not balance or M.dot(balance,basis.normal)<=0 then return result("edge_geometry_unavailable") end
+                                next_normals[i]={valid=true,normal=basis.normal,normal_load=0,balance_normal=balance,
+                                    point=M.copy(patch.point),surface_velocity=M.copy(rebuilt.contact.surface_velocity),
+                                    separation=rebuilt.separation,recovery_velocity=bias,verified_plane=false,
+                                    recovery_seconds=0,recovery_seeded=false}
+                            end
+                        end
+                    end
+                end
+            elseif edge.contact.status~="clear" then return result("edge_geometry_unavailable") end
+        end
+    end
     local previous_mask,support_mask=0,0
     for i=1,2 do if prior_normals[i].valid then previous_mask=bit32.bor(previous_mask,2^(i-1)) end if next_normals[i].valid then support_mask=bit32.bor(support_mask,2^(i-1)) end end
     local surface=surface_count>0 and M.mul(surface_sum,1/surface_count) or {0,0,0}
@@ -360,6 +442,9 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
                 wheel_axes[i]=wheel_basis.lateral
             else wheel_axes[i]=body_left end
         end
+    end
+    if contacts[1].secondary then
+        contacts[1].secondary.forward=M.around(contacts[1].secondary.forward,axis,out.front_steer_angle)
     end
     local motor_speed=math.max(0,speed,wheels[2].angular_speed*wheels[2].radius)
     local cadence,next_latch=F.pedal_cadence(prior_latch,{enabled=c.enabled,pedal=math.clamp(c.pedal,0,1),motor_speed=motor_speed,
@@ -436,6 +521,10 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
         out.longitudinal_impulse[i]=amount*effects[i].solved.longitudinal_impulse out.lateral_impulse[i]=amount*effects[i].solved.lateral_impulse
         out.approach_normal_impulse[i]=amount*(effects[i].solved.approach_impulse or 0)
         out.approach_normal_force[i]=out.approach_normal_impulse[i]/h
+        if effects[i].patches and effects[i].patches[2] then
+            out.edge_normal_impulse[i]=amount*effects[i].patches[2].solved.normal_impulse
+            out.edge_normal_load[i]=out.edge_normal_impulse[i]/h
+        end
     end
     if not M.vec(out.force) or not M.vec(out.torque) or M.length(out.force)>t.force_limit or M.length(M.mul(M.add(out.linear_impulse,out.hop_impulse),1/h))>t.force_limit or
         M.length(out.torque)>t.torque_limit or math.abs(out.wheels[1].angular_speed)>t.wheel_speed_limit or math.abs(out.wheels[2].angular_speed)>t.wheel_speed_limit then return result("output_limit") end
@@ -454,11 +543,32 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
             end
         end
     end
+    -- Retain the gross overlap bound for the actual bounded edge packet too.
+    -- Rebuild the curved feature after a one-step hub prediction, rather than
+    -- treating its normal as a permanently vertical sampled rim constraint.
+    for i=1,2 do
+        local edge=edge_samples[i]
+        if edge then
+            local bounded=M.copy(measured)
+            bounded.linear_velocity=M.add(M.add(measured.linear_velocity,gravity_delta),M.mul(M.add(out.linear_impulse,out.hop_impulse),1/measured.mass))
+            bounded.angular_velocity=M.add(measured.angular_velocity,M.tensor(measured,out.angular_impulse,true))
+            local next_hub=M.add(edge.wheel_center,M.mul(M.point_velocity(bounded,edge.wheel_center),h))
+            local future=Contact.edge_sample(next_hub,edge.wheel_radius,edge.edge_feature,body_forward)
+            if not future then return result("edge_prediction_unavailable") end
+            local limit=contacts[i].secondary.normal_deflection_limit or t.maximum_penetration
+            if future.contact.status=="hit" and future.separation < -limit-landing.deflection_tolerance then
+                return result(contacts[i].secondary.normal_deflection_limit and "landing_deflection_limit" or "penetration_limit")
+            end
+        end
+    end
     if new_event then self.last_hop_event=c.hop_event_id end
     if support_mask~=0 and not out.hop_applied and c.enabled then
         for i=1,2 do next_normals[i].normal_load=out.normal_load[i] end self.normals=next_normals self.travel_direction=direction~=0 and direction or prior_direction
     end
-    local loaded=false for i=1,2 do loaded=loaded or (out.normal_load[i]>0 and F.eligible_support(measured,samples[i],.005,t.maximum_penetration)) end
+    local loaded=false for i=1,2 do
+        loaded=loaded or (out.normal_load[i]>0 and F.eligible_support(measured,samples[i],.005,t.maximum_penetration))
+            or (edge_samples[i] and out.edge_normal_load[i]>0 and F.eligible_support(measured,edge_samples[i],.005,t.maximum_penetration))
+    end
     if loaded and not out.hop_applied then reservation(air,c.recovery_step_verified,c.enabled,true,intent,launch) end
     self.air=air out.air_rotation_reserved=air.reserved==true if c.enabled then self.steering={valid=true,angle=out.front_steer_angle} end
     self.pump=pump self.pedal_latch=next_latch out.valid=true out.issue="none" return out

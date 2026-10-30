@@ -7,6 +7,7 @@ local M = require("./force_math")
 local Identity = require("./lease_identity")
 local Geometry = require("./bike_geometry")
 local InFlight = require("./ride_inflight")
+local TrickAdapter = require("./trick_adapter")
 local Ride, Object = {}, {}
 local states = setmetatable({}, {__mode="k"})
 local MAX_SAFE = 9007199254740991
@@ -82,8 +83,9 @@ local function wrap(angle)
     if angle > math.pi then angle -= TAU end
     return angle
 end
--- The bike's own articulation, as bike_visual draws it. Ride has no trick
--- presentation, so the trick terms stay zero.
+-- The bike's articulation, as bike_visual draws it. A refused barspin step
+-- holds the last accepted angle; the separate candidate publishes only after
+-- exact advancing force admission and force-history adoption.
 local NEUTRAL_POSE = table.freeze({steer=0,front_wheel_phase=0,rear_wheel_phase=0,crank_phase=0,
     barspin=0,tailwhip=0,movement_bike_pitch=0,movement_bike_roll=0})
 -- The presentation pose after an accepted step: the front steer angle the
@@ -104,7 +106,7 @@ local function presentation(previous,model,wheels,h)
     return {steer=steer,front_wheel_phase=wrap(previous.front_wheel_phase+wheels[1].angular_speed*h),
         rear_wheel_phase=wrap(previous.rear_wheel_phase+rear),
         crank_phase=pedaling and wrap(previous.crank_phase+rear/CRANK_RATIO) or previous.crank_phase,
-        barspin=0,tailwhip=0,movement_bike_pitch=0,movement_bike_roll=0}
+        barspin=previous.barspin,tailwhip=0,movement_bike_pitch=0,movement_bike_roll=0}
 end
 -- The measured tilt of the body's up axis from world up, in degrees, and its
 -- roll rate about its own forward axis, in rad/s; nil when either is unknown.
@@ -398,9 +400,25 @@ local function stop(s, reason)
     count_stop(s,text)
     if not s.stopped then
         s.stopped=true;s.generation+=1;s.issue=detail(text)
+        if s.accepted_barspin then
+            pcall(s.accepted_barspin.cancel,s.accepted_barspin,text)
+            local ok,row=pcall(s.accepted_barspin.status,s.accepted_barspin)
+            if ok then s.barspin_state=row end
+            s.barspin_candidate,s.barspin_preview,s.barspin_presentation=nil,nil,nil;s.barspin_issue="stopped"
+            if s.pose and s.pose.barspin~=0 then
+                local pose=table.clone(s.pose);pose.barspin=0;s.pose=freeze(pose)
+            end
+        end
     end
     s.phase="stopped"
     s.input_queue={}
+end
+local function discard_barspin(s)
+    local candidate=s.barspin_candidate
+    s.barspin_candidate,s.barspin_preview=nil,nil
+    if candidate and s.accepted_barspin then
+        pcall(s.accepted_barspin.discard,s.accepted_barspin,candidate);s.barspin_issue="discarded_unadopted"
+    end
 end
 local function retire(s,pending,disposition)
     if not pending.hop_id or pending.hop_retired then return true end
@@ -446,8 +464,9 @@ local function status(s)
         input_staged=s.input_staged,input_consumed=s.input_consumed,input_queued=#s.input_queue,
         observed_steps=s.observed_steps,model_steps=s.model_steps,receipt=s.last_receipt,
         model_history=s.model_history,hop_disposition=s.hop_disposition,metrics=s.metrics,
-        presentation_pose=s.pose,
+        presentation_pose=s.pose,presentation_trick=s.barspin_presentation,
         model={trick_status=s.trick_status,trick_fallbacks=s.trick_fallbacks,
+            accepted_barspin=s.barspin_state,barspin_issue=s.barspin_issue,
             alignment_status=s.alignment_status,recovery_status=s.recovery_status}})
 end
 local function receipt_valid(row,p)
@@ -925,6 +944,17 @@ local function observe(s,source_frame,raw,context)
     if companions.trick_fallback then s.trick_fallbacks+=1 end
     s.alignment_status=companions.alignment and companions.alignment.status or nil
     s.recovery_status=companions.recovery and companions.recovery.phase or nil
+    -- This new path observes the already qualified ray frame before the gate,
+    -- while the existing companions above retain their observed-step policy.
+    -- It changes no accepted trick state until the command is admitted below.
+    if s.accepted_barspin then
+        local prepared=invoke(s,s.accepted_barspin.preview,s.accepted_barspin,frame,controls.actions)
+        if prepared.current==false or s.stopped then return end
+        local value=prepared[1] and type(prepared[2])=="table" and prepared[2] or nil
+        if value and value.valid==true and prepared.n==3 and type(prepared[3])=="table" then
+            s.barspin_candidate,s.barspin_preview=prepared[3],value;s.barspin_issue="candidate"
+        else s.barspin_issue=value and detail(value.issue) or "adapter unavailable" end
+    end
     -- Every coherent observed model step happens before the command gate.
     poll_pending(s)
     if s.stopped or s.unknown then return end
@@ -944,6 +974,7 @@ local function observe(s,source_frame,raw,context)
     end
     local force_controls=copy(controls.force_controls)
     force_controls.rotation_reserved=force_controls.rotation_reserved or companions.rotation_reserved==true
+        or (s.barspin_preview~=nil and s.barspin_preview.requests.rotation_reserved==true)
     -- Solve from the state this command will act on. Accepted commands
     -- younger than InFlight.VISIBLE_STEPS are not in the sample yet; fold them in first.
     local inflight={}
@@ -1001,6 +1032,24 @@ local function observe(s,source_frame,raw,context)
         if not adopted[1] or adopted.n~=1 then
             p.history_unknown=true;s.unknown=true;stop(s,"accepted force history adoption unavailable");return
         end
+        if not submitted.current or not adopted.current or s.stopped then
+            stop(s,"stopped during force admission");return
+        end
+        if s.barspin_candidate then
+            local accepted=invoke(s,s.accepted_barspin.adopt,s.accepted_barspin,s.barspin_candidate,sequence)
+            local value=accepted[1] and accepted.n==3 and accepted[2]==true and accepted[3] or nil
+            local target=type(value)=="table" and value.visual_targets or nil
+            if not accepted.current or s.stopped or type(value)~="table" or value.serial~=sample.serial
+                or value.accepted_sequence~=sequence or value.realized~=false or value.completion_qualified~=false
+                or type(target)~="table" or target.realized~=false or target.completion_qualified~=false
+                or not M.finite(target.barspin) or math.abs(target.barspin)>math.pi then
+                stop(s,"accepted barspin adoption unavailable");return
+            end
+            pose.barspin=target.barspin
+            s.barspin_presentation=freeze(value);s.barspin_state=s.accepted_barspin:status()
+            s.barspin_issue="predictive_accepted"
+            s.barspin_candidate,s.barspin_preview=nil,nil
+        end
         s.wheels=wheels
         -- The pose follows the accepted prediction, with the wheels it adopts;
         -- model_history names that step.
@@ -1035,11 +1084,14 @@ end
 
 function Ride.new(force_api,models,options)
     models,options=models or {},options or {}
+    local accepted_barspin=TrickAdapter.new()
+    if models.accepted_barspin==false then accepted_barspin=nil end
     local meta={__index=Object}
     local object=setmetatable({},meta)
     local s={api=force_api,body=options.body_handle,incarnation=options.incarnation,
         mapping=models.mapping or Mapping.new(options.input),force=models.force or Forces.new(options.force),
         contact=models.contact,tricks=models.tricks,recovery=models.recovery,alignment=models.alignment,
+        accepted_barspin=accepted_barspin,barspin_state=accepted_barspin and accepted_barspin:status() or nil,
         alignment_options=detached(options.alignment),geometry=detached(options.geometry or Geometry),
         wheels=Forces.proposed_wheels(),phase="inert",issue="native qualification required",generation=0,
         pose=freeze(NEUTRAL_POSE),trick_fallbacks=0,
@@ -1084,6 +1136,8 @@ function Object:observe(source_frame,body_sample,context)
     s.busy=true
     local ok,why=pcall(observe,s,source_frame,body_sample,context)
     if not ok then stop(s,"observe exception: "..detail(why)) end
+    -- Every early/refused/backpressured path releases its unadopted candidate.
+    discard_barspin(s)
     metrics_finish_step(s)
     s.busy=false
     return status(s)

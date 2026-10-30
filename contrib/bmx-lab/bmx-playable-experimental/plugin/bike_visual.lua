@@ -129,8 +129,13 @@ function V.definition(root,orientation)
     local at=M.add(root,M.turn(q,G.com))
     local v=vector.create
     local d={mass=G.mass,inertia=v(unpack(G.inertia)),position=v(unpack(at)),rotation=q,capsules={}}
-    for i,c in G.capsules do
-        d.capsules[i]={a=v(unpack(M.sub(c.a,G.com))),b=v(unpack(M.sub(c.b,G.com))),radius=c.radius}
+    -- Wheel support is solved from the measured hub rays. The two tyre
+    -- spheres would add a second collision response at a curb face before
+    -- those vertical rays can see its top. Keep only frame and rider solids.
+    -- Leave G.capsules intact: mounted_pose also uses its saddle metadata.
+    for i=3,#G.capsules do
+        local c=G.capsules[i]
+        d.capsules[#d.capsules+1]={a=v(unpack(M.sub(c.a,G.com))),b=v(unpack(M.sub(c.b,G.com))),radius=c.radius}
     end
     return d
 end

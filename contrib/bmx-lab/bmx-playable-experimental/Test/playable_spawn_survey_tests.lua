@@ -1,6 +1,8 @@
 -- Pure local spawn survey fixtures; no game, native query or input is used.
 local Rec=require("./ride_r1_record")
 local G=require("./bike_geometry")
+local Visual=require("./bike_visual")
+local M=require("./force_math")
 local T={}
 function T.run()
  local cases,assertions=0,0
@@ -69,6 +71,42 @@ function T.run()
   for _,ray in ipairs(Rec.survey_obstacle_rays({0,.5,0},0,{a=0,b=0,c=0}))do
    check(math.abs(radius(ray.from)-.75)<1e-9 and math.abs(radius(ray.to)-1.25)<1e-9,"unchanged inner ring and local outer ring")
   end
+ end)
+ case("native hull omits duplicate tyre contacts before a curb reaches the wheel ray",function()
+  -- A 100 mm curb sits 150 mm ahead of the front hub. At the ordinary
+  -- measured -5 mm wheel gap the old near-sphere already touches its top
+  -- edge, although the vertical hub ray still observes the lower floor.
+  local root={0,-.005,0};local orientation={0,0,0,1}
+  local d=assert(Visual.definition(root,orientation))
+  check(#G.capsules==8 and #d.capsules==6,"authored metadata retained; only six native frame/rider solids")
+  check(d.mass==G.mass and d.inertia.x==G.inertia[1] and d.inertia.y==G.inertia[2]
+   and d.inertia.z==G.inertia[3] and math.abs(d.position.y-root[2]-G.com[2])<1e-7
+   and d.rotation[4]==1,"body mass inertia and COM convention unchanged")
+  local function same(v,p)
+   return math.abs(v.x-p[1])<1e-7 and math.abs(v.y-p[2])<1e-7 and math.abs(v.z-p[3])<1e-7
+  end
+  local lowest=math.huge
+  for i,c in ipairs(d.capsules)do
+   local source=G.capsules[i+2]
+   check(same(c.a,M.sub(source.a,G.com)) and same(c.b,M.sub(source.b,G.com))
+    and c.radius==source.radius,"retained native capsule is unchanged original"..(i+2))
+   lowest=math.min(lowest,d.position.y+math.min(c.a.y,c.b.y)-c.radius)
+  end
+  check(G.capsules[5].a[1]==0 and G.capsules[5].b[1]==0
+   and G.capsules[5].a[3]==-.31*G.scale and G.capsules[5].b[3]==-.09*G.scale
+   and G.capsules[5].radius==.10*G.scale,"saddle fallback keeps its original index and geometry")
+  local old=G.capsules[1]
+  check(math.abs(old.radius-(G.wheel_radius-.035))<1e-12 and math.abs(old.b[2]-old.a[2]-.010)<1e-12,
+   "fixture reaches the actual old near-sphere geometry")
+  local curb_height,forward_distance=.10,.15
+  local old_low_center=root[2]+old.a[2]
+  local edge_distance=math.sqrt(forward_distance^2+(old_low_center-curb_height)^2)
+  check(edge_distance<old.radius,"old native tyre proxy collides before the vertical ray crosses the curb")
+  local curb_z=G.front_axle[3]+forward_distance
+  local floor_gap=root[2]+G.front_axle[2]-G.wheel_radius
+  check(G.front_axle[3]<curb_z and floor_gap>-.006 and floor_gap<-.004,
+   "actual vertical wheel query remains over the lower floor with ordinary supporting gap")
+  check(lowest>curb_height,"all retained native solids clear this curb without inventing wheel support")
  end)
  case("nearby planter outside spawn footprint does not veto Mount",function()
   local verdict,probes=survey({planter=2})

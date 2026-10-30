@@ -4,8 +4,8 @@
   "flat_file_count": 58,
   "quota_file_count": 59,
   "expected_processes": 24,
-  "expected_cases": 177,
-  "expected_assertions": 8360,
+  "expected_cases": 178,
+  "expected_assertions": 8373,
   "source_admission": "UNCHANGED_FALSE",
   "files": [
     {
@@ -257,8 +257,8 @@
     {
       "source": "plugin/bike_visual.lua",
       "destination": "bike_visual.lua",
-      "bytes": 6477,
-      "sha256": "CA53811504777900B124895A37C4332A5BEC8630CFD81B26D3021BB69EF640DA"
+      "bytes": 6960,
+      "sha256": "B7DC7B1F18C44DD0997BF23A2249BFB07E2C0E2B12A9EEE3D2BB0C73458FFA2E"
     },
     {
       "source": "plugin/ride_input_mapping.lua",
@@ -347,8 +347,8 @@
     {
       "source": "Test/playable_spawn_survey_tests.lua",
       "destination": "playable_spawn_survey_tests.lua",
-      "bytes": 5445,
-      "sha256": "14D17FA817521D805CA57971AE571F4EE7CDEBB2292A69401A0D0D4562F62F96"
+      "bytes": 7955,
+      "sha256": "22CECDC5663D4CC193049434E9E1A1D2B3B13876BDFD7D22D85669E59FCAAFEC"
     },
     {
       "source": "Test/session_spawn_travel_tests.lua",
@@ -385,8 +385,8 @@
     },
     {
       "source": "plugin/bike_visual.lua",
-      "bytes": 6477,
-      "sha256": "CA53811504777900B124895A37C4332A5BEC8630CFD81B26D3021BB69EF640DA"
+      "bytes": 6960,
+      "sha256": "B7DC7B1F18C44DD0997BF23A2249BFB07E2C0E2B12A9EEE3D2BB0C73458FFA2E"
     },
     {
       "source": "plugin/bmx_playable_entry.lua",
@@ -701,8 +701,8 @@
       "suite": "playable_spawn_survey_tests",
       "invoked": "playable_spawn_survey_tests",
       "context": "flat",
-      "expected_cases": 6,
-      "expected_assertions": 1121
+      "expected_cases": 7,
+      "expected_assertions": 1134
     },
     {
       "suite": "session_spawn_travel_tests",

@@ -268,7 +268,25 @@ function Contact.edge_plan(frame,rays,centers,context,geometry)
         end
         if high and low then
             local height=M.dot(M.sub(high.position,low.position),context.up)
-            if height>.015 and height<=geometry.wheel_radius*.75 and M.dot(high.normal,low.normal)>.995 then
+            -- Gravity height also changes across an ordinary inclined road.
+            -- Only suppress this optional edge candidate when every current
+            -- wheel observation proves the same local plane, in both measured
+            -- normal directions and within the existing witness tolerance.
+            -- Unknown/clear/noncoplanar rows cannot qualify this classification;
+            -- real wall evidence still follows every unchanged facet guard.
+            local common_plane=true
+            for j=1,3 do
+                local row=rays[(i-1)*3+j]
+                if row.status~="hit" then common_plane=false;break end
+                local delta=M.sub(row.position,high.position)
+                if M.dot(row.normal,high.normal)<=.995
+                    or math.abs(M.dot(delta,high.normal))>.003
+                    or math.abs(M.dot(delta,row.normal))>.003 then
+                    common_plane=false;break
+                end
+            end
+            if not common_plane and height>.015 and height<=geometry.wheel_radius*.75
+                and M.dot(high.normal,low.normal)>.995 then
                 local from=M.add(low.position,M.mul(context.up,height*.5))
                 local to=M.sub(high.position,M.mul(context.up,height*.5))
                 plan[#plan+1]=segment(from,to)

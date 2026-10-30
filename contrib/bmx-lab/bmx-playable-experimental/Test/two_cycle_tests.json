@@ -1,8 +1,8 @@
 {
   "schema": 1,
   "matrix": "closed-experimental-two-cycle-v1",
-  "flat_file_count": 61,
-  "quota_file_count": 62,
+  "flat_file_count": 62,
+  "quota_file_count": 63,
   "expected_processes": 24,
   "expected_cases": 183,
   "expected_assertions": null,
@@ -227,8 +227,8 @@
     {
       "source": "plugin/contact_runtime.lua",
       "destination": "contact_runtime.lua",
-      "bytes": 27007,
-      "sha256": "D9DF8C3089EFBB0F14B2785A6D91F0D0D26DE81FB879E9D02E4931F65E894266"
+      "bytes": 28032,
+      "sha256": "3BA8A9FEE5E5F6F3D44342DE55AA83098168B89D9897D1A664CD62DFFBC8E5F2"
     },
     {
       "source": "plugin/force_stage.lua",
@@ -373,6 +373,12 @@
       "destination": "ride_first_tick_contact_tests.lua",
       "bytes": 7344,
       "sha256": "F15FD79EB87A63A0DCEB61EACE44CACC84562CAFF12F44904557BB9EFB18BE0F"
+    },
+    {
+      "source": "Test/contact_edge_classification_tests.lua",
+      "destination": "contact_edge_classification_tests.lua",
+      "bytes": 4609,
+      "sha256": "A78BE7DB7E16A53469DADA844C70B899F152E7129DFAC00BCD45727B45F43DA0"
     }
   ],
   "runtime_files": [
@@ -433,8 +439,8 @@
     },
     {
       "source": "plugin/contact_runtime.lua",
-      "bytes": 27007,
-      "sha256": "D9DF8C3089EFBB0F14B2785A6D91F0D0D26DE81FB879E9D02E4931F65E894266"
+      "bytes": 28032,
+      "sha256": "3BA8A9FEE5E5F6F3D44342DE55AA83098168B89D9897D1A664CD62DFFBC8E5F2"
     },
     {
       "source": "plugin/equipment_runtime.lua",
@@ -586,6 +592,14 @@
       "expected_cases": 1,
       "expected_assertions": 33,
       "evidence_scope": "Actual Ride contact-phase first-submit regression with constructed SDK; no native qualification"
+    },
+    {
+      "suite": "contact_edge_classification_tests",
+      "invoked": "contact_edge_classification_tests",
+      "context": "flat",
+      "expected_cases": 1,
+      "expected_assertions": 10,
+      "evidence_scope": "Measured incline classification and realstep guard constructed regression; no native qualification"
     }
   ],
   "suites": [

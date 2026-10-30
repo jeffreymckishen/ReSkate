@@ -120,6 +120,54 @@ void queues_and_reentrance() {
     }
     check(observe(queue, reader).pending, "nested queued position remains pending");
 }
+void per_request_equipment() {
+    ++groups;
+    Queue queue;
+    auto mutation = queue.mutate();
+    auto& state = mutation.write();
+    std::array<float, 16> first{}, second{};
+    first[12] = 10; second[12] = 20;
+    state.set_position(first, true, 100);
+    check(state.position_teleport == first && state.position_teleport_on_board == true &&
+        state.position_teleport_at == 100, "explicit board option is coupled to its exact queued transform");
+    state.set_position(second, false, 200);
+    check(state.position_teleport == second && state.position_teleport_on_board == false &&
+        state.position_teleport_at == 200, "explicit false is retained with the replacement transform");
+    state.set_position(first, std::nullopt, 300);
+    check(state.position_teleport == first && !state.position_teleport_on_board.has_value() &&
+        state.position_teleport_at == 300, "legacy enqueue clears the prior explicit option");
+    state.set_position(second, true, 400);
+    const auto dispatched_option = state.position_teleport_on_board;
+    state.clear_position();
+    check(!state.position_teleport && !state.position_teleport_on_board && state.position_teleport_at == 400,
+        "consume or expiry clears both fields without renewing the original stamp");
+    state.set_position(first, std::nullopt, 500);
+    check(!state.position_teleport_on_board && state.position_teleport == first,
+        "a later legacy request cannot inherit the cleared option");
+    check(dispatched_option == true, "a captured dispatch option is not changed by a later enqueue");
+}
+void equipment_request_identity() {
+    ++groups;
+    EquipmentRequest request;
+    request.transition = 0x2000; request.transform[12] = 10; request.on_board = false;
+    auto other = request.transform; other[12] = 11;
+    check(!request.consume(0, request.transition, other) && !request.consumed,
+        "wrong target keeps the legacy path without consuming the scoped option");
+    check(!request.consume(0, request.transition + 1, request.transform) && !request.consumed,
+        "different transition cannot consume the scoped option");
+    check(!request.consume(1, request.transition, request.transform) && !request.consumed,
+        "remote request cannot consume the local option");
+    check(request.consume(0, request.transition, request.transform) && request.consumed && !request.on_board,
+        "the exact local request consumes once and retains explicit false");
+    check(!request.consume(0, request.transition, request.transform), "matching replay is refused");
+    EquipmentRequest next;
+    next.transition = request.transition; next.transform = request.transform; next.on_board = true;
+    check(next.consume(0, next.transition, next.transform) && next.on_board,
+        "a later distinct request has its own option and consumption state");
+    EquipmentRequest unbound;
+    check(!unbound.consume(0, 0, unbound.transform) && !unbound.consumed,
+        "a missing transition identity cannot qualify a scoped request");
+}
 void dispatch_destruction() {
     ++groups;
     Queue queue; Reader reader{&queue};
@@ -235,7 +283,7 @@ void qualification_composition() {
 int main() {
     try {
         categories(); queues_and_reentrance(); dispatch_destruction(); contention(); fences_and_exhaustion();
-        qualification_composition();
+        qualification_composition(); per_request_equipment(); equipment_request_identity();
         std::cout << "PASS " << groups << " groups " << checks << " checks; constructed SDK queue/native-read facts only\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << "FAIL " << error.what() << '\n'; return 1; }

@@ -27,13 +27,42 @@ constexpr bool same_idle(const Result& before, const Result& after) noexcept {
         before.manager && before.manager == after.manager;
 }
 
+// Match the one local native request before consuming its explicit option.
+// An unrelated teleport keeps its legacy path and cannot burn this request.
+struct EquipmentRequest {
+    std::array<float, 16> transform{};
+    std::uintptr_t transition{};
+    bool on_board{}, consumed{};
+    bool matches(std::uint64_t id, std::uintptr_t native_transition,
+        const std::array<float, 16>& at) const noexcept {
+        return !id && transition && transition == native_transition && at == transform;
+    }
+    bool consume(std::uint64_t id, std::uintptr_t native_transition,
+        const std::array<float, 16>& at) noexcept {
+        if (!matches(id, native_transition, at) || consumed) return false;
+        consumed = true;
+        return true;
+    }
+};
+
 // Own the queue being observed. Producers still take the existing profile
 // mutex first. Observers take only this mutex, and never wait for it.
 class Queue {
 public:
     struct State {
         std::optional<std::array<float, 16>> position_teleport;
+        std::optional<bool> position_teleport_on_board;
         std::uint64_t position_teleport_at{}, teleport_token{}, teleport_queued_at{};
+        void set_position(const std::array<float, 16>& transform, std::optional<bool> on_board,
+            std::uint64_t at) noexcept {
+            position_teleport = transform;
+            position_teleport_on_board = on_board;
+            position_teleport_at = at;
+        }
+        void clear_position() noexcept {
+            position_teleport.reset();
+            position_teleport_on_board.reset();
+        }
     };
     class Mutation {
         Queue& queue_;

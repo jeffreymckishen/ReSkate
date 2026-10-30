@@ -2,6 +2,7 @@
 #include "Engine/Core/Hooks/hooks.h"
 #include "Engine/Core/Log/logging.h"
 #include "Extension/Skater/client_source_spawn.h"
+#include "Extension/Profile/local_teleport_observation.h"
 #include "Extension/Throwdowns/native_type_scan.h"
 #include "Extension/Throwdowns/throwdown_relay.h"
 #include "Extension/Throwdowns/throwdown_kit.h"
@@ -536,6 +537,33 @@ Address spectate_name_hook(Address output) {
 }
 std::uint32_t teleport_hook(Address reason, const void *matrix, Address destination,
     std::uint64_t id, std::uint8_t mode, Address stance, Address transition) {
+    if (auto* equipment = profile_runtime::local_teleport_equipment_request;
+        equipment && !id && transition == equipment->transition) {
+        std::array<float, 16> at{};
+        // An unreadable candidate is refused without consuming or falling back
+        // to an unknown equipment state. Other targets keep the legacy path.
+        if (!memory::peek_bytes(reinterpret_cast<Address>(matrix), at.data(), sizeof(at))) return UINT32_MAX;
+        if (equipment->matches(id, transition, at)) {
+            if (!equipment->consume(id, transition, at)) return UINT32_MAX;
+            NoBailSkater owner;
+            bool protected_owner{true};
+            if (!profile_runtime::local_teleport_equipment_available(equipment->base) ||
+                !inspect_no_bail_owner(equipment->client, equipment->owner.entity, owner, protected_owner) ||
+                protected_owner || !profile_runtime::same_teleport_owner(owner, equipment->owner)) return UINT32_MAX;
+            const auto match = dingosdk::throwdowns::kit::match();
+            const bool offboard = !match.input_lock && (throwdown_relay_waits_offboard() || match.offboard);
+            if ((match.input_lock && !equipment->on_board) ||
+                (offboard && equipment->on_board)) return UINT32_MAX;
+            // The native may retain this pointer: keep storage alive after return.
+            // Only byte zero changes; stance and lip mount retain the native values.
+            static thread_local std::array<std::uint8_t, 3> options{};
+            if (!memory::peek_bytes(stance, options.data(), options.size())) return UINT32_MAX;
+            options[0] = equipment->on_board ? 1 : 0;
+            equipment->options_applied = true;
+            return state().teleport(reason, matrix, destination, id, mode,
+                reinterpret_cast<Address>(options.data()), transition);
+        }
+    }
     if (const auto value = target(id)) {
         if (!available(*value)) return UINT32_MAX;
         // Same native teleport path as live players, including ground checks,
@@ -958,3 +986,10 @@ void tick_native_party_actions(std::uintptr_t base, std::uintptr_t client, bool 
     }
 }
 } // namespace dingosdk::multiplayer
+
+namespace dingosdk::profile_runtime {
+bool local_teleport_equipment_available(std::uintptr_t base) noexcept {
+    const auto& party = multiplayer::native_party_detail::state();
+    return base && party.installed.load(std::memory_order_acquire) && party.base == base && party.teleport;
+}
+} // namespace dingosdk::profile_runtime

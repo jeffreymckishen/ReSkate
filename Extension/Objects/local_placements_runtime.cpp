@@ -7,6 +7,7 @@
 #include "Extension/Objects/ParkEditor/park_editor_runtime.h"
 #include "network_object_runtime.h"
 #include "Extension/Profile/runtime_internal.h"
+#include "Extension/Profile/local_teleport_observation.h"
 #include "Extension/Skater/native_actions.h"
 #include "Extension/World/local_world_layers.h"
 #include <algorithm>
@@ -629,14 +630,14 @@ void update_position_teleport() {
     // This marker spans the native transition constructor, call and teardown.
     if (!skater_action::enter_motion_writer(writer)) return;
     auto& r = placements_runtime();
-    bool dropped{};
+    bool dropped{}, equipment_refused{};
     std::array<float, 3> at{};
     std::uint32_t request{};
     {
         auto queue = r.teleport_queue.mutate();
         if (!queue.read().position_teleport) return;
         if (GetTickCount64() > queue.read().position_teleport_at + 5000) {
-            queue.write().position_teleport.reset();
+            queue.write().clear_position();
             dropped = true;
         } else {
             std::uintptr_t manager{}; std::uint32_t state{};
@@ -644,16 +645,46 @@ void update_position_teleport() {
                 !read(local_runtime().base + addr::local_placements::teleport_manager, manager) || !manager ||
                 !read(manager, state) || state != 0) return;
             alignas(16) const auto transform = *queue.read().position_teleport;
+            const auto on_board = queue.read().position_teleport_on_board;
             at = {transform[12], transform[13], transform[14]};
             queue.begin_dispatch();
-            queue.write().position_teleport.reset();
+            queue.write().clear_position();
             // Keep the dispatch busy from before the clear through transition
             // destruction, including same-thread native callbacks.
             alignas(16) std::array<std::uint64_t, 2> transition{};
             r.transition_ctor(transition.data());
             struct Destroy { decltype(r.transition_destroy) call; void* value; ~Destroy() { call(value); } } destroy{r.transition_destroy, transition.data()};
-            request = r.teleport(manager, transform.data(), 1, transition.data());
+            if (!on_board.has_value()) {
+                request = r.teleport(manager, transform.data(), 1, transition.data());
+            } else {
+                LocalTeleportEquipmentRequest equipment;
+                NoBailSkater verified;
+                bool protected_owner{true};
+                equipment.base = local_runtime().base;
+                equipment.transition = reinterpret_cast<std::uintptr_t>(transition.data());
+                equipment.transform = transform;
+                equipment.on_board = *on_board;
+                // A nested dispatch must not replace the outer request's option.
+                if (local_teleport_equipment_request || !local_teleport_equipment_available(equipment.base) ||
+                    !try_no_bail_skater(0, equipment.owner, equipment.client) ||
+                    !inspect_no_bail_owner(equipment.client, equipment.owner.entity, verified, protected_owner) ||
+                    protected_owner || !same_teleport_owner(equipment.owner, verified)) {
+                    equipment_refused = true;
+                } else {
+                    local_teleport_equipment_request = &equipment;
+                    struct Clear {
+                        ~Clear() { local_teleport_equipment_request = nullptr; }
+                    } clear;
+                    request = r.teleport(manager, transform.data(), 1, transition.data());
+                    equipment_refused = !equipment.options_applied;
+                }
+            }
         }
+    }
+    if (equipment_refused) {
+        dingosdk::logging::event(dingosdk::logging::Channel::objects,
+            "{\"event\":\"position_teleport_equipment_refused\"}");
+        return;
     }
     if (dropped) {
         dingosdk::logging::write(dingosdk::logging::Level::warning, dingosdk::logging::Channel::objects,

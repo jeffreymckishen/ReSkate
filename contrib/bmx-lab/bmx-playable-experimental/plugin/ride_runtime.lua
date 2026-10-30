@@ -88,6 +88,7 @@ end
 -- exact advancing force admission and force-history adoption.
 local NEUTRAL_POSE = table.freeze({steer=0,front_wheel_phase=0,rear_wheel_phase=0,crank_phase=0,
     barspin=0,tailwhip=0,movement_bike_pitch=0,movement_bike_roll=0})
+local BARSPIN_RELEASES = table.freeze({"barspin_release","release_left_hand","release_right_hand"})
 -- The presentation pose after an accepted step: the front steer angle the
 -- kernel commanded, each wheel turned by its accepted angular speed over the
 -- step, and the cranks turned by the rear wheel through CRANK_RATIO only while
@@ -103,10 +104,14 @@ local function presentation(previous,model,wheels,h)
     elseif not M.finite(steer) or math.abs(steer)>1 then return nil end
     if pedaling==nil then pedaling=false elseif type(pedaling)~="boolean" then return nil end
     local rear=wheels[2].angular_speed*h
-    return {steer=steer,front_wheel_phase=wrap(previous.front_wheel_phase+wheels[1].angular_speed*h),
+    local pose={steer=steer,front_wheel_phase=wrap(previous.front_wheel_phase+wheels[1].angular_speed*h),
         rear_wheel_phase=wrap(previous.rear_wheel_phase+rear),
         crank_phase=pedaling and wrap(previous.crank_phase+rear/CRANK_RATIO) or previous.crank_phase,
         barspin=previous.barspin,tailwhip=0,movement_bike_pitch=0,movement_bike_roll=0}
+    -- A refused candidate holds the same accepted hand releases as its angle.
+    -- Omitted zero releases keep ordinary riding's eight-field pose unchanged.
+    for _,name in ipairs(BARSPIN_RELEASES) do pose[name]=previous[name] end
+    return pose
 end
 -- The measured tilt of the body's up axis from world up, in degrees, and its
 -- roll rate about its own forward axis, in rad/s; nil when either is unknown.
@@ -405,8 +410,14 @@ local function stop(s, reason)
             local ok,row=pcall(s.accepted_barspin.status,s.accepted_barspin)
             if ok then s.barspin_state=row end
             s.barspin_candidate,s.barspin_preview,s.barspin_presentation=nil,nil,nil;s.barspin_issue="stopped"
-            if s.pose and s.pose.barspin~=0 then
-                local pose=table.clone(s.pose);pose.barspin=0;s.pose=freeze(pose)
+            if s.pose then
+                local changed=s.pose.barspin~=0
+                for _,name in ipairs(BARSPIN_RELEASES) do changed=changed or s.pose[name]~=nil end
+                if changed then
+                    local pose=table.clone(s.pose);pose.barspin=0
+                    for _,name in ipairs(BARSPIN_RELEASES) do pose[name]=nil end
+                    s.pose=freeze(pose)
+                end
             end
         end
     end
@@ -1044,6 +1055,13 @@ local function observe(s,source_frame,raw,context)
                 or type(target)~="table" or target.realized~=false or target.completion_qualified~=false
                 or not M.finite(target.barspin) or math.abs(target.barspin)>math.pi then
                 stop(s,"accepted barspin adoption unavailable");return
+            end
+            for _,name in ipairs(BARSPIN_RELEASES) do
+                local release=target[name]
+                if not M.finite(release) or release<0 or release>1 then
+                    stop(s,"accepted barspin release unavailable");return
+                end
+                pose[name]=release~=0 and release or nil
             end
             pose.barspin=target.barspin
             s.barspin_presentation=freeze(value);s.barspin_state=s.accepted_barspin:status()

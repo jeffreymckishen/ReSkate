@@ -9,9 +9,10 @@ local bike=Entry.new(reskate,Runtime,Survey,{admitted=EXPERIMENTAL_ADMITTED,slot
 local unloaded=false
 reskate.input.bind("bmx_return","F8")
 reskate.input.bind("bmx_recover","F9")
+reskate.input.bind("bmx_recover_pad","Pad.LB+Pad.RB+Pad.L3")
 reskate.on("action",function(name)
     if name=="bmx_return" then bike:return_to_skateboard()
-    elseif name=="bmx_recover" and not unloaded then
+    elseif (name=="bmx_recover" or name=="bmx_recover_pad") and not unloaded then
         local s=bike:status()
         if s.recovery_available==true then bike:recover() end
     end
@@ -21,7 +22,7 @@ reskate.menu.page("BMX experimental",function(ui)
     local s=bike:status()
     ui:warn("Experimental: at most TWO attempts; each uses a new retained body slot. Start on foot on flat ground with 1.25 m clear around you for spawning.")
     if not s.admitted then ui:note("This reviewed source build is inactive; no Mount action is admitted.") end
-    ui:warn("Opening Insert ends an active ride. Use F8 to return or F9 to recover after a fall.")
+    ui:warn("Opening Insert ends an active ride. F8 returns; F9 or LB + RB + L3 recovers after a fall.")
     if ui:button("bmx_play_mount","Mount bike") then bike:mount() end
     if ui:button("bmx_play_return","Return to skateboard") then bike:return_to_skateboard() end
     if ui:button("bmx_play_cancel","Cancel / stop and keep cleanup") then bike:cancel() end
@@ -39,6 +40,7 @@ reskate.menu.page("BMX experimental",function(ui)
     ui:note(s.detail)
     ui:note("F8: return to skateboard (remappable in Binds).")
     ui:note("F9: recover bike after a fall (remappable in Binds).")
+    ui:note("LB + RB + L3: recover after a fall; release all controls while recovery runs (remappable in Binds).")
     if s.phase=="blocked" or s.phase=="stopped" then ui:note(s.lifecycle_detail) end
     ui:note("First Mount requires on-foot504. Second Mount requires current stock100 after clean Return, then visibly obtains504 before a NEW survey. Stay still and neutral.")
     if SESSION_RENEWABLE then

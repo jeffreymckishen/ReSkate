@@ -4,7 +4,8 @@ function T.run()
     local n=0;local function check(v,why)n+=1;assert(v,why)end
     local R={menu={},input={}};local count=0
     function R.input.bind(name,key)
-        check(name=="bmx_return" and key=="F8" or name=="bmx_recover" and key=="F9","exact remappable Return/Recover defaults")
+        check(name=="bmx_return" and key=="F8" or name=="bmx_recover" and key=="F9"
+            or name=="bmx_recover_pad" and key=="Pad.LB+Pad.RB+Pad.L3","exact remappable Return/Recover defaults")
         return true
     end
     local object={step=function()end,unload=function()end,status=function()return {phase="idle",detail="source closed",admitted=false,

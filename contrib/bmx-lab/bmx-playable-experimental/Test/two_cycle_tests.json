@@ -5,7 +5,7 @@
   "quota_file_count": 68,
   "expected_processes": 28,
   "expected_cases": 186,
-  "expected_assertions": 8671,
+  "expected_assertions": 8692,
   "source_admission": "UNCHANGED_FALSE",
   "files": [
     {
@@ -131,14 +131,14 @@
     {
       "source": "plugin/bmx_playable_entry.lua",
       "destination": "bmx_playable_entry.lua",
-      "bytes": 29737,
-      "sha256": "E36281CFD1E775E0CAE66354EFB2EE127B3705C9B25F5D641162C1BB8C0559C6"
+      "bytes": 30120,
+      "sha256": "45C41DEBFAFEAA8F263A9EDC50161F1C1E65CC98241F664032EB93F659A423C0"
     },
     {
       "source": "plugin/ride_r1_record.lua",
       "destination": "ride_r1_record.lua",
-      "bytes": 62954,
-      "sha256": "8B36D15AAF5B2760491C84C4EBAC86399CFDA3E13CFC873D7ACF97E544C0DDF6"
+      "bytes": 65250,
+      "sha256": "6C86E34A33BDA0DFD5B5DBA4224C928A0BE61E8BDDC63AA0CB905AA83463F066"
     },
     {
       "source": "Test/two_cycle_fixture.lua",
@@ -407,8 +407,8 @@
     {
       "source": "Test/playable_grade_spawn_tests.lua",
       "destination": "playable_grade_spawn_tests.lua",
-      "bytes": 12578,
-      "sha256": "594923B3E7442857E71E9D6F94AFB6D1F5D8F649FC741BC310E11C4BB92A9632"
+      "bytes": 16200,
+      "sha256": "7C65D897840DC547C9A52FFB2D23CAA49C91B0060040849D3BC5F8BD61649753"
     }
   ],
   "runtime_files": [
@@ -444,8 +444,8 @@
     },
     {
       "source": "plugin/bmx_playable_entry.lua",
-      "bytes": 29737,
-      "sha256": "E36281CFD1E775E0CAE66354EFB2EE127B3705C9B25F5D641162C1BB8C0559C6"
+      "bytes": 30120,
+      "sha256": "45C41DEBFAFEAA8F263A9EDC50161F1C1E65CC98241F664032EB93F659A423C0"
     },
     {
       "source": "plugin/board_drop.lua",
@@ -549,8 +549,8 @@
     },
     {
       "source": "plugin/ride_r1_record.lua",
-      "bytes": 62954,
-      "sha256": "8B36D15AAF5B2760491C84C4EBAC86399CFDA3E13CFC873D7ACF97E544C0DDF6"
+      "bytes": 65250,
+      "sha256": "6C86E34A33BDA0DFD5B5DBA4224C928A0BE61E8BDDC63AA0CB905AA83463F066"
     },
     {
       "source": "plugin/ride_runtime.lua",
@@ -803,7 +803,7 @@
       "invoked": "playable_grade_spawn_tests",
       "context": "flat",
       "expected_cases": 1,
-      "expected_assertions": 43
+      "expected_assertions": 64
     }
   ]
 }

@@ -43,7 +43,12 @@ local function entry_fixture(check,options)
         function R.world.probe(from,to)
             f.probes+=1;f.probe_tick+=1;f.probe_peak=math.max(f.probe_peak,f.probe_tick)
             if f.on_probe then f.on_probe(from,to) end
-            if from.y-to.y>1 then return {status="hit",position=vector.create(from.x,math.tan(math.rad(f.slope))*from.x,from.z)} end
+            if from.y-to.y>1 then
+                local radius=math.sqrt(from.x*from.x+from.z*from.z)
+                local y=math.tan(math.rad(f.slope))*from.x
+                if f.outer_variation and radius>.750001 then y+=f.outer_variation end
+                return {status="hit",position=vector.create(from.x,y,from.z)}
+            end
             if f.obstacle then return {status=f.obstacle,position=vector.create(to.x,to.y,to.z)} end
             return {status="clear"}
         end
@@ -170,8 +175,47 @@ function Tests.run()
     check(not Survey.playable_survey_judge(0,floor,0,steep,0).pass,"over5degree grade stays closed")
     local rough=copy(plane);rough.residual=.0031
     check(not Survey.playable_survey_judge(0,floor,0,rough,0).pass,"new grade cannot bypass3mm agreement")
-    local f=spawn_fixture(grade)
-    check(f.owner:set_playable_grade(grade),"fresh measured plane admitted before one spawn")
+    local varied=entry_fixture(check,{gentle=true})
+    varied.slope=1.59;varied.outer_variation=.02;varied.overlay=false
+    check(varied.entry:mount(),"one Mount surveys the entire outer clearance area")
+    varied.await_mount()
+    check(varied.mounts==1 and varied.grade~=nil,"outer2cm terrain variation does not tilt or reject the local support plane")
+    check(varied.probes==Survey.survey_counts().probes and varied.probe_peak<=Survey.SURVEY_RAYS_PER_TICK,
+        "all180floor and1080obstacle rays plus each check ray remain mandatory at unchanged cadence")
+    check(math.abs(varied.grade.origin[2])<1e-6 and math.abs(varied.grade.b-grade.b)<1e-6,
+        "measured local footprint retains actual1.59degree normal and center height")
+    local varied_floor=copy(floor)
+    for _,q in ipairs(varied_floor) do if q.dx*q.dx+q.dz*q.dz>.750001^2 then q.y+=.02 end end
+    local all_plane=Survey.survey_plane(varied_floor)
+    local local_plane=Survey.playable_survey_plane(varied_floor)
+    check(all_plane.residual>.003 and local_plane.residual<1e-6,"constructed outer variation reproduces the obsolete global3mm refusal")
+    local local_verdict=Survey.playable_survey_judge(0,varied_floor,0,local_plane,0)
+    check(local_verdict.pass and local_verdict.grade_required and math.abs(local_verdict.outer_residual_mm-20)<1e-6,
+        "accepted verdict truthfully separates local3mm support and original40mm outer clearance")
+    check(not Survey.playable_survey_judge(0,varied_floor,1,local_plane,0).pass,
+        "even an outer missing ray still refuses the whole survey")
+    check(not Survey.playable_survey_judge(0,varied_floor,0,local_plane,1).pass,
+        "outer obstacle hit or unavailable remains fatal")
+    local curb=copy(varied_floor);curb[1].y+=.012
+    local curb_plane=Survey.playable_survey_plane(curb)
+    local curb_verdict=Survey.playable_survey_judge(0,curb,0,curb_plane,0)
+    check(not curb_verdict.pass and curb_verdict.why:find("footprint plane residual",1,true)
+        and curb_verdict.why:find("slope",1,true),"true local curb refuses with actual residual and slope values")
+    local far=copy(varied_floor)
+    for _,q in ipairs(far) do if q.dx*q.dx+q.dz*q.dz>.750001^2 then q.y+=.0201 end end
+    local far_verdict=Survey.playable_survey_judge(0,far,0,Survey.playable_survey_plane(far),0)
+    check(not far_verdict.pass and far_verdict.why:find("outer clearance residual",1,true),
+        "outer variation beyond original40mm stays closed")
+    local check_ray=Survey.survey_check_ray({0,.5,0},0)
+    check(not Survey.playable_survey_on_plane(local_plane,check_ray,{0,.0031,.75}),
+        "during obstacle work a changed local check hit over3mm still refuses")
+    local near_flat=entry_fixture(check,{gentle=true})
+    near_flat.outer_variation=.02;near_flat.overlay=false
+    check(near_flat.entry:mount(),"near-level local area retains explicit mount intent")
+    near_flat.await_mount()
+    check(near_flat.mounts==1 and near_flat.grade~=nil,"outer variation on near-level support still requires measured three-ray placement")
+    local f=spawn_fixture(varied.grade)
+    check(f.owner:set_playable_grade(varied.grade),"fresh local plane admitted before one spawn despite outer variation")
     local status=f.drive()
     check(status.phase=="spawned" and f.rays==3 and f.creates==1,"center and two wheel measurements precede one body creation")
     local n=M.unit({-grade.b,1,-grade.c})
@@ -197,6 +241,10 @@ function Tests.run()
     local turn=spawn_fixture(grade);check(turn.owner:set_playable_grade(grade),"heading counterexample binds")
     turn.actor.heading=grade.heading+math.rad(5.01)
     check(turn.drive().phase=="closed" and turn.rays==0,"heading drift beyond original5degrees stops before floor query")
+    local flat_entry=entry_fixture(check,{gentle=true});flat_entry.overlay=false
+    check(flat_entry.entry:mount(),"ordinary flat mount intent accepted")
+    flat_entry.await_mount()
+    check(flat_entry.mounts==1 and flat_entry.grade==nil,"normal truly flat survey keeps the existing one-ray placement branch")
     local flat=spawn_fixture(nil)
     check(flat.drive().phase=="spawned" and flat.rays==1 and flat.owner:status().grade==nil,"ordinary flat spawn retains its one-ray branch")
     check(math.abs(flat.definition.rotation[1])+math.abs(flat.definition.rotation[2])+math.abs(flat.definition.rotation[3])==0,

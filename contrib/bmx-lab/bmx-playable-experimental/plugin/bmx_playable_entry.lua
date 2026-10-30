@@ -37,6 +37,7 @@ function Entry.new(R,Runtime,Survey,options)
     local capability=call(owner.playable_grade_policy,owner)
     local gentle_grade=admitted and session_renewable and capability[1] and capability.n==2
         and capability[2]==Survey.PLAYABLE_GRADE_POLICY and type(Survey.playable_survey_judge)=="function"
+        and type(Survey.playable_survey_plane)=="function" and type(Survey.playable_survey_on_plane)=="function"
     local function judge(...)
         if gentle_grade then return Survey.playable_survey_judge(...) end
         return Survey.survey_judge(...)
@@ -150,6 +151,7 @@ function Entry.new(R,Runtime,Survey,options)
         if gentle_grade then
             return survey.plane.residual>Survey.PLAYABLE_GRADE_RESIDUAL_M
                 or verdict.slope_deg>Survey.PLAYABLE_GRADE_SLOPE_DEG
+                or finite(verdict.outer_residual_mm) and verdict.outer_residual_mm>Survey.SURVEY_RESIDUAL_M*1000
         end
         return survey.plane.residual>Survey.SURVEY_RESIDUAL_M
             or verdict.slope_deg>Survey.SURVEY_SLOPE_DEG
@@ -204,7 +206,8 @@ function Entry.new(R,Runtime,Survey,options)
                 if v then survey.floor[#survey.floor+1]={dx=ray.dx,dz=ray.dz,y=v[2]} else survey.misses+=1 end
             end
             survey.next=last+1;if survey.next<=#survey.rays then return end
-            survey.plane=Survey.survey_plane(survey.floor)
+            if gentle_grade then survey.plane=Survey.playable_survey_plane(survey.floor)
+            else survey.plane=Survey.survey_plane(survey.floor) end
             local floor=judge(survey.heading,survey.floor,survey.misses,survey.plane,0)
             if floor.pass~=true then survey_finish(floor,now);return end
             survey.phase="obstacles";survey.rays=Survey.survey_obstacle_rays(survey.p,survey.heading,survey.plane);survey.next=1
@@ -220,7 +223,8 @@ function Entry.new(R,Runtime,Survey,options)
         local ray=Survey.survey_check_ray(survey.p,survey.heading);local status,at=cast(ray)
         if generation~=version or cancelled or unloaded then return end
         local checked=status=="hit" and Survey.survey_floor_hit(ray,at) or nil
-        if not Survey.survey_on_plane(survey.plane,ray,checked) then
+        local on_plane=gentle_grade and Survey.playable_survey_on_plane or Survey.survey_on_plane
+        if not on_plane(survey.plane,ray,checked) then
             fail("Survey floor changed; attempt ended.");return
         end
         if survey.next>#survey.rays then
@@ -257,7 +261,7 @@ function Entry.new(R,Runtime,Survey,options)
         if generation~=version or cancelled or unloaded then return end
         mount_issued=true -- Burn before callback, even if the owner refuses or raises.
         local grade
-        if gentle_grade and tonumber(string.format("%.2f",survey.verdict.slope_deg))>.05 then
+        if gentle_grade and survey.verdict.grade_required==true then
             grade=table.freeze({policy=Survey.PLAYABLE_GRADE_POLICY,
                 origin=table.freeze({survey.p[1],survey.plane.a,survey.p[3]}),
                 actor_position=table.freeze({survey.p[1],survey.p[2],survey.p[3]}),

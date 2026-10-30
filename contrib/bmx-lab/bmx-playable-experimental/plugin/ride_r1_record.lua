@@ -1002,24 +1002,65 @@ function Rec.survey_judge(heading,floor,misses,plane,blocked)
     else out.pass=true;out.why="clear" end
     return out
 end
--- Only the closed live-contact playable owner may consume this verdict. A
--- gentle grade requires a tighter measured plane, never a level substitute.
+-- The complete .75 m ring bounds the authored bike footprint. Outer rings
+-- measure the additional .5 m clearance area, not one rigid contact plane.
+-- Keep every outer hit and obstacle check; do not fit their terrain variation
+-- into the support normal used for the actual center and wheel measurements.
+function Rec.playable_survey_plane(points)
+    local local_floor={}
+    local r=Rec.SURVEY_FLOOR_RINGS[1]
+    for _,q in ipairs(points) do
+        if not finite(q.dx) or not finite(q.dz) or not finite(q.y) then return nil end
+        if math.abs(q.dx*q.dx+q.dz*q.dz-r*r)<=1e-7 then local_floor[#local_floor+1]=q end
+    end
+    if #local_floor~=360//Rec.SURVEY_FLOOR_STEP_DEG then return nil end
+    return Rec.survey_plane(local_floor)
+end
+function Rec.playable_survey_on_plane(plane,ray,v)
+    return Rec.survey_on_plane(plane,ray,v)
+        and math.abs(v[2]-(plane.a+plane.b*ray.dx+plane.c*ray.dz))<=Rec.PLAYABLE_GRADE_RESIDUAL_M
+end
+-- Only the closed live-contact playable owner may consume this verdict. The
+-- footprint keeps 3 mm agreement; outer clearance keeps the original 4 cm bound.
 function Rec.playable_survey_judge(heading,floor,misses,plane,blocked)
     local out=Rec.survey_judge(heading,floor,misses,plane,blocked)
     local displayed=finite(out.slope_deg) and tonumber(string.format("%.2f",out.slope_deg)) or nil
-    if out.pass and displayed and displayed<=.05 then return out end
     out.pass=false
     if misses>0 or not plane then return out end
     if #floor~=Rec.survey_counts().floor or not finite(plane.a) or not finite(plane.b)
         or not finite(plane.c) or not finite(plane.residual) or plane.residual<0 then
-        out.why="complete measured playable plane required"
-    elseif plane.residual>Rec.PLAYABLE_GRADE_RESIDUAL_M then
-        out.why="gentle-grade plane exceeds 3 mm residual"
+        out.why="complete measured playable plane required";return out
+    end
+    local local_residual,outer_residual,local_count=plane.residual,0,0
+    local r=Rec.SURVEY_FLOOR_RINGS[1]
+    for _,q in ipairs(floor) do
+        if not finite(q.dx) or not finite(q.dz) or not finite(q.y) then
+            out.why="complete measured playable floor required";return out
+        end
+        local error=math.abs(q.y-(plane.a+plane.b*q.dx+plane.c*q.dz))
+        if math.abs(q.dx*q.dx+q.dz*q.dz-r*r)<=1e-7 then
+            local_count+=1;local_residual=math.max(local_residual,error)
+        else outer_residual=math.max(outer_residual,error) end
+    end
+    out.residual_mm=round(local_residual*1000)
+    out.local_residual_mm=local_residual*1000;out.outer_residual_mm=outer_residual*1000
+    if local_count~=360//Rec.SURVEY_FLOOR_STEP_DEG then
+        out.why="complete measured footprint ring required"
+    elseif local_residual>Rec.PLAYABLE_GRADE_RESIDUAL_M then
+        out.why=string.format("footprint plane residual %.2f mm (at most 3), slope %.2f deg; outer %.2f mm",
+            out.local_residual_mm,out.slope_deg or 0,out.outer_residual_mm)
+    elseif outer_residual>Rec.SURVEY_RESIDUAL_M then
+        out.why=string.format("outer clearance residual %.2f mm (at most 40); footprint %.2f mm, slope %.2f deg",
+            out.outer_residual_mm,out.local_residual_mm,out.slope_deg or 0)
     elseif not finite(out.slope_deg) or out.slope_deg>Rec.PLAYABLE_GRADE_SLOPE_DEG then
-        out.why=string.format("playable floor slopes %.2f deg (at most %.1f)",out.slope_deg or 0,Rec.PLAYABLE_GRADE_SLOPE_DEG)
+        out.why=string.format("playable slope %.2f deg (at most 5); footprint %.2f mm, outer %.2f mm",
+            out.slope_deg or 0,out.local_residual_mm,out.outer_residual_mm)
     elseif type(blocked)~="number" or blocked~=0 then
         out.why=tostring(blocked).." obstacle rays not clear inside the playable area"
-    else out.pass=true;out.why="measured gentle grade; aligned placement still required" end
+    else
+        out.pass=true;out.grade_required=not displayed or displayed>.05 or outer_residual>Rec.PLAYABLE_GRADE_RESIDUAL_M
+        out.why=out.grade_required and "measured local grade; aligned placement still required" or "clear"
+    end
     return out
 end
 -- Arm's check: a passing survey, at most SURVEY_MAX_AGE_MS old, the rider still where it was taken.

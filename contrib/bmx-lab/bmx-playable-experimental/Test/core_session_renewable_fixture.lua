@@ -1638,12 +1638,13 @@ function object:prepare_backend()
     if BikeSpawn.floor_spawn_qualified()==true and lookup("world.raycast") then
         -- Keep the default proxy unchanged. The private floor query shares
         -- Core's call ledger and cancellation boundary, with one attempt only.
-        local floor_query_used=false
+        local floor_query_count=0
         spawn_api.world.raycast=function(...)
-            if T.stop_latched or T.unloaded or floor_query_used then
+            local limit=T.spawn_grade and 3 or 1 -- Center plus two wheels only in the closed grade path.
+            if T.stop_latched or T.unloaded or floor_query_count>=limit then
                 error("spawn floor ray cancelled or already consumed",0)
             end
-            floor_query_used=true
+            floor_query_count+=1
             local generation=T.generation
             local r=call("spawn.world.raycast",lookup("world.raycast"),...)
             if not current(generation) then error("spawn floor ray cancelled during callback",0) end
@@ -1651,6 +1652,7 @@ function object:prepare_backend()
             return table.unpack(r,2,r.n)
         end
     end
+    spawn_api.time={now=function() return T.now end} -- Existing guarded clock cache; no new SDK call.
     spawn=BikeSpawn.new(spawn_api,{session_renewable=session_renewable})
     T.spawn_instances=(T.spawn_instances or 0)+1
     return true
@@ -1665,7 +1667,7 @@ function object:status()
         cleanup_pending=true,cleanup_unknown=true,stock_toggle_blocked=true,used=T.used==true,
         unloaded=T.unloaded==true,equipment={phase="unknown",retained=true},storage_key=KEY}
 end
-function object:request_mount(slot,admitted)
+function object:request_mount(slot,admitted,grade)
     if not valid_slot(slot) then return false,"Choose an XInput slot from0 to3" end
     -- This branch precedes clock, storage, facts and all other API calls.
     if not qualification_only then return false,"Native bike lifecycle qualification unavailable" end
@@ -1695,7 +1697,17 @@ function object:request_mount(slot,admitted)
     else
         T.arm_at=T.arm_at or now;T.level=observed.level;T.wipeouts=observed.wipeouts
         T.initial_facts=observed;T.facts=observed;T.active=true
-        if persist(true) and current(generation) then
+        if grade~=nil then
+            local ok,accepted,why=pcall(function()
+                if not session_renewable or not spawn or type(spawn.set_playable_grade)~="function" then
+                    return false,"Closed playable aligned Spawn unavailable"
+                end
+                return spawn:set_playable_grade(grade)
+            end)
+            if not ok or accepted~=true then stop_all("playable grade refused: "..short(why or accepted))
+            else T.spawn_grade=grade end
+        end
+        if current(generation) and persist(true) and current(generation) then
             if observed.state==100 then accepted=begin_equipment(slot,"mount",100)
             else T.phase="armed";T.detail="Armed once; close both menus and rest the selected controller: sticks centred, triggers and buttons released.";accepted=true end
         end

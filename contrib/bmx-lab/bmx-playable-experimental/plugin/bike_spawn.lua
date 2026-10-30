@@ -93,6 +93,106 @@ local function floor_root(api,root,actor_y)
     end
     return placed,nil,hit.y
 end
+local GRADE_POLICY="measured_plane_grade_v1"
+local GRADE_EDGE_M=.003
+local function plain(v) return type(v)=="table" and getmetatable(v)==nil end
+local function grade_clock(self)
+    local time=type(self.api.time)=="table" and self.api.time or nil
+    if not time or type(time.now)~="function" then return nil end
+    local ok,now=pcall(time.now)
+    local g=self.grade
+    if not ok or not M.finite(now) or now<0 or now>9007199254740991
+        or g and (now<g.at_ms or now>g.expires_ms) then return nil end
+    return now
+end
+function Runtime:set_playable_grade(raw)
+    if not FLOOR_SPAWN_QUALIFIED or not self.session_renewable or self.phase~="idle" or self.used or self.grade then
+        return false,"Unused closed playable floor owner required"
+    end
+    if not plain(raw) then return false,"Measured grade packet required" end
+    local allowed={policy=true,origin=true,actor_position=true,b=true,c=true,residual=true,heading=true,at_ms=true,expires_ms=true}
+    for name in pairs(raw) do if not allowed[name] then return false,"Unknown grade field" end end
+    if raw.policy~=GRADE_POLICY or not M.vec(raw.origin,99900) or not M.vec(raw.actor_position,99900)
+        or not M.finite(raw.b) or not M.finite(raw.c) or not M.finite(raw.residual) or raw.residual<0 or raw.residual>GRADE_EDGE_M
+        or not M.finite(raw.heading) or not M.finite(raw.at_ms) or not M.finite(raw.expires_ms)
+        or raw.at_ms<0 or math.abs(raw.expires_ms-raw.at_ms-45000)>1e-6 then
+        return false,"Malformed or unqualified measured grade"
+    end
+    local slope=math.deg(math.atan(math.sqrt(raw.b*raw.b+raw.c*raw.c)))
+    local now=grade_clock(self)
+    if not now or now<raw.at_ms or now>raw.expires_ms or slope>5 or self.phase~="idle" then
+        return false,"Grade slope, clock or owner unavailable"
+    end
+    self.grade=table.freeze({policy=GRADE_POLICY,origin=table.freeze(M.copy(raw.origin)),
+        actor_position=table.freeze(M.copy(raw.actor_position)),b=raw.b,c=raw.c,residual=raw.residual,
+        heading=raw.heading,at_ms=raw.at_ms,expires_ms=raw.expires_ms,slope_deg=slope})
+    return true
+end
+local function grade_actor(self,actor)
+    local g=self.grade
+    if not grade_clock(self) or not actor or not vec(actor.position) or not M.finite(actor.heading) then return false end
+    local dx,dz=actor.position.x-g.actor_position[1],actor.position.z-g.actor_position[3]
+    local turn=(actor.heading-g.heading+math.pi)%(2*math.pi)-math.pi
+    return dx*dx+dz*dz<=.25*.25 and math.abs(turn)<=math.rad(5)
+end
+local function on_grade(g,hit)
+    local expected=g.origin[2]+g.b*(hit.x-g.origin[1])+g.c*(hit.z-g.origin[3])
+    return math.abs(hit.y-expected)<=GRADE_EDGE_M
+end
+local function grade_place(self)
+    local got,actor=pcall(self.api.skater.get)
+    if not got or self.phase~="loading_assets" or not grade_actor(self,actor) then return nil,"Grade actor/heading/freshness changed" end
+    -- Keep the original center ray, above-actor/drop/segment checks and scalar
+    -- floor_height meaning. It is not a globally level floor.
+    local center,why,floor_y=floor_root(self.api,self.root,self.floor_actor_y)
+    if self.phase~="loading_assets" then return nil,"Grade cancelled during center query" end
+    if not center then return nil,why end
+    local g=self.grade
+    if not on_grade(g,vector.create(self.root[1],floor_y,self.root[3])) then return nil,"Center hit disagrees with measured plane by over 3 mm" end
+    local normal=M.unit({-g.b,1,-g.c})
+    local tilt=M.normalized({normal[3],0,-normal[1],1+normal[2]})
+    local sy,cy=math.sin(self.floor_heading*.5),math.cos(self.floor_heading*.5)
+    local rotation=M.normalized({tilt[1]*cy-tilt[3]*sy,tilt[4]*sy,tilt[1]*sy+tilt[3]*cy,tilt[4]*cy})
+    if not rotation then return nil,"Measured plane orientation unavailable" end
+    local base={self.root[1],floor_y,self.root[3]}
+    local distances={}
+    for i,axle in ipairs({G.front_axle,G.rear_axle}) do
+        if self.phase~="loading_assets" or not grade_clock(self) then return nil,"Grade cancelled or expired before wheel query" end
+        local at=M.add(M.add(base,M.mul(normal,FLOOR_CLEARANCE_M)),M.turn(rotation,axle))
+        local from=vector.create(at[1],self.floor_actor_y+.5,at[3])
+        local to=vector.create(at[1],self.floor_actor_y-FLOOR_RAY_DOWN_M,at[3])
+        local row=table.pack(pcall(self.api.world.raycast,from,to))
+        if self.phase~="loading_assets" then return nil,"Grade cancelled during wheel query" end
+        local hit=row[2]
+        if not row[1] or row.n~=2 or not vec(hit) or math.abs(hit.x-from.x)>.025 or math.abs(hit.z-from.z)>.025
+            or hit.y<to.y or hit.y>from.y or self.floor_actor_y-hit.y>FLOOR_MAX_DROP_M or not on_grade(g,hit) then
+            return nil,"Wheel hit missing, outside segment, or over 3 mm off measured plane"
+        end
+        -- A wheel's actual ground can be above the rider's center floor on an
+        -- uphill grade. Its measured-plane agreement replaces no center actor check.
+        distances[i]=M.dot(M.sub(M.add(base,M.turn(rotation,axle)),xyz(hit)),normal)-G.wheel_radius
+    end
+    local lift=math.min(FLOOR_CLEARANCE_M,FLOOR_CLEARANCE_M-math.max(distances[1],distances[2]))
+    -- A tiny inward numerical margin keeps the original strict 0..2 cm bounds.
+    lift-=1e-7
+    if lift<0 or lift>FLOOR_CLEARANCE_M then return nil,"Grade lift outside original clearance" end
+    local placed=M.add(base,M.mul(normal,lift))
+    local clearances={distances[1]+lift,distances[2]+lift}
+    for _,value in ipairs(clearances) do if value<0 or value>FLOOR_CLEARANCE_M then return nil,"Measured wheel clearance outside 0..2 cm" end end
+    -- Preserve the survey's authored <=.75 m footprint and its .5 m margin.
+    -- Some near-limit grade/headings may refuse rather than enlarge the survey.
+    local function inside(point,radius)
+        local p=M.add(M.sub(placed,{self.root[1],floor_y,self.root[3]}),M.turn(rotation,point))
+        return math.sqrt(p[1]*p[1]+p[3]*p[3])+radius<=.75
+    end
+    for _,capsule in ipairs(G.capsules) do
+        if not inside(capsule.a,capsule.radius) or not inside(capsule.b,capsule.radius) then return nil,"Tilted capsule leaves surveyed footprint" end
+    end
+    for _,axle in ipairs({G.front_axle,G.rear_axle}) do if not inside(axle,G.wheel_radius) then return nil,"Tilted wheel leaves surveyed footprint" end end
+    self.grade_receipt=table.freeze({policy=GRADE_POLICY,normal=table.freeze(normal),clearances=table.freeze(clearances),
+        center_hit_y=floor_y,queries=3,residual_m=g.residual,slope_deg=g.slope_deg,native_collision_contact=false})
+    return placed,nil,floor_y,rotation
+end
 function S.new(api,options)
     local session_renewable=type(options)=="table" and options.session_renewable==true
     return setmetatable({api=api or reskate,phase="idle",detail="No Lua bike spawned.",used=false,session_renewable=session_renewable,
@@ -107,7 +207,7 @@ function Runtime:status()
             position=xyz(self.sample.position),rotation=self.sample.rotation,
             velocity=xyz(self.sample.velocity),angular_velocity=xyz(self.sample.angular_velocity)}
     end
-    return {phase=self.phase,detail=self.detail,used=self.used,body=self.body~=nil,
+    return {phase=self.phase,detail=self.detail,used=self.used,grade=self.grade_receipt,body=self.body~=nil,
         visual_updates=self.updates,serial=self.sample and self.sample.serial or nil,
         body_release_attempted=self.body_release_attempted,body_release_accepted=self.body_release_accepted,
         follow_handed_off=self.follow_handed_off==true,
@@ -277,7 +377,8 @@ function Runtime:_update(dt)
             -- Heading zero faces +Z. The existing yaw already points the bike's
             -- +Z along the rider's facing; only the private trial moves under P.
             self.root={actor.position.x,actor.position.y+.5,actor.position.z}
-            self.floor_actor_y=actor.position.y
+            self.floor_actor_y=actor.position.y;self.floor_heading=actor.heading
+            if self.grade and not grade_actor(self,actor) then self:stop("Grade actor/heading/freshness changed before assets") return end
         end
         self.phase="loading_assets" self.phase_wall=self.wall
     end
@@ -294,10 +395,12 @@ function Runtime:_update(dt)
             if self.phase~="loading_assets" then return end
             if self.floor_query_attempted then self:stop("floor ray attempt already consumed") return end
             self.floor_query_attempted=true -- Reserve before a callback can stop or re-enter.
-            local root,issue,floor_y=floor_root(self.api,self.root,self.floor_actor_y)
+            local root,issue,floor_y,rotation
+            if self.grade then root,issue,floor_y,rotation=grade_place(self)
+            else root,issue,floor_y=floor_root(self.api,self.root,self.floor_actor_y) end
             if self.phase~="loading_assets" then return end
             if not root then self:stop(issue) return end
-            self.root=root self.floor_y=floor_y
+            self.root=root self.floor_y=floor_y;if rotation then self.rotation=rotation end
             self.floor_query_wall=self.wall
         end
         local placed,why=self:_place(assert(Visual.matrices(self.root,self.rotation)))
@@ -307,6 +410,7 @@ function Runtime:_update(dt)
         return
     end
     if self.phase=="waiting_visuals" then
+        if self.grade and not grade_clock(self) then self:stop("Measured grade expired before body creation") return end
         if FLOOR_SPAWN_QUALIFIED and self.wall-self.floor_query_wall>FLOOR_HIT_LIFETIME_MS then
             self:stop("floor hit expired before body creation") return
         end
@@ -322,6 +426,7 @@ function Runtime:_update(dt)
         -- before the trial allocates; a consumed/expired hit is never replayed.
         if FLOOR_SPAWN_QUALIFIED then
             if self.phase~="waiting_visuals" then return end
+            if self.grade and not grade_clock(self) then self:stop("Measured grade expired during visual callbacks") return end
             if self.wall-self.floor_query_wall>FLOOR_HIT_LIFETIME_MS then
                 self:stop("floor hit expired before body creation") return
             end

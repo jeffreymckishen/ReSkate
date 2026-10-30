@@ -66,7 +66,7 @@ local function new_runtime(services,options,two_cycle)
             end
         end
     end
-    local function admission(kind,slot)
+    local function admission(kind,slot,grade)
         if not valid_slot(slot) then return false,"Choose an XInput slot from0 to3" end
         if kind=="mount" and not qualification_only then return false,"Native bike lifecycle qualification unavailable" end
         if running then
@@ -120,7 +120,7 @@ local function new_runtime(services,options,two_cycle)
             end
         end
         if accepted then
-            pending={kind=kind,slot=slot,generation=generation,modules=kind=="mount" and mount_modules or stock_modules,index=1}
+            pending={kind=kind,slot=slot,grade=grade,generation=generation,modules=kind=="mount" and mount_modules or stock_modules,index=1}
             T.phase="startup";T.detail="Request accepted; preparing. Stop cancels it before acquisition."
         elseif kind=="stock" and clear and generation==T.generation and not T.stop_latched
             and not T.unloaded and not T.storage_fault and not T.clock_unknown then
@@ -134,7 +134,16 @@ local function new_runtime(services,options,two_cycle)
         return accepted==true,accepted and nil or T.detail
     end
     function object:status() return status() end
-    function object:request_mount(slot)
+    function object:playable_grade_policy()
+        return qualification_only and session_renewable and "measured_plane_grade_v1" or nil
+    end
+    function object:request_mount(slot,grade)
+        if grade~=nil and (not qualification_only or not session_renewable or type(grade)~="table"
+            or getmetatable(grade)~=nil or not table.isfrozen(grade) or grade.policy~="measured_plane_grade_v1"
+            or type(grade.origin)~="table" or not table.isfrozen(grade.origin)
+            or type(grade.actor_position)~="table" or not table.isfrozen(grade.actor_position)) then
+            return false,"Closed immutable playable grade required"
+        end
         if not valid_slot(slot) then return false,"Choose an XInput slot from0 to3" end
         if not qualification_only then return false,"Native bike lifecycle qualification unavailable" end
         if core and T.backend_ready and not pending then
@@ -151,7 +160,7 @@ local function new_runtime(services,options,two_cycle)
                 running=false
             elseif vm_attempt_used then return false,"One attempt per VM; busy or retained duty prevents rearm" end
         end
-        return admission("mount",slot)
+        return admission("mount",slot,grade)
     end
     function object:can_prepare_next_mount()
         if not two_cycle or running or pending or T.unloaded or T.startup_closed or mounts_burned~=1
@@ -243,7 +252,9 @@ local function new_runtime(services,options,two_cycle)
                 pending=nil;T.startup_pending=false;T.startup_handoff=true
                 T.gear_admission_at=math.floor(T.startup_admitted_at)
                 local accepted,why
-                if intent.kind=="mount" then accepted,why=core:request_mount(intent.slot,T)
+                if intent.kind=="mount" then
+                    if intent.grade then accepted,why=core:request_mount(intent.slot,T,intent.grade)
+                    else accepted,why=core:request_mount(intent.slot,T) end
                 else accepted,why=core:request_stock_toggle(intent.slot,T) end
                 T.startup_handoff=false;T.gear_admission_at=nil
                 if not accepted and T.phase=="startup" then

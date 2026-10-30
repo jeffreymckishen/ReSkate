@@ -1,11 +1,11 @@
 {
   "schema": 1,
   "matrix": "closed-experimental-two-cycle-v1",
-  "flat_file_count": 66,
-  "quota_file_count": 67,
+  "flat_file_count": 67,
+  "quota_file_count": 68,
   "expected_processes": 28,
-  "expected_cases": 185,
-  "expected_assertions": 8628,
+  "expected_cases": 186,
+  "expected_assertions": 8671,
   "source_admission": "UNCHANGED_FALSE",
   "files": [
     {
@@ -131,14 +131,14 @@
     {
       "source": "plugin/bmx_playable_entry.lua",
       "destination": "bmx_playable_entry.lua",
-      "bytes": 28419,
-      "sha256": "A5E474B4A738233B8242F06C4870EF62A7CD68C007F6C4CF9B7DC683A3DB1585"
+      "bytes": 29737,
+      "sha256": "E36281CFD1E775E0CAE66354EFB2EE127B3705C9B25F5D641162C1BB8C0559C6"
     },
     {
       "source": "plugin/ride_r1_record.lua",
       "destination": "ride_r1_record.lua",
-      "bytes": 61410,
-      "sha256": "EEE22DDDFDDFBF2795AA545F698CECCCF8951BA3B2865DAD89A4832CFB040C97"
+      "bytes": 62954,
+      "sha256": "8B36D15AAF5B2760491C84C4EBAC86399CFDA3E13CFC873D7ACF97E544C0DDF6"
     },
     {
       "source": "Test/two_cycle_fixture.lua",
@@ -173,8 +173,8 @@
     {
       "source": "plugin/bike_runtime_core.lua",
       "destination": "bike_runtime_core.lua",
-      "bytes": 120928,
-      "sha256": "F081CFBFA3DF7460A261073458ABCEFBE65497A325BD457013288170589D34A2"
+      "bytes": 121682,
+      "sha256": "5BAF184357C5326026F06692FF4C1D29A1D040CCA9585158CA64512D465960C0"
     },
     {
       "source": "plugin/force_math.lua",
@@ -191,14 +191,14 @@
     {
       "source": "Test/two_cycle_facade_fixture.lua",
       "destination": "two_cycle_facade_fixture.lua",
-      "bytes": 17442,
-      "sha256": "8122C4FAF2A6ED234348E79BF079B9D0CE3632A45D6BC4FC8776722914F4CAD9"
+      "bytes": 18218,
+      "sha256": "2717B418D1110CED2EC419494C5C49259E9E808B969687CC75F042057DBFB363"
     },
     {
       "source": "plugin/bike_runtime.lua",
       "destination": "bike_runtime.lua",
-      "bytes": 17412,
-      "sha256": "78FDF74929D43B8DDEAEA58533C8061EA69A6A59ADC9A9797F3D004C11E304A7"
+      "bytes": 18188,
+      "sha256": "83F118A8A8CBC1D801807D7A01363FD5EA4BAD14136055B058A7739145AE8E92"
     },
     {
       "source": "plugin/equipment_runtime.lua",
@@ -215,8 +215,8 @@
     {
       "source": "plugin/bike_spawn.lua",
       "destination": "bike_spawn.lua",
-      "bytes": 22406,
-      "sha256": "21096AEDDD8CA938AE1F9E18033A392A057D33E8D62B970C0DA3DDB1163BDDB7"
+      "bytes": 29665,
+      "sha256": "90AA2A93B5BCD402E85EF3266273FED432E3718A9CE5DA5C428DD7B986065619"
     },
     {
       "source": "plugin/ride_runtime.lua",
@@ -389,8 +389,8 @@
     {
       "source": "Test/core_session_renewable_fixture.lua",
       "destination": "core_session_renewable_fixture.lua",
-      "bytes": 120958,
-      "sha256": "3FADD49617F6625443EBC48253F23E206C272BAE160B5279A07C9B745C083917"
+      "bytes": 121712,
+      "sha256": "7BEB731E8FFEAD05EA85FADC52DDC8771BD1A68A5903EE770EEE1818460FB929"
     },
     {
       "source": "Test/tailwhip_integration_tests.lua",
@@ -403,6 +403,12 @@
       "destination": "one_hander_integration_tests.lua",
       "source": "Test/one_hander_integration_tests.lua",
       "sha256": "C61A0196C29E35F1012CEF3C770892A614521830D8909D9DF2D3DCBFC5628B7A"
+    },
+    {
+      "source": "Test/playable_grade_spawn_tests.lua",
+      "destination": "playable_grade_spawn_tests.lua",
+      "bytes": 12578,
+      "sha256": "594923B3E7442857E71E9D6F94AFB6D1F5D8F649FC741BC310E11C4BB92A9632"
     }
   ],
   "runtime_files": [
@@ -418,18 +424,18 @@
     },
     {
       "source": "plugin/bike_runtime_core.lua",
-      "bytes": 120928,
-      "sha256": "F081CFBFA3DF7460A261073458ABCEFBE65497A325BD457013288170589D34A2"
+      "bytes": 121682,
+      "sha256": "5BAF184357C5326026F06692FF4C1D29A1D040CCA9585158CA64512D465960C0"
     },
     {
       "source": "plugin/bike_runtime.lua",
-      "bytes": 17412,
-      "sha256": "78FDF74929D43B8DDEAEA58533C8061EA69A6A59ADC9A9797F3D004C11E304A7"
+      "bytes": 18188,
+      "sha256": "83F118A8A8CBC1D801807D7A01363FD5EA4BAD14136055B058A7739145AE8E92"
     },
     {
       "source": "plugin/bike_spawn.lua",
-      "bytes": 22406,
-      "sha256": "21096AEDDD8CA938AE1F9E18033A392A057D33E8D62B970C0DA3DDB1163BDDB7"
+      "bytes": 29665,
+      "sha256": "90AA2A93B5BCD402E85EF3266273FED432E3718A9CE5DA5C428DD7B986065619"
     },
     {
       "source": "plugin/bike_visual.lua",
@@ -438,8 +444,8 @@
     },
     {
       "source": "plugin/bmx_playable_entry.lua",
-      "bytes": 28419,
-      "sha256": "A5E474B4A738233B8242F06C4870EF62A7CD68C007F6C4CF9B7DC683A3DB1585"
+      "bytes": 29737,
+      "sha256": "E36281CFD1E775E0CAE66354EFB2EE127B3705C9B25F5D641162C1BB8C0559C6"
     },
     {
       "source": "plugin/board_drop.lua",
@@ -543,8 +549,8 @@
     },
     {
       "source": "plugin/ride_r1_record.lua",
-      "bytes": 61410,
-      "sha256": "EEE22DDDFDDFBF2795AA545F698CECCCF8951BA3B2865DAD89A4832CFB040C97"
+      "bytes": 62954,
+      "sha256": "8B36D15AAF5B2760491C84C4EBAC86399CFDA3E13CFC873D7ACF97E544C0DDF6"
     },
     {
       "source": "plugin/ride_runtime.lua",
@@ -584,8 +590,8 @@
     {
       "source": "plugin/bike_runtime.lua",
       "fixture": "Test/two_cycle_facade_fixture.lua",
-      "source_sha256": "78FDF74929D43B8DDEAEA58533C8061EA69A6A59ADC9A9797F3D004C11E304A7",
-      "fixture_sha256": "8122C4FAF2A6ED234348E79BF079B9D0CE3632A45D6BC4FC8776722914F4CAD9",
+      "source_sha256": "83F118A8A8CBC1D801807D7A01363FD5EA4BAD14136055B058A7739145AE8E92",
+      "fixture_sha256": "2717B418D1110CED2EC419494C5C49259E9E808B969687CC75F042057DBFB363",
       "prefix": "return function(require)\n",
       "suffix": "\nend\n"
     }
@@ -791,6 +797,13 @@
       "invoked": "one_hander_integration_tests",
       "context": "flat",
       "expected_cases": 1
+    },
+    {
+      "suite": "playable_grade_spawn_tests",
+      "invoked": "playable_grade_spawn_tests",
+      "context": "flat",
+      "expected_cases": 1,
+      "expected_assertions": 43
     }
   ]
 }

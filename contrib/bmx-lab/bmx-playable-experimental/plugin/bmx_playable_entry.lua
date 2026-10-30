@@ -34,6 +34,13 @@ function Entry.new(R,Runtime,Survey,options)
     assert(made[1] and made.n==2 and type(made[2])=="table","one inert lifecycle owner required")
     local owner=made[2] -- Constructed exactly once; never replaced or rearmed here.
     local admitted=type(options)=="table" and options.admitted==true
+    local capability=call(owner.playable_grade_policy,owner)
+    local gentle_grade=admitted and session_renewable and capability[1] and capability.n==2
+        and capability[2]==Survey.PLAYABLE_GRADE_POLICY and type(Survey.playable_survey_judge)=="function"
+    local function judge(...)
+        if gentle_grade then return Survey.playable_survey_judge(...) end
+        return Survey.survey_judge(...)
+    end
     local phase,detail="idle",admitted and "On foot, choose Mount in a flat clear area." or "This experimental source build is closed."
     local used,mount_issued,return_pending,stock_attempted=false,false,false,false
     local attempts_used=0
@@ -139,7 +146,11 @@ function Entry.new(R,Runtime,Survey,options)
             or not finite(verdict.slope_deg) or verdict.slope_deg<0
             or not finite(verdict.downhill_deg) or not finite(verdict.downhill_dir_deg)
             or not finite(verdict.residual_mm) or verdict.residual_mm<0 then return false end
-        if verdict.pass then return displayed~=nil and displayed>.05 end
+        if verdict.pass then return not gentle_grade and displayed~=nil and displayed>.05 end
+        if gentle_grade then
+            return survey.plane.residual>Survey.PLAYABLE_GRADE_RESIDUAL_M
+                or verdict.slope_deg>Survey.PLAYABLE_GRADE_SLOPE_DEG
+        end
         return survey.plane.residual>Survey.SURVEY_RESIDUAL_M
             or verdict.slope_deg>Survey.SURVEY_SLOPE_DEG
             or verdict.downhill_deg>Survey.SURVEY_DOWNHILL_DEG
@@ -161,11 +172,12 @@ function Entry.new(R,Runtime,Survey,options)
         return true
     end
     local function survey_finish(verdict,now)
-        -- S2d's operator rule required the displayed two-decimal slope <=0.05.
+        -- Keep S2d's display rule for lab owners. The closed playable owner
+        -- instead requires a measured gentle plane and aligned Spawn placement.
         local slope=plain(verdict) and verdict.slope_deg
         local displayed=finite(slope) and tonumber(string.format("%.2f",slope)) or nil
         survey.state="done";survey.verdict=verdict;survey.at=now
-        survey.pass=plain(verdict) and verdict.pass==true and displayed~=nil and displayed<=.05
+        survey.pass=plain(verdict) and verdict.pass==true and displayed~=nil and (gentle_grade or displayed<=.05)
         if not survey.pass then
             local why=text(plain(verdict) and verdict.pass==true and "Survey slope must display 0.05 degrees or less for this profile."
                 or plain(verdict) and verdict.why,"Clear-area survey refused.")
@@ -193,7 +205,7 @@ function Entry.new(R,Runtime,Survey,options)
             end
             survey.next=last+1;if survey.next<=#survey.rays then return end
             survey.plane=Survey.survey_plane(survey.floor)
-            local floor=Survey.survey_judge(survey.heading,survey.floor,survey.misses,survey.plane,0)
+            local floor=judge(survey.heading,survey.floor,survey.misses,survey.plane,0)
             if floor.pass~=true then survey_finish(floor,now);return end
             survey.phase="obstacles";survey.rays=Survey.survey_obstacle_rays(survey.p,survey.heading,survey.plane);survey.next=1
             return
@@ -212,7 +224,7 @@ function Entry.new(R,Runtime,Survey,options)
             fail("Survey floor changed; attempt ended.");return
         end
         if survey.next>#survey.rays then
-            survey_finish(Survey.survey_judge(survey.heading,survey.floor,survey.misses,survey.plane,survey.hits+survey.unavailable),now)
+            survey_finish(judge(survey.heading,survey.floor,survey.misses,survey.plane,survey.hits+survey.unavailable),now)
         end
     end
     local function prep_step(now)
@@ -244,7 +256,17 @@ function Entry.new(R,Runtime,Survey,options)
         if not fresh then fail(text(why,"Survey is no longer fresh."));return end
         if generation~=version or cancelled or unloaded then return end
         mount_issued=true -- Burn before callback, even if the owner refuses or raises.
-        local out=call(owner.request_mount,owner,slot)
+        local grade
+        if gentle_grade and tonumber(string.format("%.2f",survey.verdict.slope_deg))>.05 then
+            grade=table.freeze({policy=Survey.PLAYABLE_GRADE_POLICY,
+                origin=table.freeze({survey.p[1],survey.plane.a,survey.p[3]}),
+                actor_position=table.freeze({survey.p[1],survey.p[2],survey.p[3]}),
+                b=survey.plane.b,c=survey.plane.c,residual=survey.plane.residual,heading=survey.heading,
+                at_ms=survey.at,expires_ms=survey.at+Survey.SURVEY_MAX_AGE_MS})
+        end
+        local out
+        if grade then out=call(owner.request_mount,owner,slot,grade)
+        else out=call(owner.request_mount,owner,slot) end
         if generation~=version or cancelled or unloaded then return end
         if not out[1] or out[2]~=true then fail(text(out[3],"Mount refused; no retry in this session."));return end
         phase,detail="mounting","Mount armed. Keep controls released while the lifecycle takes ownership."

@@ -102,6 +102,10 @@ Rec.SURVEY_OBSTACLE_STEP_DEG=2
 Rec.SURVEY_MAX_AGE_MS=45000
 Rec.SURVEY_MOVE_M=.25
 Rec.SURVEY_TURN_RAD=math.rad(5)
+-- Separate playable geometry admission; R1/S2 survey limits above stay exact.
+Rec.PLAYABLE_GRADE_POLICY="measured_plane_grade_v1"
+Rec.PLAYABLE_GRADE_SLOPE_DEG=5
+Rec.PLAYABLE_GRADE_RESIDUAL_M=.003
 -- main.lua casts the survey with world.probe ("unavailable", "clear" or "hit"); with nothing excluded a
 -- ray spends one native cast, at most two, of the tick's 64, so 32 rays a tick never run the budget short.
 Rec.SURVEY_RAYS_PER_TICK=32
@@ -996,6 +1000,26 @@ function Rec.survey_judge(heading,floor,misses,plane,blocked)
     elseif type(blocked)~="number" or blocked>0 then
         out.why=tostring(blocked).." obstacle rays not clear (hit or unavailable) inside the clear area"
     else out.pass=true;out.why="clear" end
+    return out
+end
+-- Only the closed live-contact playable owner may consume this verdict. A
+-- gentle grade requires a tighter measured plane, never a level substitute.
+function Rec.playable_survey_judge(heading,floor,misses,plane,blocked)
+    local out=Rec.survey_judge(heading,floor,misses,plane,blocked)
+    local displayed=finite(out.slope_deg) and tonumber(string.format("%.2f",out.slope_deg)) or nil
+    if out.pass and displayed and displayed<=.05 then return out end
+    out.pass=false
+    if misses>0 or not plane then return out end
+    if #floor~=Rec.survey_counts().floor or not finite(plane.a) or not finite(plane.b)
+        or not finite(plane.c) or not finite(plane.residual) or plane.residual<0 then
+        out.why="complete measured playable plane required"
+    elseif plane.residual>Rec.PLAYABLE_GRADE_RESIDUAL_M then
+        out.why="gentle-grade plane exceeds 3 mm residual"
+    elseif not finite(out.slope_deg) or out.slope_deg>Rec.PLAYABLE_GRADE_SLOPE_DEG then
+        out.why=string.format("playable floor slopes %.2f deg (at most %.1f)",out.slope_deg or 0,Rec.PLAYABLE_GRADE_SLOPE_DEG)
+    elseif type(blocked)~="number" or blocked~=0 then
+        out.why=tostring(blocked).." obstacle rays not clear inside the playable area"
+    else out.pass=true;out.why="measured gentle grade; aligned placement still required" end
     return out
 end
 -- Arm's check: a passing survey, at most SURVEY_MAX_AGE_MS old, the rider still where it was taken.

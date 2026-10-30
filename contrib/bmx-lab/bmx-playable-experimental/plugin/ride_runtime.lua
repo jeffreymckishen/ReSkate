@@ -7,7 +7,6 @@ local M = require("./force_math")
 local Identity = require("./lease_identity")
 local Geometry = require("./bike_geometry")
 local InFlight = require("./ride_inflight")
-local WheelGeometry = require("./contact_runtime")
 local Ride, Object = {}, {}
 local states = setmetatable({}, {__mode="k"})
 local MAX_SAFE = 9007199254740991
@@ -626,6 +625,23 @@ local function companion_result(s,frame,contact,actions)
     end
     return out
 end
+local function wheel_plan(frame,geometry,gravity,probe_extra)
+    if type(geometry)~="table" or not M.vec(geometry.com,10) or not M.vec(geometry.front_axle,10)
+        or not M.vec(geometry.rear_axle,10) or not M.finite(geometry.wheel_radius)
+        or geometry.wheel_radius<.01 or geometry.wheel_radius>2
+        or not M.finite(probe_extra) or probe_extra<.15 or probe_extra>.75 then return nil end
+    local down=M.unit(gravity)
+    if not down then return nil end
+    local rays,centers={},{}
+    for i,axle in ipairs({geometry.front_axle,geometry.rear_axle}) do
+        local center=M.add(frame.body.center_of_mass,M.turn(frame.body.orientation,M.sub(axle,geometry.com)))
+        local target=M.add(center,M.mul(down,geometry.wheel_radius+probe_extra))
+        if not M.vec(center,100000) or not M.vec(target,100000) then return nil end
+        centers[i]=center
+        rays[i]={from=native(center),to=native(target)}
+    end
+    return freeze(rays),centers
+end
 local function contact_binding(s,frame,decoded,count)
     if type(decoded)~="table" or decoded.valid~=true or type(decoded.binding)~="table"
         or decoded.binding.body_handle~=frame.body_handle or decoded.binding.physics_epoch~=frame.physics_epoch
@@ -646,60 +662,35 @@ local function contact_binding(s,frame,decoded,count)
         or decoded.query.actor_lane~=expected then return nil,"contact actor lane unavailable" end
     return true
 end
-local function wheel_contacts(s,frame,options)
-    local planned=invoke(s,WheelGeometry.wheel_plan,frame,s.geometry,s.force.tuning.gravity,s.wheel_probe_extra)
-    if not planned[1] or planned.n~=4 or not planned.current or s.stopped or not planned[2] then
-        return nil,"authored wheel geometry unavailable"
+local function wheel_contacts(s,frame,decoded,centers,geometry)
+    local bound,why=contact_binding(s,frame,decoded,2)
+    if not bound then return nil,why end
+    local samples,grounded={},false
+    local forward=M.turn(frame.body.orientation,{0,0,1})
+    for i,ray in ipairs(decoded.rays) do
+        if ray.status=="clear" then
+            -- The paired clear-aware Forces/Solver accepts this absence.
+            samples[i]={contact={status="clear"}}
+        elseif ray.status=="hit" and ray.normal_available==true and ray.surface_velocity_available==true
+            and ray.motion=="measured" and M.vec(ray.position,100000) and M.vec(ray.normal,1)
+            and M.vec(ray.surface_velocity,50) then
+            if math.abs(M.length(ray.normal)-1)>.001 then return nil,"measured normal is not unit" end
+            local basis=M.basis(ray.normal,forward)
+            if not basis then return nil,"measured wheel tangent unavailable" end
+            local separation=M.dot(M.sub(centers[i],ray.position),basis.normal)-geometry.wheel_radius
+            if not M.finite(separation) or separation<-.10 then return nil,"wheel penetration unavailable or excessive" end
+            samples[i]={contact={status="hit",point=copy(ray.position),normal=basis.normal,
+                forward=basis.forward,surface_velocity=copy(ray.surface_velocity)},separation=separation,
+                wheel_center=copy(centers[i]),wheel_radius=geometry.wheel_radius,
+                verified_plane=false,balance_normal_available=false}
+            grounded=grounded or Forces.eligible_support(frame.body,samples[i],.005,.10)
+        else return nil,"measured wheel surface unavailable" end
     end
-    local plan,centers,context=planned[2],planned[3],planned[4]
-    local total_rays,total_casts=0,0
-    local function query(ray_plan)
-        if #ray_plan==0 then return {rays={}} end
-        total_rays+=#ray_plan
-        if total_rays>14 then return nil,"wheel query ray budget unavailable" end
-        local probed=invoke(s,s.api.probe_batch,frame.physics_epoch,ray_plan,options)
-        if not probed[1] or probed.n~=2 or not probed.current or s.stopped then return nil,"native contact batch unavailable" end
-        local contacted=invoke(s,s.contact.decode,frame,ray_plan,probed[2])
-        if not contacted[1] or contacted.n~=2 or not contacted.current or s.stopped then return nil,"contact decode unavailable" end
-        local decoded=contacted[2]
-        local bound,why=contact_binding(s,frame,decoded,#ray_plan)
-        if not bound then return nil,why end
-        if decoded.status~="available" then return nil,"measured wheel batch unavailable" end
-        if not M.finite(decoded.query.native_casts) or decoded.query.native_casts%1~=0
-            or decoded.query.native_casts<#ray_plan or decoded.query.native_casts>#ray_plan*2 then
-            return nil,"wheel query cast accounting unavailable"
-        end
-        total_casts+=decoded.query.native_casts
-        if total_casts>28 then return nil,"wheel query cast budget unavailable" end
-        return decoded
-    end
-    local decoded,why=query(plan)
-    if not decoded then return nil,why end
-    local edge_planned=invoke(s,WheelGeometry.edge_plan,frame,decoded.rays,centers,context,s.geometry)
-    if not edge_planned[1] or edge_planned.n~=3 or not edge_planned.current or s.stopped then return nil,"edge plan unavailable" end
-    local wall_plan,candidates=edge_planned[2],edge_planned[3]
-    if not wall_plan then return nil,candidates end
-    local walls,wall_issue=query(wall_plan)
-    if not walls then return nil,wall_issue end
-    local witness_planned=invoke(s,WheelGeometry.edge_witness_plan,frame,walls.rays,candidates,s.geometry)
-    if not witness_planned[1] or witness_planned.n~=3 or not witness_planned.current or s.stopped then return nil,"edge witness plan unavailable" end
-    local witness_plan,features=witness_planned[2],witness_planned[3]
-    if not witness_plan then return nil,features end
-    local witnesses,witness_issue=query(witness_plan)
-    if not witnesses then return nil,witness_issue end
-    local sampled=invoke(s,WheelGeometry.wheel_samples,frame,decoded.rays,centers,context,s.geometry,features,witnesses.rays)
-    if not sampled[1] or not sampled.current or s.stopped then return nil,"wheel projection unavailable" end
-    local samples,issue=sampled[2],sampled[3]
-    if not samples then return nil,issue end
-    local grounded=false
-    for _,sample in ipairs(samples)do
-        grounded=grounded or Forces.eligible_support(frame.body,sample,.005,.10)
-            or sample.edge~=nil and Forces.eligible_support(frame.body,sample.edge,.005,.10)
-    end
+    -- Contact.decode returns a new table frozen all through: kept as it is,
+    -- where detaching copied it. Anything else is detached as before.
     return {samples=samples,grounded=grounded,decoded=frozen_whole(decoded) or detached(decoded),
         support={known=true,grounded_known=true,grounded=grounded,epoch=frame.physics_epoch,
-            provenance="measured_central_faces_and_local_convex_edges",native_collision_contact=false,
-            wheel_query_rays=total_rays,wheel_query_casts=total_casts,edge_topology_known=false,
+            provenance="measured_rays_authored_wheel_geometry",native_collision_contact=false,
             actor_lane=decoded.query.actor_lane,
             actor_tripwire=decoded.query.actor_lane=="identity" and "not_required_identity_lane" or nil,
             landing_quality_available=false,reason="landing_quality_not_qualified"}}
@@ -834,11 +825,17 @@ local function observe(s,source_frame,raw,context)
         serial=sample.serial,time=sample.time,seconds=sample.seconds,body=body,sample=sample,source=model_source,
         owner={body_handle=s.body,lease_handle=model_source.lease_handle},gates={focused=true,menu_open=false},
         now_ms=s.now,active=true,loaded=true,telemetry=copy(context.telemetry),observed=copy(context.observed)})
+    local plan,centers=wheel_plan(frame,s.geometry,s.force.tuning.gravity,s.wheel_probe_extra)
+    if not plan then stop(s,"authored wheel geometry unavailable");return end
     local category_lane=s.contact.CATEGORY_WHEEL_LANE_QUALIFIED==true
     local query_options=category_lane
         and {require_contact=true,query_preset="camera",require_named_actor_categories_absent=true}
         or {require_contact=true,exclude_local_actor=true}
-    local contact,issue=wheel_contacts(s,frame,query_options)
+    local probed=invoke(s,s.api.probe_batch,sample.epoch,plan,query_options)
+    if not probed[1] or probed.n~=2 or not probed.current or s.stopped then stop(s,"native contact batch unavailable");return end
+    local contacted=invoke(s,s.contact.decode,frame,plan,probed[2])
+    if not contacted[1] or contacted.n~=2 or not contacted.current or s.stopped then stop(s,"contact decode unavailable");return end
+    local contact,issue=wheel_contacts(s,frame,contacted[2],centers,s.geometry)
     if not contact then stop(s,issue);return end
     if category_lane then
         -- The tripwire is cast on the first wheel batch and then every
@@ -920,7 +917,7 @@ local function observe(s,source_frame,raw,context)
         stop(s,"hop request expired before body progress");return
     end
     if s.tricks and type(controls.actions)~="table" then stop(s,"bound trick action snapshot unavailable");return end
-    local companions,companion_issue=companion_result(s,frame,contact.decoded,controls.actions)
+    local companions,companion_issue=companion_result(s,frame,contacted[2],controls.actions)
     if not companions then stop(s,companion_issue);return end
     if s.stopped then return end
     s.model_steps+=1

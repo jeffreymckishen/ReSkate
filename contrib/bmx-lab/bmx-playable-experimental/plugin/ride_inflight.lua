@@ -3,7 +3,6 @@
 -- forecast interval. Age 0 waits for the next interval; age >=2 is already in
 -- the measured sample. These copies do not grant native command authority.
 local M=require("./force_math")
-local Contact=require("./contact_runtime")
 local I={VISIBLE_STEPS=2}
 local function plain(value) return type(value)=="table" and getmetatable(value)==nil end
 local function array_size(value,limit)
@@ -64,28 +63,8 @@ local function valid_samples(samples)
                 or not vector(contact.surface_velocity,50) or not vector(contact.forward)
                 or not M.basis(contact.normal,contact.forward) then return false end
         elseif contact.status~="clear" then return false end
-        local edge=sample.edge
-        if edge~=nil then
-            if not plain(edge) or edge.edge~=nil or not plain(edge.edge_feature)
-                or not vector(edge.wheel_center) or not M.finite(edge.wheel_radius)
-                or edge.wheel_radius<.01 or edge.wheel_radius>2 or not plain(edge.contact) then return false end
-            if edge.contact.status=="hit" then
-                if not M.finite(edge.separation) or not vector(edge.contact.point) or not vector(edge.contact.normal,2)
-                    or math.abs(M.length(edge.contact.normal)-1)>.001 or not vector(edge.contact.surface_velocity,50)
-                    or not vector(edge.contact.forward) or not M.basis(edge.contact.normal,edge.contact.forward) then return false end
-            elseif edge.contact.status~="clear" then return false end
-        end
     end
     return true
-end
-local function same_edge(actual,expected)
-    if not expected or actual.contact.status~=expected.contact.status then return false end
-    if actual.contact.status=="clear" then return true end
-    local tolerance=1e-5+1e-7*math.max(M.length(actual.wheel_center),M.length(actual.contact.point))
-    return math.abs(actual.separation-expected.separation)<=tolerance
-        and M.length(M.sub(actual.contact.point,expected.contact.point))<=tolerance
-        and M.length(M.sub(actual.contact.normal,expected.contact.normal))<=1e-5
-        and M.length(M.sub(actual.contact.surface_velocity,expected.contact.surface_velocity))<=1e-6
 end
 -- inflight is a dense list of accepted {age,force,torque,impulse?,impulse_id?}.
 -- Ages are exact bounded serial differences. Only one accepted command may have
@@ -93,8 +72,7 @@ end
 -- the same event cannot appear in two accepted commands. Even ignored ages are
 -- validated. No missing force, torque or contact fact is replaced by zero.
 -- Returns fresh mutable body and contact tables, or nil/reason; inputs stay intact.
--- Optional hit wheel_center/wheel_radius describe the measured central ray;
--- wheel_rim selects an actual radius point for a measured lower-arc ray.
+-- Optional hit wheel_center/wheel_radius must describe the measured gravity ray.
 -- Their rigid forecast retains a consistent ray/plane/gap tuple. Without this
 -- pair, legacy point prediction remains available but is explicitly unsuitable
 -- for geometry-dependent approach braking (forecast_geometry_unavailable=true).
@@ -148,39 +126,28 @@ function I.fold(h,gravity,inflight,body,samples)
         local contact=sample.contact
         if contact.status=="hit" then
             local center,radius=sample.wheel_center,sample.wheel_radius
-            local rim=sample.wheel_rim
-            if rim~=nil and (center==nil or radius==nil) then return nil,"fold contact geometry invalid" end
             if center~=nil or radius~=nil then
-                -- This optional hub/radius/rim geometry is attached to a
+                -- This optional pair is authored wheel geometry attached to a
                 -- measured gravity ray. It grants no native contact authority.
                 if not vector(center) or not M.finite(radius) or radius<1e-6 or radius>10 or not down then
                     return nil,"fold contact geometry invalid"
                 end
                 local dn=M.dot(down,contact.normal)
-                if rim~=nil and (not vector(rim) or math.abs(M.length(M.sub(rim,center))-radius)>1e-6) then
-                    return nil,"fold contact geometry invalid"
-                end
-                local query_center=rim or center
-                local query_radius=rim and 0 or radius
-                local gap=M.dot(M.sub(query_center,contact.point),contact.normal)
+                local gap=M.dot(M.sub(center,contact.point),contact.normal)
                 -- Native ray coordinates are single precision; allow their
                 -- rounding error without accepting a displaced near-origin ray.
                 local tolerance=1e-5+1e-7*math.max(M.length(center),M.length(contact.point))
-                if dn>=-1e-6 or math.abs(gap-query_radius-sample.separation)>tolerance
-                    or M.length(M.sub(M.add(query_center,M.mul(down,gap/-dn)),contact.point))>tolerance then
+                if dn>=-1e-6 or math.abs(gap-radius-sample.separation)>tolerance
+                    or M.length(M.sub(M.add(center,M.mul(down,gap/-dn)),contact.point))>tolerance then
                     return nil,"fold contact geometry invalid"
                 end
                 local local_center=M.turn(inverse,M.sub(center,old_center))
                 local next_center=M.add(b.center_of_mass,M.turn(b.orientation,local_center))
                 local plane_point=M.add(contact.point,M.mul(contact.surface_velocity,h))
-                local next_rim=rim and M.add(b.center_of_mass,M.turn(b.orientation,
-                    M.turn(inverse,M.sub(rim,old_center)))) or nil
-                local next_query=next_rim or next_center
-                local next_gap=M.dot(M.sub(next_query,plane_point),contact.normal)
+                local next_gap=M.dot(M.sub(next_center,plane_point),contact.normal)
                 sample.wheel_center=next_center
-                sample.wheel_rim=next_rim
-                sample.separation=next_gap-query_radius
-                contact.point=M.add(next_query,M.mul(down,next_gap/-dn))
+                sample.separation=next_gap-radius
+                contact.point=M.add(next_center,M.mul(down,next_gap/-dn))
                 sample.forecast_geometry_unavailable=false
             else
                 -- Legacy generic samples lack the hub/radius needed to move a
@@ -191,31 +158,6 @@ function I.fold(h,gravity,inflight,body,samples)
                 contact.point=M.add(contact.point,M.mul(M.sub(point_v,M.mul(contact.normal,M.dot(point_v,contact.normal))),h))
                 sample.forecast_geometry_unavailable=true
             end
-        end
-    end
-    -- A convex edge is a static measured feature, not a material rim point.
-    -- Validate its current geometry, move only the hub through the accepted
-    -- command, then reconstruct the closest feature/normal at that new pose.
-    local old_forward=M.turn(old_orientation,{0,0,1})
-    local next_forward=M.turn(b.orientation,{0,0,1})
-    for i,sample in ipairs(out)do
-        local edge=sample.edge
-        if edge~=nil then
-            local original=samples[i]
-            if original.wheel_center and (not vector(original.wheel_center)
-                or M.length(M.sub(original.wheel_center,edge.wheel_center))>1e-5) then
-                return nil,"fold edge hub mismatch"
-            end
-            if original.wheel_radius and (not M.finite(original.wheel_radius)
-                or math.abs(original.wheel_radius-edge.wheel_radius)>1e-8) then return nil,"fold edge radius mismatch" end
-            local current=Contact.edge_sample(edge.wheel_center,edge.wheel_radius,edge.edge_feature,old_forward)
-            if not same_edge(edge,current) then return nil,"fold edge geometry invalid" end
-            local local_hub=M.turn(inverse,M.sub(edge.wheel_center,old_center))
-            local next_hub=M.add(b.center_of_mass,M.turn(b.orientation,local_hub))
-            local rebuilt,why=Contact.edge_sample(next_hub,edge.wheel_radius,edge.edge_feature,next_forward)
-            if not rebuilt then return nil,"fold edge geometry unavailable: "..tostring(why) end
-            rebuilt.forecast_geometry_unavailable=false
-            sample.edge=rebuilt
         end
     end
     -- Ride derives this tangent from the bike heading, not from the surface.

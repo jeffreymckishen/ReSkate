@@ -61,7 +61,7 @@ function Tests.run()
     end)
     case("F8 action uses the guarded Return path without opening the menu",function()
         local f=setup()
-        check(#f.binds==4 and f.binds[1].name=="bmx_return" and f.binds[1].key=="F8","F8 default remains alongside recovery; remapping belongs to Binds")
+        check(#f.binds==5 and f.binds[1].name=="bmx_return" and f.binds[1].key=="F8","F8 default remains alongside recovery; remapping belongs to Binds")
         check(f.returns==0 and f.mounts==0 and f.cancels==0 and f.steps==0 and #f.notes==0,"registration dispatches no lifecycle command or menu draw")
         f.callbacks.action("another_action");f.callbacks.action(nil);f.callbacks.action({name="bmx_return"})
         check(f.returns==0 and f.mounts==0 and f.cancels==0,"only the exact action name selects Return")
@@ -77,7 +77,7 @@ function Tests.run()
     end)
     case("F9 requests existing eligible recovery once and is inert after unload",function()
         local f=setup()
-        check(#f.binds==4 and f.binds[2].name=="bmx_recover" and f.binds[2].key=="F9","one remappable F9 recovery default")
+        check(#f.binds==5 and f.binds[2].name=="bmx_recover" and f.binds[2].key=="F9","one remappable F9 recovery default")
         check(f.recovers==0 and f.status_reads==0 and f.steps==0 and #f.notes==0,"registration never requests recovery or draws the menu")
         f.report={phase="riding",detail="constructed",admitted=true,core_phase="following",recovery_available=false,
             attempts_used=1,attempt_limit=2,cleanup_pending=false,cleanup_unknown=false}
@@ -108,7 +108,7 @@ function Tests.run()
     end)
     case("controller recovery shares exact eligibility and pending intent with F9",function()
         local f=setup()
-        check(#f.binds==4 and f.binds[3].name=="bmx_recover_pad" and f.binds[3].key=="Pad.LB+Pad.RB+Pad.L3",
+        check(#f.binds==5 and f.binds[3].name=="bmx_recover_pad" and f.binds[3].key=="Pad.LB+Pad.RB+Pad.L3",
             "separate remappable controller action preserves the F8/F9 defaults")
         f.report={phase="riding",detail="constructed",admitted=true,core_phase="following",recovery_available=false,
             attempts_used=1,attempt_limit=2,cleanup_pending=false,cleanup_unknown=false}
@@ -136,7 +136,7 @@ function Tests.run()
     end)
     case("controller Return uses the exact F8 path without a menu or ride input step",function()
         local f=setup()
-        check(#f.binds==4 and f.binds[4].name=="bmx_return_pad" and f.binds[4].key=="Pad.LB+Pad.RB+Pad.R3",
+        check(#f.binds==5 and f.binds[4].name=="bmx_return_pad" and f.binds[4].key=="Pad.LB+Pad.RB+Pad.R3",
             "separate remappable Return chord preserves all earlier binding defaults")
         check(f.returns==0 and f.mounts==0 and f.recovers==0 and f.steps==0 and f.status_reads==0,
             "registering the Return chord performs no lifecycle or input work")
@@ -155,8 +155,33 @@ function Tests.run()
         check(noted and f.returns==3,"drawing the press-order and release instruction never repeats Return")
         f.callbacks.unload()
         check(f.unloads==1 and f.new_calls==1 and f.returns==3 and f.steps==0,"unload delegates cleanup to the same existing Entry")
-        check(#f.binds==4 and f.mounts==0 and f.recovers==0 and f.cancels==0,
+        check(#f.binds==5 and f.mounts==0 and f.recovers==0 and f.cancels==0,
             "events and unload add no rebindings or alternate lifecycle actions; SDK owns binding cleanup")
+    end)
+    case("controller Mount requests the existing guarded intent without a menu or input step",function()
+        local f=setup()
+        check(#f.binds==5 and f.binds[5].name=="bmx_mount_pad" and f.binds[5].key=="Pad.LB+Pad.RB+Pad.A",
+            "a separate remappable Mount action preserves the Return and recovery defaults")
+        check(f.mounts==0 and f.returns==0 and f.recovers==0 and f.steps==0 and f.status_reads==0,
+            "registration never requests Mount or bypasses the closed source constructor")
+        f.callbacks.action("Pad.LB+Pad.RB+Pad.A");f.callbacks.action({name="bmx_mount_pad"});f.callbacks.action(nil)
+        check(f.mounts==0 and f.status_reads==0,"only the stable Mount action name selects the intent after any remap")
+        f.callbacks.action("bmx_mount_pad")
+        check(f.mounts==1 and f.new_calls==1 and f.status_reads==0 and f.steps==0 and #f.notes==0,
+            "the action calls the same Entry Mount directly without a new owner, authority latch or tick")
+        f.callbacks.action("bmx_mount_pad")
+        check(f.mounts==2 and f.returns==0 and f.recovers==0 and f.cancels==0 and f.steps==0,
+            "a separately delivered explicit event preserves Entry refusal instead of queuing an automatic retry")
+        f.buttons.bmx_play_mount=true;f.menu(f.ui);f.buttons={}
+        check(f.mounts==3 and f.new_calls==1,"the menu button and controller action use exactly the same guarded Mount method")
+        local noted=false
+        for _,note in ipairs(f.notes) do
+            if note=="Hold LB + RB, then press A to request Mount. Start on foot and release all controls while preparing (remappable in Binds)." then noted=true end
+        end
+        check(noted and f.mounts==3,"the on-foot and release instruction performs no automatic Mount")
+        f.callbacks.unload()
+        check(f.unloads==1 and f.new_calls==1 and f.mounts==3 and f.returns==0 and f.cancels==0 and #f.binds==5,
+            "unload uses the existing Entry and SDK binding cleanup without an alternate lifecycle")
     end)
     return {cases=cases,assertions=assertions,game_evidence=false,native_actions=0}
 end

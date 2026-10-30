@@ -920,7 +920,7 @@ local function observe(s,source_frame,raw,context)
         stop(s,"hop request expired before body progress");return
     end
     if s.tricks and type(controls.actions)~="table" then stop(s,"bound trick action snapshot unavailable");return end
-    local companions,companion_issue=companion_result(s,frame,contacted[2],controls.actions)
+    local companions,companion_issue=companion_result(s,frame,contact.decoded,controls.actions)
     if not companions then stop(s,companion_issue);return end
     if s.stopped then return end
     s.model_steps+=1

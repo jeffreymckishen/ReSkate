@@ -1,8 +1,8 @@
 {
   "schema": 1,
   "matrix": "closed-experimental-two-cycle-v1",
-  "flat_file_count": 59,
-  "quota_file_count": 60,
+  "flat_file_count": 60,
+  "quota_file_count": 61,
   "expected_processes": 24,
   "expected_cases": 181,
   "expected_assertions": null,
@@ -361,6 +361,12 @@
       "destination": "wheel_edge_rolling_impedance_tests.lua",
       "bytes": 5558,
       "sha256": "B593977C9D71EEC38033376AAC7294D85B999CE48EB8E073B5C3BC9CC888F95D"
+    },
+    {
+      "source": "Test/hop_curb_crossing_tests.lua",
+      "destination": "hop_curb_crossing_tests.lua",
+      "bytes": 13047,
+      "sha256": "E2BCDC4A49049E8839382B8ACFC7E6F95C7BFC99B347FFA4ABDDE7C14CDDF210"
     }
   ],
   "runtime_files": [
@@ -556,6 +562,16 @@
       "expected_cases": 3,
       "expected_assertions": 23,
       "evidence_scope": "Corrected rolling material consistency only; no traversal or native qualification"
+    }
+  ],
+  "hop_suites": [
+    {
+      "suite": "hop_curb_crossing_tests",
+      "invoked": "hop_curb_crossing_tests",
+      "context": "flat",
+      "expected_cases": 1,
+      "expected_assertions": 4797,
+      "evidence_scope": "Exact R2 pure hop-assisted model fixture; no unassisted traversal, Host or native qualification"
     }
   ],
   "suites": [

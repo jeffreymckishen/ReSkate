@@ -288,6 +288,77 @@ function Tests.run()
         f.tick(10)
         check(f.entry:status().cancelled and f.stepoffs==nil,"cancel during environment read wins before owner callback")
     end)
+    local function fall(f,issue)
+        f.latest=cleaned();f.latest.phase="stopping";f.latest.bike_cleanup_complete=false
+        f.latest.bike_authority=true;f.latest.cleanup_pending=true;f.latest.stock_toggle_blocked=true
+        f.latest.stop_reason="subordinate requested stop"
+        f.latest.ride={stop_requested=true,issue=issue}
+        f.tick()
+    end
+    case("explicit tilt recovery waits for clean Return and fresh504 survey",function()
+        local f=fixture({two=true});f.riding()
+        fall(f,"measured tilt 55.8 deg over the 55 deg Ride stop")
+        check(f.entry:status().phase=="fallen" and f.entry:status().recovery_available,"known tilt is visible without restarting")
+        check(f.toggles==0 and f.stops==0 and f.mounts==1,"fall observation alone sends no recovery command")
+        check(f.entry:recover() and f.entry:status().recovery_pending,"one explicit Recover intent is accepted")
+        check(not f.entry:recover() and f.stops==1,"repeated Recover never resends Return")
+        f.tick(5);check(f.toggles==0 and f.mounts==1,"incomplete cleanup blocks stock input and a new mount")
+        f.latest=cleaned();f.overlay=true;f.tick()
+        check(f.toggles==0,"menu-open cleanup proof never sends stock input")
+        f.overlay=false;f.tick();check(f.toggles==1 and f.mounts==1,"one existing stock transaction after clean proof")
+        local probes=f.probes
+        f.latest=cleaned();f.stock=100;f.tick()
+        check(f.entry:status().phase=="stepping_off" and f.entry:status().attempts_used==2
+            and not f.entry:status().recovery_pending and f.stepoffs==nil,"actual100 consumes the single fresh Mount intent before callbacks")
+        f.tick();check(f.stepoffs==1 and f.probes==probes,"existing deferred504 request precedes all new survey work")
+        f.latest=cleaned();f.stock=504;f.on_ready504=function()return true,2 end
+        f.tick();f.await_mount();f.tick()
+        check(f.mounts==2 and f.probes>=probes+1260 and f.entry:status().phase=="riding","fresh504 ACK and complete fresh survey precede mount two")
+        check(f.new_calls==1 and f.entry:status().fall_reason==nil,"same bounded manager; fallen display clears only on actual following")
+        fall(f,"measured tilt 56.0 deg over the 55 deg Ride stop")
+        check(not f.entry:recover() and not f.entry:status().recovery_available and f.mounts==2,"second fall cannot allocate a third attempt")
+        check(f.entry:return_to_skateboard(),"ordinary Return remains available after the final fall")
+    end)
+    case("roll fall can recover after a separately completed Return",function()
+        local f=fixture({two=true});f.riding()
+        fall(f,"measured roll rate 8.25 rad/s over the 8 rad/s Ride stop")
+        check(f.entry:status().phase=="fallen" and f.entry:return_to_skateboard(),"existing measured roll diagnostic enables the same guarded flow")
+        f.latest=cleaned();f.stock=100;f.tick()
+        check(f.entry:status().phase=="skateboard" and f.mounts==1,"Return alone never requests a fresh Mount")
+        check(f.entry:recover() and f.stops==1,"Recover after Return does not repeat the stock transaction or Stop")
+        f.tick();check(f.entry:status().attempts_used==2 and f.stepoffs==nil,"next tick consumes one ordinary second Mount intent")
+    end)
+    case("closed nonfall and unknown cleanup cannot recover",function()
+        local closed=fixture({two=true,admitted=false})
+        check(not closed.entry:recover(),"closed admission never gains a recovery intent")
+        for _,issue in {"selected riding pad unavailable or malformed","native command outcome unknown","measured tilt unavailable"} do
+            local f=fixture({two=true});f.riding();fall(f,issue)
+            check(f.entry:status().phase=="stopped" and not f.entry:recover(),"arbitrary Source/native/measurement faults are not fall recovery")
+            f.tick(5);check(f.toggles==0 and f.mounts==1,"fault classification never sends stock or remount commands")
+        end
+        local f=fixture({two=true});f.riding();fall(f,"measured tilt 55.8 deg over the 55 deg Ride stop")
+        check(f.entry:recover(),"known first fall intent starts once")
+        f.latest.cleanup_unknown=true;f.tick(5)
+        check(f.entry:status().phase=="blocked" and not f.entry:status().recovery_pending
+            and f.toggles==0 and f.mounts==1,"unknown cleanup cancels the queued intent without any stock or Mount")
+    end)
+    case("recovery Cancel unload and successor failure never replay",function()
+        for _,operation in {"cancel","unload"} do
+            local f=fixture({two=true});f.riding();fall(f,"measured tilt 55.8 deg over the 55 deg Ride stop")
+            check(f.entry:recover(),"one recover intent before explicit cancellation")
+            f.entry[operation](f.entry);f.latest=cleaned();f.stock=100;f.tick(5)
+            check(not f.entry:status().recovery_pending and f.mounts==1 and f.stepoffs==nil,"cancel/unload clears pending recovery before later clean status")
+        end
+        local f=fixture({two=true});f.riding();fall(f,"measured tilt 55.8 deg over the 55 deg Ride stop")
+        check(f.entry:recover(),"one recover before successor proof")
+        f.latest=cleaned();f.stock=100;f.failed_cycle=true;f.tick(5)
+        check(f.entry:status().phase=="spent" and not f.entry:status().recovery_pending and f.mounts==1,"failed successor proof clears intent and never mounts")
+        local g=fixture({two=true});g.riding();fall(g,"measured tilt 55.8 deg over the 55 deg Ride stop")
+        check(g.entry:recover(),"one recover before equipment refusal")
+        g.latest=cleaned();g.on_stock=function()return false,"constructed stock refusal" end;g.tick(5)
+        check(g.entry:status().phase=="blocked" and not g.entry:status().recovery_pending
+            and g.toggles==1 and g.mounts==1,"stock refusal is not retried or converted into a Mount")
+    end)
     return {cases=cases,assertions=assertions,constructed=true,native_authority=false,gameplay=false}
 end
 return Tests

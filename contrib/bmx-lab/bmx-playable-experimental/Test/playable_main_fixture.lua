@@ -19,6 +19,15 @@ reskate.menu.page("BMX experimental",function(ui)
     if ui:button("bmx_play_mount","Mount bike") then bike:mount() end
     if ui:button("bmx_play_return","Return to skateboard") then bike:return_to_skateboard() end
     if ui:button("bmx_play_cancel","Cancel / stop and keep cleanup") then bike:cancel() end
+    if s.fall_reason then
+        ui:warn("Fallen: "..s.fall_reason)
+        if s.recovery_available then
+            if ui:button("bmx_play_recover","Recover bike") then bike:recover() end
+        elseif s.recovery_pending then ui:note("Recover requested. Close menus and release controls while Return completes.")
+        elseif s.attempts_used>=s.attempt_limit then ui:note("Both bike attempts are spent. Return to skateboard remains available.") end
+        if s.attempts_used<s.attempt_limit then ui:note("Recovery uses the remaining attempt and checks fresh flat ground.") end
+        ui:note("The stopped bike is removed during normal cleanup.")
+    end
     s=bike:status()
     ui:info("State",s.phase)
     ui:note(s.detail)

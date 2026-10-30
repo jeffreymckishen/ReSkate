@@ -16,6 +16,14 @@ local function clean(s)
         and s.bike_authority==false and s.cleanup_pending==false and s.cleanup_unknown==false
         and s.stock_toggle_blocked==false and s.unloaded~=true
 end
+-- A display/intent classification only. The lifecycle still proves all cleanup.
+local function fall_cause(s)
+    local ride=plain(s) and s.stop_latched==true and s.ride or nil
+    local issue=plain(ride) and ride.stop_requested==true and ride.issue or nil
+    if type(issue)=="string" and (issue:match("^measured tilt [%d%.]+ deg over the %d+ deg Ride stop$")
+        or issue:match("^measured roll rate [%d%.]+ rad/s over the %d+ rad/s Ride stop$")) then return text(issue) end
+    return nil
+end
 function Entry.new(R,Runtime,Survey,options)
     assert(type(R)=="table" and type(Runtime)=="table" and type(Survey)=="table","entry dependencies required")
     local slot=type(options)=="table" and options.slot or 0
@@ -31,6 +39,7 @@ function Entry.new(R,Runtime,Survey,options)
     local attempts_used=0
     local second_prepare_pending=false
     local attempt_limit=two_cycle and 2 or 1
+    local fallen,recover_pending=nil,false
     local stopped,cancel_sent,cancelled,unloaded,ticking=false,false,false,false,false
     local generation,latest,known=0,nil,false
     local prep_at,prep_last,prep_calls,last_clock,survey=nil,nil,0,nil,nil
@@ -65,7 +74,7 @@ function Entry.new(R,Runtime,Survey,options)
     end
     local function fail(why)
         phase,detail="blocked",text(why,"Operation failed; no retry in this session.")
-        return_pending=false;second_prepare_pending=false;generation+=1
+        return_pending=false;second_prepare_pending=false;recover_pending=false;generation+=1
         -- A later equipment transaction has independent authority from the ride stop.
         stop_once("experimental entry: "..detail,stock_attempted)
     end
@@ -250,6 +259,7 @@ function Entry.new(R,Runtime,Survey,options)
                 local ready=call(owner.can_prepare_next_mount,owner)
                 if generation~=version or cancelled or unloaded then return end
                 if not ready[1] or ready[2]~=true then
+                    recover_pending=false
                     phase,detail="spent","Skateboard observed; prior cycle did not qualify a clean successor. No further attempt."
                     return
                 end
@@ -349,9 +359,25 @@ function Entry.new(R,Runtime,Survey,options)
         stop_once("explicit return to skateboard",false)
         return true
     end
+    local function recoverable()
+        return admitted and two_cycle and attempts_used==1 and mount_issued and fallen~=nil
+            and not recover_pending and not return_pending and not unloaded and not ticking and not cancelled
+            and namespace_clear and known and latest.cleanup_unknown==false
+            and (phase=="fallen" or phase=="skateboard")
+    end
+    function object:recover()
+        if not recoverable() then return false,"Recovery needs a known fall, cleanable first attempt and one remaining attempt." end
+        recover_pending=true -- One explicit intent before any Return callback can reenter.
+        if phase=="skateboard" then return true end
+        local out=call(self.return_to_skateboard,self)
+        if not out[1] or out[2]~=true or cancelled or unloaded then
+            recover_pending=false;return false,text(out[3],"Recovery Return was refused or cancelled.")
+        end
+        return true
+    end
     function object:cancel()
         if unloaded then return false,"Entry is unloaded." end
-        cancelled=true;return_pending=false;second_prepare_pending=false;generation+=1
+        cancelled=true;return_pending=false;second_prepare_pending=false;recover_pending=false;generation+=1
         phase,detail="cancelled","Cancelled. The lifecycle continues cleanup; this session cannot remount."
         stop_once("explicit playable cancel",true)
         return true
@@ -364,6 +390,9 @@ function Entry.new(R,Runtime,Survey,options)
             local out=call(owner.step,owner,dt_ms)
             if out[1] and out.n==2 and plain(out[2]) then latest=out[2];known=true
             else known=false;fail("Lifecycle step unavailable; cleanup remains required.") end
+            if recover_pending and known and latest.cleanup_unknown~=false then
+                fail("Recovery stopped by unknown lifecycle cleanup; no fresh Mount.");return
+            end
             if not cancelled and phase~="blocked" then
             if return_pending then return_step()
             elseif phase=="stepping_off" or phase=="preparing" or phase=="surveying" or phase=="awaiting_mount" then
@@ -376,16 +405,27 @@ function Entry.new(R,Runtime,Survey,options)
                         if environment(true) and generation==version and not cancelled and not unloaded and phase=="surveying" then survey_step(now) end
                     elseif phase=="awaiting_mount" then mount_step(now) end
                 end
-            elseif mount_issued and known and phase~="skateboard" then
-                if latest.phase=="following" and latest.stop_latched~=true then phase,detail="riding","One-session bike active. Return or Cancel remains available."
+            elseif mount_issued and known and phase~="skateboard" and phase~="spent" then
+                if latest.phase=="following" and latest.stop_latched~=true then
+                    fallen=nil;phase,detail="riding","One-session bike active. Return or Cancel remains available."
                 elseif latest.stop_latched==true or latest.phase=="done" then
-                    phase,detail="stopped",text(latest.stop_reason,"Ride stopped; cleanup continues. Return remains available.") end
+                    fallen=fall_cause(latest) or fallen
+                    if fallen then phase,detail="fallen","Bike stopped after a fall: "..fallen
+                        ..(attempts_used<attempt_limit and ". Recover can return and prepare the remaining attempt."
+                            or ". Both attempts are spent; Return remains available.")
+                    else phase,detail="stopped",text(latest.stop_reason,"Ride stopped; cleanup continues. Return remains available.") end
+                end
             end
             end
         end
         local advanced=pcall(advance)
         ticking=false
-        if not advanced then known=false;fail("Entry step failed; cleanup remains required.") end
+        if not advanced then known=false;fail("Entry step failed; cleanup remains required.")
+        elseif recover_pending and not cancelled and not unloaded and phase=="skateboard" then
+            recover_pending=false -- Consume before fresh Mount callbacks; no automatic retry.
+            local out=call(self.mount,self)
+            if not out[1] or out[2]~=true then fail(text(out[3],"Recovery Mount refused; the intent is spent.")) end
+        end
     end
     function object:status()
         local history=table.clone(terrain_refusals);table.freeze(history)
@@ -393,6 +433,7 @@ function Entry.new(R,Runtime,Survey,options)
             terrain_refusal_count=#history,terrain_refusal_limit=MAX_TERRAIN_REFUSALS,terrain_refusals=history,
             preflight_retry_available=phase=="preflight_refused" and not cancelled and not unloaded,
             mount_requested=mount_issued,return_requested=return_pending,stock_attempted=stock_attempted,cancelled=cancelled,
+            fall_reason=fallen,recovery_pending=recover_pending,recovery_available=recoverable(),
             prepare_calls=prep_calls,survey_state=survey and survey.state or "not_started",
             core_phase=known and latest.phase or "unknown",
             lifecycle_detail=known and (plain(latest.spawn) and text(latest.spawn.detail,nil) or text(latest.detail,nil)
@@ -404,7 +445,7 @@ function Entry.new(R,Runtime,Survey,options)
     end
     function object:unload()
         if unloaded then return end
-        unloaded=true;cancelled=true;return_pending=false;second_prepare_pending=false;generation+=1
+        unloaded=true;cancelled=true;return_pending=false;second_prepare_pending=false;recover_pending=false;generation+=1
         local out=call(owner.unload,owner)
         if out[1] and out.n==2 and plain(out[2]) then latest=out[2];known=true else known=false end
         phase,detail="unloaded","Unloaded; native cleanup remains with the lifecycle and SDK."

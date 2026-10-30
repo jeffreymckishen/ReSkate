@@ -50,6 +50,7 @@ local function result(issue)
         linear_impulse={0,0,0},angular_impulse={0,0,0},hop_impulse={0,0,0},hop_event_id=0,wheels={},
         normal_load={0,0},normal_impulse={0,0},longitudinal_impulse={0,0},lateral_impulse={0,0},recovery_velocity={0,0},
         patch_count={1,1},edge_normal_impulse={0,0},edge_normal_load={0,0},
+        edge_normal_softness={0,0},edge_approach_impulse={0,0},
         front_steer_angle=0,requested_front_steer_angle=0,turning_lean_angle=0,steering_limited=false,contact_scale=1,
         desired_support_angular_velocity={0,0,0},balance_support_mask=0,balance_continuation_mask=0,brake_impulse={0,0},
         balance_reference_up={0,0,0},desired_balance_up={0,0,0},balance_torque={0,0,0},air_control_torque={0,0,0},
@@ -347,11 +348,19 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
                     local bias=math.min(t.recovery_speed_limit,t.recovery_fraction*math.max(0,-edge.separation)/h)
                     local target=bias-math.max(0,edge.separation)/h
                     patch.normal_only=edge.separation>landing.contact_gap
-                    if floor_plane then
+                    -- Material impedance belongs to this fully validated
+                    -- static wheel constraint too. Its radial normal need
+                    -- not be a floor normal; support and the floor-only
+                    -- deflection classification remain separate below.
+                    local edge_impedance=landing_selected and c.enabled and rebuilt.kind=="edge"
+                    if floor_plane or edge_impedance then
                         patch.normal_softness=floor_softness(h,measured,patch,basis,t.recovery_fraction)
+                        out.edge_normal_softness[i]=patch.normal_softness
+                        out.compliant_normal_mask=bit32.bor(out.compliant_normal_mask,2^(i-1))
+                    end
+                    if floor_plane then
                         patch.normal_deflection_limit=limit
                         patch.normal_floor_delta=(-limit-edge.separation)/h-target
-                        out.compliant_normal_mask=bit32.bor(out.compliant_normal_mask,2^(i-1))
                     end
                     patch.surface_velocity=M.add(patch.surface_velocity,M.mul(basis.normal,target))
                     contacts[i].secondary=patch
@@ -524,6 +533,7 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
         if effects[i].patches and effects[i].patches[2] then
             out.edge_normal_impulse[i]=amount*effects[i].patches[2].solved.normal_impulse
             out.edge_normal_load[i]=out.edge_normal_impulse[i]/h
+            out.edge_approach_impulse[i]=amount*(effects[i].patches[2].solved.approach_impulse or 0)
         end
     end
     if not M.vec(out.force) or not M.vec(out.torque) or M.length(out.force)>t.force_limit or M.length(M.mul(M.add(out.linear_impulse,out.hop_impulse),1/h))>t.force_limit or

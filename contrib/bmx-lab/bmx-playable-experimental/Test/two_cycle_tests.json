@@ -1,8 +1,8 @@
 {
   "schema": 1,
   "matrix": "closed-experimental-two-cycle-v1",
-  "flat_file_count": 58,
-  "quota_file_count": 59,
+  "flat_file_count": 59,
+  "quota_file_count": 60,
   "expected_processes": 24,
   "expected_cases": 181,
   "expected_assertions": null,
@@ -269,8 +269,8 @@
     {
       "source": "plugin/forces.lua",
       "destination": "forces.lua",
-      "bytes": 51167,
-      "sha256": "CE38A05C5A3C199C476CCA63C72EE345D8138BEDB42D16B57881230303691869"
+      "bytes": 51889,
+      "sha256": "71D527E54DFAAA1E2371D93BD9683B06D116FE78B3C3170CD6874E7EA805FEF2"
     },
     {
       "source": "plugin/ride_inflight.lua",
@@ -355,6 +355,12 @@
       "destination": "session_spawn_travel_tests.lua",
       "bytes": 6018,
       "sha256": "39A7D68E8A7394C4899D653F39E756105BC60AB195C98D702793BC04C0432E92"
+    },
+    {
+      "source": "Test/wheel_edge_rolling_impedance_tests.lua",
+      "destination": "wheel_edge_rolling_impedance_tests.lua",
+      "bytes": 5558,
+      "sha256": "B593977C9D71EEC38033376AAC7294D85B999CE48EB8E073B5C3BC9CC888F95D"
     }
   ],
   "runtime_files": [
@@ -445,8 +451,8 @@
     },
     {
       "source": "plugin/forces.lua",
-      "bytes": 51167,
-      "sha256": "CE38A05C5A3C199C476CCA63C72EE345D8138BEDB42D16B57881230303691869"
+      "bytes": 51889,
+      "sha256": "71D527E54DFAAA1E2371D93BD9683B06D116FE78B3C3170CD6874E7EA805FEF2"
     },
     {
       "source": "plugin/frame_identity.lua",
@@ -542,6 +548,16 @@
     "destination": "json_encoding_tests.lua",
     "sha256": "3E415D1E0A53301A9562944172FE1EE190A6F179E2B6F2FAC5BDDF22646B4DFD"
   },
+  "focused_suites": [
+    {
+      "suite": "wheel_edge_rolling_impedance_tests",
+      "invoked": "wheel_edge_rolling_impedance_tests",
+      "context": "flat",
+      "expected_cases": 3,
+      "expected_assertions": 23,
+      "evidence_scope": "Corrected rolling material consistency only; no traversal or native qualification"
+    }
+  ],
   "suites": [
     {
       "suite": "two_cycle_entry_tests",

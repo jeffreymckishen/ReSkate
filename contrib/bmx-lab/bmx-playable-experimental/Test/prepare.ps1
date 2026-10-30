@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory)][string]$TestRoot,
-    [ValidateSet('entry','two-cycle')][string]$Matrix='entry'
+    [ValidateSet('entry','two-cycle','wheel-edge-material')][string]$Matrix='entry'
 )
 # File preparation only. Root separately owns the runner and execution grant.
 $ErrorActionPreference='Stop'
@@ -20,10 +20,10 @@ Assert-PlainPath $Package
 Assert-PlainPath $TestRoot
 $manifestPath=Join-Path $PSScriptRoot 'two_cycle_tests.json'
 Assert-PlainPath $manifestPath
-if((Get-FileHash -LiteralPath $manifestPath).Hash -cne '9DF88D757D13790DCE9553BD176AFF5328DD3C978D939D1809C734ECB150EE22'){throw 'Exact matrix manifest changed'}
+if((Get-FileHash -LiteralPath $manifestPath).Hash -cne '389302078D8A1D130CEAE26F234B5073A9A1EB4EDF576C1DD5CAC4F66A944133'){throw 'Exact matrix manifest changed'}
 $plan=Get-Content -LiteralPath $manifestPath -Raw|ConvertFrom-Json
-if($plan.schema -ne 1 -or $plan.flat_file_count -ne 58 -or $plan.quota_file_count -ne 59 -or
-    @($plan.files).Count -ne 58 -or @($plan.runtime_files).Count -ne 32 -or @($plan.suites).Count -ne 24){throw 'Unexpected matrix shape'}
+if($plan.schema -ne 1 -or $plan.flat_file_count -ne 59 -or $plan.quota_file_count -ne 60 -or
+    @($plan.files).Count -ne 59 -or @($plan.runtime_files).Count -ne 32 -or @($plan.suites).Count -ne 24 -or @($plan.focused_suites).Count -ne 1){throw 'Unexpected matrix shape'}
 function Assert-Source($Row){
     if($Row.source -notmatch '^(plugin|Test)/[A-Za-z0-9_-]+\.lua$' -and $Row.source -notin @('README.md','reskate-plugin.json')){throw 'Non-relative matrix input refused'}
     $source=Join-Path $Package $Row.source
@@ -66,6 +66,11 @@ $invocations=@()
 if($Matrix -ceq 'entry'){
     Copy-Files $TestRoot $files
     foreach($name in @('bmx_playable_entry_tests','bmx_playable_main_tests')){$invocations+=[ordered]@{directory=$TestRoot;module=$name;suite=$name}}
+}elseif($Matrix -ceq 'wheel-edge-material'){
+    $flat=Join-Path $TestRoot 'flat'
+    $null=New-Item -ItemType Directory -Path $flat -ErrorAction Stop
+    Copy-Files $flat $files
+    foreach($run in $plan.focused_suites){$invocations+=[ordered]@{directory=$flat;module=$run.invoked;suite=$run.suite;expected_cases=$run.expected_cases;expected_assertions=$run.expected_assertions}}
 }else{
     $flat=Join-Path $TestRoot 'flat';$quota=Join-Path $TestRoot 'quota-flat'
     $null=New-Item -ItemType Directory -Path $flat,$quota -ErrorAction Stop
@@ -76,6 +81,6 @@ if($Matrix -ceq 'entry'){
     if((Get-FileHash -LiteralPath $alias).Hash -cne $plan.quota.sha256){throw 'Quota alias differs; preserve partials'}
     foreach($run in $plan.suites){$invocations+=[ordered]@{directory=(Join-Path $TestRoot $run.context);module=$run.invoked;suite=$run.suite;expected_cases=$run.expected_cases;expected_assertions=$run.expected_assertions}}
 }
-$result=[ordered]@{matrix=$Matrix;flat_files=$files.Count;quota_files=$(if($Matrix -ceq 'two-cycle'){59}else{0});destination=$TestRoot;source_admission='UNCHANGED_FALSE';executed=$false;invocations=$invocations}
+$result=[ordered]@{matrix=$Matrix;flat_files=$files.Count;quota_files=$(if($Matrix -ceq 'two-cycle'){60}else{0});destination=$TestRoot;source_admission='UNCHANGED_FALSE';executed=$false;invocations=$invocations}
 [IO.File]::WriteAllText((Join-Path $TestRoot 'preparation.json'),($result|ConvertTo-Json -Depth 8),$utf)
 $result|ConvertTo-Json -Depth 8 -Compress

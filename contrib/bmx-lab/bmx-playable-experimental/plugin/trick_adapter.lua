@@ -10,7 +10,7 @@ function Model.new(primed)
         waiting=false,caught=false,failed=false,direction=0,elapsed=0,catch_elapsed=0,
         blend_remaining=0,origin=0,angle=0,release=0}
 end
-function Model.advance(previous,seconds,grounded,request,neutral,duration)
+function Model.advance(previous,seconds,grounded,request,neutral,duration,allowed)
     -- Only the adapter supplies these checked scalars and existing duration.
     local turn_seconds=duration or BAR_SECONDS
     local c=table.clone(previous)
@@ -30,7 +30,7 @@ function Model.advance(previous,seconds,grounded,request,neutral,duration)
     end
     if neutral and request=="none" then c.armed=true end
     if request~="none" then
-        local start=c.armed and not c.rotating and not c.waiting and not c.failed
+        local start=allowed~=false and c.armed and not c.rotating and not c.waiting and not c.failed
         c.armed=false
         if start then
             c.rotating,c.caught,c.elapsed=true,false,0
@@ -59,7 +59,51 @@ function Model.advance(previous,seconds,grounded,request,neutral,duration)
     end
     return c
 end
-function Model.target(c,tail)
+-- Closed authored motions.lua entry36: One Hander Left, release mask1,
+-- pose enter .18s/recover .12s, no bar/tail/crank/bike rotation. This is one
+-- presentation channel, not the full catalog or a physical completion model.
+local ONE_HAND=table.freeze({id=36,enter_seconds=.18,recover_seconds=.12})
+local OneHand={}
+function OneHand.new()
+    return {armed=false,active=false,holding=false,recovering=false,elapsed=0,
+        recover_elapsed=0,progress=0,phase=0,release=0}
+end
+function OneHand.advance(previous,seconds,grounded,takeoff,request,neutral,allowed)
+    local m=table.clone(previous)
+    if grounded then return OneHand.new() end
+    if takeoff then
+        m=OneHand.new();m.armed=neutral and not request;return m
+    end
+    if neutral and not request then m.armed=true end
+    if request then
+        local start=m.armed and not m.active and allowed
+        m.armed=false -- Busy selections are consumed, never queued.
+        if start then
+            m.active,m.holding,m.recovering=true,false,false
+            m.elapsed,m.recover_elapsed,m.progress,m.phase,m.release=0,0,0,0,0
+            return m -- Selection arrived at the end of this accepted sample.
+        end
+    end
+    if not m.active then return m end
+    if m.recovering then
+        m.recover_elapsed=math.min(ONE_HAND.recover_seconds,m.recover_elapsed+seconds)
+        local left=1-smooth(m.recover_elapsed/ONE_HAND.recover_seconds)
+        m.phase,m.release=left,left
+        if m.recover_elapsed+1e-9>=ONE_HAND.recover_seconds then
+            m.active,m.recovering,m.phase,m.release=false,false,0,0
+        end
+        return m
+    end
+    if not m.holding then
+        m.elapsed+=seconds;m.progress=math.min(1,m.elapsed/ONE_HAND.enter_seconds)
+        m.phase=smooth(m.progress);m.release=math.min(1,m.progress/.15)
+        if m.progress>=1 then m.holding=true end
+    end
+    if neutral then m.holding,m.recovering,m.recover_elapsed=false,true,0 end
+    return m
+end
+table.freeze(OneHand)
+function Model.target(c,tail,hand)
     -- Equivalent periodic joint poses within existing articulation bounds.
     local angle=(c.angle+math.pi)%TAU-math.pi
     local tail_angle=tail and (tail.angle+math.pi)%TAU-math.pi or 0
@@ -68,7 +112,7 @@ function Model.target(c,tail)
         pose_provenance="measured_rays_authored_wheel_geometry",native_collision_contact=false,
         landing_quality_available=false,completion_qualified=false,barspin=angle,
         tailwhip=tail_angle,movement_bike_pitch=0,movement_bike_roll=0,movement_crank_angle=0,
-        barspin_release=c.release,tailwhip_release=tail_release,release_left_hand=c.release,
+        barspin_release=c.release,tailwhip_release=tail_release,release_left_hand=math.max(c.release,hand and hand.release or 0),
         release_right_hand=c.release,release_left_foot=tail_release,release_right_foot=tail_release})
 end
 function Model.reserved(c) return c.airborne and (c.rotating or c.waiting) end
@@ -78,6 +122,7 @@ table.freeze(Model)
 -- no body, query, lease, effect, score or progression authority.
 local Frame=require("./frame_identity")
 local Identity=require("./lease_identity")
+local Catalog=require("./catalog") -- Already staged before the input/adapter graph.
 -- Model is the closed pure bar channel above; no extra dependency leaf.
 -- Historical barspin scope/diagnostic names remain stable; this private
 -- transaction now carries both authored channels, never native completion.
@@ -149,19 +194,21 @@ local function actions_copy(raw,frame)
     if tail_request~="none" and tail_request~="left" and tail_request~="right" then return nil end
     if tail_request=="left" and rawget(raw,"movement")~=56
         or tail_request=="right" and rawget(raw,"movement")~=52 then return nil end
+    local movement=rawget(raw,"movement")
+    if not Catalog.valid(movement) then return nil end
     return {request=request,neutral=raw.bar_neutral,tail_request=tail_request,tail_neutral=raw.rear_neutral,
-        observation_serial=frame.source.observation_serial}
+        one_hand_request=movement==ONE_HAND.id,observation_serial=frame.source.observation_serial}
 end
 local function reject(why)
     return table.freeze({valid=false,issue=why,scope="accepted_step_ray_barspin_only",
         realized=false,completion_qualified=false})
 end
 function Runtime.new()
-    local state,tail_state=Model.new(),Model.new()
+    local state,tail_state,hand_state=Model.new(),Model.new(),OneHand.new()
     local observed,accepted,action_seen,consumed,sequence,draft,air_started
     local revision,stopped,stop_reason=0,false,nil
     local object={}
-    local function result(frame,support,next_state,next_tail)
+    local function result(frame,support,next_state,next_tail,next_hand)
         local source={lease_handle=frame.source.lease_handle}
         for _,name in ipairs(SOURCE) do source[name]=frame.source[name] end
         return table.freeze({valid=true,issue="candidate",scope="accepted_step_ray_barspin_only",
@@ -169,7 +216,7 @@ function Runtime.new()
             landing_quality_available=false,actor_lane=support.actor_lane,actor_tripwire=support.actor_tripwire,
             binding=table.freeze({body_handle=frame.body_handle,physics_epoch=frame.physics_epoch,
                 lease_handle=frame.source.lease_handle,serial=frame.serial,time=frame.time,seconds=frame.seconds,
-                source=table.freeze(source)}),visual_targets=Model.target(next_state,next_tail),
+                source=table.freeze(source)}),visual_targets=Model.target(next_state,next_tail,next_hand),
             requests=table.freeze({rotation_reserved=Model.reserved(next_state) or Model.reserved(next_tail),scope="model_request_only"})})
     end
     function object:preview(raw,actions)
@@ -190,7 +237,8 @@ function Runtime.new()
         if not action then return reject("invalid_mapped_barspin_actions") end
         if action_seen and action_seen.observation_serial==action.observation_serial
             and (action_seen.request~=action.request or action_seen.neutral~=action.neutral
-                or action_seen.tail_request~=action.tail_request or action_seen.tail_neutral~=action.tail_neutral) then
+                or action_seen.tail_request~=action.tail_request or action_seen.tail_neutral~=action.tail_neutral
+                or action_seen.one_hand_request~=action.one_hand_request) then
             return reject("actions_duplicate_changed")
         end
         -- Observe every eligible physical frame, including an eventual refused
@@ -203,15 +251,20 @@ function Runtime.new()
             return reject("authored_air_time_exceeded")
         end
         local request=consumed~=action.observation_serial and action.request or "none"
-        local next_state,model_issue=Model.advance(state,frame.seconds,support.grounded,request,action.neutral)
+        local next_state,model_issue=Model.advance(state,frame.seconds,support.grounded,request,action.neutral,BAR_SECONDS,not hand_state.active)
         if not next_state then return reject(model_issue) end
         local tail_request=consumed~=action.observation_serial and action.tail_request or "none"
-        local next_tail,tail_issue=Model.advance(tail_state,frame.seconds,support.grounded,tail_request,action.tail_neutral,TAIL_SECONDS)
+        local next_tail,tail_issue=Model.advance(tail_state,frame.seconds,support.grounded,tail_request,action.tail_neutral,TAIL_SECONDS,not hand_state.active)
         if not next_tail then return reject(tail_issue) end
-        local out=result(frame,support,next_state,next_tail)
+        local hand_request=consumed~=action.observation_serial and action.one_hand_request
+        local can_pose=not next_state.rotating and not next_state.waiting and next_state.release==0
+            and not next_tail.rotating and not next_tail.waiting and next_tail.release==0
+        local next_hand=OneHand.advance(hand_state,frame.seconds,support.grounded,
+            not state.airborne and next_state.airborne,hand_request,action.tail_neutral,can_pose)
+        local out=result(frame,support,next_state,next_tail,next_hand)
         local candidate=table.freeze({scope="private_ray_barspin_candidate_v1"})
         local next_air=next_state.airborne and (state.airborne and air_started or frame.time) or nil
-        draft={token=candidate,revision=revision,frame=frame,action=action,state=next_state,tail_state=next_tail,result=out,air_started=next_air}
+        draft={token=candidate,revision=revision,frame=frame,action=action,state=next_state,tail_state=next_tail,hand_state=next_hand,result=out,air_started=next_air}
         return out,candidate
     end
     function object:discard(candidate)
@@ -226,7 +279,7 @@ function Runtime.new()
         -- Root alone calls this after exact native admission and force-history
         -- adoption. This local sequence check is not a native receipt itself.
         local chosen=draft
-        state,tail_state,accepted,consumed,sequence=chosen.state,chosen.tail_state,chosen.frame,chosen.action.observation_serial,accepted_sequence
+        state,tail_state,hand_state,accepted,consumed,sequence=chosen.state,chosen.tail_state,chosen.hand_state,chosen.frame,chosen.action.observation_serial,accepted_sequence
         air_started=chosen.air_started;revision+=1;draft=nil
         return true,table.freeze({valid=true,scope="predictive_accepted_ray_barspin_only",realized=false,
             completion_qualified=false,serial=accepted.serial,accepted_sequence=sequence,
@@ -234,7 +287,7 @@ function Runtime.new()
     end
     function object:cancel(reason)
         if stopped then return end
-        draft=nil;stopped=true;state,tail_state=Model.new(),Model.new();revision+=1
+        draft=nil;stopped=true;state,tail_state,hand_state=Model.new(),Model.new(),OneHand.new();revision+=1
         stop_reason=type(reason)=="string" and #reason>0 and #reason<=100 and reason or "cancelled"
     end
     object.stop=object.cancel
@@ -242,7 +295,7 @@ function Runtime.new()
         return table.freeze({scope="accepted_step_ray_barspin_only",realized=false,completion_qualified=false,
             stopped=stopped,issue=stop_reason or "none",revision=revision,
             accepted_sequence=sequence,serial=accepted and accepted.serial or nil,
-            visual_targets=Model.target(state,tail_state),rotation_reserved=Model.reserved(state) or Model.reserved(tail_state)})
+            visual_targets=Model.target(state,tail_state,hand_state),rotation_reserved=Model.reserved(state) or Model.reserved(tail_state)})
     end
     return table.freeze(object)
 end

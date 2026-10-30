@@ -1,11 +1,11 @@
 {
   "schema": 1,
   "matrix": "closed-experimental-two-cycle-v1",
-  "flat_file_count": 65,
-  "quota_file_count": 66,
-  "expected_processes": 27,
-  "expected_cases": 184,
-  "expected_assertions": 8577,
+  "flat_file_count": 66,
+  "quota_file_count": 67,
+  "expected_processes": 28,
+  "expected_cases": 185,
+  "expected_assertions": 8628,
   "source_admission": "UNCHANGED_FALSE",
   "files": [
     {
@@ -359,8 +359,8 @@
     {
       "source": "plugin/trick_adapter.lua",
       "destination": "trick_adapter.lua",
-      "bytes": 15528,
-      "sha256": "E88A63A22918C6223AC710B8CE93BD7D8F83C5366393E503E814FF30B057632C"
+      "bytes": 18531,
+      "sha256": "B7076D90CC1F28F054231266FF32536BAD6D5841F89C188BC2932D42856CE70A"
     },
     {
       "source": "Test/ride_barspin_integration_tests.lua",
@@ -397,6 +397,12 @@
       "destination": "tailwhip_integration_tests.lua",
       "bytes": 21109,
       "sha256": "519940D77D62B2FB144D823FAD2C970DB547AB0248A7E5B90EE7B4FCE1ED31A9"
+    },
+    {
+      "bytes": 21736,
+      "destination": "one_hander_integration_tests.lua",
+      "source": "Test/one_hander_integration_tests.lua",
+      "sha256": "C61A0196C29E35F1012CEF3C770892A614521830D8909D9DF2D3DCBFC5628B7A"
     }
   ],
   "runtime_files": [
@@ -562,8 +568,8 @@
     },
     {
       "source": "plugin/trick_adapter.lua",
-      "bytes": 15528,
-      "sha256": "E88A63A22918C6223AC710B8CE93BD7D8F83C5366393E503E814FF30B057632C"
+      "bytes": 18531,
+      "sha256": "B7076D90CC1F28F054231266FF32536BAD6D5841F89C188BC2932D42856CE70A"
     }
   ],
   "wrappers": [
@@ -778,6 +784,13 @@
       "context": "flat",
       "expected_cases": 1,
       "expected_assertions": 69
+    },
+    {
+      "expected_assertions": 51,
+      "suite": "one_hander_integration_tests",
+      "invoked": "one_hander_integration_tests",
+      "context": "flat",
+      "expected_cases": 1
     }
   ]
 }

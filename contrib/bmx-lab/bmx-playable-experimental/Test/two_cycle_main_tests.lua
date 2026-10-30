@@ -3,7 +3,10 @@ local T={}
 function T.run()
     local n=0;local function check(v,why)n+=1;assert(v,why)end
     local R={menu={},input={}};local count=0
-    function R.input.bind(name,key)check(name=="bmx_return" and key=="F8","same keyboard Return action");return true end
+    function R.input.bind(name,key)
+        check(name=="bmx_return" and key=="F8" or name=="bmx_recover" and key=="F9","exact remappable Return/Recover defaults")
+        return true
+    end
     local object={step=function()end,unload=function()end,status=function()return {phase="idle",detail="source closed",admitted=false,
         core_phase="idle",attempts_used=0,attempt_limit=2,cleanup_pending=false,cleanup_unknown=false}end}
     function R.on(name,fn)check((name=="tick" or name=="unload" or name=="action")and type(fn)=="function","normal callbacks only")end

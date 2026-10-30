@@ -6,16 +6,22 @@ local Runtime=require("./bike_runtime")
 local Survey=require("./ride_r1_record")
 local Entry=require("./bmx_playable_entry")
 local bike=Entry.new(reskate,Runtime,Survey,{admitted=EXPERIMENTAL_ADMITTED,slot=SLOT,experimental_two_cycle=true,session_renewable=SESSION_RENEWABLE})
+local unloaded=false
 reskate.input.bind("bmx_return","F8")
+reskate.input.bind("bmx_recover","F9")
 reskate.on("action",function(name)
-    if name=="bmx_return" then bike:return_to_skateboard() end
+    if name=="bmx_return" then bike:return_to_skateboard()
+    elseif name=="bmx_recover" and not unloaded then
+        local s=bike:status()
+        if s.recovery_available==true then bike:recover() end
+    end
 end)
 reskate.on("tick",function(dt_ms) bike:step(dt_ms) end)
 reskate.menu.page("BMX experimental",function(ui)
     local s=bike:status()
     ui:warn("Experimental: at most TWO attempts; each uses a new retained body slot. Start on foot on flat ground with 1.25 m clear around you for spawning.")
     if not s.admitted then ui:note("This reviewed source build is inactive; no Mount action is admitted.") end
-    ui:warn("Opening Insert ends an active ride. Use F8 to return to skateboard.")
+    ui:warn("Opening Insert ends an active ride. Use F8 to return or F9 to recover after a fall.")
     if ui:button("bmx_play_mount","Mount bike") then bike:mount() end
     if ui:button("bmx_play_return","Return to skateboard") then bike:return_to_skateboard() end
     if ui:button("bmx_play_cancel","Cancel / stop and keep cleanup") then bike:cancel() end
@@ -32,6 +38,7 @@ reskate.menu.page("BMX experimental",function(ui)
     ui:info("State",s.phase)
     ui:note(s.detail)
     ui:note("F8: return to skateboard (remappable in Binds).")
+    ui:note("F9: recover bike after a fall (remappable in Binds).")
     if s.phase=="blocked" or s.phase=="stopped" then ui:note(s.lifecycle_detail) end
     ui:note("First Mount requires on-foot504. Second Mount requires current stock100 after clean Return, then visibly obtains504 before a NEW survey. Stay still and neutral.")
     if SESSION_RENEWABLE then
@@ -44,4 +51,4 @@ reskate.menu.page("BMX experimental",function(ui)
     ui:info("Lifecycle",tostring(s.core_phase))
     ui:info("Cleanup pending / unknown",tostring(s.cleanup_pending).." / "..tostring(s.cleanup_unknown))
 end)
-reskate.on("unload",function() bike:unload() end)
+reskate.on("unload",function() unloaded=true;bike:unload() end)

@@ -266,7 +266,13 @@ function Tests.run()
             end
         end
     end)
-    case("22 measured Return waits for queued placement convergence before stock",function()
+    case("22 measured Return places once after clean stock100 ACK and then converges",function()
+        local function stock_done(f)
+            f.stock=100;f.latest=cleaned()
+            f.latest.equipment={phase="done",outcome="target_observed",initial_state=504,expected_state=100,
+                retained=false,acknowledged=true,qualified_transition=true,current_transition=true,unloaded=false,storage_fault=false,
+                terminal_receipt={terminal=true,claim_released=true,report_debt=false,quarantined=false}}
+        end
         local function prepared(options)
             options=options or {}
             local f=fixture();f.riding();f.placements=0;f.pending=false
@@ -283,39 +289,55 @@ function Tests.run()
             end
             function f.R.skater.teleport(at,heading)
                 f.placements+=1;f.placed_at=f.now
-                check(f.latest.bike_cleanup_complete and f.stops==1 and f.toggles==0,"full cleanup precedes exactly one placement and all stock input")
-                check(at==vector.create(55,5.8,80) and heading==.2,"root height retains measured clearance in the exact native-vector representation")
+                check(f.latest.bike_cleanup_complete and f.stops==1 and f.toggles==1 and f.stock==100
+                    and f.latest.equipment.acknowledged,"full bike cleanup and exact stock100 target/ACK precede the ONE placement")
+                check(at==vector.create(55,5.8,80) and heading==.2,"final captured target survives a stock-root reset in exact native-vector representation")
                 if options.refuse then return false,"host disabled" end
                 if options.raise then error("constructed unknown queued result") end
                 f.pending=true;return true
             end
-            check(f.entry:return_to_skateboard(),"one explicit Return starts the position transaction")
-            f.tick(2);check(f.placements==0 and f.toggles==0,"retained bike cleanup blocks placement and stock")
+            check(f.entry:return_to_skateboard(),"one explicit Return starts the transaction")
+            f.tick(2);check(f.placements==0 and f.toggles==0,"retained bike cleanup blocks stock and placement")
             return f
         end
-        local f=prepared();f.latest=cleaned();f.tick()
-        check(f.placements==1 and f.pending and f.toggles==0,"sent means queued only; no stock action")
-        f.pending=false;f.tick(12)
-        check(f.toggles==0,"pending cleared alone does not prove the new position")
-        f.position=vector.create(55,5.8,80);f.heading=.2;f.tick(12)
-        check(f.placements==1 and f.toggles==1 and f.entry:status().return_position.observed,
-            "actual grounded root/heading convergence spanning100ms unlocks only one existing stock transaction")
-        f.latest=cleaned();f.stock=100;f.tick()
-        check(f.entry:status().phase=="skateboard","stock100 observation remains independently required after convergence")
-        for _,options in ipairs({{refuse=true},{raise=true}})do
-            local g=prepared(options);g.latest=cleaned();g.tick(5)
-            check(g.placements==1 and g.toggles==0 and g.entry:status().phase=="blocked","refusal/unknown is sticky with no retry or stock input")
+        local function after_stock(options)
+            local f=prepared(options);f.latest=cleaned();f.tick()
+            check(f.toggles==1 and f.placements==0,"clean bike requests stock exactly once with NO earlier504placement")
+            f.position=vector.create(1,.5,1) -- actual stock transition may reset the physical root
+            stock_done(f);f.tick()
+            return f
         end
+        local f=after_stock()
+        check(f.placements==1 and f.pending and f.toggles==1 and f.entry:status().phase=="returning",
+            "postACK sent means queued only; final Return and remount remain unavailable")
+        check(not f.entry:mount(),"queued handback cannot remount")
+        f.pending=false;f.tick(12)
+        check(f.entry:status().phase=="returning" and not f.entry:status().return_position.observed,
+            "stock100 ACK plus pending cleared at the OLD physical location is not final Return")
+        f.position=vector.create(55,5.8,80);f.heading=.2;f.tick(12)
+        check(f.placements==1 and f.toggles==1 and f.entry:status().return_position.observed
+            and f.entry:status().phase=="skateboard","only grounded100 root/heading convergence spanning100ms completes Return")
+        for _,options in ipairs({{refuse=true},{raise=true}})do
+            local g=after_stock(options);g.tick(5)
+            check(g.placements==1 and g.toggles==1 and g.entry:status().phase=="blocked",
+                "placement refusal/unknown after stock never retries or advertises final Return")
+        end
+        local noack=prepared();noack.latest=cleaned();noack.tick();stock_done(noack)
+        noack.latest.equipment.acknowledged=false;noack.tick()
+        check(noack.placements==0 and noack.toggles==1 and noack.entry:status().phase=="blocked",
+            "stock100 without exact equipment ACK cannot queue placement")
         local late=prepared();late.now+=14900;late.latest=cleaned();late.tick(3)
         check(late.placements==0 and late.toggles==0 and late.entry:status().phase=="blocked",
-            "native5s queue plus100ms observation must fit original20s before enqueue")
-        local lost=prepared();lost.latest=cleaned();lost.tick();lost.now+=20001;lost.tick()
-        check(lost.placements==1 and lost.toggles==0 and lost.entry:status().phase=="blocked",
-            "no convergence by original deadline never fabricates observed placement or stock")
-        local cancelled=prepared();cancelled.latest=cleaned();cancelled.tick()
-        check(cancelled.entry:cancel(),"explicit cancel after queued placement is accepted")
+            "native5s queue plus100ms convergence must fit original20s before stock even starts")
+        local slow=prepared();slow.latest=cleaned();slow.tick();slow.now+=14900;stock_done(slow);slow.tick()
+        check(slow.placements==0 and slow.toggles==1 and slow.entry:status().phase=="blocked",
+            "time spent obtaining stock ACK is charged to original20s; no late placement")
+        local lost=after_stock();lost.now+=20001;lost.tick()
+        check(lost.placements==1 and lost.toggles==1 and lost.entry:status().phase=="blocked",
+            "missing poststock convergence by original deadline stays failed")
+        local cancelled=after_stock();check(cancelled.entry:cancel(),"cancel after queued poststock placement accepted")
         cancelled.tick(10)
-        check(cancelled.placements==1 and cancelled.toggles==0 and cancelled.entry:status().return_position.unknown,
+        check(cancelled.placements==1 and cancelled.toggles==1 and cancelled.entry:status().return_position.unknown,
             "cancel never retries or claims to cancel/complete the generic queued placement")
         for _,raises in ipairs({false,true}) do
             local refused=fixture();refused.riding()

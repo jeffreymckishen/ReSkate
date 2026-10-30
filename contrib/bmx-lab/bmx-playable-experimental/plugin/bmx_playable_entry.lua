@@ -277,10 +277,10 @@ function Entry.new(R,Runtime,Survey,options)
         phase,detail="mounting","Mount armed. Keep controls released while the lifecycle takes ownership."
     end
     local function handback_step(version)
-        if not return_plan or return_position.observed and stock_attempted then return true end
+        if not return_plan then return true end
         local function live() return generation==version and not cancelled and not unloaded and return_pending end
         local now=clock();if not live() then return false,"cancelled" end
-        if not now or now<return_plan.stop_ms or now>=return_plan.expires_ms then return false,"Return position deadline expired; no stock input" end
+        if not now or now<return_plan.stop_ms or now>=return_plan.expires_ms then return false,"Return position deadline expired; final Return blocked" end
         if not environment(false) or not live() then return false,"Return position context lost" end
         if return_position.last_poll and now-return_position.last_poll<50 then return false,"pending" end
         return_position.last_poll=now
@@ -288,11 +288,7 @@ function Entry.new(R,Runtime,Survey,options)
         local level=call(R.level and R.level.current);if not live() then return false,"cancelled" end
         if not allowed[1] or allowed.n~=2 or allowed[2]~=true or not level[1] or level.n~=2
             or not plain(level[2]) or level[2].name~=return_plan.level then return false,"Return permission or level changed" end
-        if return_position.observed then
-            -- A queued stock transaction gets its independent original bounds;
-            -- before it starts, keep checking the actually converged root.
-            if stock_attempted then return true end
-        end
+
         if not return_position.attempted then
             -- Reserve the existing native5s queue lifetime plus100ms observed
             -- convergence INSIDE the original stop+20s window, never after it.
@@ -302,9 +298,9 @@ function Entry.new(R,Runtime,Survey,options)
             -- not a post-park or unclassified ray and not a static-world pin.
             local watch=call(R.skater and R.skater.telemetry);if not live() then return false,"cancelled" end
             local w=watch[2]
-            if not watch[1] or watch.n~=2 or not plain(w) or w.skater~=true or w.teleport_pending~=false
-                or not plain(w.watch) or w.watch.valid~=true or w.watch.state~=504 or w.watch.ragdoll_known~=true
-                or w.watch.ragdoll~=false or w.watch.wipeouts~=return_plan.wipeouts then return false,"Fresh on-foot Return context unavailable" end
+            if not watch[1] or watch.n~=2 or not plain(w) or w.skater~=true or w.teleport_pending~=false or w.airborne~=false
+                or not plain(w.watch) or w.watch.valid~=true or w.watch.state~=100 or w.watch.ragdoll_known~=true
+                or w.watch.ragdoll~=false or w.watch.wipeouts~=return_plan.wipeouts then return false,"Fresh grounded-stock Return context unavailable" end
             now=clock();if not live() then return false,"cancelled" end
             if not now or now+5100>=return_plan.expires_ms then return false,"Return queue no longer fits original deadline" end
             return_position.attempted=true;return_position.unknown=true -- burn before callback; never retry
@@ -316,12 +312,12 @@ function Entry.new(R,Runtime,Survey,options)
             if not sent[1] or sent.n~=2 or sent[2]~=true then
                 local refused=sent[1] and sent.n==3 and sent[2]==false and type(sent[3])=="string"
                 return_position.unknown=not refused;return_position.phase=refused and "refused" or "unknown"
-                return false,refused and "Return placement refused: "..text(sent[3],"refused") or "Return placement result unknown; no retry or stock input"
+                return false,refused and "Return placement refused: "..text(sent[3],"refused") or "Return placement result unknown; no retry or final Return"
             end
             return_position.unknown=false;return_position.queued=true;return_position.phase="queued"
             now=clock();if not live() then return false,"cancelled" end
             if not now or now>=return_plan.expires_ms then return_position.unknown=true;return false,"Return request crossed original deadline" end
-            detail="Return placement queued; waiting for actual grounded position before stock input."
+            detail="Return placement queued after stock ACK; waiting for actual grounded100 position."
             return false,"pending"
         end
         local watch=call(R.skater and R.skater.telemetry);if not live() then return false,"cancelled" end
@@ -331,7 +327,7 @@ function Entry.new(R,Runtime,Survey,options)
         local w,a=watch[2],actor[2]
         if watch[1] and watch.n==2 and plain(w) and w.skater==true and type(w.teleport_pending)=="boolean"
             and plain(w.watch) and w.watch.valid==true and w.watch.ragdoll_known==true and w.watch.ragdoll==false
-            and w.watch.wipeouts==return_plan.wipeouts and w.watch.state==504
+            and w.watch.wipeouts==return_plan.wipeouts and w.watch.state==100
             and actor[1] and actor.n==2 and plain(a) and typeof(a.position)=="vector"
             and finite(a.position.x) and finite(a.position.y) and finite(a.position.z) and finite(a.heading) then
             local p=return_position.target
@@ -345,7 +341,7 @@ function Entry.new(R,Runtime,Survey,options)
                 if now-return_position.first_match>=100 and return_position.samples>=3 then
                     return_position.observed=true;return_position.phase="observed"
                     return_position.observed_ms=now;return_position.position=table.freeze({a.position.x,a.position.y,a.position.z})
-                    detail="Grounded Return position observed; stock equipment still needs its own transaction."
+                    detail="Grounded100 Return position observed after the stock target and ACK."
                     return true
                 end
             else return_position.first_match=nil;return_position.samples=0 end
@@ -355,20 +351,37 @@ function Entry.new(R,Runtime,Survey,options)
     local function return_step()
         local version=generation
         if not known or not clean(latest) then detail="Returning: waiting for confirmed cleanup; no stock input sent.";return end
-        if return_plan then
-            local ready,why=handback_step(version)
-            if generation~=version or cancelled or unloaded then return end
-            if not ready then
-                if why~="pending" then
-                    return_position.phase="blocked";return_position.reason=why
-                    return_position.unknown=return_position.unknown or return_position.queued and not return_position.observed
-                    fail(why)
+        if return_plan and stock_attempted then
+                -- Stock's physical transition can replace its root. Place only
+                -- AFTER that exact transaction has observed100 and cleared ACK.
+                local e=latest.equipment
+                local receipt=plain(e) and e.terminal_receipt or nil
+                if not stock_attempted or not plain(e) or e.phase~="done" or e.outcome~="target_observed"
+                    or e.initial_state~=504 or e.expected_state~=100 or e.retained~=false or e.acknowledged~=true
+                    or e.qualified_transition~=true or e.current_transition~=true or e.unloaded~=false or e.storage_fault~=false
+                    or not plain(receipt) or receipt.terminal~=true or receipt.claim_released~=true
+                    or receipt.report_debt~=false or receipt.quarantined~=false then
+                    fail("Matched clean stock100 target and ACK required before Return placement.");return
                 end
-                return
-            end
+                local ready,why=handback_step(version)
+                if generation~=version or cancelled or unloaded then return end
+                if not ready then
+                    if why~="pending" then
+                        return_position.phase="blocked";return_position.reason=why
+                        return_position.unknown=return_position.unknown or return_position.queued and not return_position.observed
+                        fail(why)
+                    end
+                    return
+                end
         end
+        -- During a queued placement handback_step tolerates missing/transient
+        -- samples without admitting an effect. Only its actual100 convergence
+        -- reaches this fresh state check and final Return path.
         local observed=state();if observed==nil or generation~=version or cancelled or unloaded then return end
         if observed==100 then
+            if return_plan and (not stock_attempted or return_position.observed~=true) then
+                fail("Matched stock100 ACK and position convergence required for final Return.");return
+            end
             return_pending=false
             if two_cycle and attempts_used<attempt_limit then
                 local ready=call(owner.can_prepare_next_mount,owner)
@@ -385,6 +398,13 @@ function Entry.new(R,Runtime,Survey,options)
         if stock_attempted then fail("Stock transition ended without an observed skateboard; no retry.");return end
         if not environment(false) then return end
         if generation~=version or cancelled or unloaded then return end
+        if return_plan then
+            local now=clock()
+            if generation~=version or cancelled or unloaded then return end
+            if not now or now<return_plan.stop_ms or now+5100>=return_plan.expires_ms then
+                fail("Too little original Return time before stock transition.");return
+            end
+        end
         stock_attempted=true -- One existing equipment transaction, never a per-tick pulse.
         local out=call(owner.request_stock_toggle,owner,slot)
         if generation~=version or cancelled or unloaded then return end

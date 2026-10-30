@@ -155,8 +155,8 @@
     {
       "source": "Test/playable_main_fixture.lua",
       "destination": "playable_main_fixture.lua",
-      "bytes": 3266,
-      "sha256": "D754C166D1C18F41F5A695F68BFD2175BC1F4ED27829CFD22EC7D0DBD9A67EBA"
+      "bytes": 3349,
+      "sha256": "694433F3A9BE916620A31108B188D3A3B0656075595D9FF519C10EF2ABB3FC09"
     },
     {
       "source": "plugin/lease_source.lua",
@@ -173,8 +173,8 @@
     {
       "source": "plugin/bike_runtime_core.lua",
       "destination": "bike_runtime_core.lua",
-      "bytes": 120361,
-      "sha256": "E11FF432EA2F27339E5890E70DE29E0AAAB30C40D9C9835E22AF32B39886B8C8"
+      "bytes": 120429,
+      "sha256": "844FE48B4308E2CB903E891A0861D95C07140C01E918C9A9100B0D16B647717A"
     },
     {
       "source": "plugin/force_math.lua",
@@ -370,8 +370,8 @@
     },
     {
       "source": "plugin/bike_runtime_core.lua",
-      "bytes": 120361,
-      "sha256": "E11FF432EA2F27339E5890E70DE29E0AAAB30C40D9C9835E22AF32B39886B8C8"
+      "bytes": 120429,
+      "sha256": "844FE48B4308E2CB903E891A0861D95C07140C01E918C9A9100B0D16B647717A"
     },
     {
       "source": "plugin/bike_runtime.lua",
@@ -470,8 +470,8 @@
     },
     {
       "source": "plugin/main.lua",
-      "bytes": 3227,
-      "sha256": "6422CF0807B1803F03CFC404913877AC397B2D431301B27D7D157067EDDAC721"
+      "bytes": 3310,
+      "sha256": "4D66C15CA850C460B73B78F46AB4CA01873BE5C58D940D33B7F6CCEC938059CA"
     },
     {
       "source": "plugin/mounted_pose.lua",
@@ -523,8 +523,8 @@
     {
       "source": "plugin/main.lua",
       "fixture": "Test/playable_main_fixture.lua",
-      "source_sha256": "6422CF0807B1803F03CFC404913877AC397B2D431301B27D7D157067EDDAC721",
-      "fixture_sha256": "D754C166D1C18F41F5A695F68BFD2175BC1F4ED27829CFD22EC7D0DBD9A67EBA",
+      "source_sha256": "4D66C15CA850C460B73B78F46AB4CA01873BE5C58D940D33B7F6CCEC938059CA",
+      "fixture_sha256": "694433F3A9BE916620A31108B188D3A3B0656075595D9FF519C10EF2ABB3FC09",
       "prefix": "return function(reskate, require)\n",
       "suffix": "\nend\n"
     },

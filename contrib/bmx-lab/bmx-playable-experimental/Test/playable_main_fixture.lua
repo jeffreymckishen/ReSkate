@@ -16,6 +16,7 @@ reskate.menu.page("BMX experimental",function(ui)
     local s=bike:status()
     ui:warn("Experimental: at most TWO attempts; each uses a new retained body slot. Start on foot on flat ground with 1.25 m clear around you for spawning.")
     if not s.admitted then ui:note("This reviewed source build is inactive; no Mount action is admitted.") end
+    ui:warn("Opening Insert ends an active ride. Use F8 to return to skateboard.")
     if ui:button("bmx_play_mount","Mount bike") then bike:mount() end
     if ui:button("bmx_play_return","Return to skateboard") then bike:return_to_skateboard() end
     if ui:button("bmx_play_cancel","Cancel / stop and keep cleanup") then bike:cancel() end

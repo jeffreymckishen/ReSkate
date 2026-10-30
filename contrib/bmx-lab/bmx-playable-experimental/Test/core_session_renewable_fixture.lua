@@ -1774,7 +1774,8 @@ local function tick(dt)
                     else T.phase="capturing" end
                 end
             else T.ready_since=nil;T.ready_ticks=0;T.ready_last=nil end
-        elseif not closed_ready(f,T.phase~="following") then stop_all("fresh menu/input/grounded acquisition gate lost") end
+        elseif not closed_ready(f,T.phase~="following") then stop_all(T.phase=="following" and "ride menu/input gate lost"
+            or "fresh menu/input/grounded acquisition gate lost") end
         -- S2 declared change: the 60 s window needs the effect watchdog past it (65 s from source Arm).
         if T.effect_at and now-T.effect_at>=65000 and not session_following() then stop_all("total effect watchdog expired") end
     end

@@ -276,7 +276,7 @@ function Tests.run()
     end)
     case("menu and context loss still stop and clean",function()
         for _,gate in {
-            {name="menu",change=function(f)f.menu=true end,why="fresh menu/input/grounded acquisition gate lost"},
+            {name="menu",change=function(f)f.menu=true end,why="ride menu/input gate lost"},
             {name="level",change=function(f)f.level="another" end,why="fresh sampled upright/focus/context/fall readiness lost"},
             {name="focus",change=function(f)f.focused=false end,why="fresh sampled upright/focus/context/fall readiness lost"},
         } do

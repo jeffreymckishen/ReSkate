@@ -308,10 +308,24 @@ function Contact.edge_witness_plan(frame,rays,candidates,geometry)
             local nt,nw=top.normal,wall.normal
             local outside=M.unit(M.sub(lower.position,top.position))
             local anchor,top_distance,wall_distance,c=plane_edge(candidate.center,top.position,nt,wall.position,nw)
-            if not anchor or math.abs(M.dot(nw,candidate.up))>.2 or not outside
-                or M.dot(nw,outside)<.8 or not stationary(top.surface_velocity)
-                or not stationary(wall.surface_velocity) or not stationary(lower.surface_velocity) then
-                return nil,"convex static edge facets unavailable"
+            -- Preserve the original first-failing order and acceptance rule.
+            -- A bounded refusal reason records geometry, not contact authority.
+            local failed
+            if not anchor then failed="plane_pair"
+            elseif math.abs(M.dot(nw,candidate.up))>.2 then failed="wall_up"
+            elseif not outside then failed="outside_direction"
+            elseif M.dot(nw,outside)<.8 then failed="wall_outside"
+            elseif not stationary(top.surface_velocity) then failed="top_velocity"
+            elseif not stationary(wall.surface_velocity) then failed="wall_velocity"
+            elseif not stationary(lower.surface_velocity) then failed="lower_velocity" end
+            if failed then
+                local function velocity(v)
+                    return M.vec(v,50) and string.format("%.5g",M.length(v)) or "bad"
+                end
+                local reason=string.format("edge facets:%s nd=%.5g up=%.5g out=%s v=%s/%s/%s",failed,
+                    M.dot(nt,nw),M.dot(nw,candidate.up),outside and string.format("%.5g",M.dot(nw,outside)) or "none",
+                    velocity(top.surface_velocity),velocity(wall.surface_velocity),velocity(lower.surface_velocity))
+                return nil,string.sub(reason,1,200)
             end
             local side=M.unit(M.sub(nw,M.mul(nt,c)))
             local wall_up=M.unit(M.sub(nt,M.mul(nw,c)))

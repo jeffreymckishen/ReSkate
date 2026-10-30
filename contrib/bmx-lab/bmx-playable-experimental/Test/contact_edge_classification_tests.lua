@@ -1,4 +1,5 @@
--- One source-only regression: an inclined plane is not a convex step.
+-- One source-only regression: preserve classification/edge acceptance and
+-- name the first failed original facet clause in a bounded refusal reason.
 -- Constructed exact nearest segments only; no SDK, game or native evidence.
 local Contact=require("./contact_runtime")
 local M=require("./force_math")
@@ -71,10 +72,14 @@ function Tests.run()
     local samples=Contact.wheel_samples(frame,step,centers,context,G,features,cast_plan(witness_plan,nil,.12))
     check(samples and samples[1].edge and samples[1].edge.kind=="edge"
         and samples[1].edge.edge_feature.topology_known==false,"four query/projection phases retain the coherent optional edge")
-    local forged_walls=M.copy(walls);forged_walls[1].normal={0,1,0}
+    -- This unit wall passes plane_pair (d=.8), then fails wall_up before
+    -- wall_outside. It was refused by the original combined boolean guard.
+    local forged_walls=M.copy(walls);forged_walls[1].normal=M.unit({0,.5,-1})
     local refused,reason=Contact.edge_witness_plan(frame,forged_walls,candidates,G)
-    check(refused==nil and reason=="convex static edge facets unavailable",
-        "an unsupported actual candidate still refuses at the unchanged wall guard")
+    check(refused==nil and type(reason)=="string" and #reason<=200
+        and string.match(reason,"^edge facets:([%w_]+) ")=="wall_up"
+        and string.find(reason,"nd=0.44721 up=0.44721",1,true)~=nil,
+        "the same unsupported candidate refuses with the exact first failed clause and bounded measured numbers")
     return {cases=1,assertions=n,native_qualified=false}
 end
 return Tests

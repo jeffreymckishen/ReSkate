@@ -4,8 +4,8 @@
   "flat_file_count": 58,
   "quota_file_count": 59,
   "expected_processes": 24,
-  "expected_cases": 179,
-  "expected_assertions": 8390,
+  "expected_cases": 180,
+  "expected_assertions": 8407,
   "source_admission": "UNCHANGED_FALSE",
   "files": [
     {
@@ -95,8 +95,8 @@
     {
       "source": "Test/two_cycle_main_tests.lua",
       "destination": "two_cycle_main_tests.lua",
-      "bytes": 1673,
-      "sha256": "B86A73E302986A90D3C855AC9104EE4437C402B22218977A329404D54526AF5F"
+      "bytes": 1743,
+      "sha256": "44A0D3C2E3AD64F765E583410D51D0D2EAD76E1FA3FD496DD3CB484399967F6C"
     },
     {
       "source": "Test/bmx_playable_entry_tests.lua",
@@ -107,8 +107,8 @@
     {
       "source": "Test/bmx_playable_main_tests.lua",
       "destination": "bmx_playable_main_tests.lua",
-      "bytes": 10247,
-      "sha256": "9367C05BED4056E3816B1B6EF61A26728A643782F2590EEBD3AA9EEE413BCAC4"
+      "bytes": 12242,
+      "sha256": "36D809639973F94DC2FBD9E3CFE7D92E9DCCEB770ED555DBA4098E21E9A1E32C"
     },
     {
       "source": "Test/source_cleanup_reconcile_tests.lua",
@@ -155,8 +155,8 @@
     {
       "source": "Test/playable_main_fixture.lua",
       "destination": "playable_main_fixture.lua",
-      "bytes": 3867,
-      "sha256": "9C7A122A3062E4EE5BA7DB8E2892807172EF6616B1F71D18F5696AA6BD186A38"
+      "bytes": 4099,
+      "sha256": "A0B50CA8A4A0D5896610160FC49F9FF1613A93285CE8A74610B106B9CA1DC2D5"
     },
     {
       "source": "plugin/lease_source.lua",
@@ -470,8 +470,8 @@
     },
     {
       "source": "plugin/main.lua",
-      "bytes": 3828,
-      "sha256": "021232F4CE4BDC8EC307FC0798E38864567AA97E140DD242FA05D57F4646D955"
+      "bytes": 4060,
+      "sha256": "FCE9A3C9A94B84E92EF854751D072A318F5556D66F9993DAE29EDF6F74844B72"
     },
     {
       "source": "plugin/mounted_pose.lua",
@@ -523,8 +523,8 @@
     {
       "source": "plugin/main.lua",
       "fixture": "Test/playable_main_fixture.lua",
-      "source_sha256": "021232F4CE4BDC8EC307FC0798E38864567AA97E140DD242FA05D57F4646D955",
-      "fixture_sha256": "9C7A122A3062E4EE5BA7DB8E2892807172EF6616B1F71D18F5696AA6BD186A38",
+      "source_sha256": "FCE9A3C9A94B84E92EF854751D072A318F5556D66F9993DAE29EDF6F74844B72",
+      "fixture_sha256": "A0B50CA8A4A0D5896610160FC49F9FF1613A93285CE8A74610B106B9CA1DC2D5",
       "prefix": "return function(reskate, require)\n",
       "suffix": "\nend\n"
     },
@@ -639,7 +639,7 @@
       "invoked": "two_cycle_main_tests",
       "context": "flat",
       "expected_cases": 1,
-      "expected_assertions": 13
+      "expected_assertions": 14
     },
     {
       "suite": "two_cycle_quota_tests",
@@ -666,8 +666,8 @@
       "suite": "bmx_playable_main_tests",
       "invoked": "bmx_playable_main_tests",
       "context": "flat",
-      "expected_cases": 6,
-      "expected_assertions": 78
+      "expected_cases": 7,
+      "expected_assertions": 94
     },
     {
       "suite": "source_cleanup_reconcile_tests",

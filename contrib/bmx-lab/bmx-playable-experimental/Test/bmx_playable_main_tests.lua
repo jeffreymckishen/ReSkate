@@ -61,7 +61,7 @@ function Tests.run()
     end)
     case("F8 action uses the guarded Return path without opening the menu",function()
         local f=setup()
-        check(#f.binds==3 and f.binds[1].name=="bmx_return" and f.binds[1].key=="F8","F8 default remains alongside recovery; remapping belongs to Binds")
+        check(#f.binds==4 and f.binds[1].name=="bmx_return" and f.binds[1].key=="F8","F8 default remains alongside recovery; remapping belongs to Binds")
         check(f.returns==0 and f.mounts==0 and f.cancels==0 and f.steps==0 and #f.notes==0,"registration dispatches no lifecycle command or menu draw")
         f.callbacks.action("another_action");f.callbacks.action(nil);f.callbacks.action({name="bmx_return"})
         check(f.returns==0 and f.mounts==0 and f.cancels==0,"only the exact action name selects Return")
@@ -77,7 +77,7 @@ function Tests.run()
     end)
     case("F9 requests existing eligible recovery once and is inert after unload",function()
         local f=setup()
-        check(#f.binds==3 and f.binds[2].name=="bmx_recover" and f.binds[2].key=="F9","one remappable F9 recovery default")
+        check(#f.binds==4 and f.binds[2].name=="bmx_recover" and f.binds[2].key=="F9","one remappable F9 recovery default")
         check(f.recovers==0 and f.status_reads==0 and f.steps==0 and #f.notes==0,"registration never requests recovery or draws the menu")
         f.report={phase="riding",detail="constructed",admitted=true,core_phase="following",recovery_available=false,
             attempts_used=1,attempt_limit=2,cleanup_pending=false,cleanup_unknown=false}
@@ -108,7 +108,7 @@ function Tests.run()
     end)
     case("controller recovery shares exact eligibility and pending intent with F9",function()
         local f=setup()
-        check(#f.binds==3 and f.binds[3].name=="bmx_recover_pad" and f.binds[3].key=="Pad.LB+Pad.RB+Pad.L3",
+        check(#f.binds==4 and f.binds[3].name=="bmx_recover_pad" and f.binds[3].key=="Pad.LB+Pad.RB+Pad.L3",
             "separate remappable controller action preserves the F8/F9 defaults")
         f.report={phase="riding",detail="constructed",admitted=true,core_phase="following",recovery_available=false,
             attempts_used=1,attempt_limit=2,cleanup_pending=false,cleanup_unknown=false}
@@ -133,6 +133,30 @@ function Tests.run()
         f.report.recovery_available=true;local reads=f.status_reads
         f.callbacks.unload();f.callbacks.action("bmx_recover_pad");f.callbacks.action("bmx_recover")
         check(f.unloads==1 and f.recovers==1 and f.status_reads==reads,"unload blocks both late recovery actions before status or intent calls")
+    end)
+    case("controller Return uses the exact F8 path without a menu or ride input step",function()
+        local f=setup()
+        check(#f.binds==4 and f.binds[4].name=="bmx_return_pad" and f.binds[4].key=="Pad.LB+Pad.RB+Pad.R3",
+            "separate remappable Return chord preserves all earlier binding defaults")
+        check(f.returns==0 and f.mounts==0 and f.recovers==0 and f.steps==0 and f.status_reads==0,
+            "registering the Return chord performs no lifecycle or input work")
+        f.callbacks.action("Pad.LB+Pad.RB+Pad.R3");f.callbacks.action({name="bmx_return_pad"});f.callbacks.action(nil)
+        check(f.returns==0 and f.status_reads==0,"only the action identity selects Return; raw or remapped key text is not a command")
+        f.callbacks.action("bmx_return_pad")
+        check(f.returns==1 and f.new_calls==1 and f.status_reads==0 and f.steps==0 and #f.notes==0,
+            "the chord directly invokes the existing guarded Entry Return before any tick or menu")
+        f.callbacks.action("bmx_return");f.callbacks.action("bmx_return_pad")
+        check(f.returns==3 and f.mounts==0 and f.recovers==0 and f.cancels==0 and f.steps==0,
+            "F8 and the pad action share refusal semantics without a replacement owner, recovery or input step")
+        f.menu(f.ui);local noted=false
+        for _,note in ipairs(f.notes) do
+            if note=="Hold LB + RB, then click R3 to return to skateboard. Release all controls while Return runs (remappable in Binds)." then noted=true end
+        end
+        check(noted and f.returns==3,"drawing the press-order and release instruction never repeats Return")
+        f.callbacks.unload()
+        check(f.unloads==1 and f.new_calls==1 and f.returns==3 and f.steps==0,"unload delegates cleanup to the same existing Entry")
+        check(#f.binds==4 and f.mounts==0 and f.recovers==0 and f.cancels==0,
+            "events and unload add no rebindings or alternate lifecycle actions; SDK owns binding cleanup")
     end)
     return {cases=cases,assertions=assertions,game_evidence=false,native_actions=0}
 end

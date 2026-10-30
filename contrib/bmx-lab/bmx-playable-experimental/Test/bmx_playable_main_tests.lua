@@ -160,11 +160,11 @@ function Tests.run()
     end)
     case("controller Mount requests the existing guarded intent without a menu or input step",function()
         local f=setup()
-        check(#f.binds==5 and f.binds[5].name=="bmx_mount_pad" and f.binds[5].key=="Pad.LB+Pad.RB+Pad.A",
+        check(#f.binds==5 and f.binds[5].name=="bmx_mount_pad" and f.binds[5].key=="Pad.LB+Pad.A",
             "a separate remappable Mount action preserves the Return and recovery defaults")
         check(f.mounts==0 and f.returns==0 and f.recovers==0 and f.steps==0 and f.status_reads==0,
             "registration never requests Mount or bypasses the closed source constructor")
-        f.callbacks.action("Pad.LB+Pad.RB+Pad.A");f.callbacks.action({name="bmx_mount_pad"});f.callbacks.action(nil)
+        f.callbacks.action("Pad.LB+Pad.A");f.callbacks.action({name="bmx_mount_pad"});f.callbacks.action(nil)
         check(f.mounts==0 and f.status_reads==0,"only the stable Mount action name selects the intent after any remap")
         f.callbacks.action("bmx_mount_pad")
         check(f.mounts==1 and f.new_calls==1 and f.status_reads==0 and f.steps==0 and #f.notes==0,
@@ -176,7 +176,7 @@ function Tests.run()
         check(f.mounts==3 and f.new_calls==1,"the menu button and controller action use exactly the same guarded Mount method")
         local noted=false
         for _,note in ipairs(f.notes) do
-            if note=="Hold LB + RB, then press A to request Mount. Start on foot and release all controls while preparing (remappable in Binds)." then noted=true end
+            if note=="Hold LB, then press A to request Mount. Start on foot and release all controls while preparing (remappable in Binds)." then noted=true end
         end
         check(noted and f.mounts==3,"the on-foot and release instruction performs no automatic Mount")
         f.callbacks.unload()

@@ -95,8 +95,8 @@
     {
       "source": "Test/two_cycle_main_tests.lua",
       "destination": "two_cycle_main_tests.lua",
-      "bytes": 1817,
-      "sha256": "B8C235B3E04B902C2D83DA53C7DF93AA0A762A18781049F78CD9266A7878436F"
+      "bytes": 1810,
+      "sha256": "88C2EA1AA517240B2D14561F41CC47443E445414545A878187BC630CD300969D"
     },
     {
       "source": "Test/bmx_playable_entry_tests.lua",
@@ -107,8 +107,8 @@
     {
       "source": "Test/bmx_playable_main_tests.lua",
       "destination": "bmx_playable_main_tests.lua",
-      "bytes": 14292,
-      "sha256": "D898871020EE24AF1062D3C3A74C86E66DDD162D5D5B58AEC6B704EAFEB677C3"
+      "bytes": 14273,
+      "sha256": "06281F1538FD24D0BDEF447A65B03AD456A08B8ACD454AFB164B2AC0B5C1CC4C"
     },
     {
       "source": "Test/source_cleanup_reconcile_tests.lua",
@@ -155,8 +155,8 @@
     {
       "source": "Test/playable_main_fixture.lua",
       "destination": "playable_main_fixture.lua",
-      "bytes": 4342,
-      "sha256": "A02AC7616FB05DB6A5A1F5EF5E0C010AF065110F1E9738D3E37EA6A81E378FDE"
+      "bytes": 4330,
+      "sha256": "90BB6A763E93EEF8E1FD9229541D45D9D8D2806E656367FB79F6EC7004E978CD"
     },
     {
       "source": "plugin/lease_source.lua",
@@ -470,8 +470,8 @@
     },
     {
       "source": "plugin/main.lua",
-      "bytes": 4303,
-      "sha256": "0E4945B2BF2E8AC2C9B9523614BE0B818812A6297BE85977E4609164B437A266"
+      "bytes": 4291,
+      "sha256": "71304FC3B00ED6A08329B0FE4AB56C58A0339FEAF8E7A6AD344C4DE70EEB0FE3"
     },
     {
       "source": "plugin/mounted_pose.lua",
@@ -523,8 +523,8 @@
     {
       "source": "plugin/main.lua",
       "fixture": "Test/playable_main_fixture.lua",
-      "source_sha256": "0E4945B2BF2E8AC2C9B9523614BE0B818812A6297BE85977E4609164B437A266",
-      "fixture_sha256": "A02AC7616FB05DB6A5A1F5EF5E0C010AF065110F1E9738D3E37EA6A81E378FDE",
+      "source_sha256": "71304FC3B00ED6A08329B0FE4AB56C58A0339FEAF8E7A6AD344C4DE70EEB0FE3",
+      "fixture_sha256": "90BB6A763E93EEF8E1FD9229541D45D9D8D2806E656367FB79F6EC7004E978CD",
       "prefix": "return function(reskate, require)\n",
       "suffix": "\nend\n"
     },

@@ -876,9 +876,11 @@ local function pose_step(sample,pose,now)
     local a=type(pose)=="table" and pose or {}
     local articulation=table.clone(POSE_RELEASED)
     articulation.steer=a.steer or 0;articulation.crank_phase=a.crank_phase or 0
-    -- Ride publishes these only with the same accepted barspin step.
+    -- Ride publishes these only with the same accepted articulation step.
     articulation.barspin=a.barspin or 0;articulation.barspin_release=a.barspin_release or 0
     articulation.release_left_hand=a.release_left_hand or 0;articulation.release_right_hand=a.release_right_hand or 0
+    articulation.tailwhip=a.tailwhip or 0;articulation.tailwhip_release=a.tailwhip_release or 0
+    articulation.release_left_foot=a.release_left_foot or 0;articulation.release_right_foot=a.release_right_foot or 0
     local r=poser:tick(now/1000,{bike={center_of_mass=sample.position,rotation=sample.rotation},articulation=articulation})
     if r.sent==true then T.pose_sent_ticks=(T.pose_sent_ticks or 0)+1 end
     if r.ok~=true and r.reason~=nil then T.pose_issue=T.pose_issue or short(r.reason) end

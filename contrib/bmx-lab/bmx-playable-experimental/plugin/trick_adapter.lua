@@ -1,17 +1,18 @@
--- Pure authored bar channel. The turn/catch/blend equations and timings are
--- the existing tricks.lua _channel policy (.45/.12/.06 seconds), with no
+-- Pure authored bar/tail channels. Turn/catch/blend equations and timings are
+-- the existing tricks.lua _channel policy (.45 bar/.55 tail/.12/.06), with no
 -- landing, tally, movement, score or native effect machinery. A ray-qualified
 -- airborne interval is not a native collision or a qualified landing.
 local Model = {}
-local TAU, BAR_SECONDS, CATCH_WINDOW, CATCH_BLEND = 2 * math.pi, .45, .12, .06
+local TAU, BAR_SECONDS, TAIL_SECONDS, CATCH_WINDOW, CATCH_BLEND = 2 * math.pi, .45, .55, .12, .06
 local function smooth(t) return t * t * (3 - 2 * t) end
 function Model.new(primed)
     return {primed=primed==true,airborne=false,air_seconds=0,armed=false,rotating=false,
         waiting=false,caught=false,failed=false,direction=0,elapsed=0,catch_elapsed=0,
         blend_remaining=0,origin=0,angle=0,release=0}
 end
-function Model.advance(previous,seconds,grounded,request,neutral)
-    -- Only the adapter supplies these already checked bounded scalar inputs.
+function Model.advance(previous,seconds,grounded,request,neutral,duration)
+    -- Only the adapter supplies these checked scalars and existing duration.
+    local turn_seconds=duration or BAR_SECONDS
     local c=table.clone(previous)
     if grounded then
         return Model.new(c.primed or neutral and request=="none")
@@ -41,11 +42,11 @@ function Model.advance(previous,seconds,grounded,request,neutral)
     if c.failed then c.release=1;return c end
     if c.rotating then
         c.elapsed+=seconds
-        local progress=math.min(1,c.elapsed/BAR_SECONDS)
+        local progress=math.min(1,c.elapsed/turn_seconds)
         c.angle=c.origin+c.direction*TAU*smooth(progress)
         c.release=math.min(1,progress/.10)
         if progress<1 then return c end
-        c.rotating,c.waiting,c.catch_elapsed=false,true,math.max(0,c.elapsed-BAR_SECONDS)
+        c.rotating,c.waiting,c.catch_elapsed=false,true,math.max(0,c.elapsed-turn_seconds)
     elseif c.waiting then c.catch_elapsed+=seconds end
     if c.waiting then
         c.release=1
@@ -58,15 +59,17 @@ function Model.advance(previous,seconds,grounded,request,neutral)
     end
     return c
 end
-function Model.target(c)
-    -- Equivalent periodic joint pose within existing articulation bounds.
+function Model.target(c,tail)
+    -- Equivalent periodic joint poses within existing articulation bounds.
     local angle=(c.angle+math.pi)%TAU-math.pi
+    local tail_angle=tail and (tail.angle+math.pi)%TAU-math.pi or 0
+    local tail_release=tail and tail.release or 0
     return table.freeze({valid=true,scope="authored_ray_barspin_target_only",realized=false,
         pose_provenance="measured_rays_authored_wheel_geometry",native_collision_contact=false,
         landing_quality_available=false,completion_qualified=false,barspin=angle,
-        tailwhip=0,movement_bike_pitch=0,movement_bike_roll=0,movement_crank_angle=0,
-        barspin_release=c.release,tailwhip_release=0,release_left_hand=c.release,
-        release_right_hand=c.release,release_left_foot=0,release_right_foot=0})
+        tailwhip=tail_angle,movement_bike_pitch=0,movement_bike_roll=0,movement_crank_angle=0,
+        barspin_release=c.release,tailwhip_release=tail_release,release_left_hand=c.release,
+        release_right_hand=c.release,release_left_foot=tail_release,release_right_foot=tail_release})
 end
 function Model.reserved(c) return c.airborne and (c.rotating or c.waiting) end
 table.freeze(Model)
@@ -76,6 +79,8 @@ table.freeze(Model)
 local Frame=require("./frame_identity")
 local Identity=require("./lease_identity")
 -- Model is the closed pure bar channel above; no extra dependency leaf.
+-- Historical barspin scope/diagnostic names remain stable; this private
+-- transaction now carries both authored channels, never native completion.
 local Runtime={}
 local SOURCE={"generation","user","sequence","source_epoch","context_generation",
     "observation_serial","observed_ms","packet"}
@@ -134,23 +139,29 @@ local function actions_copy(raw,frame)
     if not plain(raw) or rawget(raw,"active")~=true
         or not rawequal(rawget(raw,"physics_epoch"),frame.physics_epoch)
         or rawget(raw,"h")~=frame.seconds or not source_matches(rawget(raw,"source"),frame.source,true)
-        or type(rawget(raw,"bar_neutral"))~="boolean" then return nil end
+        or type(rawget(raw,"bar_neutral"))~="boolean"
+        or type(rawget(raw,"rear_neutral"))~="boolean" then return nil end
     local request=rawget(raw,"handlebar")
     if request~="none" and request~="left" and request~="right" then return nil end
     if request=="left" and rawget(raw,"movement")~=34
         or request=="right" and rawget(raw,"movement")~=44 then return nil end
-    return {request=request,neutral=raw.bar_neutral,observation_serial=frame.source.observation_serial}
+    local tail_request=rawget(raw,"tailwhip")
+    if tail_request~="none" and tail_request~="left" and tail_request~="right" then return nil end
+    if tail_request=="left" and rawget(raw,"movement")~=56
+        or tail_request=="right" and rawget(raw,"movement")~=52 then return nil end
+    return {request=request,neutral=raw.bar_neutral,tail_request=tail_request,tail_neutral=raw.rear_neutral,
+        observation_serial=frame.source.observation_serial}
 end
 local function reject(why)
     return table.freeze({valid=false,issue=why,scope="accepted_step_ray_barspin_only",
         realized=false,completion_qualified=false})
 end
 function Runtime.new()
-    local state=Model.new()
+    local state,tail_state=Model.new(),Model.new()
     local observed,accepted,action_seen,consumed,sequence,draft,air_started
     local revision,stopped,stop_reason=0,false,nil
     local object={}
-    local function result(frame,support,next_state)
+    local function result(frame,support,next_state,next_tail)
         local source={lease_handle=frame.source.lease_handle}
         for _,name in ipairs(SOURCE) do source[name]=frame.source[name] end
         return table.freeze({valid=true,issue="candidate",scope="accepted_step_ray_barspin_only",
@@ -158,8 +169,8 @@ function Runtime.new()
             landing_quality_available=false,actor_lane=support.actor_lane,actor_tripwire=support.actor_tripwire,
             binding=table.freeze({body_handle=frame.body_handle,physics_epoch=frame.physics_epoch,
                 lease_handle=frame.source.lease_handle,serial=frame.serial,time=frame.time,seconds=frame.seconds,
-                source=table.freeze(source)}),visual_targets=Model.target(next_state),
-            requests=table.freeze({rotation_reserved=Model.reserved(next_state),scope="model_request_only"})})
+                source=table.freeze(source)}),visual_targets=Model.target(next_state,next_tail),
+            requests=table.freeze({rotation_reserved=Model.reserved(next_state) or Model.reserved(next_tail),scope="model_request_only"})})
     end
     function object:preview(raw,actions)
         -- One outstanding candidate at most. Replacement/refusal never adopts.
@@ -178,7 +189,8 @@ function Runtime.new()
         local action=actions_copy(actions,frame)
         if not action then return reject("invalid_mapped_barspin_actions") end
         if action_seen and action_seen.observation_serial==action.observation_serial
-            and (action_seen.request~=action.request or action_seen.neutral~=action.neutral) then
+            and (action_seen.request~=action.request or action_seen.neutral~=action.neutral
+                or action_seen.tail_request~=action.tail_request or action_seen.tail_neutral~=action.tail_neutral) then
             return reject("actions_duplicate_changed")
         end
         -- Observe every eligible physical frame, including an eventual refused
@@ -193,10 +205,13 @@ function Runtime.new()
         local request=consumed~=action.observation_serial and action.request or "none"
         local next_state,model_issue=Model.advance(state,frame.seconds,support.grounded,request,action.neutral)
         if not next_state then return reject(model_issue) end
-        local out=result(frame,support,next_state)
+        local tail_request=consumed~=action.observation_serial and action.tail_request or "none"
+        local next_tail,tail_issue=Model.advance(tail_state,frame.seconds,support.grounded,tail_request,action.tail_neutral,TAIL_SECONDS)
+        if not next_tail then return reject(tail_issue) end
+        local out=result(frame,support,next_state,next_tail)
         local candidate=table.freeze({scope="private_ray_barspin_candidate_v1"})
         local next_air=next_state.airborne and (state.airborne and air_started or frame.time) or nil
-        draft={token=candidate,revision=revision,frame=frame,action=action,state=next_state,result=out,air_started=next_air}
+        draft={token=candidate,revision=revision,frame=frame,action=action,state=next_state,tail_state=next_tail,result=out,air_started=next_air}
         return out,candidate
     end
     function object:discard(candidate)
@@ -211,7 +226,7 @@ function Runtime.new()
         -- Root alone calls this after exact native admission and force-history
         -- adoption. This local sequence check is not a native receipt itself.
         local chosen=draft
-        state,accepted,consumed,sequence=chosen.state,chosen.frame,chosen.action.observation_serial,accepted_sequence
+        state,tail_state,accepted,consumed,sequence=chosen.state,chosen.tail_state,chosen.frame,chosen.action.observation_serial,accepted_sequence
         air_started=chosen.air_started;revision+=1;draft=nil
         return true,table.freeze({valid=true,scope="predictive_accepted_ray_barspin_only",realized=false,
             completion_qualified=false,serial=accepted.serial,accepted_sequence=sequence,
@@ -219,7 +234,7 @@ function Runtime.new()
     end
     function object:cancel(reason)
         if stopped then return end
-        draft=nil;stopped=true;state=Model.new();revision+=1
+        draft=nil;stopped=true;state,tail_state=Model.new(),Model.new();revision+=1
         stop_reason=type(reason)=="string" and #reason>0 and #reason<=100 and reason or "cancelled"
     end
     object.stop=object.cancel
@@ -227,7 +242,7 @@ function Runtime.new()
         return table.freeze({scope="accepted_step_ray_barspin_only",realized=false,completion_qualified=false,
             stopped=stopped,issue=stop_reason or "none",revision=revision,
             accepted_sequence=sequence,serial=accepted and accepted.serial or nil,
-            visual_targets=Model.target(state),rotation_reserved=Model.reserved(state)})
+            visual_targets=Model.target(state,tail_state),rotation_reserved=Model.reserved(state) or Model.reserved(tail_state)})
     end
     return table.freeze(object)
 end

@@ -88,7 +88,7 @@ end
 -- exact advancing force admission and force-history adoption.
 local NEUTRAL_POSE = table.freeze({steer=0,front_wheel_phase=0,rear_wheel_phase=0,crank_phase=0,
     barspin=0,tailwhip=0,movement_bike_pitch=0,movement_bike_roll=0})
-local BARSPIN_RELEASES = table.freeze({"barspin_release","release_left_hand","release_right_hand"})
+local TRICK_RELEASES = table.freeze({"barspin_release","release_left_hand","release_right_hand","tailwhip_release","release_left_foot","release_right_foot"})
 -- The presentation pose after an accepted step: the front steer angle the
 -- kernel commanded, each wheel turned by its accepted angular speed over the
 -- step, and the cranks turned by the rear wheel through CRANK_RATIO only while
@@ -107,10 +107,10 @@ local function presentation(previous,model,wheels,h)
     local pose={steer=steer,front_wheel_phase=wrap(previous.front_wheel_phase+wheels[1].angular_speed*h),
         rear_wheel_phase=wrap(previous.rear_wheel_phase+rear),
         crank_phase=pedaling and wrap(previous.crank_phase+rear/CRANK_RATIO) or previous.crank_phase,
-        barspin=previous.barspin,tailwhip=0,movement_bike_pitch=0,movement_bike_roll=0}
+        barspin=previous.barspin,tailwhip=previous.tailwhip,movement_bike_pitch=0,movement_bike_roll=0}
     -- A refused candidate holds the same accepted hand releases as its angle.
     -- Omitted zero releases keep ordinary riding's eight-field pose unchanged.
-    for _,name in ipairs(BARSPIN_RELEASES) do pose[name]=previous[name] end
+    for _,name in ipairs(TRICK_RELEASES) do pose[name]=previous[name] end
     return pose
 end
 -- The measured tilt of the body's up axis from world up, in degrees, and its
@@ -411,11 +411,11 @@ local function stop(s, reason)
             if ok then s.barspin_state=row end
             s.barspin_candidate,s.barspin_preview,s.barspin_presentation=nil,nil,nil;s.barspin_issue="stopped"
             if s.pose then
-                local changed=s.pose.barspin~=0
-                for _,name in ipairs(BARSPIN_RELEASES) do changed=changed or s.pose[name]~=nil end
+                local changed=s.pose.barspin~=0 or s.pose.tailwhip~=0
+                for _,name in ipairs(TRICK_RELEASES) do changed=changed or s.pose[name]~=nil end
                 if changed then
-                    local pose=table.clone(s.pose);pose.barspin=0
-                    for _,name in ipairs(BARSPIN_RELEASES) do pose[name]=nil end
+                    local pose=table.clone(s.pose);pose.barspin=0;pose.tailwhip=0
+                    for _,name in ipairs(TRICK_RELEASES) do pose[name]=nil end
                     s.pose=freeze(pose)
                 end
             end
@@ -1053,17 +1053,18 @@ local function observe(s,source_frame,raw,context)
             if not accepted.current or s.stopped or type(value)~="table" or value.serial~=sample.serial
                 or value.accepted_sequence~=sequence or value.realized~=false or value.completion_qualified~=false
                 or type(target)~="table" or target.realized~=false or target.completion_qualified~=false
-                or not M.finite(target.barspin) or math.abs(target.barspin)>math.pi then
+                or not M.finite(target.barspin) or math.abs(target.barspin)>math.pi
+                or not M.finite(target.tailwhip) or math.abs(target.tailwhip)>math.pi then
                 stop(s,"accepted barspin adoption unavailable");return
             end
-            for _,name in ipairs(BARSPIN_RELEASES) do
+            for _,name in ipairs(TRICK_RELEASES) do
                 local release=target[name]
                 if not M.finite(release) or release<0 or release>1 then
                     stop(s,"accepted barspin release unavailable");return
                 end
                 pose[name]=release~=0 and release or nil
             end
-            pose.barspin=target.barspin
+            pose.barspin=target.barspin;pose.tailwhip=target.tailwhip
             s.barspin_presentation=freeze(value);s.barspin_state=s.accepted_barspin:status()
             s.barspin_issue="predictive_accepted"
             s.barspin_candidate,s.barspin_preview=nil,nil

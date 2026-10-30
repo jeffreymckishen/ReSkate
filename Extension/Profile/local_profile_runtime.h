@@ -88,7 +88,9 @@ bool teleport_to_local_placed_object(std::string_view map, std::uint64_t token);
 // moved). False when the game's teleport is unavailable.
 bool teleport_local_skater(const std::array<float, 3>& position);
 // The same, facing `heading` (radians about world up; 0 = +Z, the way the other teleports face).
-// An explicit choice applies only to this request; omission keeps the native preference.
+// An explicit choice sets the native arrival preference at dispatch. The game may
+// retain it after arrival; omission leaves that preference unchanged. True means
+// queued, not an arrival acknowledgement.
 bool teleport_local_skater_heading(const std::array<float, 3>& position, float heading,
     std::optional<bool> on_board = std::nullopt);
 bool teleport_local_skater_transform(const std::array<float,16>& transform,

@@ -92,7 +92,6 @@ bool teleport_local_skater_transform(const std::array<float,16>& transform, std:
     if (!local_runtime().active || !r.teleport || !r.transition_ctor || !r.transition_destroy) return false;
     for (const auto v : transform)
         if (!std::isfinite(v) || std::abs(v) > 1e6f) return false;
-    if (on_board.has_value() && !local_teleport_equipment_available(local_runtime().base)) return false;
     auto queue = r.teleport_queue.mutate();
     queue.write().set_position(transform, on_board, GetTickCount64());
     return true;

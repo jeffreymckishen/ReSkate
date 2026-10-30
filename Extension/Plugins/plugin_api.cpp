@@ -570,9 +570,11 @@ struct ApiFunctions {
         else lua_pushnil(L);
         return 1;
     }
-    // skater.teleport: true when the teleport was sent (it happens within a few seconds); false
+    // skater.teleport: true means queued, not an arrival or equipment acknowledgement; false
     // and why when the host has turned teleporting off, it cannot be done now, or it is asked too often.
-    // Optional on_board affects only this request; omission keeps the native preference.
+    // Explicit on_board sets the native spawn preference at dispatch. The engine may retain it
+    // for later teleports; omitted options leave that preference unchanged. This is native state,
+    // not a saved SDK setting, and no automatic restoration is promised.
     static int skater_teleport(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "skater.teleport", "reskate.skater.teleport");

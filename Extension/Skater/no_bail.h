@@ -71,6 +71,10 @@ struct NoBailSkater {
     std::uintptr_t base{}, entity{}, core{}, context{}, rig{};
 };
 bool no_bail_skater(NoBailSkater& skater) noexcept;
+// At an admitted local teleport dispatch, set only the captured owner's arrival
+// preference. Unknown/replaced owners or protected board state refuse. The game
+// can retain this preference; this neither restores it nor acknowledges arrival.
+bool prepare_teleport_equipment(std::uintptr_t client, const NoBailSkater& expected, bool on_board) noexcept;
 // Read-only full local ownership/protection query for an owner-pinned handoff.
 // false means unavailable/changed; protected_owner includes manual/flight/BMX
 // leases and must be false before another feature requests a native bail.

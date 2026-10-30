@@ -7,7 +7,9 @@
 #include "Extension/Objects/ParkEditor/park_editor_runtime.h"
 #include "network_object_runtime.h"
 #include "Extension/Profile/runtime_internal.h"
-#include "Extension/Profile/local_teleport_observation.h"
+#include "Extension/Skater/no_bail.h"
+#include "Extension/Throwdowns/throwdown_kit.h"
+#include "Extension/Throwdowns/throwdown_relay.h"
 #include "Extension/Skater/native_actions.h"
 #include "Extension/World/local_world_layers.h"
 #include <algorithm>
@@ -654,30 +656,20 @@ void update_position_teleport() {
             alignas(16) std::array<std::uint64_t, 2> transition{};
             r.transition_ctor(transition.data());
             struct Destroy { decltype(r.transition_destroy) call; void* value; ~Destroy() { call(value); } } destroy{r.transition_destroy, transition.data()};
-            if (!on_board.has_value()) {
-                request = r.teleport(manager, transform.data(), 1, transition.data());
-            } else {
-                LocalTeleportEquipmentRequest equipment;
-                NoBailSkater verified;
-                bool protected_owner{true};
-                equipment.base = local_runtime().base;
-                equipment.transition = reinterpret_cast<std::uintptr_t>(transition.data());
-                equipment.transform = transform;
-                equipment.on_board = *on_board;
-                // A nested dispatch must not replace the outer request's option.
-                if (local_teleport_equipment_request || !local_teleport_equipment_available(equipment.base) ||
-                    !try_no_bail_skater(0, equipment.owner, equipment.client) ||
-                    !inspect_no_bail_owner(equipment.client, equipment.owner.entity, verified, protected_owner) ||
-                    protected_owner || !same_teleport_owner(equipment.owner, verified)) {
+            if (on_board.has_value()) {
+                NoBailSkater owner;
+                std::uintptr_t client{};
+                const auto match = dingosdk::throwdowns::kit::match();
+                const bool offboard = !match.input_lock && (throwdown_relay_waits_offboard() || match.offboard);
+                if ((match.input_lock && !*on_board) || (offboard && *on_board) ||
+                    !try_no_bail_skater(0, owner, client) ||
+                    !prepare_teleport_equipment(client, owner, *on_board)) {
                     equipment_refused = true;
                 } else {
-                    local_teleport_equipment_request = &equipment;
-                    struct Clear {
-                        ~Clear() { local_teleport_equipment_request = nullptr; }
-                    } clear;
                     request = r.teleport(manager, transform.data(), 1, transition.data());
-                    equipment_refused = !equipment.options_applied;
                 }
+            } else {
+                request = r.teleport(manager, transform.data(), 1, transition.data());
             }
         }
     }

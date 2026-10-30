@@ -3124,22 +3124,46 @@ void cancel_bmx_board_mount() noexcept {
     if (!p.board_mount.action_sequence) { p.board_mount = {}; p.board_mount_pending.store(false, std::memory_order_release); }
     ReleaseSRWLockExclusive(&p.lock);
 }
-bool set_teleport_on_board(std::uintptr_t component) noexcept {
+bool set_teleport_equipment(std::uintptr_t component, bool on_board) noexcept {
     __try {
-        *reinterpret_cast<volatile std::uint8_t*>(component + 0xc0) = 1;
+        *reinterpret_cast<volatile std::uint8_t*>(component + addr::no_bail::teleport_on_board_option) = on_board ? 1 : 0;
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+bool set_teleport_on_board(std::uintptr_t component) noexcept {
+    return set_teleport_equipment(component, true);
 }
 bool prepare_on_board_teleport(std::uintptr_t client, std::uintptr_t entity) noexcept {
     LastError error;
     Owner owner;
     if(!protection().ready.load(std::memory_order_acquire) || !resolve(client,entity,owner))return false;
     std::uint8_t board{};
-    if(!read(owner.component+0xc0,board))return false;
+    if(!read(owner.component+addr::no_bail::teleport_on_board_option,board))return false;
     if(board==1)return true;
     if(!set_teleport_on_board(owner.component))return false;
     logging::write(logging::Level::info,logging::Channel::skater,"Match countdown: native on-board spawn option prepared.");
     return true;
+}
+bool prepare_teleport_equipment(std::uintptr_t client, const NoBailSkater& expected, bool on_board) noexcept {
+    LastError error;
+    auto& p = protection();
+    Owner opening, closing;
+    if (!p.ready.load(std::memory_order_acquire) || expected.base != p.base ||
+        !resolve(client, expected.entity, opening)) return false;
+    if (opening.entity != expected.entity || opening.core != expected.core ||
+        opening.context != expected.context || opening.rig != expected.rig ||
+        !TryAcquireSRWLockShared(&p.lock)) return false;
+    struct Unlock { SRWLOCK& lock; ~Unlock() { ReleaseSRWLockShared(&lock); } } unlock{p.lock};
+    // Keep all existing protection/board-lock publications stable through the
+    // byte write. A pending board-preference restoration owns this byte too.
+    if (!p.ready.load(std::memory_order_acquire) || p.board_rearm ||
+        action_protection_locked(opening, GetTickCount64()) ||
+        !resolve(client, expected.entity, closing) || closing != opening) return false;
+    std::uint8_t board{};
+    if (!read(opening.component + addr::no_bail::teleport_on_board_option, board) || board > 1) return false;
+    const std::uint8_t wanted = on_board ? 1 : 0;
+    if (board != wanted && !set_teleport_equipment(opening.component, on_board)) return false;
+    return resolve(client, expected.entity, closing) && closing == opening;
 }
 void update_board_lock(std::uintptr_t client, std::uintptr_t entity, bool locked) noexcept {
     LastError error;

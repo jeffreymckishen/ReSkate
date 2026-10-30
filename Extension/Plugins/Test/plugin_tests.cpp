@@ -5111,7 +5111,7 @@ void teleport_equipment_choices_keep_permissions_and_host_limits() {
     environment.now += 1000;
     check(host.run_console("choose-teleport") && host.run_console("choose-teleport empty") && environment.teleports.size() == 4 &&
           !environment.teleport_equipment[2].has_value() && !environment.teleport_equipment[3].has_value(),
-          "Omitted and empty options keep the native equipment preference instead of inheriting the previous choice");
+          "Omitted and empty options forward no equipment override");
     environment.now += 1000;
     environment.teleport_forbidden = true;
     host.run_console("choose-teleport on");

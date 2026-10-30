@@ -298,12 +298,49 @@ function Contact.edge_plan(frame,rays,centers,context,geometry)
     return freeze(plan),candidates
 end
 
+-- A nearest segment aimed at a wall can instead enter the already measured
+-- top floor on a shallow road/seam. This proves no second facet or edge.
+-- It may retain only the original central contacts, never synthesize support.
+local function floor_continuation(candidate,wall,geometry)
+    local top,lower=candidate.top,candidate.lower
+    local radius=geometry.wheel_radius
+    if not measured(top) or not measured(lower) or not measured(wall)
+        or not stationary(top.surface_velocity) or not stationary(wall.surface_velocity)
+        or not stationary(lower.surface_velocity) or not M.finite(radius) or radius<.01 or radius>2
+        or not M.vec(candidate.center,100000) or not M.vec(candidate.up,1.001)
+        or math.abs(M.length(candidate.up)-1)>.001 or not M.finite(candidate.height)
+        or candidate.height<=.015 or candidate.height>radius*.75 then return false end
+    local nt,nw,up=top.normal,wall.normal,candidate.up
+    if M.dot(nt,nw)<.999 or M.dot(nt,up)<.95 or M.dot(nw,up)<.95
+        or M.dot(lower.normal,up)<.95 or M.dot(nt,lower.normal)<=.995 then return false end
+    local offset=M.sub(wall.position,top.position)
+    if math.abs(M.dot(offset,nt))>.003 or math.abs(M.dot(offset,nw))>.003 then return false end
+    -- Use the same bounded segment and original vertical-column envelope.
+    -- These checks cannot bless an unknown result or a farther replacement.
+    for _,row in ipairs({top,lower})do
+        local arm=M.sub(row.position,candidate.center)
+        local vertical=M.dot(arm,up)
+        if vertical>.003 or vertical< -(radius+.75+.003)
+            or M.length(M.sub(arm,M.mul(up,vertical)))>radius+.003 then return false end
+    end
+    local span=M.sub(top.position,lower.position)
+    if math.abs(M.dot(span,up)-candidate.height)>.003 then return false end
+    local delta=M.sub(span,M.mul(up,candidate.height))
+    local distance=M.length(delta)
+    if distance<.00001 or distance>2*radius+.003 or not M.finite(wall.fraction)
+        or wall.fraction<0 or wall.fraction>1 or M.dot(delta,nw)>1e-4*distance then return false end
+    local from=M.add(lower.position,M.mul(up,candidate.height*.5))
+    local expected=M.add(from,M.mul(delta,wall.fraction))
+    return M.length(M.sub(wall.position,expected))<=.003
+end
+
 function Contact.edge_witness_plan(frame,rays,candidates,geometry)
     if type(candidates)~="table" or not complete(rays,#candidates) then return nil,"measured edge wall unavailable" end
     local plan,features={},{}
     for i,candidate in ipairs(candidates)do
         local wall=rays[i]
         if wall.status=="hit" then
+            if floor_continuation(candidate,wall,geometry) then continue end
             local top,lower=candidate.top,candidate.lower
             local nt,nw=top.normal,wall.normal
             local outside=M.unit(M.sub(lower.position,top.position))
@@ -322,8 +359,10 @@ function Contact.edge_witness_plan(frame,rays,candidates,geometry)
                 local function velocity(v)
                     return M.vec(v,50) and string.format("%.5g",M.length(v)) or "bad"
                 end
-                local reason=string.format("edge facets:%s nd=%.5g up=%.5g out=%s v=%s/%s/%s",failed,
+                local top_offset=M.dot(M.sub(wall.position,top.position),nt)
+                local reason=string.format("edge facets:%s nd=%.5g up=%.5g out=%s pt=%.5g apt=%.5g v=%s/%s/%s",failed,
                     M.dot(nt,nw),M.dot(nw,candidate.up),outside and string.format("%.5g",M.dot(nw,outside)) or "none",
+                    top_offset,math.abs(top_offset),
                     velocity(top.surface_velocity),velocity(wall.surface_velocity),velocity(lower.surface_velocity))
                 return nil,string.sub(reason,1,200)
             end

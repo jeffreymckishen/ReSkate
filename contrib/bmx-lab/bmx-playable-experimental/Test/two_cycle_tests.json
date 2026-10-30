@@ -227,8 +227,8 @@
     {
       "source": "plugin/contact_runtime.lua",
       "destination": "contact_runtime.lua",
-      "bytes": 28982,
-      "sha256": "5DCAECCE58EAA1F6607D88EB87C8409D1FECF27002C4ED2785F9D3DF1795272B"
+      "bytes": 31512,
+      "sha256": "E78C3C0117C4C7F5B8BBFE4D922361DEE0E1B33218C14B3FBF8CDD704C2BD171"
     },
     {
       "source": "plugin/force_stage.lua",
@@ -377,8 +377,8 @@
     {
       "source": "Test/contact_edge_classification_tests.lua",
       "destination": "contact_edge_classification_tests.lua",
-      "bytes": 5007,
-      "sha256": "29F6DC558625F76641A55481A1D1517B0D25BD9433A53CE06F4D5BC8260E2FFE"
+      "bytes": 8462,
+      "sha256": "7E797AF3BB82922D9DF799E6B423374FD35549A0E46F0385DB2F768F792C1C33"
     }
   ],
   "runtime_files": [
@@ -439,8 +439,8 @@
     },
     {
       "source": "plugin/contact_runtime.lua",
-      "bytes": 28982,
-      "sha256": "5DCAECCE58EAA1F6607D88EB87C8409D1FECF27002C4ED2785F9D3DF1795272B"
+      "bytes": 31512,
+      "sha256": "E78C3C0117C4C7F5B8BBFE4D922361DEE0E1B33218C14B3FBF8CDD704C2BD171"
     },
     {
       "source": "plugin/equipment_runtime.lua",
@@ -598,7 +598,7 @@
       "invoked": "contact_edge_classification_tests",
       "context": "flat",
       "expected_cases": 1,
-      "expected_assertions": 10,
+      "expected_assertions": 22,
       "evidence_scope": "Measured incline classification and realstep guard constructed regression; no native qualification"
     }
   ],

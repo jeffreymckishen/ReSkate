@@ -299,7 +299,10 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     local up=support_mask~=0 and M.unit(support_sum) or nil
     local forward=up and M.unit(M.sub(body_forward,M.mul(up,M.dot(body_forward,up)))) or nil
     local balance_frame=up~=nil and forward~=nil
-    if c.enabled and balance_frame and M.dot(body_up,up)>.2 and prior_steering.valid then
+    -- This is a body-local joint angle, so its accepted history remains valid
+    -- when support disappears. Slew the same joint through loss/reacquisition;
+    -- support, balance and raw air-trick intent keep their independent gates.
+    if c.enabled and prior_steering.valid then
         local gain=t.steer_limit/(1+math.abs(speed)/t.steer_speed_scale) local u=math.clamp(math.abs(speed)/30,0,1)
         local rate_delta=(5-3*u*u*(3-2*u))*gain*h
         local joint_delta=math.clamp(6*h,0,1)*math.abs(out.requested_front_steer_angle-prior_steering.angle)

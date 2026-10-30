@@ -4,8 +4,8 @@
   "flat_file_count": 58,
   "quota_file_count": 59,
   "expected_processes": 24,
-  "expected_cases": 175.0,
-  "expected_assertions": 8251.0,
+  "expected_cases": 176,
+  "expected_assertions": 8341,
   "source_admission": "UNCHANGED_FALSE",
   "files": [
     {
@@ -269,8 +269,8 @@
     {
       "source": "plugin/forces.lua",
       "destination": "forces.lua",
-      "bytes": 40866,
-      "sha256": "856D0AE695982B16171E3D143D3C377BF89B0E6B11CD707EDC0A3F814CCBE008"
+      "bytes": 41061,
+      "sha256": "FA12E389E42201D50B4B4C0D08C3258946A14B47B389A05C952C1F0028C005D5"
     },
     {
       "source": "plugin/ride_inflight.lua",
@@ -335,8 +335,8 @@
     {
       "source": "Test/playable_steering_tests.lua",
       "destination": "playable_steering_tests.lua",
-      "bytes": 14443,
-      "sha256": "3535608E6D284A426F6C6AF36F352B6B24E613201F6E85DD4DCE2ABD8DE7D166"
+      "bytes": 18620,
+      "sha256": "A4BB7D2C5FBA9C406F84CA9C83520E48C05A1DC44C8DA736FEB19F4FB5A7C66F"
     },
     {
       "source": "Test/sim_world.lua",
@@ -445,8 +445,8 @@
     },
     {
       "source": "plugin/forces.lua",
-      "bytes": 40866,
-      "sha256": "856D0AE695982B16171E3D143D3C377BF89B0E6B11CD707EDC0A3F814CCBE008"
+      "bytes": 41061,
+      "sha256": "FA12E389E42201D50B4B4C0D08C3258946A14B47B389A05C952C1F0028C005D5"
     },
     {
       "source": "plugin/frame_identity.lua",
@@ -694,8 +694,8 @@
       "suite": "playable_steering_tests",
       "invoked": "playable_steering_tests",
       "context": "flat",
-      "expected_cases": 8,
-      "expected_assertions": 5516
+      "expected_cases": 9,
+      "expected_assertions": 5606
     },
     {
       "suite": "playable_spawn_survey_tests",

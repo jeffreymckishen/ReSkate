@@ -203,6 +203,69 @@ function T.run()
   contact_compliance_available=true,landing_contact_compliance_selected=true})
  local reserved=Forces.new():preview(Forces.native_seconds,curb_body,curb_wheels,curb_samples,air_controls)
  check(reserved.valid and not reserved.neutral_air_damping_active,"explicit air rotation still suppresses passive damping")
- return{cases=8,assertions=n,native_qualified=false}
+ -- The already-slewed physical joint must not snap to raw steer when its
+ -- measured support disappears. These constructed clear rows model a short
+ -- support gap; they never grant ground or qualify a native road collision.
+ local transition_stage=Stage.new()
+ local transition_body,transition_wheels=World.place(terrain,{speed=2})
+ local previous_angle=0
+ local step_limit=5*Forces.tuning().steer_limit*Forces.native_seconds+1e-8
+ local function joint_step(steer,supported,discard_once)
+  local samples=supported and World.contacts(terrain,transition_body,Forces.tuning().gravity)
+   or {{contact={status="clear"}},{contact={status="clear"}}}
+  local controls={pedal=0,steer=steer,brake=0}
+  local out,candidate=transition_stage:preview(Forces.native_seconds,transition_body,transition_wheels,samples,controls)
+  check(out.valid,"support-transition packet stays bounded: "..tostring(out.issue))
+  if discard_once then
+   local second,accepted=transition_stage:preview(Forces.native_seconds,transition_body,transition_wheels,samples,controls)
+   check(second.valid and math.abs(second.front_steer_angle-out.front_steer_angle)<1e-12,
+    "discarded preview cannot advance joint history")
+   out,candidate=second,accepted
+  end
+  check(math.abs(out.front_steer_angle-previous_angle)<=step_limit,
+   "joint change remains bounded from the previous accepted step across support transitions")
+  check(M.length(out.force)<=6000 and M.length(out.torque)<=2000 and out.contact_scale==1,
+   "joint continuity preserves physical packet caps without clipping")
+  if not supported then
+   check(not out.grounded and out.balance_support_mask==0,"slewed airborne joint never invents support or balance")
+  end
+  transition_stage:_adopt(candidate)
+  previous_angle=out.front_steer_angle
+  transition_body=World.integrate(transition_body,out,Forces.tuning().gravity,Forces.native_seconds)
+  transition_wheels=out.wheels
+  return out
+ end
+ for _=1,12 do joint_step(0,true,false)end
+ for _=1,3 do joint_step(.8,true,false)end
+ check(previous_angle<0,"fixture first accepts a nonzero grounded joint angle")
+ local lost=joint_step(-.8,false,true)
+ check(lost.requested_front_steer_angle>0 and lost.front_steer_angle<0 and
+  math.abs(lost.front_steer_angle-lost.requested_front_steer_angle)>1e-4,
+  "first lost-support reversal retains the previous joint instead of jumping to the raw target")
+ for _=1,2 do joint_step(-.8,false,false)end
+ local returned=joint_step(.8,true,true)
+ check(returned.grounded and returned.balance_support_mask~=0,
+  "current measured contact independently restores eligible support")
+ for _=1,7 do joint_step(.8,true,false)end
+ -- Only the local wheel-joint scalar is slewed. The independent explicit air
+ -- yaw/manual torque channels retain their original requested magnitudes.
+ local joint_kernel=Forces.new()
+ local joint_body,joint_wheels=Forces.proposed_body(),Forces.proposed_wheels()
+ local no_support={{contact={status="clear"}},{contact={status="clear"}}}
+ local seed_joint,seed_joint_candidate=joint_kernel:preview(Forces.native_seconds,joint_body,joint_wheels,no_support,Forces.controls())
+ check(seed_joint.valid,"constructed air-joint history seed")
+ joint_kernel:_adopt(seed_joint_candidate)
+ local air_joint=joint_kernel:preview(Forces.native_seconds,joint_body,joint_wheels,no_support,
+  Forces.controls({steer=1,air_yaw=.5,manual=.25,rotation_reserved=true,
+   contact_compliance_available=true,landing_contact_compliance_selected=true}))
+ check(air_joint.valid and math.abs(air_joint.front_steer_angle)<=step_limit and
+  math.abs(air_joint.front_steer_angle-air_joint.requested_front_steer_angle)>1e-4,
+  "existing joint slew continues with explicit air intent")
+ check(math.abs(air_joint.air_control_torque[1]+40)<1e-8 and math.abs(air_joint.air_control_torque[2]+100)<1e-8 and
+  math.abs(air_joint.air_control_torque[3])<1e-8 and not air_joint.neutral_air_damping_active,
+  "joint continuity neither filters explicit air yaw/manual torque nor adds upright assistance")
+ check(not air_joint.grounded and air_joint.balance_support_mask==0 and M.length(air_joint.torque)<=2000,
+  "explicit airborne channels preserve support and torque contracts")
+ return{cases=9,assertions=n,native_qualified=false}
 end
 return T

@@ -287,8 +287,11 @@ function Tests.run()
                 return true,table.freeze({schema="measured_return_position_v1",ground=table.freeze({55,5,80}),
                     actor_floor_clearance_m=.8,heading=.2,level="constructed",wipeouts=0,stop_ms=stop,expires_ms=stop+20000})
             end
-            function f.R.skater.teleport(at,heading)
+            function f.R.skater.teleport(at,heading,placement_options)
                 f.placements+=1;f.placed_at=f.now
+                check(type(placement_options)=="table" and getmetatable(placement_options)==nil and placement_options.on_board==true
+                    and next(placement_options)=="on_board" and next(placement_options,"on_board")==nil,
+                    "the single postACK placement explicitly requests only on_board=true")
                 check(f.latest.bike_cleanup_complete and f.stops==1 and f.toggles==1 and f.stock==100
                     and f.latest.equipment.acknowledged,"full bike cleanup and exact stock100 target/ACK precede the ONE placement")
                 check(at==vector.create(55,5.8,80) and heading==.2,"final captured target survives a stock-root reset in exact native-vector representation")
@@ -314,7 +317,17 @@ function Tests.run()
         f.pending=false;f.tick(12)
         check(f.entry:status().phase=="returning" and not f.entry:status().return_position.observed,
             "stock100 ACK plus pending cleared at the OLD physical location is not final Return")
-        f.position=vector.create(55,5.8,80);f.heading=.2;f.tick(12)
+        f.position=vector.create(55,5.8,80);f.heading=.2;f.stock=504;f.tick(12)
+        local wrong_state=f.entry:status().return_position
+        check(f.entry:status().phase=="returning" and not wrong_state.observed and wrong_state.actual_state==504
+            and wrong_state.actual_pending==false and wrong_state.horizontal_error_m<1e-6,
+            "matching root on504 is cached truthfully and never promoted to stock100 convergence")
+        check(f.placements==1 and f.toggles==1,"504 observation causes no second placement or equipment pulse")
+        f.stock=100;f.heading=.2+math.pi;f.tick(12)
+        local wrong_heading=f.entry:status().return_position
+        check(not wrong_heading.observed and wrong_heading.actual_state==100 and math.abs(math.abs(wrong_heading.heading_error_deg)-180)<1e-6,
+            "a real180degree heading mismatch stays refused and visible without a guessed heading flip")
+        f.heading=.2;f.tick(12)
         check(f.placements==1 and f.toggles==1 and f.entry:status().return_position.observed
             and f.entry:status().phase=="skateboard","only grounded100 root/heading convergence spanning100ms completes Return")
         for _,options in ipairs({{refuse=true},{raise=true}})do

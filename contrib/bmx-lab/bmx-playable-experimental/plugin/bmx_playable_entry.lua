@@ -307,7 +307,9 @@ function Entry.new(R,Runtime,Survey,options)
             return_position.target=table.freeze({p[1],p[2]+return_plan.actor_floor_clearance_m,p[3]})
             return_position.sent_ms=now
             local q=return_position.target
-            local sent=call(R.skater and R.skater.teleport,vector.create(q[1],q[2],q[3]),return_plan.heading)
+            -- The generic per-request option preserves the intended stock
+            -- equipment target; actual100 convergence remains mandatory.
+            local sent=call(R.skater and R.skater.teleport,vector.create(q[1],q[2],q[3]),return_plan.heading,{on_board=true})
             if not live() then return false,"cancelled" end
             if not sent[1] or sent.n~=2 or sent[2]~=true then
                 local refused=sent[1] and sent.n==3 and sent[2]==false and type(sent[3])=="string"
@@ -325,6 +327,33 @@ function Entry.new(R,Runtime,Survey,options)
         now=clock();if not live() then return false,"cancelled" end
         if not now or now>=return_plan.expires_ms then return false,"Return position observation crossed original deadline" end
         local w,a=watch[2],actor[2]
+        -- Last-value diagnostics from these EXISTING reads only. Absence is
+        -- unknown, never zero/false; this projection grants no effect authority.
+        return_position.sample_ms=now
+        return_position.actual_state=nil;return_position.actual_pending=nil
+        return_position.actual_position=nil;return_position.actual_heading_rad=nil
+        return_position.horizontal_error_m=nil;return_position.vertical_error_m=nil;return_position.heading_error_deg=nil
+        if watch[1] and watch.n==2 and plain(w) then
+            if type(w.teleport_pending)=="boolean" then return_position.actual_pending=w.teleport_pending end
+            if plain(w.watch) and w.watch.valid==true and finite(w.watch.state) and w.watch.state%1==0 then
+                return_position.actual_state=w.watch.state
+            end
+        end
+        if actor[1] and actor.n==2 and plain(a) and typeof(a.position)=="vector"
+            and finite(a.position.x) and finite(a.position.y) and finite(a.position.z) and finite(a.heading) then
+            local p=return_position.target
+            local dx,dy,dz=a.position.x-p[1],a.position.y-p[2],a.position.z-p[3]
+            return_position.actual_position=table.freeze({a.position.x,a.position.y,a.position.z})
+            return_position.actual_heading_rad=a.heading
+            return_position.horizontal_error_m=math.sqrt(dx*dx+dz*dz);return_position.vertical_error_m=dy
+            return_position.heading_error_deg=math.deg((a.heading-return_plan.heading+math.pi)%(2*math.pi)-math.pi)
+        end
+        local state_text=return_position.actual_state~=nil and tostring(return_position.actual_state) or "unknown"
+        local pending_text=return_position.actual_pending~=nil and tostring(return_position.actual_pending) or "unknown"
+        local errors=return_position.horizontal_error_m and string.format(" h%.3fm v%+.3fm yaw%+.2fdeg",
+            return_position.horizontal_error_m,return_position.vertical_error_m,return_position.heading_error_deg) or " pose unknown"
+        return_position.diagnostic="state "..state_text.." pending "..pending_text..errors
+        detail="Return observation: "..return_position.diagnostic
         if watch[1] and watch.n==2 and plain(w) and w.skater==true and type(w.teleport_pending)=="boolean"
             and plain(w.watch) and w.watch.valid==true and w.watch.ragdoll_known==true and w.watch.ragdoll==false
             and w.watch.wipeouts==return_plan.wipeouts and w.watch.state==100
@@ -369,7 +398,7 @@ function Entry.new(R,Runtime,Survey,options)
                     if why~="pending" then
                         return_position.phase="blocked";return_position.reason=why
                         return_position.unknown=return_position.unknown or return_position.queued and not return_position.observed
-                        fail(why)
+                        fail(why..(return_position.diagnostic and "; "..return_position.diagnostic or ""))
                     end
                     return
                 end

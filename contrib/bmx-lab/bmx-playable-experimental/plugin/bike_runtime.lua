@@ -101,10 +101,16 @@ local function new_runtime(services,options,two_cycle)
         local ok,missing=true,nil
         if kind=="mount" then ok,missing=api.available() end
         local now=clear and ok and api.clock() or nil
+        T.startup_fact_read=nil -- A diagnostic may describe only this intent's existing reads.
         local observed=clear and ok and (kind=="stock" or now) and api.facts() or nil
         if now then now=api.clock() end
+        local ready=Admission.ready(observed) -- Pure policy; no additional SDK observation.
         local accepted=clear and ok and generation==T.generation and not T.unloaded and not T.storage_fault
-            and not T.clock_unknown and Admission.ready(observed) and now~=nil
+            and not T.clock_unknown and ready and now~=nil
+        T.startup_admission={kind=kind,clear=clear==true,api_available=ok==true,missing_api=missing,
+            clock_present=now~=nil,generation_match=generation==T.generation,unloaded=T.unloaded==true,
+            storage_fault=T.storage_fault==true,clock_unknown=T.clock_unknown==true,ready=ready==true,
+            facts_present=observed~=nil,accepted=accepted==true,facts=observed,fact_read=T.startup_fact_read}
         if accepted then
             T.admitted_facts=observed;T.startup_admitted_at=now
             if kind=="mount" then

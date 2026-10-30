@@ -29,6 +29,7 @@ struct Environment {
     actor::Reason acquire_reason{actor::Reason::unavailable};
     actor::Observation inspect_failure{dingosdk::actor_observation::Phase::capture, actor::Reason::unavailable};
     actor::Observation enter_failure{dingosdk::actor_observation::Phase::enter_owner_lock, actor::Reason::unavailable};
+    bool forged_enter_observation{};
     DWORD thread_override{};
     unsigned acquire_calls{}, enable_calls{}, inspect_calls{}, retire_calls{}, disable_calls{}, clock_reads{};
     unsigned reads_before_jump{};
@@ -161,7 +162,8 @@ bool inspect(std::uint64_t owner, std::uint64_t sequence, const Actor& expected,
 }
 bool enter(std::uint64_t owner, std::uint64_t sequence, const Actor& value, control::Call& call, Observation& observation) noexcept {
     const bool result = enter(owner, sequence, value, call);
-    observation = result ? Observation{dingosdk::actor_observation::Phase::qualified, Reason::none} : fixture::env.enter_failure;
+    observation = result && !fixture::env.forged_enter_observation ?
+        Observation{dingosdk::actor_observation::Phase::qualified, Reason::none} : fixture::env.enter_failure;
     return result;
 }
 bool retire(std::uint64_t owner, std::uint64_t sequence, const Actor& value, bool duty_resolved) noexcept {
@@ -428,6 +430,123 @@ void resting_noise() {
     check(result.status == model::Status::released && result.claim_released && result.first_rejection_mask == 0,
         "a resting pad's pulse releases normally");
 }
+void owner_lock_contention() {
+    namespace observed = dingosdk::actor_observation;
+    const actor::Observation owner_busy{observed::Phase::enter_owner_lock, actor::Reason::unavailable};
+    env.enter_failure = owner_busy;
+    {
+        constexpr std::uint64_t base = 30000;
+        prime(base); const auto handle = request();
+        Frame passthrough; passthrough.raw_packet = 0x44556677; passthrough.prior_packet = 0x11223344;
+        const auto before = frame(base, passthrough).value;
+        check(before.dwPacketNumber != passthrough.prior_packet && before.dwPacketNumber != passthrough.raw_packet,
+            "earlier publications keep the per-slot packet domain active across request retirement");
+        const auto acquired = env.acquire_calls, inspections = env.inspect_calls, clocks = env.clock_reads;
+        env.enter_ok = false;
+        for (const auto offset : {20u, 40u, 60u}) {
+            SetLastError(0x1234); const auto output = frame(base + offset, passthrough);
+            check(GetLastError() == 0x1234 && output.value.dwPacketNumber == before.dwPacketNumber &&
+                std::memcmp(&output.value.Gamepad, &passthrough.raw, sizeof(passthrough.raw)) == 0,
+                "owner-lock waiting preserves raw fields, the persistent packet tag and caller error");
+            const auto pending = read(handle);
+            check(pending.status == model::Status::warming && !pending.press_candidates && !pending.press_publications &&
+                !pending.neutral_publications && !pending.report_debt && !pending.claim_released &&
+                pending.first_rejection_mask == 0 && pending.first_rejection_stage == model::RejectionStage::none &&
+                !pending.first_actor_observation.known && pending.expires_ms == base + 1000,
+                "owner-lock waiting invents neither a successful observation nor a renewed deadline");
+        }
+        check(env.acquire_calls == acquired && env.inspect_calls == inspections && env.clock_reads == clocks &&
+            read(handle).warmup_deferrals == 3, "owner-lock misses neither reacquire nor inspect nor probe a skipped clock");
+        env.enter_ok = true;
+        for (const auto offset : {94u, 127u, 160u})
+            check(frame(base + offset).value.Gamepad.wButtons == 0, "owner-lock resumption requires a wholly fresh warmup suffix");
+        check(frame(base + 194).value.Gamepad.wButtons == 0x1000 && read(handle).press_publications == 1 &&
+            read(handle).warmup_deferrals == 3 && env.acquire_calls == acquired &&
+            env.inspect_calls > inspections && env.clock_reads > clocks,
+            "four fully qualified samples spanning 100ms publish exactly one press on the same request");
+        check(service::cancel(1, handle), "resumed owner-lock request remains explicitly cancellable");
+        (void)frame(base + 220); retire(base + 221);
+        check(service::acknowledge(1, handle), "resumed request joins actual neutral cleanup before acknowledgement");
+    }
+    {
+        constexpr std::uint64_t base = 32000;
+        prime(base); const auto handle = request(); (void)frame(base); env.enter_ok = false;
+        const auto acquired = env.acquire_calls;
+        for (unsigned offset = 50; offset < 1000; offset += 50)
+            check(frame(base + offset).value.Gamepad.wButtons == 0 && read(handle).status == model::Status::warming,
+                "permanent owner contention waits without any SDK output only inside the original lifetime");
+        (void)frame(base + 1000); retire(base + 1001);
+        const auto expired = read(handle);
+        check(expired.status == model::Status::expired && expired.expires_ms == base + 1000 &&
+            expired.warmup_deferrals == 19 && !expired.press_candidates && !expired.press_publications &&
+            !expired.neutral_publications && !expired.report_debt && expired.claim_released && env.acquire_calls == acquired &&
+            expired.first_rejection_mask == pulse_policy::failure_bit(pulse_policy::FailedCheck::deadline) &&
+            expired.first_rejection_stage == model::RejectionStage::service_plan && service::acknowledge(1, handle),
+            "permanent owner contention expires the same request at its original deadline without publication or debt");
+        env.enter_ok = true;
+    }
+    for (unsigned guard = 0; guard < 15; ++guard) {
+        const auto base = 34000 + static_cast<std::uint64_t>(guard) * 1100;
+        prime(base); const auto handle = request(); (void)frame(base);
+        env.enter_ok = false; env.enter_failure = owner_busy;
+        (void)frame(base + 20);
+        check(read(handle).warmup_deferrals == 1, "one exact owner-lock miss precedes the independent refusal");
+        Frame value;
+        if (guard == 0) value.raw = value.transformed = {0x1100, 1, 2, -32768, 32767, -123, 456};
+        if (guard == 1) value.original = value.returned = ERROR_DEVICE_NOT_CONNECTED;
+        if (guard == 2) value.clean = false;
+        if (guard == 3) env.focus = false;
+        if (guard == 4) env.gameplay = false;
+        if (guard == 5) env.menu = false;
+        if (guard == 6) env.interference = false;
+        if (guard == 7) env.enter_failure.reason = actor::Reason::context_changed;
+        if (guard == 8) env.enter_failure = {observed::Phase::enter_ownership, actor::Reason::motion_owned};
+        if (guard == 9) env.enter_failure = {observed::Phase::enter_claim, actor::Reason::busy};
+        if (guard == 10) env.enter_failure = {observed::Phase::qualified, actor::Reason::none};
+        if (guard == 11) env.enter_failure = {observed::Phase::controls_profile_lock, actor::Reason::unavailable};
+        if (guard == 12) {
+            // A forged owner-lock label cannot defer an actually active call/inspection.
+            env.enter_ok = env.forged_enter_observation = true; env.inspect_ok = false;
+            env.inspect_failure = {observed::Phase::not_attempted, actor::Reason::none};
+        }
+        if (guard == 13) { value.transformed.bLeftTrigger = 1; value.prior_packet = 123; }
+        if (guard == 14) {
+            env.enter_ok = true; env.inspect_ok = false;
+            env.inspect_failure = {observed::Phase::context, actor::Reason::context_changed};
+        }
+        SetLastError(0x1234); const auto output = frame(base + 50, value);
+        check(GetLastError() == 0x1234 &&
+            std::memcmp(&output.value.Gamepad, &value.transformed, sizeof(value.transformed)) == 0,
+            "an independent owner-lock refusal preserves the full original output and error");
+        const auto rejected = read(handle);
+        check(rejected.warmup_deferrals == 1 && rejected.first_rejection_stage != model::RejectionStage::none &&
+            !rejected.press_candidates && !rejected.press_publications && !rejected.neutral_publications && !rejected.report_debt,
+            "physical activity, context loss, other admission failures and forged facts cannot extend owner-lock waiting");
+        env.enter_ok = env.inspect_ok = env.focus = env.gameplay = env.menu = env.interference = true;
+        env.forged_enter_observation = false; env.enter_failure = owner_busy;
+        (void)frame(base + 70); retire(base + 71);
+        const auto terminal = read(handle);
+        check(terminal.status == model::Status::revoked && terminal.warmup_deferrals == 1 &&
+            terminal.first_actor_observation == rejected.first_actor_observation && terminal.claim_released &&
+            service::acknowledge(1, handle), "later valid facts cannot revive the refused request or erase its first witness");
+    }
+    {
+        constexpr std::uint64_t base = 52000;
+        const auto handle = press(1, base); env.enter_ok = false;
+        check(frame(base + 150).value.Gamepad.wButtons == 0, "owner-lock contention after a press immediately ends assertion");
+        const auto rejected = read(handle);
+        check(rejected.warmup_deferrals == 0 && rejected.press_candidates == 1 && rejected.press_publications == 1 &&
+            rejected.neutral_publications == 1 && !rejected.report_debt && rejected.first_actor_observation.known &&
+            !rejected.first_actor_observation.call_active && !rejected.first_actor_observation.inspect_attempted &&
+            !rejected.first_actor_observation.clock_attempted && rejected.first_actor_observation.enter == owner_busy &&
+            rejected.first_rejection_mask == (pulse_policy::failure_bit(pulse_policy::FailedCheck::actor) |
+                pulse_policy::failure_bit(pulse_policy::FailedCheck::native_clock)),
+            "post-press contention is fatal and retains the actual absent facts plus real neutral cleanup");
+        env.enter_ok = true; retire(base + 151);
+        check(read(handle).first_actor_observation == rejected.first_actor_observation && service::acknowledge(1, handle),
+            "post-press acknowledgement cannot erase the first owner-lock refusal");
+    }
+}
 void actor_clock_lost() {
     namespace observed = dingosdk::actor_observation;
     prime(100); const auto deferred_handle = request();
@@ -502,7 +621,10 @@ void actor_clock_lost() {
         const auto base = 3400 + static_cast<std::uint64_t>(fault) * 1100;
         prime(base); const auto handle = request();
         for (const auto offset : {0u, 34u, 67u}) (void)frame(base + offset);
-        if (fault == 0) env.enter_ok = false;
+        if (fault == 0) {
+            env.enter_ok = false;
+            env.enter_failure = {observed::Phase::enter_ownership, actor::Reason::motion_owned};
+        }
         else {
             env.inspect_ok = false;
             env.inspect_failure = {phases[fault - 1], phases[fault - 1] == observed::Phase::context ?
@@ -543,6 +665,7 @@ void actor_clock_lost() {
             terminal.claim_released && !terminal.report_debt && service::acknowledge(1, handle),
             "later positive facts and cleanup do not rewrite the first actor witness or revive the same pulse");
     }
+    env.enter_failure = {observed::Phase::enter_owner_lock, actor::Reason::unavailable};
     {
         constexpr std::uint64_t base = 16000;
         prime(base); const auto handle = request(); (void)frame(base);
@@ -607,6 +730,7 @@ void actor_clock_lost() {
         check(read(handle).first_actor_observation == press_rejected.first_actor_observation && service::acknowledge(1, handle),
             "post-press cleanup and acknowledgement cannot erase the original failure");
     }
+    owner_lock_contention();
 }
 void environment_guards() {
     for (unsigned guard = 0; guard < 5; ++guard) {

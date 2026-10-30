@@ -200,22 +200,28 @@ policy::Key key(const Entry& entry) noexcept {
         entry.actor.ticket.generation, entry.receipt.user};
 }
 bool eligible_state(const actor_control_native::State& state) noexcept { return state.known; }
-bool warmup_profile_lock(const Entry& entry, const model::ActorObservation& observation) noexcept {
+bool warmup_lock_contention(const Entry& entry, const model::ActorObservation& observation) noexcept {
     using Phase = actor_observation::Phase;
     using Reason = actor_control_native::Reason;
     const auto& receipt = entry.receipt;
-    // Only a positively identified profile Try-lock refusal may defer a sample.
+    // Only the exact owner/profile Try-lock refusals may wait without output.
     // Skipped actor/clock facts remain absent; none becomes ready by waiting.
-    return entry.started && entry.ending == model::Status::released && !entry.rejection_recorded &&
+    const bool untouched = entry.started && entry.ending == model::Status::released && !entry.rejection_recorded &&
         receipt.status == model::Status::warming && !receipt.press_candidates && !receipt.press_publications &&
         !receipt.neutral_publications && !receipt.report_debt && !receipt.orphaned && !receipt.quarantined &&
         !receipt.claim_released && receipt.first_rejection_mask == 0 &&
         receipt.first_rejection_stage == model::RejectionStage::none &&
-        observation.known && observation.owner_present && observation.call_active &&
-        observation.enter.phase == Phase::qualified && observation.enter.reason == Reason::none &&
-        observation.inspect_attempted && !observation.inspect_succeeded && !observation.actor_equal &&
-        observation.inspect.phase == Phase::controls_profile_lock && observation.inspect.reason == Reason::unavailable &&
+        observation.known && observation.owner_present && !observation.inspect_succeeded && !observation.actor_equal &&
         !observation.clock_attempted && !observation.clock_known;
+    const bool owner_lock = !observation.call_active &&
+        observation.enter.phase == Phase::enter_owner_lock && observation.enter.reason == Reason::unavailable &&
+        !observation.inspect_attempted && observation.inspect.phase == Phase::not_attempted &&
+        observation.inspect.reason == Reason::none;
+    const bool profile_lock = observation.call_active &&
+        observation.enter.phase == Phase::qualified && observation.enter.reason == Reason::none &&
+        observation.inspect_attempted && observation.inspect.phase == Phase::controls_profile_lock &&
+        observation.inspect.reason == Reason::unavailable;
+    return untouched && (owner_lock || profile_lock);
 }
 model::Reason native_issue(actor_control_native::Reason reason) noexcept {
     using Native = actor_control_native::Reason;
@@ -756,7 +762,7 @@ static DWORD finish_core(Poll& poll, const PublicationScope& scope, bool outer, 
             input.focused = publication_facts.focused; input.gameplay = publication_facts.gameplay;
             input.menu_closed = publication_facts.menu_closed;
             input.interference_clear = !private_lane && !stale_stage && interference_clear && publication_facts.interference_clear;
-            deferred = warmup_profile_lock(*entry, observation) && shared.pulse.defer_warmup(poll.ticket, input, plan);
+            deferred = warmup_lock_contention(*entry, observation) && shared.pulse.defer_warmup(poll.ticket, input, plan);
             if (deferred) increment(r.warmup_deferrals);
             else {
                 plan = shared.pulse.poll(poll.ticket, input);

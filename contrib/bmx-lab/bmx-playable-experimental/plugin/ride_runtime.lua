@@ -491,6 +491,7 @@ end
 local function metrics_report(s,key)
     local m=s.metrics
     s.metrics_step.report=true
+    s.metrics_step.input_observed_ms=key.observed_ms
     if s.metrics_report_ms then
         m.report_gap_count+=1
         local delta=Identity.bounded_delta(key.observed_ms,s.metrics_report_ms,MAX_SAFE)
@@ -507,10 +508,13 @@ local function metric_ring(m,name,limit,row)
     ring[#ring+1]=freeze(row) -- Never changed once kept; status shares it.
 end
 -- Fixed first report-backed support-classification edge, not collision evidence.
--- At most 55 named value slots, depth 2, SDK JSON bound 1778 bytes
--- (1800 including its metrics member). The unchanged 48000-byte ledger owns admission.
+-- V2: at most 96 value slots, depth 3, SDK JSON bound 2948 bytes
+-- (2970 including its metrics member). The unchanged 48000-byte ledger owns admission.
 local function metric_support_row(row,facts)
+    local function vec(v) return v and {v[1],v[2],v[3]} or nil end
     local out={serial=row.serial,physics_time=facts.physics_time,report=row.report,grounded=row.grounded,
+        input_observed_ms=facts.input_observed_ms,rear_hub_position=vec(facts.measured_rear_hub),
+        rear_hit_position=vec(facts.measured_rear_hit),rear_hit_normal=vec(facts.measured_rear_normal),
         front_hit=row.front_hit,rear_hit=row.rear_hit,front_gap=row.front_separation,rear_gap=row.rear_separation,
         body_height=row.body_height,command_admitted=facts.published_sequence~=nil,
         model_sequence=facts.published_sequence,model_grounded=facts.published_grounded,
@@ -521,6 +525,13 @@ local function metric_support_row(row,facts)
     for i,name in ipairs({"physics_time","front_gap","rear_gap","body_height","front_normal_load","rear_normal_load"}) do
         if out[name]==0 and 1/out[name]==-math.huge then negative_zero+=2^(i-1) end
     end
+    -- Preserve the v1 bits 0..5; append hub XYZ, hit XYZ, normal XYZ at bits 6..14.
+    for i,name in ipairs({"rear_hub_position","rear_hit_position","rear_hit_normal"}) do
+        local value=out[name]
+        if value then for axis=1,3 do
+            if value[axis]==0 and 1/value[axis]==-math.huge then negative_zero+=2^(5+(i-1)*3+axis) end
+        end end
+    end
     out.negative_zero_mask=negative_zero
     return freeze(out)
 end
@@ -530,7 +541,8 @@ local function metrics_support_loss(s,row,step)
     if first==nil then
         local previous=s.metrics_support_previous
         if previous and previous.row.grounded==true and row.grounded==false and step.report then
-            m.first_support_loss=freeze({version=1,scope="reported_grounded_classification_only",
+            m.first_support_loss=freeze({version=2,scope="reported_grounded_classification_only",
+                rear_normal_provenance="qualified_plane_used_for_gap",input_clock_provenance="selected_sample.observed_ms",
                 measured_provenance="measured_rays_authored_wheel_geometry",
                 model_provenance="admitted_forecast_model_not_consumption",
                 native_collision_contact=false,native_consumption_known=false,time_provenance="body_sample.time",
@@ -538,11 +550,13 @@ local function metrics_support_loss(s,row,step)
             s.metrics_support_previous=nil
         else
             -- One private reference to the preceding existing ring row and
-            -- five scalar facts; no extra history or whole model is retained.
+            -- scalar facts and three small ray-term arrays; no whole model is retained.
             previous=previous or {}
             previous.row=row;previous.physics_time=step.physics_time
             previous.published_sequence=step.published_sequence;previous.published_grounded=step.published_grounded
             previous.published_front_load=step.published_front_load;previous.published_rear_load=step.published_rear_load
+            previous.measured_rear_hub=step.measured_rear_hub;previous.measured_rear_hit=step.measured_rear_hit
+            previous.measured_rear_normal=step.measured_rear_normal;previous.input_observed_ms=step.input_observed_ms
             s.metrics_support_previous=previous
         end
     elseif first.reacquired==nil and row.grounded==true then
@@ -1155,6 +1169,9 @@ local function observe(s,source_frame,raw,context)
         front_hit=contact.samples[1].contact.status=="hit",rear_hit=contact.samples[2].contact.status=="hit",
         front_separation=contact.samples[1].separation,rear_separation=contact.samples[2].separation,
         grounded=contact.grounded}
+    s.metrics_step.measured_rear_hub=centers[2]
+    s.metrics_step.measured_rear_hit=contact.samples[2].contact.point
+    s.metrics_step.measured_rear_normal=contact.samples[2].contact.normal
     -- The frame is frozen whole, so a shallow copy shares everything in it.
     local enriched=table.clone(frame)
     -- contact is complete here and only read from now on (the fold and the

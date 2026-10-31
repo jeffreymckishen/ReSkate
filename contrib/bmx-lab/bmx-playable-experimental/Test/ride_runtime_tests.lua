@@ -648,6 +648,17 @@ function Tests.run(case_done)
         -- Constructed report/receipt facts only; no collision or native load proof.
         local f=fixture()
         local negative_zero=-1/math.huge
+        f.on_decode=function(out)
+            for _,ray in ipairs(out.rays) do if ray.status=="hit" then
+                if ray.position[1]==0 then ray.position[1]=negative_zero end
+                ray.normal[1]=negative_zero;ray.normal[3]=negative_zero
+            end end
+        end
+        local trick_step=f.tricks.step
+        function f.tricks:step(frame,contact,actions)
+            f.rear_terms=copy(frame.contact.samples[2])
+            return trick_step(self,frame,contact,actions)
+        end
         local preview=f.force.preview
         function f.force:preview(h,body,wheels,samples,controls,speculative)
             local model,candidate=preview(self,h,body,wheels,samples,controls,speculative)
@@ -674,12 +685,27 @@ function Tests.run(case_done)
         check(initial.metrics.first_support_loss==nil,"no invented initial loss")
         local unreported=step(true,false)
         check(unreported.metrics.first_support_loss==nil,"unreported loss is not relabeled reported")
-        local before=step(false,true);local before_time=f.time
+        local before=step(false,true);local before_time=f.time;local before_terms=copy(f.rear_terms);local before_ms=f.ms
         local lost=step(true,true);local loss_time=f.time
         local first=lost.metrics.first_support_loss
         check(first and first.prior.serial==before.last_serial and first.loss.serial==lost.last_serial
             and first.reacquired==nil,"first reported edge owns exact prior/current samples")
-        check(first.prior.physics_time==before_time and first.loss.physics_time==loss_time,"raw sample time retained")
+        check(first.version==2 and first.prior.physics_time==before_time and first.loss.physics_time==loss_time,"raw sample time retained")
+        check(first.prior.input_observed_ms==before_ms and first.loss.input_observed_ms==f.ms
+            and first.input_clock_provenance=="selected_sample.observed_ms","existing selected-input clock, no Go inference")
+        for axis=1,3 do
+            check(first.prior.rear_hub_position[axis]==before_terms.wheel_center[axis]
+                and first.prior.rear_hit_position[axis]==before_terms.contact.point[axis]
+                and first.prior.rear_hit_normal[axis]==before_terms.contact.normal[axis],"exact measured rear terms "..axis)
+        end
+        local hub,hit,n=first.prior.rear_hub_position,first.prior.rear_hit_position,first.prior.rear_hit_normal
+        local gap=(hub[1]-hit[1])*n[1]+(hub[2]-hit[2])*n[2]+(hub[3]-hit[3])*n[3]-G.wheel_radius
+        check(gap==first.prior.rear_gap,"retained rear terms reconstruct the measured gap without orientation")
+        check(first.loss.rear_hub_position~=nil and first.loss.rear_hit_position==nil
+            and first.loss.rear_hit_normal==nil,"clear ray retains hub and truthful absence of hit/normal")
+        check(bit32.band(first.prior.negative_zero_mask,512)==512
+            and bit32.band(first.prior.negative_zero_mask,4096)==4096
+            and bit32.band(first.prior.negative_zero_mask,16384)==16384,"v2 vector sign bits retain negative zero")
         check(first.prior.grounded and not first.loss.grounded and first.loss.report
             and first.prior.front_hit and not first.loss.front_hit,"measured classifications and hit facts remain separate")
         check(first.prior.front_gap==before.metrics.samples[#before.metrics.samples].front_separation
@@ -690,13 +716,16 @@ function Tests.run(case_done)
         check(first.prior.front_normal_load==0 and 1/first.prior.front_normal_load==-math.huge
             and first.prior.rear_normal_load==41 and first.loss.front_normal_load==nil
             and first.loss.rear_normal_load==73 and first.loss.model_grounded==false
-            and bit32.band(first.prior.negative_zero_mask,16)==16 and first.loss.negative_zero_mask==0,
+            and bit32.band(first.prior.negative_zero_mask,16)==16 and bit32.band(first.loss.negative_zero_mask,63)==0,
             "signed zero including transport sign, missing load and false forecast preserved")
         step(true,false)
         local returned=step(false,true)
         local complete=returned.metrics.first_support_loss
         check(complete~=first and complete.prior==first.prior and complete.loss==first.loss
             and first.reacquired==nil and complete.reacquired.serial==returned.last_serial,"first recontact adds exactly one immutable row")
+        check(complete.reacquired.rear_hit_position[2]==f.rear_terms.contact.point[2]
+            and table.isfrozen(complete.prior.rear_hub_position) and table.isfrozen(complete.loss.rear_hub_position)
+            and table.isfrozen(complete.reacquired.rear_hit_normal),"three projected rows retain immutable vector values")
         check(complete.measured_provenance=="measured_rays_authored_wheel_geometry"
             and complete.model_provenance=="admitted_forecast_model_not_consumption"
             and not complete.native_collision_contact and not complete.native_consumption_known,"no classification/load promotion")
@@ -714,14 +743,20 @@ function Tests.run(case_done)
             and f.wheel_probes==m.steps and count(f,"submit")==final.submitted,"no extra ring fields, queries or publications")
         local slots=0
         local function json_bound(v,depth)
-            check(depth<=2,"support-loss projection depth")
+            check(depth<=3,"support-loss projection depth")
             local kind=type(v)
             if kind=="table" then
                 local bytes=2
+                local array=#v>0
                 for k,x in pairs(v) do
                     slots+=1
-                    check(type(k)=="string" and string.match(k,"^[%w_]+$")~=nil,"fixed named fields only")
-                    bytes+=#k+4+json_bound(x,depth+1)
+                    if array then
+                        check(type(k)=="number" and k%1==0 and k>=1 and k<=3 and #v==3,"exact three-component vector")
+                        bytes+=1+json_bound(x,depth+1)
+                    else
+                        check(type(k)=="string" and string.match(k,"^[%w_]+$")~=nil,"fixed named fields only")
+                        bytes+=#k+4+json_bound(x,depth+1)
+                    end
                 end
                 return bytes
             elseif kind=="number" then
@@ -733,7 +768,7 @@ function Tests.run(case_done)
                 return #v+2
             end
         end
-        check(json_bound(complete,0)<=1778 and slots<=55,"unchanged ledger receives a statically bounded projection")
+        check(json_bound(complete,0)<=2948 and slots<=96,"unchanged ledger receives a statically bounded v2 projection")
     end
     if case_done then case_done(cases,assertions) end
     return {cases=cases,assertions=assertions}

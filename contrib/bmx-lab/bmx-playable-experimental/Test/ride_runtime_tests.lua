@@ -644,6 +644,97 @@ function Tests.run(case_done)
         bounded(d,0)
         check(values==133 and values<=192,"fixed complete refusal size, no growing history")
     end
+    next_case() do
+        -- Constructed report/receipt facts only; no collision or native load proof.
+        local f=fixture()
+        local negative_zero=-1/math.huge
+        local preview=f.force.preview
+        function f.force:preview(h,body,wheels,samples,controls,speculative)
+            local model,candidate=preview(self,h,body,wheels,samples,controls,speculative)
+            model.normal_load=f.clear and {[2]=73} or {negative_zero,41}
+            return model,candidate
+        end
+        function f.on_receipt(sequence)
+            local r=f.transactions[sequence]
+            local applied=f.serial>=r.produced -- These fixture counters keep the same width.
+            return {sequence=sequence,requested_serial=r.requested,produced_serial=applied and r.produced or "0",
+                outcome=applied and "applied" or "queued",force_attempted=applied,torque_attempted=applied,
+                retained=false,quarantined=false,cleanup_disposition="none",
+                successor=applied and f.serial>r.produced and f.sample() or nil}
+        end
+        local function step(clear,report)
+            local serial,ms=f.input_serial,f.ms
+            f.advance();f.clear=clear
+            if report==false then f.input_serial,f.ms=serial,ms end
+            local state=f.observe()
+            check(not state.stop_requested,"support-loss fixture continues accepted Ride")
+            return state
+        end
+        local initial=f.observe()
+        check(initial.metrics.first_support_loss==nil,"no invented initial loss")
+        local unreported=step(true,false)
+        check(unreported.metrics.first_support_loss==nil,"unreported loss is not relabeled reported")
+        local before=step(false,true);local before_time=f.time
+        local lost=step(true,true);local loss_time=f.time
+        local first=lost.metrics.first_support_loss
+        check(first and first.prior.serial==before.last_serial and first.loss.serial==lost.last_serial
+            and first.reacquired==nil,"first reported edge owns exact prior/current samples")
+        check(first.prior.physics_time==before_time and first.loss.physics_time==loss_time,"raw sample time retained")
+        check(first.prior.grounded and not first.loss.grounded and first.loss.report
+            and first.prior.front_hit and not first.loss.front_hit,"measured classifications and hit facts remain separate")
+        check(first.prior.front_gap==before.metrics.samples[#before.metrics.samples].front_separation
+            and first.loss.front_gap==nil and first.loss.rear_gap==nil,"measured gap values and absent clear-ray gaps preserved")
+        check(first.prior.command_admitted and first.loss.command_admitted
+            and first.prior.model_sequence==before.model_history.sequence
+            and first.loss.model_sequence==lost.model_history.sequence,"normal loads bind the exact admitted model sequence")
+        check(first.prior.front_normal_load==0 and 1/first.prior.front_normal_load==-math.huge
+            and first.prior.rear_normal_load==41 and first.loss.front_normal_load==nil
+            and first.loss.rear_normal_load==73 and first.loss.model_grounded==false
+            and bit32.band(first.prior.negative_zero_mask,16)==16 and first.loss.negative_zero_mask==0,
+            "signed zero including transport sign, missing load and false forecast preserved")
+        step(true,false)
+        local returned=step(false,true)
+        local complete=returned.metrics.first_support_loss
+        check(complete~=first and complete.prior==first.prior and complete.loss==first.loss
+            and first.reacquired==nil and complete.reacquired.serial==returned.last_serial,"first recontact adds exactly one immutable row")
+        check(complete.measured_provenance=="measured_rays_authored_wheel_geometry"
+            and complete.model_provenance=="admitted_forecast_model_not_consumption"
+            and not complete.native_collision_contact and not complete.native_consumption_known,"no classification/load promotion")
+        check(table.isfrozen(complete) and table.isfrozen(complete.prior) and table.isfrozen(complete.loss)
+            and table.isfrozen(complete.reacquired) and not pcall(function() complete.prior.front_gap=99 end),"all projected rows immutable")
+        local final=returned
+        for _=1,26 do final=step(false,true) end
+        step(true,true);final=step(false,true)
+        local m=final.metrics
+        check(m.first_support_loss==complete,"later transitions and ring eviction never replace the first event")
+        check(#m.samples==24 and m.samples_total==m.steps and m.samples_omitted==m.samples_total-24
+            and m.grounded_transition_total==6 and m.grounded_changes_without_report==1
+            and m.grounded_changes_with_report==5,"original ring totals/omissions/transitions preserved")
+        check(m.samples[1].physics_time==nil and m.samples[1].model_sequence==nil
+            and f.wheel_probes==m.steps and count(f,"submit")==final.submitted,"no extra ring fields, queries or publications")
+        local slots=0
+        local function json_bound(v,depth)
+            check(depth<=2,"support-loss projection depth")
+            local kind=type(v)
+            if kind=="table" then
+                local bytes=2
+                for k,x in pairs(v) do
+                    slots+=1
+                    check(type(k)=="string" and string.match(k,"^[%w_]+$")~=nil,"fixed named fields only")
+                    bytes+=#k+4+json_bound(x,depth+1)
+                end
+                return bytes
+            elseif kind=="number" then
+                check(v==v and math.abs(v)<math.huge,"finite raw number")
+                return v%1==0 and math.abs(v)<=9007199254740992 and 17 or 26
+            elseif kind=="boolean" then return 5
+            else
+                check(kind=="string" and string.match(v,"^[%w_.]+$")~=nil,"ASCII constant or exact u64 string")
+                return #v+2
+            end
+        end
+        check(json_bound(complete,0)<=1778 and slots<=55,"unchanged ledger receives a statically bounded projection")
+    end
     if case_done then case_done(cases,assertions) end
     return {cases=cases,assertions=assertions}
 end

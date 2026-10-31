@@ -506,6 +506,51 @@ local function metric_ring(m,name,limit,row)
     if #ring==limit then table.remove(ring,1);m[stem.."_omitted"]+=1 end
     ring[#ring+1]=freeze(row) -- Never changed once kept; status shares it.
 end
+-- Fixed first report-backed support-classification edge, not collision evidence.
+-- At most 55 named value slots, depth 2, SDK JSON bound 1778 bytes
+-- (1800 including its metrics member). The unchanged 48000-byte ledger owns admission.
+local function metric_support_row(row,facts)
+    local out={serial=row.serial,physics_time=facts.physics_time,report=row.report,grounded=row.grounded,
+        front_hit=row.front_hit,rear_hit=row.rear_hit,front_gap=row.front_separation,rear_gap=row.rear_separation,
+        body_height=row.body_height,command_admitted=facts.published_sequence~=nil,
+        model_sequence=facts.published_sequence,model_grounded=facts.published_grounded,
+        front_normal_load=facts.published_front_load,rear_normal_load=facts.published_rear_load}
+    -- SDK JSON converts integral -0 to 0. Keep its sign in a six-bit mask:
+    -- time, front gap, rear gap, height, front load, rear load, in that order.
+    local negative_zero=0
+    for i,name in ipairs({"physics_time","front_gap","rear_gap","body_height","front_normal_load","rear_normal_load"}) do
+        if out[name]==0 and 1/out[name]==-math.huge then negative_zero+=2^(i-1) end
+    end
+    out.negative_zero_mask=negative_zero
+    return freeze(out)
+end
+local function metrics_support_loss(s,row,step)
+    local m=s.metrics
+    local first=m.first_support_loss
+    if first==nil then
+        local previous=s.metrics_support_previous
+        if previous and previous.row.grounded==true and row.grounded==false and step.report then
+            m.first_support_loss=freeze({version=1,scope="reported_grounded_classification_only",
+                measured_provenance="measured_rays_authored_wheel_geometry",
+                model_provenance="admitted_forecast_model_not_consumption",
+                native_collision_contact=false,native_consumption_known=false,time_provenance="body_sample.time",
+                prior=metric_support_row(previous.row,previous),loss=metric_support_row(row,step)})
+            s.metrics_support_previous=nil
+        else
+            -- One private reference to the preceding existing ring row and
+            -- five scalar facts; no extra history or whole model is retained.
+            previous=previous or {}
+            previous.row=row;previous.physics_time=step.physics_time
+            previous.published_sequence=step.published_sequence;previous.published_grounded=step.published_grounded
+            previous.published_front_load=step.published_front_load;previous.published_rear_load=step.published_rear_load
+            s.metrics_support_previous=previous
+        end
+    elseif first.reacquired==nil and row.grounded==true then
+        local complete=table.clone(first)
+        complete.reacquired=metric_support_row(row,step)
+        m.first_support_loss=freeze(complete)
+    end
+end
 local function metrics_finish_step(s)
     local step=s.metrics_step
     if not step then return end
@@ -526,6 +571,7 @@ local function metrics_finish_step(s)
     row.inflight=inflight
     -- Speeds are the latest accepted Lua prediction, never native wheel state.
     row.front_speed=s.wheels[1].angular_speed;row.rear_speed=s.wheels[2].angular_speed
+    metrics_support_loss(s,row,step)
     if s.metrics_grounded~=nil and row.grounded~=s.metrics_grounded then
         local kind=step.report and "grounded_changes_with_report" or "grounded_changes_without_report"
         m[kind]+=1
@@ -1049,7 +1095,7 @@ local function observe(s,source_frame,raw,context)
         stop(s,string.format("measured roll rate %.2f rad/s over the %d rad/s Ride stop",math.abs(roll),ROLL_STOP_RATE));return
     end
     s.observed_steps+=1
-    s.metrics_step={serial=sample.serial,report=false}
+    s.metrics_step={serial=sample.serial,physics_time=sample.time,report=false}
     -- Check observed limits before prediction, model work or command
     -- backpressure can conceal them. Exact accepted receipts remain drainable.
     if s.admit_measured then
@@ -1258,6 +1304,15 @@ local function observe(s,source_frame,raw,context)
         end
         p.sequence=sequence;s.last_sequence=sequence;s.submitted+=1
         metrics_serial(s,"submitted",p.serial)
+        -- The returned sequence is command admission, not application or consumption.
+        local metric_step=s.metrics_step
+        metric_step.published_sequence=sequence
+        if type(model.grounded)=="boolean" then metric_step.published_grounded=model.grounded end
+        local loads=model.normal_load
+        if type(loads)=="table" then
+            if M.finite(loads[1]) then metric_step.published_front_load=loads[1] end
+            if M.finite(loads[2]) then metric_step.published_rear_load=loads[2] end
+        end
         -- Prediction follows exact acceptance order, independent of later ACK.
         -- Actual N+1 application and N+2+ proof remain separate receipt facts.
         local adopted=invoke(s,s.force._adopt,s.force,candidate)

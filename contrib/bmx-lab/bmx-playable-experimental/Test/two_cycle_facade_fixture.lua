@@ -168,19 +168,32 @@ local function new_runtime(services,options,two_cycle)
             or next_preparation or not session_owner then return false,"No clean successor available" end
         return session_owner:can_archive_return()
     end
-    function object:prepare_next_mount(slot)
+    function object:prepare_next_mount(slot,admitted_at_ms)
         if not two_cycle or not valid_slot(slot) or running or pending or T.unloaded or T.startup_closed
             or mounts_burned~=1 or next_preparation or not session_owner or not core then
             return false,"Second preparation unavailable"
+        end
+        -- Entry may wait for its Mount chord to release before admission. Keep
+        -- that same intent's original arm deadline rather than starting it again.
+        if admitted_at_ms~=nil then
+            local now=api.clock()
+            if not finite(admitted_at_ms) or admitted_at_ms<0 or admitted_at_ms%1~=0
+                or not now or admitted_at_ms>now or now-admitted_at_ms>=60000 then
+                T.startup_closed=true;return false,"Original second Mount admission expired"
+            end
         end
         -- Intent two is spent before archive/stock callbacks. Any failure closes
         -- it permanently; no fresh facade or reset can recover this admission.
         next_preparation=true;running=true
         local ok,why=session_owner:archive_return()
         if not ok then T.startup_closed=true;running=false;return false,why end
-        local accepted,reason=core:request_stock_toggle(slot)
-        running=false
-        if not accepted then T.startup_closed=true;return false,reason end
+        local previous=T.gear_admission_at
+        T.gear_admission_at=admitted_at_ms
+        local called,accepted,reason=pcall(core.request_stock_toggle,core,slot)
+        T.gear_admission_at=previous;running=false
+        if not called or accepted~=true then
+            T.startup_closed=true;return false,called and reason or "Second preparation raised; cleanup required"
+        end
         return true
     end
     function object:next_mount_ready()

@@ -46,6 +46,7 @@ function Entry.new(R,Runtime,Survey,options)
     local used,mount_issued,return_pending,stock_attempted=false,false,false,false
     local attempts_used=0
     local second_prepare_pending=false
+    local second_admitted_at,second_quiet_at,second_quiet_last,second_quiet_samples=nil,nil,nil,0
     local attempt_limit=two_cycle and 2 or 1
     local fallen,recover_pending=nil,false
     local stopped,cancel_sent,cancelled,unloaded,ticking=false,false,false,false,false
@@ -440,19 +441,73 @@ function Entry.new(R,Runtime,Survey,options)
         if not out[1] or out[2]~=true then fail(text(out[3],"Stock switch refused; cleanup remains owned by the lifecycle."));return end
         phase,detail="returning","Stock transition armed. Release all controls and wait for the skateboard."
     end
+    local function reset_second_quiet()
+        second_quiet_at,second_quiet_last,second_quiet_samples=nil,nil,0
+    end
+    local function second_quiet(now)
+        -- This aggregate pad observation can only delay admission. It proves no
+        -- selected-slot identity or native consumption; the original equipment
+        -- owner still supplies every selected-slot baseline, pulse and ACK guard.
+        local pad=call(R.input and R.input.gamepad)
+        local a=call(R.skater and R.skater.get)
+        local telemetry=call(R.skater and R.skater.telemetry)
+        local p,w=pad[2],telemetry[2]
+        local watch=plain(w) and w.watch or nil
+        if not pad[1] or pad.n~=2 or not plain(p) or not plain(p.buttons)
+            or not a[1] or a.n~=2 or not plain(a[2]) or type(a[2].airborne)~="boolean"
+            or not telemetry[1] or telemetry.n~=2 or not plain(w) or w.skater~=true
+            or type(w.airborne)~="boolean" or type(w.teleport_pending)~="boolean"
+            or not plain(watch) or watch.valid~=true or not finite(watch.state)
+            or watch.state<0 or watch.state%1~=0 or watch.state>4294967295
+            or watch.ragdoll_known~=true or type(watch.ragdoll)~="boolean" then
+            fail("Fresh released controls and grounded stock readiness unavailable.");return false
+        end
+        local released=true
+        for _,name in {"up","down","left","right","start","back","left_stick","right_stick","lb","rb","a","b","x","y"} do
+            if type(p.buttons[name])~="boolean" then fail("Pad release observation is malformed.");return false end
+            released=released and not p.buttons[name]
+        end
+        for _,name in {"left_x","left_y","right_x","right_y"} do
+            if not finite(p[name]) or math.abs(p[name])>32768/32767 then fail("Pad stick observation is malformed.");return false end
+        end
+        for _,name in {"left_trigger","right_trigger"} do
+            if not finite(p[name]) or p[name]<0 or p[name]>1 then fail("Pad trigger observation is malformed.");return false end
+        end
+        -- Match the SDK's circular XInput rest thresholds, including noise.
+        released=released and p.left_x^2+p.left_y^2<=(7849/32767)^2
+            and p.right_x^2+p.right_y^2<=(8689/32767)^2
+            and p.left_trigger<=30/255 and p.right_trigger<=30/255
+        if watch.state==504 or watch.state==300 or watch.ragdoll then
+            fail("Attempt two lost its stock100 baseline before admission.");return false
+        end
+        if not released or watch.state~=100 or a[2].airborne or w.airborne or w.teleport_pending then
+            reset_second_quiet();return false
+        end
+        if not second_quiet_last or now<=second_quiet_last or now-second_quiet_last>250 then
+            second_quiet_at,second_quiet_samples=now,1
+        else second_quiet_samples+=1 end
+        second_quiet_last=now
+        return now-second_quiet_at>=600 and second_quiet_samples>=10
+    end
     local function step_off(now)
         local version=generation
         if second_prepare_pending then
-            if not environment(false) then return end
+            if not second_admitted_at or now<second_admitted_at or now-second_admitted_at>=60000 then
+                fail("Original second Mount admission deadline expired; no step-off request.");return
+            end
+            if not environment(false) then reset_second_quiet();return end
             if generation~=version or cancelled or unloaded then return end
             if not known or not clean(latest) then fail("Previous Return is no longer fully clean.");return end
-            local current=state()
+            local quiet=second_quiet(now)
             if generation~=version or cancelled or unloaded then return end
-            if current~=100 then fail("Attempt two still requires current stock100 before step-off.");return end
-            -- Consume the deferred request before any owner callback can reenter.
-            -- The menu click spends the intent; only a closed-menu tick sends it.
+            if not quiet then
+                if phase~="blocked" then detail="Release controls and settle on stock100 before the single guarded step-off." end
+                return
+            end
+            -- Intent was spent at the Mount action. Release of that same chord
+            -- must precede admission; preserve its original60s equipment arm.
             second_prepare_pending=false
-            local prepared=call(owner.prepare_next_mount,owner,slot)
+            local prepared=call(owner.prepare_next_mount,owner,slot,second_admitted_at)
             if generation~=version or cancelled or unloaded then return end
             if not prepared[1] or prepared[2]~=true then fail(text(prepared[3],"Second preparation refused."));return end
             detail="Step-off armed once. Keep menus closed and controls released for the504 ACK."
@@ -507,6 +562,9 @@ function Entry.new(R,Runtime,Survey,options)
                 fail("Attempt two requires current stock100 after Return. Already on foot or unreadable state spends this intent.")
                 return false,detail
             end
+            local now=clock()
+            if not now or generation~=version or cancelled or unloaded then return false,detail end
+            second_admitted_at=math.floor(now);reset_second_quiet()
             second_prepare_pending=true
             return true
         end

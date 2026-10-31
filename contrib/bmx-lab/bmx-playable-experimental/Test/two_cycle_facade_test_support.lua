@@ -20,7 +20,7 @@ function M.new(check)
             check(actual==t,"actual facade hands off its OWN shared state")
             event("mount"..tostring(f.core_count));t.phase="following";return true
         end
-        function object:request_stock_toggle()f.stock_requests+=1;event("stock504");t.phase="stock_switching";return true end
+        function object:request_stock_toggle()f.stock_requests+=1;f.gear_admission_at=t.gear_admission_at;event("stock504");t.phase="stock_switching";return true end
         function object:request_stop()event("stop");return not t.retired end
         function object:step()return self:status()end
         function object:unload()event("unload");t.unloaded=true;return self:status()end

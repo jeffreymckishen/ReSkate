@@ -4,8 +4,8 @@
   "flat_file_count": 68,
   "quota_file_count": 69,
   "expected_processes": 28,
-  "expected_cases": 186,
-  "expected_assertions": 8700,
+  "expected_cases": 202,
+  "expected_assertions": 8965,
   "source_admission": "UNCHANGED_FALSE",
   "files": [
     {
@@ -17,8 +17,8 @@
     {
       "source": "Test/two_cycle_entry_tests.lua",
       "destination": "two_cycle_entry_tests.lua",
-      "bytes": 24498,
-      "sha256": "5464C8A29A17D552AFE0E6E231AF52D8BFDB7063E9B3E107C32DD1D714B2E0A2"
+      "bytes": 27692,
+      "sha256": "1F11A69B9E18805DF7CEB495E6C7451B90807996C5416C52A67792D3E557A7C1"
     },
     {
       "source": "Test/two_cycle_handoff_tests.lua",
@@ -77,8 +77,8 @@
     {
       "source": "Test/two_cycle_facade_flow_tests.lua",
       "destination": "two_cycle_facade_flow_tests.lua",
-      "bytes": 1515,
-      "sha256": "28AAAC4B0E7771836DAE91A8D9AED3817E9E54F92959CB9EAA69AEC296F192BC"
+      "bytes": 1731,
+      "sha256": "565C6521FBC40FF22D12E903847B5647BDD62E67BBBBA28DAD9F244849F082AD"
     },
     {
       "source": "Test/two_cycle_facade_cancel_tests.lua",
@@ -131,8 +131,8 @@
     {
       "source": "plugin/bmx_playable_entry.lua",
       "destination": "bmx_playable_entry.lua",
-      "bytes": 42885,
-      "sha256": "06CF412F6A2183D32AC6CBC54B20BD1FE9BCC19ACB9DDB822FA0B1E18C6364F2"
+      "bytes": 46489,
+      "sha256": "C43CAEAC2987CD0FDC0036D26A19BF3F772E1E9C188446C84BE05F981117A082"
     },
     {
       "source": "plugin/ride_r1_record.lua",
@@ -149,8 +149,8 @@
     {
       "source": "Test/two_cycle_facade_test_support.lua",
       "destination": "two_cycle_facade_test_support.lua",
-      "bytes": 3600,
-      "sha256": "5DF5751F55822A25AD0FCF3E84420CD81D0F75F374895ED910C6A7FD7342F0A2"
+      "bytes": 3640,
+      "sha256": "44A2343E373EF1EE727B1EF011CC47D9CAF957D26FE89ED1934A4DAB0566AB24"
     },
     {
       "source": "Test/playable_main_fixture.lua",
@@ -191,14 +191,14 @@
     {
       "source": "Test/two_cycle_facade_fixture.lua",
       "destination": "two_cycle_facade_fixture.lua",
-      "bytes": 18677,
-      "sha256": "DE0C3B899595449CBD07B25AC3F4F938BCC528BAF3223F0E2242729D59DEA39D"
+      "bytes": 19443,
+      "sha256": "AACF451ECFC97F66BC5653A25D6A5A9E4B1C2B528D640DD49DF2997A460704E0"
     },
     {
       "source": "plugin/bike_runtime.lua",
       "destination": "bike_runtime.lua",
-      "bytes": 18647,
-      "sha256": "3EAC11C15944A880D562DD377617B32EBFDA31F36E8000A64C3E2C62AE4AF6B8"
+      "bytes": 19413,
+      "sha256": "6B03C5FE9724819285A4960CB52162375E56CD7F47560DA41102AB8D3431B69E"
     },
     {
       "source": "plugin/equipment_runtime.lua",
@@ -435,8 +435,8 @@
     },
     {
       "source": "plugin/bike_runtime.lua",
-      "bytes": 18647,
-      "sha256": "3EAC11C15944A880D562DD377617B32EBFDA31F36E8000A64C3E2C62AE4AF6B8"
+      "bytes": 19413,
+      "sha256": "6B03C5FE9724819285A4960CB52162375E56CD7F47560DA41102AB8D3431B69E"
     },
     {
       "source": "plugin/bike_spawn.lua",
@@ -450,8 +450,8 @@
     },
     {
       "source": "plugin/bmx_playable_entry.lua",
-      "bytes": 42885,
-      "sha256": "06CF412F6A2183D32AC6CBC54B20BD1FE9BCC19ACB9DDB822FA0B1E18C6364F2"
+      "bytes": 46489,
+      "sha256": "C43CAEAC2987CD0FDC0036D26A19BF3F772E1E9C188446C84BE05F981117A082"
     },
     {
       "source": "plugin/board_drop.lua",
@@ -596,8 +596,8 @@
     {
       "source": "plugin/bike_runtime.lua",
       "fixture": "Test/two_cycle_facade_fixture.lua",
-      "source_sha256": "3EAC11C15944A880D562DD377617B32EBFDA31F36E8000A64C3E2C62AE4AF6B8",
-      "fixture_sha256": "DE0C3B899595449CBD07B25AC3F4F938BCC528BAF3223F0E2242729D59DEA39D",
+      "source_sha256": "6B03C5FE9724819285A4960CB52162375E56CD7F47560DA41102AB8D3431B69E",
+      "fixture_sha256": "AACF451ECFC97F66BC5653A25D6A5A9E4B1C2B528D640DD49DF2997A460704E0",
       "prefix": "return function(require)\n",
       "suffix": "\nend\n"
     }
@@ -612,8 +612,8 @@
       "suite": "two_cycle_entry_tests",
       "invoked": "two_cycle_entry_tests",
       "context": "flat",
-      "expected_cases": 25,
-      "expected_assertions": 344
+      "expected_cases": 26,
+      "expected_assertions": 383
     },
     {
       "suite": "two_cycle_handoff_tests",
@@ -683,7 +683,7 @@
       "invoked": "two_cycle_facade_flow_tests",
       "context": "flat",
       "expected_cases": 1,
-      "expected_assertions": 15
+      "expected_assertions": 16
     },
     {
       "suite": "two_cycle_facade_cancel_tests",

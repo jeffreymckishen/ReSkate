@@ -15,7 +15,7 @@ function Tests.run()
     local function fixture(options)
         options=options or {}
         local f={now=0,slot=0,focused=true,gameplay=true,overlay=true,game_menu=false,stock=504,
-            position=vector.create(0,.5,0),heading=0,slope=0,new_calls=0,steps=0,mounts=0,stops=0,toggles=0,
+            position=vector.create(0,.5,0),heading=0,slope=0,airborne=false,new_calls=0,steps=0,mounts=0,stops=0,toggles=0,
             unloads=0,prepares=0,probes=0,probe_tick=0,probe_peak=0,events={},keys=options.keys or {},latest=cleaned()}
         f.latest.phase="idle";f.latest.stop_latched=false
         local R={time={},input={},menu={},skater={},storage={},world={physics={}}}
@@ -24,14 +24,22 @@ function Tests.run()
             if f.on_focus then f.on_focus() end
             return {focused=f.focused,gameplay=f.gameplay,interface_open=f.overlay}
         end
+        function R.input.gamepad()
+            local pad={left_x=0,left_y=0,right_x=0,right_y=0,left_trigger=0,right_trigger=0,buttons={}}
+            for _,name in {"up","down","left","right","start","back","left_stick","right_stick","lb","rb","a","b","x","y"} do
+                pad.buttons[name]=false
+            end
+            if f.on_pad then return f.on_pad(pad) end
+            return pad
+        end
         function R.menu.game() if f.on_menu then f.on_menu() end;return {open=f.game_menu} end
         function R.skater.get()
             if f.on_actor then f.on_actor() end
-            return {position=f.position,heading=f.heading}
+            return {position=f.position,heading=f.heading,airborne=f.airborne}
         end
         function R.skater.telemetry()
             if f.on_telemetry then f.on_telemetry() end
-            return {watch={state=f.stock}}
+            return {skater=true,airborne=f.airborne,teleport_pending=false,watch={valid=true,state=f.stock,ragdoll_known=true,ragdoll=false}}
         end
         function R.storage.keys() if f.keys_raise then error("keys unavailable") end;return f.keys end
         function R.world.physics.prepare()
@@ -89,8 +97,9 @@ function Tests.run()
             return old_new(services,config)
         end
         function owner:can_prepare_next_mount()return not f.failed_cycle end
-        function owner:prepare_next_mount(slot)
+        function owner:prepare_next_mount(slot,admitted_at_ms)
             f.stepoffs=(f.stepoffs or 0)+1;f.events[#f.events+1]="prepare504"
+            f.second_admitted_at=admitted_at_ms
             if f.on_prepare504 then return f.on_prepare504() end
             f.latest=cleaned();f.latest.phase="stock_switching";f.latest.cleanup_pending=true;f.latest.stock_toggle_blocked=true
             return true
@@ -103,6 +112,14 @@ function Tests.run()
         f.entry=Entry.new(R,Runtime,Survey,{admitted=options.admitted~=false,slot=0,experimental_two_cycle=options.two==true})
         function f.tick(count)
             for _=1,count or 1 do f.now+=16;f.probe_tick=0;f.entry:step(16) end
+        end
+        function f.await_stepoff()
+            for _=1,80 do
+                f.tick()
+                local s=f.entry:status()
+                if f.stepoffs or s.phase=="blocked" or s.cancelled or s.phase=="unloaded" then return end
+            end
+            error("bounded fixture did not reach step-off or refusal")
         end
         function f.await_mount()
             for _=1,200 do f.tick();if f.entry:status().mount_requested or f.entry:status().phase=="blocked" then return end end
@@ -127,7 +144,7 @@ function Tests.run()
         local before=f.probes
         check(f.entry:mount(),"second intent is accepted once")
         check(f.entry:status().attempts_used==2 and f.stepoffs==nil,"intent2 burned before the deferred old-owner504 request")
-        f.tick();check(f.stepoffs==1,"closed-menu tick sends one old-owner504 request")
+        f.await_stepoff();check(f.stepoffs==1,"released settled closed-menu dwell sends one old-owner504 request")
         f.tick(10);check(f.probes==before,"pending504 must never take a new survey")
         f.latest=cleaned();f.stock=504;f.on_ready504=function()return true,2 end
         f.tick();check(f.entry:status().phase=="preparing","only acknowledged504 begins preparation")
@@ -137,6 +154,33 @@ function Tests.run()
         f.latest=cleaned();f.stock=100;f.tick()
         check(f.entry:status().phase=="skateboard" and not f.entry:mount(),"third intent refused before preparation")
         check(f.new_calls==1 and f.mounts==2 and f.stepoffs==1,"fixed manager/two mounts/one preparation transition")
+    end)
+    case("second Mount chord cannot race the strict equipment baseline",function()
+        local f=fixture({two=true});first_return(f)
+        local held=true
+        f.on_pad=function(pad)pad.buttons.lb=held;pad.buttons.a=held;return pad end
+        local admitted=f.now
+        check(f.entry:mount(),"second intent is spent while the actual Mount chord is held")
+        f.tick(50)
+        check(f.stepoffs==nil and f.entry:status().attempts_used==2,"held chord cannot arm an equipment baseline or refund intent")
+        held=false;f.airborne=true;f.stock=200;f.tick(45)
+        check(f.stepoffs==nil,"known transient airborne stock state cannot arm the baseline")
+        f.airborne=false;f.stock=100;f.tick(20)
+        check(f.stepoffs==nil,"fresh100 for less than600ms cannot arm")
+        held=true;f.tick();held=false;f.tick(38)
+        check(f.stepoffs==nil,"a renewed input edge resets the full dwell")
+        f.tick();check(f.stepoffs==1 and f.second_admitted_at==admitted,"one admission preserves the original intent time after release and600ms")
+        local probes=f.probes;f.stock=504;f.latest=cleaned();f.on_ready504=function()return false,"stale old ACK"end
+        f.tick();check(f.entry:status().phase=="blocked" and f.stepoffs==1 and f.probes==probes,"actual504 cannot replace a newer qualified targetACK")
+        check(not f.entry:mount(),"baseline failure cannot retry the spent intent")
+        local expired=fixture({two=true});first_return(expired);expired.overlay=true
+        check(expired.entry:mount(),"one second intent before bounded wait")
+        expired.now+=60000;expired.tick()
+        check(expired.stepoffs==nil and expired.entry:status().phase=="blocked","original60s expires even with menus open")
+        local unknown=fixture({two=true});first_return(unknown)
+        unknown.on_pad=function()return nil end
+        check(unknown.entry:mount(),"one second intent before unreadable pad proof")
+        unknown.tick();check(unknown.stepoffs==nil and unknown.entry:status().phase=="blocked","missing release evidence is never classified neutral")
     end)
     case("legacy Entry retains one-shot factory and behavior",function()
         local f=fixture();first_return(f)
@@ -148,20 +192,20 @@ function Tests.run()
         f.on_prepare504=function()return false,"archive refused"end
         local before=f.probes
         check(f.entry:mount(),"intent is accepted before its deferred callback")
-        f.tick()
+        f.await_stepoff()
         check(f.entry:status().attempts_used==2 and f.entry:status().phase=="blocked","deferred refusal remains visible and spent")
         check(not f.entry:mount() and f.probes==before and f.mounts==1,"no hidden allocation or survey retry")
     end)
     case("old sampled504 cannot replace private newer equipment ACK",function()
         local f=fixture({two=true});first_return(f);check(f.entry:mount(),"intent2 accepted")
-        f.tick();check(f.stepoffs==1,"old-owner504 request starts before readiness check")
+        f.await_stepoff();check(f.stepoffs==1,"old-owner504 request starts before readiness check")
         f.stock=504;f.latest=cleaned();f.on_ready504=function()return false,"stale old ACK"end
         local before=f.probes;f.tick()
         check(f.entry:status().phase=="blocked" and f.probes==before,"private proof refusal blocks survey despite504 sample")
     end)
     case("private ready504 but wrong sampled state is refused",function()
         local f=fixture({two=true});first_return(f);check(f.entry:mount(),"intent2 accepted")
-        f.tick()
+        f.await_stepoff()
         f.latest=cleaned();f.stock=100;f.on_ready504=function()return true,2 end
         f.tick();check(f.entry:status().phase=="blocked" and f.mounts==1,"fresh state check prevents premature survey/mount")
     end)
@@ -169,12 +213,12 @@ function Tests.run()
         local f=fixture({two=true});first_return(f)
         f.on_prepare504=function()f.entry:cancel();return true end
         check(f.entry:mount(),"intent accepted before deferred callback")
-        f.tick();check(f.stepoffs==1 and f.entry:status().cancelled,"reentrant Cancel invalidates deferred acceptance")
+        f.await_stepoff();check(f.stepoffs==1 and f.entry:status().cancelled,"reentrant Cancel invalidates deferred acceptance")
         f.tick(20);check(f.entry:status().cancelled and f.mounts==1,"no second body after cancellation")
     end)
     case("Cancel during acknowledged504 callback cannot start prepare",function()
         local f=fixture({two=true});first_return(f);check(f.entry:mount(),"intent2 accepted")
-        f.tick()
+        f.await_stepoff()
         f.latest=cleaned();f.stock=504
         f.on_ready504=function()f.entry:cancel();return true,2 end
         local before=f.prepares;f.tick()
@@ -182,7 +226,7 @@ function Tests.run()
     end)
     case("unload during second preparation cannot start prepare",function()
         local f=fixture({two=true});first_return(f);check(f.entry:mount(),"intent2 accepted")
-        f.tick()
+        f.await_stepoff()
         f.latest=cleaned();f.stock=504
         f.on_ready504=function()f.entry:unload();return true,2 end
         local before=f.prepares;f.tick();check(f.entry:status().phase=="unloaded" and f.prepares==before,"unload remains terminal")
@@ -191,7 +235,7 @@ function Tests.run()
         local f=fixture({two=true});first_return(f);check(f.entry:mount(),"intent2 accepted")
         local before=f.toggles;check(not f.entry:return_to_skateboard(),"old mount proof does not authorize Return during504 setup")
         check(f.toggles==before and f.stepoffs==nil,"no pulse from premature Return while deferred")
-        f.tick();check(f.stepoffs==1,"only the following closed-menu tick starts step-off")
+        f.await_stepoff();check(f.stepoffs==1,"only the released closed-menu dwell starts step-off")
     end)
     case("prior namespace blocks experimental factory acquisition",function()
         local f=fixture({two=true,keys={"old_marker"}})
@@ -201,7 +245,7 @@ function Tests.run()
     case("new survey expiry remains unchanged for second mount",function()
         local f=fixture({two=true});first_return(f);f.overlay=true
         check(f.entry:mount(),"intent2 accepted")
-        f.overlay=false;f.tick();check(f.stepoffs==1,"closed-menu tick starts step-off");f.overlay=true
+        f.overlay=false;f.await_stepoff();check(f.stepoffs==1,"released closed-menu dwell starts step-off");f.overlay=true
         f.latest=cleaned();f.stock=504;f.on_ready504=function()return true,2 end
         for _=1,200 do f.tick();if f.entry:status().phase=="awaiting_mount" then break end end
         check(f.entry:status().phase=="awaiting_mount","fresh second survey waits behind overlay")
@@ -211,7 +255,7 @@ function Tests.run()
     case("second survey movement failure remains terminal",function()
         local f=fixture({two=true});first_return(f);f.overlay=true
         check(f.entry:mount(),"intent2 accepted")
-        f.overlay=false;f.tick();check(f.stepoffs==1,"closed-menu tick starts step-off");f.overlay=true
+        f.overlay=false;f.await_stepoff();check(f.stepoffs==1,"released closed-menu dwell starts step-off");f.overlay=true
         f.latest=cleaned();f.stock=504;f.on_ready504=function()return true,2 end
         for _=1,200 do f.tick();if f.entry:status().phase=="awaiting_mount" then break end end
         f.position=vector.create(1,.5,0);f.overlay=false;f.tick()
@@ -238,7 +282,7 @@ function Tests.run()
         f.tick(10);check(f.stepoffs==nil and f.probes==before,"overlay-open ticks send no step-off or survey")
         f.overlay=false;f.game_menu=true;f.tick(10)
         check(f.stepoffs==nil,"game menu also blocks step-off")
-        f.game_menu=false;f.tick();check(f.stepoffs==1,"first closed-menu tick sends exactly once")
+        f.game_menu=false;f.await_stepoff();check(f.stepoffs==1,"released closed-menu dwell sends exactly once")
         f.tick(10);check(f.stepoffs==1 and f.probes==before,"pending504 status cannot resend or survey")
         check(not f.entry:mount() and f.entry:status().attempts_used==2,"pending readiness never rearms intent")
     end)
@@ -278,7 +322,7 @@ function Tests.run()
             return true
         end
         check(f.entry:mount(),"second intent armed")
-        f.tick(10)
+        f.await_stepoff()
         check(f.stepoffs==1 and f.entry:status().cancelled and f.mounts==1,"reentrant tick cancels without duplicate request/body")
     end)
     case("Cancel during fresh menu proof suppresses deferred request",function()
@@ -310,7 +354,7 @@ function Tests.run()
         f.latest=cleaned();f.stock=100;f.tick()
         check(f.entry:status().phase=="stepping_off" and f.entry:status().attempts_used==2
             and not f.entry:status().recovery_pending and f.stepoffs==nil,"actual100 consumes the single fresh Mount intent before callbacks")
-        f.tick();check(f.stepoffs==1 and f.probes==probes,"existing deferred504 request precedes all new survey work")
+        f.await_stepoff();check(f.stepoffs==1 and f.probes==probes,"existing deferred504 request precedes all new survey work")
         f.latest=cleaned();f.stock=504;f.on_ready504=function()return true,2 end
         f.tick();f.await_mount();f.tick()
         check(f.mounts==2 and f.probes>=probes+1260 and f.entry:status().phase=="riding","fresh504 ACK and complete fresh survey precede mount two")

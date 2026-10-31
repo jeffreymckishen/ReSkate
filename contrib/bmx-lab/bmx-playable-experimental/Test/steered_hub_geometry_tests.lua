@@ -3,6 +3,7 @@
 local G=require("./bike_geometry")
 local M=require("./force_math")
 local Forces=require("./forces")
+local Stage=require("./force_stage")
 local Visual=require("./bike_visual")
 local Fixtures=require("./ride_runtime_tests")
 local Tests={}
@@ -14,6 +15,119 @@ end
 local function near(a,b,e)
     for i=1,3 do if math.abs(a[i]-b[i])>e then return false end end
     return true
+end
+-- Constructed sloped-plane invariant; not a replay of the human F126 stop.
+-- A measured ray and an analytic reference describe the same plane and hub gap.
+local function floor_geometry_case(check)
+ local function same_vector(a,b,why)check(M.length(M.sub(a,b))<1e-7,why)end
+ local h,radius=Forces.native_seconds,Forces.wheel_radius
+ local angle=math.rad(8)
+ local body=Forces.proposed_body()
+ body.orientation={math.sin(angle*.5),0,0,math.cos(angle*.5)}
+ body.center_of_mass={3,2,5}
+ local normal=M.turn(body.orientation,{0,1,0})
+ local forward=M.turn(body.orientation,{0,0,1})
+ body.linear_velocity=M.sub(M.mul(forward,1.25),M.mul(normal,.25))
+ -- Zero initial angular velocity makes grounded truth independent of which
+ -- point on the same plane is supplied; the normal impulse still has a lever.
+ body.angular_velocity={0,0,0}
+ local wheels=Forces.proposed_wheels()
+ for _,wheel in ipairs(wheels)do wheel.angular_speed=1.25/wheel.radius end
+ local hubs={M.add(body.center_of_mass,M.turn(body.orientation,M.sub(G.front_axle,G.com))),
+  M.add(body.center_of_mass,M.turn(body.orientation,M.sub(G.rear_axle,G.com)))}
+ local controls={pedal=0,steer=0,brake=0}
+ local function samples_at(front_gap)
+  local plane_d=M.dot(hubs[1],normal)-radius-front_gap
+  local rays,reference={},{}
+  for i=1,2 do
+   local distance=M.dot(hubs[i],normal)-plane_d
+   local down={0,-1,0}
+   local ray_length=distance/-M.dot(down,normal)
+   local point=M.add(hubs[i],M.mul(down,ray_length))
+   local projected=M.sub(hubs[i],M.mul(normal,distance))
+   check(ray_length>0 and ray_length<radius+.75,"the finite current downward segment actually hits")
+   check(math.abs(M.dot(point,normal)-plane_d)<1e-12
+    and math.abs(M.dot(projected,normal)-plane_d)<1e-12,"both points lie on the exact same plane")
+   check(math.abs(point[1]-3)<2 and math.abs(point[3]-5)<2
+    and math.abs(projected[1]-3)<2 and math.abs(projected[3]-5)<2,"both points lie inside the finite face")
+   local hub_jacobian=M.cross(M.sub(hubs[i],body.center_of_mass),normal)
+   local projected_jacobian=M.cross(M.sub(projected,body.center_of_mass),normal)
+   check(M.length(M.sub(projected_jacobian,hub_jacobian))<1e-12,
+    "the normal projection preserves the derivative of the measured hub gap")
+   check(M.length(M.sub(M.cross(M.sub(point,body.center_of_mass),normal),hub_jacobian))>.01,
+    "a raw gravity-ray lever differs on this slope and cannot be substituted at contact")
+   rays[i]={contact={status="hit",point=point,normal=M.copy(normal),forward=M.copy(forward),
+    surface_velocity={0,0,0}},separation=distance-radius,wheel_center=M.copy(hubs[i]),wheel_radius=radius,
+    verified_plane=false,balance_normal_available=false}
+   reference[i]=M.copy(rays[i])
+   -- This is an independent geometric reference, not a second observed ray.
+   reference[i].contact.point=projected
+  end
+  return rays,reference
+ end
+ local function bounded(out,label)
+  check(out.valid,label..": "..tostring(out.issue))
+  check(out.contact_scale==1 and M.length(out.force)<=6000 and M.length(out.torque)<=2000,
+   label.." retains the unchanged unscaled authored caps")
+  check(not out.hop_applied and out.hop_event_id==0,label.." creates no hop")
+ end
+ local function equivalent(a,b,label)
+  same_vector(a.force,b.force,label.." force is independent of tangential hit displacement")
+  same_vector(a.torque,b.torque,label.." torque uses the same hub-gap Jacobian")
+  check(a.grounded==b.grounded and a.balance_support_mask==b.balance_support_mask,
+   label.." geometry does not invent support")
+  for i=1,2 do
+   check(math.abs(a.normal_impulse[i]-b.normal_impulse[i])<1e-7
+    and math.abs(a.approach_normal_impulse[i]-b.approach_normal_impulse[i])<1e-7,
+    label.." retains the same normal impulse")
+   check(math.abs(a.wheels[i].angular_speed-b.wheels[i].angular_speed)<1e-7,
+    label.." retains the same rotor result")
+  end
+ end
+ -- Independent fresh previews straddle the existing 5 mm branch. This tests
+ -- geometry on each side, not equality of the two different contact laws.
+ for _,gap in ipairs({.006,.00501,.005,.00499,.004})do
+  local samples,reference=samples_at(gap)
+  local before=M.copy(samples)
+  local stage=Stage.new()
+  local actual,discarded=stage:preview(h,body,wheels,samples,controls)
+  local expected=Stage.new():preview(h,body,wheels,reference,controls)
+  bounded(actual,"ray gap "..tostring(gap))
+  bounded(expected,"reference gap "..tostring(gap))
+  equivalent(actual,expected,"gap "..tostring(gap))
+  local expected_ground=false
+  for i=1,2 do
+   local approach=samples[i].separation>.005
+   check((bit32.band(actual.landing_approach_mask,2^(i-1))~=0)==approach,
+    "the unchanged measured gap chooses approach versus contact")
+   expected_ground=expected_ground or Forces.eligible_support(body,samples[i],.005,.10)
+   same_vector(samples[i].contact.point,before[i].contact.point,"preview preserves the observed hit")
+   same_vector(samples[i].wheel_center,before[i].wheel_center,"preview preserves the observed hub")
+  end
+  check(actual.grounded==expected_ground,"only current support eligibility grants grounded truth")
+  local again,accepted=stage:preview(h,body,wheels,samples,controls)
+  bounded(again,"discarded preview")
+  equivalent(actual,again,"discarded preview")
+  check(discarded~=accepted,"a later preview has its own exact adoption token")
+  check(not pcall(stage._adopt,stage,discarded),"discarded tokens still cannot adopt history")
+  stage:_adopt(accepted)
+  check(not pcall(stage._adopt,stage,accepted),"accepted history still advances only once")
+ end
+ -- These guards were already required for approach geometry; contact must
+ -- not turn malformed exact hub/radius facts into a guessed lever.
+ local samples=samples_at(.004)
+ local wrong_radius=M.copy(samples);wrong_radius[1].wheel_radius+=.001
+ local radius_refusal=Stage.new():preview(h,body,wheels,wrong_radius,controls)
+ check(not radius_refusal.valid and radius_refusal.issue=="landing_geometry_unavailable",
+  "contact preserves the exact authored-radius validation")
+ local wrong_plane=M.copy(samples);wrong_plane[1].wheel_center[2]+=.001
+ local plane_refusal=Stage.new():preview(h,body,wheels,wrong_plane,controls)
+ check(not plane_refusal.valid and plane_refusal.issue=="landing_geometry_unavailable",
+  "contact preserves the exact hub-plane-gap validation")
+ local unavailable=M.copy(samples);unavailable[1].forecast_geometry_unavailable=true
+ local forecast_refusal=Stage.new():preview(h,body,wheels,unavailable,controls)
+ check(not forecast_refusal.valid and forecast_refusal.issue=="landing_geometry_unavailable",
+  "unavailable forecast geometry never substitutes a measured point")
 end
 function Tests.run()
     local cases,assertions=0,0
@@ -100,6 +214,7 @@ function Tests.run()
         check(near(apply(matrices[4],G.front_axle),front,1e-11),
             "query and drawn front hub agree after the same body/source transform")
     end)
+    case(function() floor_geometry_case(check) end)
     return {cases=cases,assertions=assertions}
 end
 return Tests

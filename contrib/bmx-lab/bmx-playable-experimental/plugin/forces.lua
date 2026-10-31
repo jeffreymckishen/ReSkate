@@ -205,24 +205,31 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
             local deflection_limit=(impact_envelope or supported) and t.maximum_penetration or landing.maximum_deflection
             if floor_plane then contact.normal_deflection_limit=deflection_limit end
             if landing_plane and s.separation < -deflection_limit-landing.deflection_tolerance then out.issue="landing_deflection_limit" return out end
-            local approach=floor_plane and s.separation>landing.contact_gap and s.separation<=landing.approach_gap
-            if approach then
-                -- A gravity ray hits downslope from the tyre's normal projection.
-                -- Apply the approach impulse through that projection so a distant
-                -- hit cannot invent a pitch or roll lever. Folded samples must
-                -- retain an actual forecast hub; legacy hit-only forecasts do not
-                -- establish this geometry.
+            -- A gravity ray hits downslope from the tyre's normal projection.
+            -- The gap is measured at the hub, so its normal Jacobian must use
+            -- this projection in both approach and contact. Switching back to
+            -- the ray hit at 5 mm changes the lever on the same measured plane.
+            local exact_floor_geometry=floor_plane and s.separation<=landing.approach_gap
+                and (s.wheel_center~=nil or s.wheel_radius~=nil)
+            if exact_floor_geometry then
                 if s.forecast_geometry_unavailable~=nil and s.forecast_geometry_unavailable~=false then
                     return result("landing_geometry_unavailable")
                 end
-                if s.wheel_center~=nil or s.wheel_radius~=nil then
-                    if not M.vec(s.wheel_center) or not M.finite(s.wheel_radius)
-                        or math.abs(s.wheel_radius-wheels[i].radius)>1e-8
-                        or math.abs(M.dot(M.sub(s.wheel_center,contact.point),basis.normal)-s.wheel_radius-s.separation)>1e-6 then
-                        return result("landing_geometry_unavailable")
-                    end
-                    contact.point=M.sub(s.wheel_center,M.mul(basis.normal,s.separation+s.wheel_radius))
-                else
+                if not M.vec(s.wheel_center) or not M.finite(s.wheel_radius)
+                    or math.abs(s.wheel_radius-wheels[i].radius)>1e-8
+                    or math.abs(M.dot(M.sub(s.wheel_center,contact.point),basis.normal)-s.wheel_radius-s.separation)>1e-6 then
+                    return result("landing_geometry_unavailable")
+                end
+                contact.point=M.sub(s.wheel_center,M.mul(basis.normal,s.separation+s.wheel_radius))
+            end
+            local approach=floor_plane and s.separation>landing.contact_gap and s.separation<=landing.approach_gap
+            if approach then
+                -- Retain the legacy hit-only approach path. A folded sample
+                -- without its forecast hub still cannot establish this geometry.
+                if s.forecast_geometry_unavailable~=nil and s.forecast_geometry_unavailable~=false then
+                    return result("landing_geometry_unavailable")
+                end
+                if not exact_floor_geometry then
                     local down=M.mul(gravity_up,-1) local dn=M.dot(down,basis.normal)
                     contact.point=M.sub(contact.point,M.mul(M.sub(down,M.mul(basis.normal,dn)),(s.separation+wheels[i].radius)/-dn))
                 end

@@ -556,6 +556,94 @@ function Tests.run(case_done)
         check(s.force_pending and s.unknown,"N+1 setter sample is not later consumption evidence")
         check(count(f,"ack")==0,"no early ACK of produced epoch")
     end
+    next_case() do
+        local f=fixture()
+        local sample=f.sample
+        function f.sample()
+            local raw=sample();raw.rotation={0,.6,0,.8};raw.inertia=vector.create(17,29,41)
+            return raw
+        end
+        local trick_step=f.tricks.step
+        function f.tricks:step(frame,contact,actions)
+            f.qualified_samples=copy(frame.contact.samples)
+            return trick_step(self,frame,contact,actions)
+        end
+        local diagnostic={valid=true,force={3000,-7200,200},torque={2100,-900,200},contact_scale=1,
+            balance_torque={100,200,300},contact_torque={1800,-1200,-100},motor_torque={200,100,0},
+            air_control_torque={0,0,0},air_damping_torque={0,0,0},pump_force={0,-80,0},
+            balance_support_mask=1,balance_continuation_mask=0,landing_approach_mask=2,
+            compliant_normal_mask=2,landing_recovery_mask=0,normal_load={120,240},
+            normal_impulse={2,4},approach_normal_force={0,240},unbounded={ignored=true}}
+        function f.force:preview(h,body,wheels,samples)
+            f.refusal_body=copy(body);f.refusal_samples=copy(samples)
+            return {valid=false,issue="authored_force_limit",diagnostic=diagnostic},{}
+        end
+        local state=f.observe()
+        local d=state.last_force_refusal
+        check(state.stop_requested and state.submitted==0 and f.command==nil,"refusal stays unsent and terminal")
+        check(type(d)=="table" and d.version==1 and d.issue=="authored_force_limit"
+            and d.diagnostic_only and not d.command_submitted and d.model_valid,"one diagnostic-only fixed refusal")
+        check(d.serial==f.read.serial and d.seconds==f.read.seconds,"exact already-read physics identity and step")
+        check(d.force[1]==3000 and d.force[2]==-7200 and d.force[3]==200
+            and d.force_norm==math.sqrt(3000^2+7200^2+200^2),"exact unsent force and norm")
+        check(d.torque[1]==2100 and d.torque[2]==-900 and d.torque_norm==math.sqrt(2100^2+900^2+200^2),
+            "exact unsent torque and norm")
+        check(d.balance_torque[3]==300 and d.contact_torque[2]==-1200 and d.motor_torque[1]==200
+            and d.pump_force[2]==-80 and d.normal_load[2]==240 and d.normal_impulse[1]==2
+            and d.approach_normal_force[2]==240 and d.landing_approach_mask==2,"computed channels preserved")
+        check(d.measured.center_of_mass[2]==f.read.position.y
+            and d.measured.linear_velocity[1]==f.read.velocity.x
+            and d.folded.mass==f.refusal_body.mass
+            and d.folded.linear_velocity[2]==f.refusal_body.linear_velocity[2],"measured and folded body kept distinct")
+        for i=1,4 do
+            check(d.measured.orientation[i]==f.read.rotation[i]
+                and d.folded.orientation[i]==f.refusal_body.orientation[i],"raw measured/folded orientation "..i)
+        end
+        for i=1,3 do
+            check(d.folded.center_of_mass[i]==f.refusal_body.center_of_mass[i]
+                and d.folded.inertia_body[i]==f.refusal_body.inertia_body[i],"raw folded COM/inertia "..i)
+        end
+        check(d.contacts.provenance=="measured_rays_authored_wheel_geometry"
+            and not d.contacts.native_collision_contact and not d.contacts.landing_quality_available
+            and #d.contacts.wheels==2,"qualified rays gain no collision or landing claim")
+        check(f.qualified_samples[1].separation~=f.refusal_samples[1].separation,
+            "qualified ray separation stays distinct from the later gravity forecast")
+        for i=1,2 do
+            local actual,expected=d.contacts.wheels[i],f.qualified_samples[i]
+            check(actual.status==expected.contact.status and actual.separation==expected.separation,"exact qualified wheel sample "..i)
+            for axis=1,3 do
+                check(actual.point[axis]==expected.contact.point[axis] and actual.normal[axis]==expected.contact.normal[axis]
+                    and actual.surface_velocity[axis]==expected.contact.surface_velocity[axis],"exact qualified wheel coordinates "..i..":"..axis)
+            end
+        end
+        check(d.unbounded==nil and d.measured.epoch==nil and d.contacts.epoch==nil,"unknown fields and opaque handles excluded")
+        check(table.isfrozen(d) and table.isfrozen(d.force) and table.isfrozen(d.contacts.wheels[1])
+            and table.isfrozen(d.measured.orientation) and table.isfrozen(d.folded.orientation)
+            and table.isfrozen(d.folded.center_of_mass) and table.isfrozen(d.folded.inertia_body),"refusal frozen through")
+        check(not pcall(function() d.force[1]=0 end),"caller cannot mutate retained refusal")
+        local measured_y,folded_y,inertia_y=d.measured.orientation[2],d.folded.center_of_mass[2],d.folded.inertia_body[2]
+        diagnostic.force[1]=0;diagnostic.normal_load[2]=0;f.qualified_samples[1].separation=99
+        f.read.rotation[2]=0;f.refusal_body.orientation[2]=0;f.refusal_body.center_of_mass[2]=99;f.refusal_body.inertia_body[2]=99
+        local calls=#f.calls;f.advance();local stopped=f.observe()
+        check(stopped.last_force_refusal.force[1]==3000 and stopped.last_force_refusal.normal_load[2]==240
+            and stopped.last_force_refusal.contacts.wheels[1].separation~=99
+            and stopped.last_force_refusal.measured.orientation[2]==measured_y
+            and stopped.last_force_refusal.folded.center_of_mass[2]==folded_y
+            and stopped.last_force_refusal.folded.inertia_body[2]==inertia_y,"later mutable inputs cannot rewrite refusal")
+        check(#f.calls==calls and stopped.last_force_refusal.serial==d.serial,"stopped observation adds no calls or refusal history")
+        local values=0
+        local function bounded(v,depth)
+            check(depth<=5,"bounded DTO depth")
+            if type(v)=="table" then for k,x in pairs(v) do
+                values+=1
+                check(type(k)=="number" or type(k)=="string" and #k<=32,"bounded DTO keys")
+                bounded(x,depth+1)
+            end
+            else check(type(v)~="userdata" and type(v)~="function" and type(v)~="vector","portable values only") end
+        end
+        bounded(d,0)
+        check(values==133 and values<=192,"fixed complete refusal size, no growing history")
+    end
     if case_done then case_done(cases,assertions) end
     return {cases=cases,assertions=assertions}
 end

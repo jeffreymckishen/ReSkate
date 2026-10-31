@@ -89,6 +89,95 @@ function T.run()
  local fresh=Stage.new():preview(h,opening_body,wheels,opening_samples,controls)
  check(not fresh.valid and fresh.issue=="landing_deflection_limit",
   "a fresh unsupported contact cannot borrow an unobserved loaded envelope")
- return {cases=1,assertions=n,constructed=true,native_qualified=false}
+ -- Additional constructed envelopes, not a replay: the human store omits742
+ -- of766 samples and does not retain the failing full pose/mass/contact path.
+ -- World.place supplies proposed106kg body/inertia/identity pose and rolling
+ -- rotors here. Only the rounded failure velocities and last two gaps below
+ -- are carried from that retained diagnostic, never the omitted trajectory.
+ local function vector_text(v)
+  if not v then return "unavailable" end
+  return string.format("(%.9g,%.9g,%.9g)",v[1],v[2],v[3])
+ end
+ local function inspect(label,step,current,samples,out,previous)
+  local raw=out.valid and out or out.diagnostic
+  check(type(raw)=="table" and M.vec(raw.force) and M.vec(raw.torque),
+   label.." exposes actual finite raw kernel force/torque even on authored refusal")
+  local df=previous and M.sub(raw.force,previous.force) or nil
+  local dt=previous and M.sub(raw.torque,previous.torque) or nil
+  print(string.format("constructed_%s step=%d h=%.17g issue=%s gaps=(%s,%s) v=%s w=%s F=%s |F|=%.9g T=%s |T|=%.9g dF=%s dT=%s joint=%s target=%s grounded=%s approach=%s",
+   label,step,h,tostring(out.issue),tostring(samples[1].separation),tostring(samples[2].separation),
+   vector_text(current.linear_velocity),vector_text(current.angular_velocity),vector_text(raw.force),M.length(raw.force),
+   vector_text(raw.torque),M.length(raw.torque),vector_text(df),vector_text(dt),tostring(raw.front_steer_angle),
+   tostring(raw.requested_front_steer_angle),tostring(raw.grounded),tostring(raw.landing_approach_mask)))
+  return raw
+ end
+ -- Twenty ordinary native steps: four neutral accepted support steps, then
+ -- full steering reversals every two steps. No impulse, cap or cadence changes.
+ local speed=math.sqrt(4.47^2+5.37^2)
+ local turning_body,turning_wheels=World.place(terrain,{speed=speed})
+ local turning_stage=Stage.new()
+ local previous,previous_joint
+ local joint_step_limit=5*Forces.tuning().steer_limit*h+1e-8 -- existing playable_steering_tests bound
+ for step=1,20 do
+  check(turning_stage:admit_measured(turning_body),"constructed rolling body remains inside original measured admission")
+  local samples=World.contacts(terrain,turning_body,gravity)
+  local steer=step<=4 and 0 or (math.floor((step-5)/2)%2==0 and .85 or -.85)
+  local out,candidate=turning_stage:preview(h,turning_body,turning_wheels,samples,{pedal=0,brake=0,steer=steer})
+  local raw=inspect("quick_reversal",step,turning_body,samples,out,previous)
+  check(out.valid and out.contact_scale==1 and M.length(raw.force)<=6000 and M.length(raw.torque)<=2000
+   and not out.hop_applied,"constructed rolling reversals retain original unscaled packet caps: "..tostring(out.issue))
+  if previous_joint then check(math.abs(out.front_steer_angle-previous_joint)<=joint_step_limit,
+   "reversal keeps the existing accepted joint step bound") end
+  previous,previous_joint=raw,out.front_steer_angle
+  turning_stage:_adopt(candidate)
+  turning_body=World.integrate(turning_body,out,gravity,h);turning_wheels=out.wheels
+ end
+ -- One isolated near-floor closing component fixture. Two authored stationary
+ -- planes are placed at the retained gaps under the proposed body's two hubs.
+ -- This does not assert an actual native road normal, body orientation, mass,
+ -- actuator state, accepted history, or force-component cause for the failure.
+ local near_body,near_wheels=World.place(terrain,{speed=speed})
+ near_body.linear_velocity={4.47,-1.47,5.37}
+ near_body.angular_velocity={2.65,.03,3.45}
+ local gaps={.006200412758532281,.006561090946082759}
+ local near_samples={}
+ for i,hub in ipairs(World.hubs(near_body))do
+  local height=hub[2]-World.wheel_radius-gaps[i]
+  local plane={height=function()return height end,slope=function()return 0 end}
+  local samples=World.contacts(plane,near_body,gravity)
+  local sample=samples[i];sample.wheel_center=M.copy(hub);sample.wheel_radius=World.wheel_radius
+  near_samples[i]=sample
+  -- Set an explicitly constructed rolling rotor for this authored contact
+  -- point; the retained native wheel state is unknown and is not substituted.
+  local rolling_speed=M.dot(M.point_velocity(near_body,sample.contact.point),sample.contact.forward)
+  near_wheels[i].angular_speed=rolling_speed/near_wheels[i].radius
+  check(math.abs(near_wheels[i].angular_speed*near_wheels[i].radius-rolling_speed)<1e-9,
+   "authored rotor starts with zero longitudinal slip at its constructed ray point")
+  check(sample.contact.status=="hit" and math.abs(sample.separation-gaps[i])<1e-9,
+   "constructed plane gives the retained scalar gap without inventing an omitted ray")
+  check(not Forces.eligible_support(near_body,sample,.005,.10),
+   "positive gap outside original5mm eligibility never fabricates supporting contact")
+ end
+ local near_stage=Stage.new()
+ check(near_stage:admit_measured(near_body),"rounded diagnostic velocity envelope remains within original measured caps")
+ local near,candidate=near_stage:preview(h,near_body,near_wheels,near_samples,{pedal=0,brake=0,steer=0})
+ local raw=inspect("near_floor_closing_guard",1,near_body,near_samples,near,nil)
+ -- Positive measured gaps do not promise an admissible next point position.
+ -- T45 actually refused this proposed pose/history. The original post-packet
+ -- landing-deflection guard returns result(issue), sanitizing F/T/support/hop
+ -- to zero; those zeros do not reveal the internal calculated packet or prove
+ -- the human7802N cause. The unsupported valid-packet oracle from R1 is removed.
+ check(not near.valid and near.issue=="landing_deflection_limit" and not raw.valid
+  and raw.issue=="landing_deflection_limit","constructed unsafe next-point envelope retains the original exact guard refusal")
+ check(M.length(near.force)==0 and M.length(near.torque)==0 and M.length(near.linear_impulse)==0
+  and M.length(near.angular_impulse)==0 and M.length(raw.force)==0 and M.length(raw.torque)==0,
+  "refused result exposes zero submit authority rather than a clamped candidate")
+ check(not near.grounded and not raw.grounded and raw.balance_support_mask==0
+  and not near.hop_applied and near.hop_event_id==0 and M.length(near.hop_impulse)==0
+  and not raw.hop_applied and raw.hop_event_id==0 and M.length(raw.hop_impulse)==0,
+  "guard refusal cannot fabricate support, balance or a hop")
+ local adopted=pcall(function() near_stage:_adopt(candidate) end)
+ check(not adopted,"refused candidate has no accepted history authority")
+ return {cases=3,assertions=n,constructed=true,native_qualified=false}
 end
 return T

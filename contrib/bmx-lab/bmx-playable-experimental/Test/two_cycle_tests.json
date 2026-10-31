@@ -4,8 +4,8 @@
   "flat_file_count": 83,
   "quota_file_count": 84,
   "expected_processes": 42,
-  "expected_cases": 268.0,
-  "expected_assertions": 11392.0,
+  "expected_cases": 271.0,
+  "expected_assertions": 11711.0,
   "source_admission": "UNCHANGED_FALSE",
   "files": [
     {
@@ -221,14 +221,14 @@
     {
       "source": "plugin/ride_runtime.lua",
       "destination": "ride_runtime.lua",
-      "bytes": 81254,
-      "sha256": "D9518B7EE3C1D67A83E4E6AACF87964B7B79DDF4A709A5C130CF7B841C73EE0D",
+      "bytes": 83914,
+      "sha256": "BBA8ECB1464F4A6B0A4760C47E43DDBEF25B4178A1D652B8F971839FB823F174",
       "test_transform": {
         "kind": "inert_raw_ride_fixture",
         "before": "local ACTIVATION_QUALIFIED = true",
         "after": "local ACTIVATION_QUALIFIED = false",
-        "bytes": 81255,
-        "sha256": "DF035B3F6817B515EAA20CD30040CCCBAA9D43A2B3EDD7CB6040DAFA2AC32293"
+        "bytes": 83915,
+        "sha256": "5DCC0A2D74149FFF440D7C5BC64B80B1BEB627758FB4C3996370EC30BC0A71D2"
       }
     },
     {
@@ -276,8 +276,8 @@
     {
       "source": "plugin/forces.lua",
       "destination": "forces.lua",
-      "bytes": 41816,
-      "sha256": "2A69B1D47A7DD1FE965D7CA0FBB98FC7DC5DC1CEA0ED6222571CD1ECEE4537B7"
+      "bytes": 42259,
+      "sha256": "61648323F32A10BA3A5413BC72364B757A664570EDF123CEAA29BF617F659458"
     },
     {
       "source": "plugin/ride_inflight.lua",
@@ -378,14 +378,14 @@
     {
       "source": "Test/ride_runtime_tests.lua",
       "destination": "ride_runtime_tests.lua",
-      "bytes": 34831,
-      "sha256": "809FC2213FBC662167EE00856456002F9EB4987B2C4CF20CBDE32D624777C590"
+      "bytes": 41139,
+      "sha256": "6E1732C774934920680526999C03183752FAD73CEF4B6FE9039A16A47F09F5EA"
     },
     {
       "source": "plugin/ride_runtime.lua",
       "destination": "ride_runtime_qualified_fixture.lua",
-      "bytes": 81254,
-      "sha256": "D9518B7EE3C1D67A83E4E6AACF87964B7B79DDF4A709A5C130CF7B841C73EE0D"
+      "bytes": 83914,
+      "sha256": "BBA8ECB1464F4A6B0A4760C47E43DDBEF25B4178A1D652B8F971839FB823F174"
     },
     {
       "source": "Test/barspin_rider_pose_integration_tests.lua",
@@ -450,8 +450,8 @@
     {
       "source": "Test/rolling_contact_envelope_tests.lua",
       "destination": "rolling_contact_envelope_tests.lua",
-      "bytes": 5507,
-      "sha256": "3F197125988B4626C9F91E0B4986450A3BA79935595BA5AA8A3950A2ED521169"
+      "bytes": 11909,
+      "sha256": "7C9B92554BC0642191C66298BE26E68D2AC4480B3CEBD4C59E2B671549C257E1"
     },
     {
       "source": "Test/two_hop_landing_tests.lua",
@@ -474,8 +474,8 @@
     {
       "source": "Test/steered_hub_geometry_tests.lua",
       "destination": "steered_hub_geometry_tests.lua",
-      "bytes": 5822,
-      "sha256": "06E3947227D18CD42CBEE0D9682DA1CB372B6DC51964B43D9FBCD8FFD91384DE"
+      "bytes": 12556,
+      "sha256": "1DBD1CE76685DD4F349D1A10F55FE1A5F1888510F455F5D884812C46A8CB212A"
     },
     {
       "source": "Test/score_runtime_tests.lua",
@@ -602,8 +602,8 @@
     },
     {
       "source": "plugin/forces.lua",
-      "bytes": 41816,
-      "sha256": "2A69B1D47A7DD1FE965D7CA0FBB98FC7DC5DC1CEA0ED6222571CD1ECEE4537B7"
+      "bytes": 42259,
+      "sha256": "61648323F32A10BA3A5413BC72364B757A664570EDF123CEAA29BF617F659458"
     },
     {
       "source": "plugin/frame_identity.lua",
@@ -657,8 +657,8 @@
     },
     {
       "source": "plugin/ride_runtime.lua",
-      "bytes": 81254,
-      "sha256": "D9518B7EE3C1D67A83E4E6AACF87964B7B79DDF4A709A5C130CF7B841C73EE0D"
+      "bytes": 83914,
+      "sha256": "BBA8ECB1464F4A6B0A4760C47E43DDBEF25B4178A1D652B8F971839FB823F174"
     },
     {
       "source": "plugin/tire.lua",
@@ -941,8 +941,8 @@
       "suite": "rolling_contact_envelope_tests",
       "context": "flat",
       "invoked": "rolling_contact_envelope_tests",
-      "expected_cases": 1,
-      "expected_assertions": 33
+      "expected_cases": 3,
+      "expected_assertions": 124
     },
     {
       "suite": "two_hop_landing_tests",
@@ -969,8 +969,8 @@
       "suite": "steered_hub_geometry_tests",
       "context": "flat",
       "invoked": "steered_hub_geometry_tests",
-      "expected_cases": 3,
-      "expected_assertions": 31
+      "expected_cases": 4,
+      "expected_assertions": 259
     },
     {
       "suite": "score_runtime_tests",

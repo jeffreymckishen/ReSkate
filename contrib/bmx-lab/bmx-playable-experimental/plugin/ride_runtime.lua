@@ -620,6 +620,46 @@ local function suppress_hop(s,id)
     end
     return true
 end
+-- A single fixed-size refusal projection, not a force or collision receipt.
+-- Body prediction and ray contacts keep their existing, different provenance.
+local function force_refusal(s,issue,d,sample,measured,folded,contact)
+    if s.last_force_refusal~=nil then return end
+    local function vec(v) return M.vec(v) and {v[1],v[2],v[3]} or nil end
+    local function four(v)
+        return type(v)=="table" and M.finite(v[1]) and M.finite(v[2]) and M.finite(v[3]) and M.finite(v[4])
+            and {v[1],v[2],v[3],v[4]} or nil
+    end
+    local function pair(v)
+        return type(v)=="table" and M.finite(v[1]) and M.finite(v[2]) and {v[1],v[2]} or nil
+    end
+    local out={version=1,issue=detail(issue),serial=sample.serial,seconds=sample.seconds,
+        diagnostic_only=true,command_submitted=false,model_valid=d.valid==true,
+        force=vec(d.force),torque=vec(d.torque),
+        measured={center_of_mass=vec(measured.center_of_mass),linear_velocity=vec(measured.linear_velocity),
+            angular_velocity=vec(measured.angular_velocity),orientation=four(measured.orientation)},
+        folded={mass=M.finite(folded.mass) and folded.mass or nil,linear_velocity=vec(folded.linear_velocity),
+            angular_velocity=vec(folded.angular_velocity),center_of_mass=vec(folded.center_of_mass),
+            orientation=four(folded.orientation),inertia_body=vec(folded.inertia_body)},
+        contacts={provenance=contact.support.provenance,native_collision_contact=false,
+            landing_quality_available=false,grounded=contact.grounded,wheels={}}}
+    if out.force then out.force_norm=M.length(out.force) end
+    if out.torque then out.torque_norm=M.length(out.torque) end
+    for _,name in ipairs({"balance_torque","contact_torque","motor_torque","air_control_torque","air_damping_torque","pump_force"}) do
+        out[name]=vec(d[name])
+    end
+    for _,name in ipairs({"contact_scale","balance_support_mask","balance_continuation_mask","landing_approach_mask",
+        "compliant_normal_mask","landing_recovery_mask"}) do
+        if M.finite(d[name]) then out[name]=d[name] end
+    end
+    for _,name in ipairs({"normal_load","normal_impulse","approach_normal_force"}) do out[name]=pair(d[name]) end
+    for i=1,2 do
+        local row=contact.samples[i]
+        local c=row.contact
+        out.contacts.wheels[i]={status=c.status,separation=M.finite(row.separation) and row.separation or nil,
+            point=vec(c.point),normal=vec(c.normal),surface_velocity=vec(c.surface_velocity)}
+    end
+    s.last_force_refusal=freeze(out)
+end
 local function status(s)
     metrics_inflight(s)
     local p=s.pending[1]
@@ -641,6 +681,7 @@ local function status(s)
         input_staged=s.input_staged,input_consumed=s.input_consumed,input_queued=#s.input_queue,
         observed_steps=s.observed_steps,model_steps=s.model_steps,receipt=s.last_receipt,
         model_history=s.model_history,hop_disposition=s.hop_disposition,metrics=s.metrics,
+        last_force_refusal=s.last_force_refusal,
         presentation_pose=s.pose,presentation_trick=s.barspin_presentation,
         mod_score=s.mod_score,mod_score_issue=s.score_issue,mod_landing_phase=s.score_landing_phase,
         model={trick_status=s.trick_status,trick_fallbacks=s.trick_fallbacks,
@@ -1188,6 +1229,7 @@ local function observe(s,source_frame,raw,context)
         local d=type(model)=="table" and (type(model.diagnostic)=="table" and model.diagnostic or model) or {}
         local b=folded[2]
         local why=type(model)=="table" and tostring(model.issue) or "no model"
+        force_refusal(s,why,d,sample,body,b,contact)
         if M.vec(d.force) and M.vec(d.torque) then why..=string.format(" |F| %.0f N |T| %.0f N*m",M.length(d.force),M.length(d.torque)) end
         if M.vec(b.linear_velocity) and M.vec(b.angular_velocity) then
             local v,w=b.linear_velocity,b.angular_velocity

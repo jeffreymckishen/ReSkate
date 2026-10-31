@@ -8,6 +8,8 @@ local MAX_SCORE,MAX_EVENTS=999999999,16
 local channels=table.freeze({
     barspin=table.freeze({name="Barspin",base=200}),
     tailwhip=table.freeze({name="Tailwhip",base=350}),
+    -- Legacy mod difficulty1; an authored local value, C0 still uncalibrated.
+    one_hander=table.freeze({name="One Hander",base=100}),
 })
 -- These are the legacy mod's authored difficulty2/3 bases and local repeat,
 -- combination and category defaults. C0 has not calibrated them to Skate.
@@ -97,9 +99,12 @@ function Score.new()
         for i=1,n do
             local e=presentation.authored_events[i]
             local c=plain(e) and channels[e.channel] or nil
-            if not c or seen[e.channel] or e.kind~="authored_channel_catch"
+            local pose=c and e.channel=="one_hander"
+            local shape=c and (pose and e.kind=="authored_pose_recovery"
+                and e.movement_id==36 and e.side=="left" and e.direction==nil
+                or not pose and e.kind=="authored_channel_catch" and (e.direction==-1 or e.direction==1))
+            if not c or not shape or seen[e.channel]
                 or e.scope~="mod_authored_accepted_step" or e.catch_phase~="regrip_complete" or e.authored_completion~=true
-                or (e.direction~=-1 and e.direction~=1)
                 or e.body_serial~=f.serial or e.accepted_sequence~=presentation.accepted_sequence
                 or e.source_observation_serial~=f.source.observation_serial
                 or e.prediction_only~=true or e.native_application~="unobserved"
@@ -234,7 +239,7 @@ function Score.new()
     object.status=object.view
     return table.freeze(object)
 end
-Score.rules=table.freeze({barspin=200,tailwhip=350,repeat_step=.25,repeat_floor=.1,
+Score.rules=table.freeze({barspin=200,tailwhip=350,one_hander=100,repeat_step=.25,repeat_floor=.1,
     combination_step=.2,combination_cap=2,category_step=.5,multiplier_cap=4,
     maximum_events=MAX_EVENTS,maximum_score=MAX_SCORE,calibration="C0_UNRUN"})
 return table.freeze(Score)

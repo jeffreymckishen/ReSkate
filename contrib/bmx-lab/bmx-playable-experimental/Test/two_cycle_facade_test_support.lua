@@ -8,7 +8,7 @@ function M.new(check)
     function Admission.ready(o) return o and o.grounded and o.upright_stock end
     function Admission.matches(a,b) return a.state==b.state and a.level==b.level and a.wipeouts==b.wipeouts end
     function Admission.bind(t)
-        return {marker_clear=function()return true end,persist=function()event("marker");f.marker_limit=t.experimental_attempt_limit;f.marker_session=t.experimental_session;return true end,
+        return {marker_clear=function()return true end,persist=function()event("marker");f.marker_limit=t.experimental_attempt_limit;f.marker_session=t.experimental_session;f.marker_arm=t.arm_at;f.marker_admitted=t.startup_admitted_at;return true end,
             available=function()return true end,clock=function()f.now+=16;t.now=f.now;return f.now end,
             facts=function()return {state=f.state,grounded=true,upright_stock=true,level="constructed",wipeouts=0}end}
     end
@@ -37,7 +37,7 @@ function M.new(check)
             if f.on_archive then f.on_archive()end
             return not f.aborted,f.aborted and "cancelled" or nil
         end
-        function owner:ready()if f.aborted then return false,"cancelled"end;return f.done504,f.done504 and 2 or "pending"end
+        function owner:ready()if f.on_ready then return f.on_ready()end;if f.aborted then return false,"cancelled"end;return f.done504,f.done504 and 2 or "pending"end
         function owner:abort_preparation()f.aborted=true;event("abort")end
         function owner:successor(_,_,t)
             event("archive504");f.old.retired=true;event("retire")

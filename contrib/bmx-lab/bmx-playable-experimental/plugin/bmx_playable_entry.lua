@@ -45,7 +45,7 @@ function Entry.new(R,Runtime,Survey,options)
     local phase,detail="idle",admitted and "On foot, choose Mount in a flat clear area." or "This experimental source build is closed."
     local used,mount_issued,return_pending,stock_attempted=false,false,false,false
     local attempts_used=0
-    local second_prepare_pending=false
+    local second_prepare_pending,second_terrain_pending=false,false
     local second_admitted_at,second_quiet_at,second_quiet_last,second_quiet_samples=nil,nil,nil,0
     local attempt_limit=two_cycle and 2 or 1
     local fallen,recover_pending,recover_wait_context=nil,false,nil
@@ -69,6 +69,18 @@ function Entry.new(R,Runtime,Survey,options)
             and s.startup.core_ready==false and s.startup.backend_ready==false
     end
     local function preflight_clear()
+        if attempts_used==2 and two_cycle then
+            if not used or mount_issued or return_pending or stock_attempted or second_prepare_pending
+                or stopped or cancel_sent or cancelled or unloaded or not known or not clean(latest)
+                or not finite(second_admitted_at) then return false end
+            local observed=call(owner.status,owner)
+            if not observed[1] or observed.n~=2 or not clean(observed[2]) then return false end
+            -- The same old owner proves a NEW504 ACK and no successor request.
+            -- Its ledger is legitimately nonempty; do not reuse the cold proof.
+            local ready=call(owner.second_preflight_ready,owner,second_admitted_at)
+            return ready[1] and ready.n==3 and ready[2]==true and finite(ready[3])
+                and ready[3]%1==0 and ready[3]>=2
+        end
         if attempts_used~=1 or not used or mount_issued or return_pending or stock_attempted
             or stopped or cancel_sent or cancelled or unloaded or not known or not inert(latest) then return false end
         local out=call(owner.status,owner)
@@ -84,7 +96,7 @@ function Entry.new(R,Runtime,Survey,options)
     end
     local function fail(why)
         phase,detail="blocked",text(why,"Operation failed; no retry in this session.")
-        return_pending=false;second_prepare_pending=false;recover_pending=false;generation+=1
+        return_pending=false;second_prepare_pending=false;second_terrain_pending=false;recover_pending=false;generation+=1
         -- A later equipment transaction has independent authority from the ride stop.
         stop_once("experimental entry: "..detail,stock_attempted)
     end
@@ -450,7 +462,8 @@ function Entry.new(R,Runtime,Survey,options)
     local function reset_second_quiet()
         second_quiet_at,second_quiet_last,second_quiet_samples=nil,nil,0
     end
-    local function second_quiet(now)
+    local function second_quiet(now,expected)
+        expected=expected or 100
         -- This aggregate pad observation can only delay admission. It proves no
         -- selected-slot identity or native consumption; the original equipment
         -- owner still supplies every selected-slot baseline, pulse and ACK guard.
@@ -483,10 +496,12 @@ function Entry.new(R,Runtime,Survey,options)
         released=released and p.left_x^2+p.left_y^2<=(7849/32767)^2
             and p.right_x^2+p.right_y^2<=(8689/32767)^2
             and p.left_trigger<=30/255 and p.right_trigger<=30/255
-        if watch.state==504 or watch.state==300 or watch.ragdoll then
+        if expected==504 and (watch.state~=504 or watch.ragdoll) then
+            fail("Terrain retry lost its acknowledged on-foot504 baseline.");return false
+        elseif expected==100 and (watch.state==504 or watch.state==300 or watch.ragdoll) then
             fail("Attempt two lost its stock100 baseline before admission.");return false
         end
-        if not released or watch.state~=100 or a[2].airborne or w.airborne or w.teleport_pending then
+        if not released or watch.state~=expected or a[2].airborne or w.airborne or w.teleport_pending then
             reset_second_quiet();return false
         end
         if not second_quiet_last or now<=second_quiet_last or now-second_quiet_last>250 then
@@ -494,6 +509,31 @@ function Entry.new(R,Runtime,Survey,options)
         else second_quiet_samples+=1 end
         second_quiet_last=now
         return now-second_quiet_at>=600 and second_quiet_samples>=10
+    end
+    local function second_terrain_step(now)
+        local version=generation
+        if not second_admitted_at or now<second_admitted_at or now-second_admitted_at>=60000 then
+            fail("Original second Mount admission deadline expired; no terrain retry.");return
+        end
+        if now-prep_at>=30000 then fail("Preparation timed out; no mount was requested.");return end
+        if not environment(false) then reset_second_quiet();return end
+        if generation~=version or cancelled or unloaded then return end
+        local quiet=second_quiet(now,504)
+        if generation~=version or cancelled or unloaded then return end
+        if not quiet then
+            if phase~="blocked" then detail="Release controls and settle on acknowledged504 before the new full terrain survey." end
+            return
+        end
+        local clear=preflight_clear()
+        if generation~=version or cancelled or unloaded then return end
+        if not clear then fail("Second preflight owner or acknowledged504 proof lost; no retry.");return end
+        local checked=clock()
+        if not checked or generation~=version or cancelled or unloaded then return end
+        if checked<second_admitted_at or checked-second_admitted_at>=60000 then
+            fail("Original second Mount admission deadline expired; no terrain retry.");return
+        end
+        second_terrain_pending=false -- no Y, archive or admission callback here
+        prep_step(checked)
     end
     local function step_off(now)
         local version=generation
@@ -546,9 +586,14 @@ function Entry.new(R,Runtime,Survey,options)
             if current~=504 then fail("Preflight retry requires on-foot504; no retry.");return false,detail end
             local now=clock()
             if not now or generation~=version or cancelled or unloaded then return false,detail end
-            -- A new explicit terrain survey gets the original prepare bounds.
-            -- Neither the reserved attempt nor any lifecycle/native state is reset.
+            if attempts_used==2 and (not second_admitted_at or now<second_admitted_at or now-second_admitted_at>=60000) then
+                fail("Original second Mount admission deadline expired; no terrain retry.");return false,detail
+            end
+            -- Keep the reserved attempt and its original second-intent deadline.
+            -- Only a NEW survey/preparation is allowed; no old-owner Y repeats.
             generation+=1;prep_at=now;prep_last=nil;prep_calls=0;survey=nil
+            second_terrain_pending=attempts_used==2
+            if second_terrain_pending then reset_second_quiet() end
             phase,detail="preparing","Retrying terrain preflight; stay on foot and still. Prior refusals remain recorded."
             return true
         end
@@ -681,7 +726,7 @@ function Entry.new(R,Runtime,Survey,options)
         if return_position and return_position.queued and not return_position.observed then
             return_position.unknown=true;return_position.phase="interrupted"
         end
-        cancelled=true;return_pending=false;second_prepare_pending=false;recover_pending=false;generation+=1
+        cancelled=true;return_pending=false;second_prepare_pending=false;second_terrain_pending=false;recover_pending=false;generation+=1
         phase,detail="cancelled","Cancelled. The lifecycle continues cleanup; this session cannot remount."
         stop_once("explicit playable cancel",true)
         return true
@@ -709,8 +754,12 @@ function Entry.new(R,Runtime,Survey,options)
             elseif phase=="stepping_off" or phase=="preparing" or phase=="surveying" or phase=="awaiting_mount" then
                 local now=clock()
                 if now then
+                    if attempts_used==2 and (not second_admitted_at or now<second_admitted_at or now-second_admitted_at>=60000) then
+                        fail("Original second Mount admission deadline expired; no new survey or mount.");return
+                    end
                     if phase=="stepping_off" then step_off(now)
-                    elseif phase=="preparing" then prep_step(now)
+                    elseif phase=="preparing" then
+                        if second_terrain_pending then second_terrain_step(now) else prep_step(now) end
                     elseif phase=="surveying" then
                         local version=generation
                         if environment(true) and generation==version and not cancelled and not unloaded and phase=="surveying" then survey_step(now) end
@@ -766,7 +815,7 @@ function Entry.new(R,Runtime,Survey,options)
         if return_position and return_position.queued and not return_position.observed then
             return_position.unknown=true;return_position.phase="interrupted"
         end
-        unloaded=true;cancelled=true;return_pending=false;second_prepare_pending=false;recover_pending=false;generation+=1
+        unloaded=true;cancelled=true;return_pending=false;second_prepare_pending=false;second_terrain_pending=false;recover_pending=false;generation+=1
         local out=call(owner.unload,owner)
         if out[1] and out.n==2 and plain(out[2]) then latest=out[2];known=true else known=false end
         phase,detail="unloaded","Unloaded; native cleanup remains with the lifecycle and SDK."

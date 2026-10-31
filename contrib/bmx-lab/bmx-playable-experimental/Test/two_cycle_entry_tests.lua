@@ -50,11 +50,16 @@ function Tests.run()
         function R.world.probe(from,to)
             f.probes+=1;f.probe_tick+=1;f.probe_peak=math.max(f.probe_peak,f.probe_tick)
             if f.on_probe then f.on_probe(from,to) end
-            if from.y-to.y>1 then return {status="hit",position=vector.create(from.x,math.tan(math.rad(f.slope))*from.x,from.z)} end
+            if from.y-to.y>1 then
+                local y=math.tan(math.rad(f.slope))*from.x
+                if f.rough and from.x>f.position.x then y+=.02 end
+                return {status="hit",position=vector.create(from.x,y,from.z)}
+            end
             if f.obstacle then return {status=f.obstacle,position=vector.create(to.x,to.y,to.z)} end
             return {status="clear"}
         end
         local owner={}
+        function owner:status() if f.on_status then f.on_status() end;return copy(f.latest) end
         function owner:step(dt)
             f.steps+=1;f.events[#f.events+1]="step"
             if f.step_raise then error("constructed step failure") end
@@ -108,8 +113,17 @@ function Tests.run()
             if f.on_ready504 then return f.on_ready504() end
             return false,"pending"
         end
+        function owner:playable_grade_policy()return options.playable and Survey.PLAYABLE_GRADE_POLICY or nil end
+        function owner:second_preflight_ready(admitted_at_ms)
+            f.preflight_proofs=(f.preflight_proofs or 0)+1
+            if f.on_preflight_proof then return f.on_preflight_proof(admitted_at_ms) end
+            if f.stepoffs~=1 or f.mounts~=1 or admitted_at_ms~=f.second_admitted_at or f.stock~=504 then
+                return false,"No current unrequested second intent"
+            end
+            return self:next_mount_ready()
+        end
         f.R=R;f.owner=owner
-        f.entry=Entry.new(R,Runtime,Survey,{admitted=options.admitted~=false,slot=0,experimental_two_cycle=options.two==true})
+        f.entry=Entry.new(R,Runtime,Survey,{admitted=options.admitted~=false,slot=0,experimental_two_cycle=options.two==true,session_renewable=options.playable==true})
         function f.tick(count)
             for _=1,count or 1 do f.now+=16;f.probe_tick=0;f.entry:step(16) end
         end
@@ -137,6 +151,26 @@ function Tests.run()
         check(f.entry:return_to_skateboard(),"explicit first Return accepted")
         f.latest=cleaned();f.stock=100;f.tick()
         check(f.entry:status().phase=="skateboard","first actual supplied100 closes Return")
+    end
+    local function await_terrain(f)
+        for _=1,220 do
+            f.tick();local s=f.entry:status()
+            if s.phase=="preflight_refused" or s.phase=="blocked" or s.mount_requested then return s end
+        end
+        error("bounded constructed survey did not finish")
+    end
+    local function second_terrain(f)
+        first_return(f);f.rough=true
+        check(f.entry:mount(),"one original second intent")
+        f.await_stepoff();check(f.stepoffs==1,"one consumed old-owner step-off")
+        f.latest=cleaned();f.stock=504;f.on_ready504=function()return true,2 end
+        f.tick();check(f.entry:status().phase=="preparing","NEW504 ACK precedes survey")
+        local s=await_terrain(f)
+        check(s.phase=="preflight_refused" and s.attempts_used==2 and f.mounts==1,
+            "terrain-only second refusal retains charged intent before new native request")
+        check(s.terrain_refusal_count==1 and s.terrain_refusals[1].residual_mm>3,
+            "actual full constructed footprint is over unchanged3mm")
+        return s
     end
     case("two-cycle completes two explicit cycles and spends third",function()
         local f=fixture({two=true});first_return(f)
@@ -442,6 +476,107 @@ function Tests.run()
         g.latest=cleaned();g.on_stock=function()return false,"constructed stock refusal" end;g.tick(5)
         check(g.entry:status().phase=="blocked" and not g.entry:status().recovery_pending
             and g.toggles==1 and g.mounts==1,"stock refusal is not retried or converted into a Mount")
+    end)
+    case("second terrain retry keeps intent and step-off then repeats full survey",function()
+        local f=fixture({two=true,playable=true});second_terrain(f)
+        local admitted=f.second_admitted_at;local probes,prepares=f.probes,f.prepares
+        local held=true;f.on_pad=function(p) p.buttons.lb=held;p.buttons.a=held;return p end
+        f.rough=false;f.position=vector.create(4,.5,0)
+        check(f.entry:mount(),"explicit terrain retry accepted on existing second intent")
+        f.tick(45)
+        check(f.probes==probes and f.prepares==prepares and f.mounts==1 and f.stepoffs==1,
+            "held retry chord delays all preparation and never repeats Y")
+        held=false;f.tick(38)
+        check(f.probes==probes and f.mounts==1,"less than600ms neutral cannot start a new survey")
+        f.await_mount()
+        check(f.mounts==2 and f.stepoffs==1 and f.new_calls==1 and f.second_admitted_at==admitted,
+            "one fresh owner request after the same intent, no replacement manager or step-off")
+        local counts=Survey.survey_counts()
+        check(counts.floor==180 and counts.obstacle==1080 and counts.obstacle_ticks==35
+            and counts.probes==1295 and Survey.SURVEY_RAYS_PER_TICK==32,
+            "unchanged180floor+1080obstacle+35check rays and32ray per-tick policy")
+        check(f.probes-probes==counts.probes,
+            string.format("fresh complete survey probe count: got%d expected%d",f.probes-probes,counts.probes))
+        check(f.probe_peak<=Survey.SURVEY_RAYS_PER_TICK,
+            string.format("original per-tick probe budget: got%d limit%d",f.probe_peak,Survey.SURVEY_RAYS_PER_TICK))
+        check(f.entry:status().attempts_used==2 and f.entry:status().terrain_refusal_count==1,
+            "attempt and retained numeric history never refunded")
+        check(not f.entry:mount(),"a native request permanently closes this retry seam")
+    end)
+    case("second terrain proof loss is sticky and never repeats native work",function()
+        for _,kind in {"cleanup","ack","missingproof","state","pad"} do
+            local f=fixture({two=true,playable=true});second_terrain(f)
+            local probes,prepares=f.probes,f.prepares;f.rough=false
+            if kind=="cleanup" then f.latest.cleanup_unknown=true
+            elseif kind=="ack" then f.on_preflight_proof=function()return false,"newACK lost" end
+            elseif kind=="missingproof" then f.owner.second_preflight_ready=nil
+            elseif kind=="state" then f.stock=100
+            else f.on_pad=function()return nil end end
+            local accepted=f.entry:mount()
+            if kind=="pad" then check(accepted,"pending retry before malformed new pad read");f.tick()
+            else check(not accepted,"exact prior proof required before retry") end
+            check(f.entry:status().phase=="blocked" and not f.entry:mount(),"proof loss cannot become another terrain retry")
+            check(f.mounts==1 and f.stepoffs==1 and f.probes==probes and f.prepares==prepares,
+                "no body request, Y or survey after unknown proof")
+        end
+    end)
+    case("second terrain retry never resets original60second deadline",function()
+        local f=fixture({two=true,playable=true});second_terrain(f)
+        local probes,prepares=f.probes,f.prepares
+        f.now=f.second_admitted_at+60000
+        check(not f.entry:mount() and f.entry:status().phase=="blocked","expired original intent refuses explicit retry")
+        check(f.mounts==1 and f.stepoffs==1 and f.probes==probes and f.prepares==prepares,"expiry admits no native or survey work")
+        local g=fixture({two=true,playable=true});second_terrain(g);g.rough=false
+        local original=g.second_admitted_at;check(g.entry:mount(),"one pending terrain retry")
+        g.on_pad=function(p)p.buttons.a=true;return p end;g.now=original+60000;g.tick()
+        check(g.entry:status().phase=="blocked" and g.second_admitted_at==original and g.mounts==1 and g.stepoffs==1,
+            "held controls cannot turn retry time into a fresh arm window")
+    end)
+    case("shared eight terrain refusals never allocate or evict",function()
+        local f=fixture({two=true,playable=true});second_terrain(f)
+        for count=2,8 do
+            check(f.entry:mount(),"explicit bounded terrain retry")
+            local s=await_terrain(f)
+            check(s.terrain_refusal_count==count,"same existing refusal history appends")
+            check(f.mounts==1 and f.stepoffs==1 and f.new_calls==1,"terrain refusals cannot create new owners or repeat stock")
+        end
+        local s=f.entry:status()
+        check(s.phase=="blocked" and #s.terrain_refusals==8 and s.terrain_refusals[1].index==1,
+            "eighth refusal is sticky without dropping the first")
+        check(not f.entry:mount(),"no ninth terrain attempt")
+    end)
+    case("second obstacle or native refusal never gains terrain retry",function()
+        local f=fixture({two=true,playable=true});first_return(f)
+        check(f.entry:mount(),"second intent before unknown obstacle result");f.await_stepoff()
+        f.latest=cleaned();f.stock=504;f.on_ready504=function()return true,2 end;f.obstacle="unavailable"
+        local s=await_terrain(f)
+        check(s.phase=="blocked" and s.terrain_refusal_count==0 and not f.entry:mount(),"unknown query is not a terrain-only refusal")
+        check(f.mounts==1 and f.stepoffs==1,"unknown query never sends new allocation or Y")
+        local g=fixture({two=true,playable=true});second_terrain(g);g.rough=false
+        g.on_mount=function()return false,"constructed native refusal" end
+        check(g.entry:mount(),"one resurvey intent before native refusal")
+        g.await_mount();g.tick()
+        check(g.entry:status().phase=="blocked" and g.mounts==2 and g.stepoffs==1 and not g.entry:mount(),
+            "native-request refusal stays spent even after successful terrain retry")
+    end)
+    case("terrain proof callback cancellation keeps its terminal phase",function()
+        for _,operation in {"cancel","unload"} do
+            local f=fixture({two=true,playable=true});second_terrain(f);f.rough=false
+            check(f.entry:mount(),"one terrain retry before later proof callback cancellation")
+            local stopped=f.stops
+            f.on_preflight_proof=function()
+                f.entry[operation](f.entry)
+                return false,"cancelled during private proof"
+            end
+            for _=1,80 do
+                f.tick();local phase=f.entry:status().phase
+                if phase=="cancelled" or phase=="unloaded" or phase=="blocked" then break end
+            end
+            check(f.entry:status().phase==(operation=="cancel" and "cancelled" or "unloaded"),
+                "reentrant cancellation is checked before a false proof can replace its phase")
+            check(f.stops==stopped+(operation=="cancel" and 1 or 0),"no extra stop callback after cancelled/unloaded proof")
+            check(f.mounts==1 and f.stepoffs==1 and not f.entry:mount(),"no allocation/Y or retry after cancellation")
+        end
     end)
     return {cases=cases,assertions=assertions,constructed=true,native_authority=false,gameplay=false}
 end

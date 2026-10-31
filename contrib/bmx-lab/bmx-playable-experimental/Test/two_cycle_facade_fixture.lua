@@ -29,7 +29,7 @@ local function new_runtime(services,options,two_cycle)
         remove_attempted={},remove_accepted={},experimental_attempt_limit=two_cycle and 2 or nil}
     local object={}
     local core,api,pending,running,cancelling
-    local session_owner,mounts_burned,next_preparation= nil,0,false
+    local session_owner,mounts_burned,next_preparation,next_admitted_at= nil,0,false,nil
     local loaded={}
     local function status()
         if core then return core:status() end
@@ -106,16 +106,17 @@ local function new_runtime(services,options,two_cycle)
         local observed=clear and ok and (kind=="stock" or now) and api.facts() or nil
         if now then now=api.clock() end
         local ready=Admission.ready(observed) -- Pure policy; no additional SDK observation.
+        local arm_at=kind=="mount" and two_cycle and T.experimental_session==2 and next_admitted_at or now
         local accepted=clear and ok and generation==T.generation and not T.unloaded and not T.storage_fault
-            and not T.clock_unknown and ready and now~=nil
+            and not T.clock_unknown and ready and now~=nil and finite(arm_at) and arm_at<=now and now-arm_at<60000
         T.startup_admission={kind=kind,clear=clear==true,api_available=ok==true,missing_api=missing,
             clock_present=now~=nil,generation_match=generation==T.generation,unloaded=T.unloaded==true,
             storage_fault=T.storage_fault==true,clock_unknown=T.clock_unknown==true,ready=ready==true,
             facts_present=observed~=nil,accepted=accepted==true,facts=observed,fact_read=T.startup_fact_read}
         if accepted then
-            T.admitted_facts=observed;T.startup_admitted_at=now
+            T.admitted_facts=observed;T.startup_admitted_at=arm_at
             if kind=="mount" then
-                T.arm_at=now;T.level=observed.level;T.wipeouts=observed.wipeouts
+                T.arm_at=arm_at;T.level=observed.level;T.wipeouts=observed.wipeouts
                 T.initial_facts=observed;T.facts=observed
                 accepted=api.persist() and generation==T.generation and not T.unloaded
             end
@@ -150,6 +151,12 @@ local function new_runtime(services,options,two_cycle)
         if core and T.backend_ready and not pending then
             if running then cancel("reentrant mount request");return false,"Bike lifecycle operation already in progress" end
             if two_cycle and mounts_burned==1 and next_preparation and session_owner then
+                local version=T.generation
+                local now=next_admitted_at~=nil and api.clock() or nil
+                if T.unloaded or T.startup_closed or T.generation~=version or not next_preparation or
+                    next_admitted_at~=nil and (not now or now<next_admitted_at or now-next_admitted_at>=60000) then
+                    T.startup_closed=true;return false,"Original second Mount admission expired or changed"
+                end
                 running=true
                 local next_state={phase="idle",detail="Second bounded fresh-allocation session.",generation=0,cancel_version=0,
                     calls={},counts={},receipts={},omitted_calls=0,omitted_receipts=0,remove_attempted={},remove_accepted={},
@@ -184,7 +191,7 @@ local function new_runtime(services,options,two_cycle)
         end
         -- Intent two is spent before archive/stock callbacks. Any failure closes
         -- it permanently; no fresh facade or reset can recover this admission.
-        next_preparation=true;running=true
+        next_preparation=true;next_admitted_at=admitted_at_ms;running=true
         local ok,why=session_owner:archive_return()
         if not ok then T.startup_closed=true;running=false;return false,why end
         local previous=T.gear_admission_at
@@ -205,6 +212,37 @@ local function new_runtime(services,options,two_cycle)
         running=false
         if not ok and why~="pending" then T.startup_closed=true end
         return ok,why
+    end
+    function object:second_preflight_ready(admitted_at_ms)
+        if not two_cycle or not qualification_only or running or pending or T.unloaded or T.startup_closed
+            or mounts_burned~=1 or not next_preparation or not session_owner or not core or not api
+            or not finite(next_admitted_at) or admitted_at_ms~=next_admitted_at then
+            return false,"No unrequested second terrain preflight remains"
+        end
+        local version=T.generation
+        running=true
+        local out=table.pack(pcall(function()
+            local now=api.clock()
+            if not now or now<next_admitted_at or now-next_admitted_at>=60000 then
+                return false,"Original second Mount admission expired"
+            end
+            -- ready() retains full old body/Follow/Source/pose/board cleanup,
+            -- NEW504 terminal ACK and fresh same-context readiness predicates.
+            local ok,why=session_owner:ready()
+            if not ok then return false,why end
+            local after=api.clock()
+            if T.generation~=version or T.unloaded or T.startup_closed or pending or mounts_burned~=1 or not next_preparation
+                or not after or after<next_admitted_at or after-next_admitted_at>=60000 then
+                return false,"Second terrain preflight changed or expired"
+            end
+            return true,why
+        end))
+        running=false
+        if not out[1] or out.n~=3 or out[2]~=true or not finite(out[3]) or out[3]%1~=0 or out[3]<2 then
+            if not out[1] or out[3]~="pending" then T.startup_closed=true end
+            return false,out[1] and out[3] or "Second terrain proof raised; no retry"
+        end
+        return true,out[3]
     end
     function object:request_stock_toggle(slot)
         if core and not pending then

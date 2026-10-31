@@ -6,8 +6,8 @@ function Tests.run()
     local cases,assertions=0,0
     local function check(ok,why) assertions+=1;assert(ok,why) end
     local function case(name,fn) cases+=1;local ok,why=pcall(fn);assert(ok,name..": "..tostring(why)) end
-    local function setup()
-        local f={new_calls=0,callbacks={},buttons={},mounts=0,returns=0,recovers=0,cancels=0,steps=0,unloads=0,status_reads=0,requires={},binds={},notes={}}
+    local function setup(score_view)
+        local f={new_calls=0,callbacks={},buttons={},mounts=0,returns=0,recovers=0,cancels=0,steps=0,unloads=0,status_reads=0,score_reads=0,requires={},binds={},notes={}}
         local Runtime,Survey={},{}
         local controller={}
         function controller:mount() f.mounts+=1;return false,"closed" end
@@ -22,7 +22,11 @@ function Tests.run()
         function controller:cancel() f.cancels+=1;return true end
         function controller:step(dt) f.steps+=1;f.last_dt=dt end
         function controller:unload() f.unloads+=1 end
-        function controller:score_view() return nil,"ride_unavailable","unavailable" end
+        function controller:score_view()
+            f.score_reads+=1
+            if score_view==nil then return nil,"ride_unavailable","unavailable" end
+            return score_view,"none","unavailable"
+        end
         function controller:status()
             f.status_reads+=1
             if f.report then return f.report end
@@ -184,6 +188,39 @@ function Tests.run()
         f.callbacks.unload()
         check(f.unloads==1 and f.new_calls==1 and f.mounts==3 and f.returns==0 and f.cancels==0 and #f.binds==5,
             "unload uses the existing Entry and SDK binding cleanup without an alternate lifecycle")
+    end)
+    case("score HUD draws six cached lines above stock hints at the observed resolution",function()
+        local score={scope="authored_mod_score_only",calibration="C0_UNRUN",native_score=false,
+            active=true,stopped=false,issue="none",pending_score=120,eligible_pending_score=0,
+            banked_total=400,best_combo=250,tricks=2,multiplier=2,combo_factor=1.2,
+            rows={{name="Barspin"},{name="Tailwhip"}}}
+        local f=setup(score)
+        local expected=ScoreHUD.lines(score,"none","unavailable")
+        local draw={calls={},sizes=0}
+        function draw:size() self.sizes+=1;return vector.create(2560,1440,0) end
+        function draw:text(position,text,style)
+            self.calls[#self.calls+1]={position=position,text=text,style=style}
+        end
+        f.callbacks.draw(draw)
+        check(#draw.calls==0 and draw.sizes==0 and f.steps==0 and f.score_reads==0,
+            "draw before a tick has no score cache or lifecycle work")
+        f.callbacks.tick(16)
+        check(f.steps==1 and f.last_dt==16 and f.score_reads==1,"only tick refreshes the cached score view")
+        f.callbacks.draw(draw)
+        check(draw.sizes==1 and #draw.calls==6,"one size read and the same six bounded text calls")
+        for i=1,6 do
+            local call=draw.calls[i]
+            check(call.position.x==48 and call.position.y==48+(i-1)*32 and call.position.z==0,
+                "score row "..i.." uses the upper-left scaled position")
+            check(call.text==expected[i] and call.style==(i==1 and ScoreHUD.header_style or ScoreHUD.row_style),
+                "moving row "..i.." preserves the exact authored score text and style")
+        end
+        check(f.score_reads==1 and f.status_reads==0 and f.steps==1 and #f.notes==0
+            and f.mounts==0 and f.returns==0 and f.recovers==0 and f.cancels==0,
+            "drawing reads only cached text and never opens menus or drives lifecycle actions")
+        f.callbacks.unload();f.callbacks.draw(draw)
+        check(f.unloads==1 and #draw.calls==6 and draw.sizes==1 and f.score_reads==1,
+            "unload clears the display cache without any late draw or score read")
     end)
     return {cases=cases,assertions=assertions,game_evidence=false,native_actions=0}
 end

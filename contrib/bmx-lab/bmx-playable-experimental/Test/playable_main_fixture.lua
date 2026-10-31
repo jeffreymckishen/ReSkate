@@ -24,7 +24,7 @@ local function draw_score_lines(d)
     local limit=math.clamp(math.floor((width/scale-72)/20),16,ScoreHUD.MAX_TEXT)
     for i=1,math.min(#score_lines,ScoreHUD.MAX_LINES) do
         local text=ScoreHUD.fit(score_lines[i],limit)
-        d:text(vector.create(36*scale,height-(176-(i-1)*24)*scale,0),text,
+        d:text(vector.create(36*scale,(36+(i-1)*24)*scale,0),text,
             i==1 and ScoreHUD.header_style or ScoreHUD.row_style)
     end
 end

@@ -207,9 +207,18 @@ local function reject(why)
 end
 -- Catch facts name an adopted, completed re-grip prediction only. A queue is not proof
 -- of native application, physical catch, landing, or progression.
-local function authored_events(before_bar,before_tail,chosen,accepted_sequence)
+local function authored_events(before_bar,before_tail,before_hand,chosen,accepted_sequence)
+    local after_hand=chosen.hand_state
+    -- A released hand is not a completed pose. Require the full authored
+    -- entry, then its accepted neutral recovery, all before measured recontact.
+    local hand_complete=before_bar.airborne and chosen.state.airborne
+        and before_hand.active and before_hand.recovering and before_hand.progress==1
+        and before_hand.recover_elapsed<ONE_HAND.recover_seconds
+        and not after_hand.active and not after_hand.recovering and after_hand.progress==1
+        and after_hand.recover_elapsed+1e-9>=ONE_HAND.recover_seconds
+        and after_hand.phase==0 and after_hand.release==0
     if not (before_bar.caught and before_bar.blend_remaining>0
-        or before_tail.caught and before_tail.blend_remaining>0) then return nil end
+        or before_tail.caught and before_tail.blend_remaining>0 or hand_complete) then return nil end
     local rows={}
     local function caught(channel,before,after)
         if before.airborne and after.airborne and before.caught and before.blend_remaining>0
@@ -224,6 +233,14 @@ local function authored_events(before_bar,before_tail,chosen,accepted_sequence)
     end
     caught("barspin",before_bar,chosen.state)
     caught("tailwhip",before_tail,chosen.tail_state)
+    if hand_complete then
+        rows[#rows+1]=table.freeze({kind="authored_pose_recovery",scope="mod_authored_accepted_step",
+            channel="one_hander",movement_id=ONE_HAND.id,side="left",body_serial=chosen.frame.serial,
+            accepted_sequence=accepted_sequence,source_observation_serial=chosen.action.observation_serial,
+            catch_phase="regrip_complete",authored_completion=true,
+            prediction_only=true,native_application="unobserved",native_application_observed=false,
+            native_catch=false,native_landing=false,landing_quality_available=false,completion_qualified=false})
+    end
     return #rows>0 and table.freeze(rows) or nil
 end
 function Runtime.new()
@@ -302,7 +319,7 @@ function Runtime.new()
         -- Root alone calls this after exact native admission and force-history
         -- adoption. This local sequence check is not a native receipt itself.
         local chosen=draft
-        local events=authored_events(state,tail_state,chosen,accepted_sequence)
+        local events=authored_events(state,tail_state,hand_state,chosen,accepted_sequence)
         state,tail_state,hand_state,accepted,consumed,sequence=chosen.state,chosen.tail_state,chosen.hand_state,chosen.frame,chosen.action.observation_serial,accepted_sequence
         air_started=chosen.air_started;revision+=1;draft=nil
         local receipt={valid=true,scope="predictive_accepted_ray_barspin_only",realized=false,

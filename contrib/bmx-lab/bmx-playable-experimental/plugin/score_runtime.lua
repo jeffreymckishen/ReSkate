@@ -55,6 +55,17 @@ local function totals(rows,confirmed_only)
     local multiplier=math.min(4,1+.5*unique)
     return points,sat(points*combo*multiplier),n,multiplier,combo
 end
+-- Preserve authored labels and exact command identities, not labels inferred
+-- from point totals. Each snapshot is detached from later confirmation/clear.
+local function row_snapshot(rows)
+    local out={}
+    for i=math.max(1,#rows-3),#rows do
+        local r=rows[i]
+        out[#out+1]=table.freeze({name=r.name,channel=r.channel,body_serial=r.serial,
+            accepted_sequence=r.sequence,state=r.confirmed and "force_applied_observed" or "prediction_only"})
+    end
+    return table.freeze(out)
+end
 function Score.new()
     local rows,owner,last_sequence,last_serial,last_landing={},nil,nil,nil,nil
     local stopped,issue=false,"none"
@@ -64,7 +75,7 @@ function Score.new()
         local points,_,n=totals(rows,false)
         if n>0 then
             last_closed=table.freeze({outcome="lost",reason=reason,score=0,points=points,tricks=n,
-                authored=true,native_score=false,native_landing=false})
+                rows=row_snapshot(rows),authored=true,native_score=false,native_landing=false})
         end
         rows={};issue=reason;stopped=stopped or terminal==true
         return false,reason
@@ -211,7 +222,7 @@ function Score.new()
         banked=sat(banked+score);best=math.max(best,score);landed=sat(landed+1)
         last_closed=table.freeze({outcome="landed",reason="qualified_measured_mod_landing",score=score,
             points=points,tricks=n,multiplier=multiplier,combo_factor=combo,
-            authored=true,native_score=false,native_landing=false})
+            rows=row_snapshot(rows),authored=true,native_score=false,native_landing=false})
         rows={};last_landing=f.serial;issue="none"
         return true,last_closed
     end
@@ -224,16 +235,11 @@ function Score.new()
     function object:view()
         local points,score,n,multiplier,combo=totals(rows,false)
         local _,eligible,confirmed=totals(rows,true)
-        local display={}
-        for i=math.max(1,#rows-3),#rows do
-            local r=rows[i]
-            display[#display+1]=table.freeze({name=r.name,channel=r.channel,body_serial=r.serial,
-                accepted_sequence=r.sequence,state=r.confirmed and "force_applied_observed" or "prediction_only"})
-        end
+        local display=row_snapshot(rows)
         return table.freeze({scope="authored_mod_score_only",calibration="C0_UNRUN",native_score=false,
             active=n>0,pending_points=points,pending_score=score,eligible_pending_score=eligible,
             tricks=n,observed_command_tricks=confirmed,multiplier=multiplier,combo_factor=combo,
-            rows=table.freeze(display),banked_total=banked,best_combo=best,landed_combos=landed,
+            rows=display,banked_total=banked,best_combo=best,landed_combos=landed,
             last_closed=last_closed,stopped=stopped,issue=issue})
     end
     object.status=object.view

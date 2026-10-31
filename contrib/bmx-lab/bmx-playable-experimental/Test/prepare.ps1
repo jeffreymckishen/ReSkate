@@ -20,7 +20,7 @@ Assert-PlainPath $Package
 Assert-PlainPath $TestRoot
 $manifestPath=Join-Path $PSScriptRoot 'two_cycle_tests.json'
 Assert-PlainPath $manifestPath
-if((Get-FileHash -LiteralPath $manifestPath).Hash -cne 'FA3E014A4956A537007CAD4F647445465FCD73F66D4F04AE0536A3B06904EDB9'){throw 'Exact matrix manifest changed'}
+if((Get-FileHash -LiteralPath $manifestPath).Hash -cne '1265CBF21AEF1B8478BBBCC1479AED9729FE9D0ECFC7619CDE845EAED9A1EF85'){throw 'Exact matrix manifest changed'}
 $plan=Get-Content -LiteralPath $manifestPath -Raw|ConvertFrom-Json
 if($plan.schema -ne 1 -or $plan.flat_file_count -ne 83 -or $plan.quota_file_count -ne 84 -or
     @($plan.files).Count -ne 83 -or @($plan.runtime_files).Count -ne 36 -or @($plan.suites).Count -ne 42){throw 'Unexpected matrix shape'}

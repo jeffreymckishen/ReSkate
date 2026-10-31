@@ -37,6 +37,34 @@ local function valid(view)
         and number(rawget(view,"combo_factor"),1,2,false)
         and plain(rawget(view,"rows"))
 end
+-- Closed rows retain original authored metadata. These bounded format checks
+-- do not turn their names into evidence of native catches, landings or points.
+local function serial(v)
+    return type(v)=="string" and #v>0 and #v<=20 and string.match(v,"^[1-9][0-9]*$")~=nil
+        and (#v<20 or v<="18446744073709551615")
+end
+local function closed_names(closed,rows)
+    if not plain(rows) or not number(rawget(closed,"tricks"),0,16,true) then return nil end
+    local count,highest=0,0
+    for key in next,rows do
+        count+=1
+        if count>4 or not number(key,1,4,true) then return nil end
+        highest=math.max(highest,key)
+    end
+    if highest~=count or count>rawget(closed,"tricks") then return nil end
+    local names={}
+    for i=1,count do
+        local row=rawget(rows,i)
+        if not plain(row) then return nil end
+        local name,channel,state=rawget(row,"name"),rawget(row,"channel"),rawget(row,"state")
+        if type(name)~="string" or #name==0 or #name>80
+            or (channel~="barspin" and channel~="tailwhip" and channel~="one_hander")
+            or (state~="prediction_only" and state~="force_applied_observed")
+            or not serial(rawget(row,"body_serial")) or not serial(rawget(row,"accepted_sequence")) then return nil end
+        names[i]=label(name,20,"Trick")
+    end
+    return names
+end
 function HUD.lines(view,issue,landing_phase)
     -- An absent Ride is hidden. A real Ride with unavailable scoring is visible
     -- as unavailable, never as an invented zero-point or landed result.
@@ -49,6 +77,17 @@ function HUD.lines(view,issue,landing_phase)
         if row==nil then break end
         if not plain(row) then return unavailable("unqualified trick row",landing_phase) end
         names[#names+1]=label(rawget(row,"name"),20,"Trick")
+    end
+    local trick_line="Tricks: "..(#names>0 and table.concat(names," + ") or "none")
+    local closed=rawget(view,"last_closed")
+    if not rawget(view,"active") and plain(closed) and rawget(closed,"authored")==true
+        and rawget(closed,"native_score")==false and rawget(closed,"native_landing")==false then
+        local outcome,closed_rows=rawget(closed,"outcome"),rawget(closed,"rows")
+        if (outcome=="landed" or outcome=="lost") and closed_rows~=nil then
+            local history=closed_names(closed,closed_rows)
+            trick_line=(outcome=="landed" and "Last landed: " or "Last lost: ")
+                ..(history and (#history>0 and table.concat(history," + ") or "none") or "unavailable")
+        end
     end
     local state="READY"
     if rawget(view,"stopped") then state="STOPPED: "..label(rawget(view,"issue"),30,"unknown")
@@ -64,7 +103,7 @@ function HUD.lines(view,issue,landing_phase)
     return lines({HEADER,
         string.format("Pending %.0f | %.0f tricks | x%.2f / combo x%.2f",
             view.pending_score,view.tricks,view.multiplier,view.combo_factor),
-        "Tricks: "..(#names>0 and table.concat(names," + ") or "none"),
+        trick_line,
         string.format("Observed-force candidate %.0f | UNBANKED",view.eligible_pending_score),
         string.format("Qualified local bank %.0f | best %.0f",view.banked_total,view.best_combo),
         "Landing: "..label(landing_phase,20,"unavailable").." | "..state})

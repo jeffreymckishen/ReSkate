@@ -166,6 +166,64 @@ function Tests.run()
         check(not ok and why=="event_capacity","no silent row drop or capacity widening")
         v=f.score:view()
         check(v.stopped and not v.active and v.banked_total==0 and v.last_closed.tricks==16,"all unbanked work remains lost")
+        local kept=v.last_closed.rows
+        check(#kept==4 and kept[1].accepted_sequence=="7" and kept[2].accepted_sequence=="7"
+            and kept[3].accepted_sequence=="8" and kept[4].accepted_sequence=="8"
+            and kept[1].name=="Barspin" and kept[2].name=="Tailwhip"
+            and kept[3].name=="Barspin" and kept[4].name=="Tailwhip"
+            and kept[1].state=="prediction_only" and kept[4].state=="prediction_only",
+            "loss retains only the last four original rows without changing total16 or promoting unconfirmed commands")
+    end)
+    case("landed labels keep original order and last four detached command states",function()
+        local f=fixture();local live
+        local channels={"barspin","tailwhip","barspin","tailwhip","barspin"}
+        for i,channel in ipairs(channels) do
+            local at=(i-1)*4;local frame=f:at(at);local p=f:presentation(frame,tostring(i),{channel})
+            check(f.score:queue(frame,p),"one original authored occurrence")
+            if i==5 then live=f.score:view().rows end
+            p.authored_events[1].channel=channel=="barspin" and "tailwhip" or "barspin"
+            check(f.score:observe(f:at(at+2),f:receipt(at,tostring(i))),"matching actual constructed application")
+        end
+        local land=f:at(22);local ok,closed=f.score:land(land,f:quality(land))
+        check(ok and closed.outcome=="landed" and closed.tricks==5 and #closed.rows==4,"five total tricks retain only four original labels")
+        local names={"Tailwhip","Barspin","Tailwhip","Barspin"}
+        local channel_names={"tailwhip","barspin","tailwhip","barspin"}
+        for i,r in ipairs(closed.rows) do
+            check(r.name==names[i] and r.channel==channel_names[i]
+                and r.body_serial==tostring(100+i*4) and r.accepted_sequence==tostring(i+1)
+                and r.state=="force_applied_observed","kept rows2..5 remain in original occurrence order")
+        end
+        check(live[4].state=="prediction_only" and closed.rows[4].state=="force_applied_observed",
+            "earlier pending snapshot is not mutated by later confirmation")
+        check(not rawequal(live,closed.rows) and not rawequal(live[1],closed.rows[1]),"closed array and rows are detached snapshots")
+        check(table.isfrozen(closed.rows) and table.isfrozen(closed.rows[1]),"dense closed rows and members are frozen")
+        check(not pcall(function() closed.rows[1].name="forged" end),"caller cannot rewrite a retained authored label")
+        check(not pcall(function() table.insert(closed.rows,closed.rows[1]) end),"caller cannot grow the closed history")
+        local banked=f.score:view().banked_total
+        f.score:cancel("later empty owner stop")
+        check(f.score:view().last_closed==closed and f.score:view().banked_total==banked,"empty stop preserves the closed names and existing bank")
+    end)
+    case("lost labels retain confirmed and unconfirmed states without promoting either",function()
+        local f=fixture();local first=f:at(0)
+        check(f.score:queue(first,f:presentation(first,"1")),"first authored row")
+        check(f.score:observe(f:at(2),f:receipt(0,"1")),"only first command confirmed")
+        local second=f:at(4);local p=f:presentation(second,"2",{"tailwhip"})
+        check(f.score:queue(second,p),"second command remains unconfirmed")
+        p.authored_events[1].channel="barspin"
+        check(f.score:cancel("bail"),"terminal loss")
+        local view=f.score:view();local closed=view.last_closed
+        check(closed.outcome=="lost" and closed.score==0 and closed.tricks==2 and #closed.rows==2 and view.banked_total==0,
+            "lost labels add no banked points")
+        check(closed.rows[1].name=="Barspin" and closed.rows[1].body_serial=="100"
+            and closed.rows[1].accepted_sequence=="1" and closed.rows[1].state=="force_applied_observed",
+            "first row keeps only its command-observation fact")
+        check(closed.rows[2].name=="Tailwhip" and closed.rows[2].channel=="tailwhip"
+            and closed.rows[2].body_serial=="104" and closed.rows[2].accepted_sequence=="2"
+            and closed.rows[2].state=="prediction_only","unconfirmed original second row never becomes an observed catch")
+        check(closed.authored and not closed.native_score and not closed.native_landing,"closed provenance stays local authored")
+        check(not pcall(function() closed.rows[2].state="force_applied_observed" end),"caller cannot promote lost command evidence")
+        check(not f.score:observe(f:at(6),f:receipt(4,"2")) and f.score:view().last_closed.rows[2].state=="prediction_only",
+            "late application cannot alter a frozen terminal loss")
     end)
     return {cases=cases,assertions=assertions,constructed=true,native_authority=false,qualification="SOURCE_FIXTURE_ONLY"}
 end

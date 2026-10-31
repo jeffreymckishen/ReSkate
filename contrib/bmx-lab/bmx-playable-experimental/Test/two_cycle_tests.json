@@ -4,8 +4,8 @@
   "flat_file_count": 83,
   "quota_file_count": 84,
   "expected_processes": 42,
-  "expected_cases": 246,
-  "expected_assertions": 11041,
+  "expected_cases": 251.0,
+  "expected_assertions": 11136.0,
   "source_admission": "UNCHANGED_FALSE",
   "files": [
     {
@@ -221,14 +221,14 @@
     {
       "source": "plugin/ride_runtime.lua",
       "destination": "ride_runtime.lua",
-      "bytes": 79665,
-      "sha256": "AB7987AF53D23C8F2C43834B9DBCA627AA55C9663D50E84384F1F73E270F7BCB",
+      "bytes": 81198,
+      "sha256": "1D584391C293C88BCE13EFF7193BF758E42C2273456D1CB45C4486FFE4F5451B",
       "test_transform": {
         "kind": "inert_raw_ride_fixture",
         "before": "local ACTIVATION_QUALIFIED = true",
         "after": "local ACTIVATION_QUALIFIED = false",
-        "bytes": 79666,
-        "sha256": "09A20F3E820C9527B57DF41212C6DEF695FB0A7000C56CCAE912033ED9BDC59A"
+        "bytes": 81199,
+        "sha256": "9788B955911A270E5CA399528C0A4DD257026D6DF396A5A24CF44066E2C50B35"
       }
     },
     {
@@ -384,8 +384,8 @@
     {
       "source": "plugin/ride_runtime.lua",
       "destination": "ride_runtime_qualified_fixture.lua",
-      "bytes": 79665,
-      "sha256": "AB7987AF53D23C8F2C43834B9DBCA627AA55C9663D50E84384F1F73E270F7BCB"
+      "bytes": 81198,
+      "sha256": "1D584391C293C88BCE13EFF7193BF758E42C2273456D1CB45C4486FFE4F5451B"
     },
     {
       "source": "Test/barspin_rider_pose_integration_tests.lua",
@@ -426,8 +426,8 @@
     {
       "source": "plugin/score_runtime.lua",
       "destination": "score_runtime.lua",
-      "bytes": 13301,
-      "sha256": "5F01D34DFAD2881EB1312B1A2C7933168473715AA7583B38E6407632CBC50294"
+      "bytes": 13564,
+      "sha256": "B1708651C78B3BEB715BD24C4255392A90E2C15E7288C22B8C5A10F44DAECBF4"
     },
     {
       "source": "plugin/measured_landing.lua",
@@ -438,8 +438,8 @@
     {
       "source": "plugin/score_hud.lua",
       "destination": "score_hud.lua",
-      "bytes": 4205,
-      "sha256": "A900C07D4C971DF2DB4FF6C831FE916541B71C99BBAAD3234C007C703901BA17"
+      "bytes": 6227,
+      "sha256": "446617C0C31B4417ED9FD703A96C8CF9B9EAB8B657B2D7F8610E211261986CEF"
     },
     {
       "source": "Test/pedal_brake_priority_tests.lua",
@@ -480,8 +480,8 @@
     {
       "source": "Test/score_runtime_tests.lua",
       "destination": "score_runtime_tests.lua",
-      "bytes": 11918,
-      "sha256": "3949322999D6414F55645A69FFB47959AB761D2B39611C98BD2018E30710975F"
+      "bytes": 16606,
+      "sha256": "4D5071792E41B8C7281D71CF74FFD084844C6E2710C110BD70EE38CD9E28A73A"
     },
     {
       "source": "Test/measured_landing_tests.lua",
@@ -492,8 +492,8 @@
     {
       "source": "Test/ride_score_wiring_tests.lua",
       "destination": "ride_score_wiring_tests.lua",
-      "bytes": 9230,
-      "sha256": "AC4245085F2F45D1450B263413FA6AEDA66AC1D158DC87D6981D86C69431CC14"
+      "bytes": 14556,
+      "sha256": "F7169CAA62DBA78FDBAD85B23D42EB2B9814FD7FA35D9322E8B96D08176FFD0E"
     },
     {
       "source": "Test/entry_score_view_tests.lua",
@@ -504,8 +504,8 @@
     {
       "source": "Test/score_hud_tests.lua",
       "destination": "score_hud_tests.lua",
-      "bytes": 3536,
-      "sha256": "AFA6021199117B5D1FA866F52455DDAD97F4052F6DA431C42DD5E41512CDC0AA"
+      "bytes": 9014,
+      "sha256": "2AFDC9061C1CDF06AB87081A247ED2EC9B10D1B1CE4E238A9E66BF1456D6AEF8"
     },
     {
       "source": "Test/one_hander_score_tests.lua",
@@ -657,8 +657,8 @@
     },
     {
       "source": "plugin/ride_runtime.lua",
-      "bytes": 79665,
-      "sha256": "AB7987AF53D23C8F2C43834B9DBCA627AA55C9663D50E84384F1F73E270F7BCB"
+      "bytes": 81198,
+      "sha256": "1D584391C293C88BCE13EFF7193BF758E42C2273456D1CB45C4486FFE4F5451B"
     },
     {
       "source": "plugin/tire.lua",
@@ -682,8 +682,8 @@
     },
     {
       "source": "plugin/score_runtime.lua",
-      "bytes": 13301,
-      "sha256": "5F01D34DFAD2881EB1312B1A2C7933168473715AA7583B38E6407632CBC50294"
+      "bytes": 13564,
+      "sha256": "B1708651C78B3BEB715BD24C4255392A90E2C15E7288C22B8C5A10F44DAECBF4"
     },
     {
       "source": "plugin/measured_landing.lua",
@@ -692,8 +692,8 @@
     },
     {
       "source": "plugin/score_hud.lua",
-      "bytes": 4205,
-      "sha256": "A900C07D4C971DF2DB4FF6C831FE916541B71C99BBAAD3234C007C703901BA17"
+      "bytes": 6227,
+      "sha256": "446617C0C31B4417ED9FD703A96C8CF9B9EAB8B657B2D7F8610E211261986CEF"
     }
   ],
   "wrappers": [
@@ -976,8 +976,8 @@
       "suite": "score_runtime_tests",
       "context": "flat",
       "invoked": "score_runtime_tests",
-      "expected_cases": 8,
-      "expected_assertions": 64
+      "expected_cases": 10,
+      "expected_assertions": 96
     },
     {
       "suite": "measured_landing_tests",
@@ -990,8 +990,8 @@
       "suite": "ride_score_wiring_tests",
       "context": "flat",
       "invoked": "ride_score_wiring_tests",
-      "expected_cases": 3,
-      "expected_assertions": 190
+      "expected_cases": 6,
+      "expected_assertions": 216
     },
     {
       "suite": "entry_score_view_tests",
@@ -1005,7 +1005,7 @@
       "context": "flat",
       "invoked": "score_hud_tests",
       "expected_cases": 1,
-      "expected_assertions": 33
+      "expected_assertions": 70
     },
     {
       "suite": "one_hander_score_tests",

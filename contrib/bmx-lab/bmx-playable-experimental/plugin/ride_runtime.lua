@@ -192,6 +192,33 @@ local function score_snapshot(v)
             or c.combo_factor~=nil and not score_number(c.combo_factor,1,2) then return nil end
         out.last_closed={outcome=c.outcome,reason=c.reason,score=c.score,points=c.points,tricks=c.tricks,
             authored=true,native_score=false,native_landing=false,multiplier=c.multiplier,combo_factor=c.combo_factor}
+        if c.rows~=nil then
+            if not score_plain(c.rows) then return nil end
+            local rows,count,high={},0,0
+            for k in next,c.rows do
+                count+=1;if count>4 or not score_count(k,4) or k==0 then return nil end
+                high=math.max(high,k)
+            end
+            if count~=high or count>c.tricks then return nil end
+            for i=1,count do
+                local r=c.rows[i]
+                if not score_plain(r) or type(r.name)~="string" or #r.name==0 or #r.name>80
+                    or (r.channel~="barspin" and r.channel~="tailwhip" and r.channel~="one_hander")
+                    or not Identity.is_nonzero_u64(r.body_serial) or not Identity.is_nonzero_u64(r.accepted_sequence)
+                    or (r.state~="prediction_only" and r.state~="force_applied_observed") then return nil end
+                -- Only these scalar fields may survive the display boundary.
+                -- Unknown/nested keys, including cycles, are not closed labels.
+                local fields=0
+                for key in next,r do
+                    fields+=1
+                    if fields>5 or (key~="name" and key~="channel" and key~="body_serial"
+                        and key~="accepted_sequence" and key~="state") then return nil end
+                end
+                rows[i]={name=r.name,channel=r.channel,body_serial=r.body_serial,
+                    accepted_sequence=r.accepted_sequence,state=r.state}
+            end
+            out.last_closed.rows=rows
+        end
     end
     return freeze(out)
 end

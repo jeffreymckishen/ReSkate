@@ -50,6 +50,20 @@ local function fixture(options)
             view=function() return real:view() end,
         }
     end
+    if options.closed_view~=nil then
+        local real=Score.new()
+        models.scoring={
+            queue=function(_,...) return real:queue(...) end,
+            observe=function(_,...) return real:observe(...) end,
+            land=function(_,...) return real:land(...) end,
+            cancel=function(_,...) return real:cancel(...) end,
+            view=function()
+                local view=copy(real:view())
+                view.last_closed=options.closed_view
+                return view
+            end,
+        }
+    end
     f=Fixtures.fixture({models=models});f.landing=landing
     local decode=f.contact.decode
     function f.contact.decode(...)
@@ -154,6 +168,78 @@ function Tests.run()
         check(not row.stop_requested and #f.commands>before and row.acknowledged>ack,"existing command and ACK pipeline continues")
         check(string.find(row.mod_score.issue,"mod score queue unavailable",1,true)~=nil,"score fault retained in bounded view")
         f.ride:stop("constructed scoring fault cleanup")
+    end)
+    local function closed_row(name,channel,state)
+        return {name=name,channel=channel,body_serial="9007199254747001",
+            accepted_sequence="9007199254748001",state=state or "force_applied_observed"}
+    end
+    local function closed_view(rows,tricks)
+        return {outcome="lost",reason="constructed_closed_projection",score=0,points=0,tricks=tricks or 1,
+            authored=true,native_score=false,native_landing=false,rows=rows}
+    end
+    case("closed labels preserve only supplied authored metadata in immutable copies",function()
+        local rows={closed_row("Barspin","barspin","prediction_only"),closed_row("Tailwhip","tailwhip"),
+            closed_row("One Hander","one_hander"),closed_row("Barspin","barspin")}
+        for i=2,4 do
+            rows[i].body_serial=inc(rows[i-1].body_serial)
+            rows[i].accepted_sequence=inc(rows[i-1].accepted_sequence)
+        end
+        local closed=closed_view(rows,6)
+        local f=fixture({closed_view=closed})
+        local view=f.ride:score_view()
+        check(view and not view.stopped and #view.last_closed.rows==4 and view.last_closed.tricks==6,
+            "bounded last four labels do not replace the full closed trick count")
+        check(view.last_closed.outcome==closed.outcome and view.last_closed.score==0 and view.last_closed.points==0
+            and view.last_closed.authored and not view.last_closed.native_score and not view.last_closed.native_landing
+            and view.calibration=="C0_UNRUN","closed labels do not manufacture landed credit or native catch metadata")
+        check(not rawequal(view.last_closed.rows,rows) and table.isfrozen(view.last_closed.rows),
+            "closed row array is copied and frozen")
+        for i=1,4 do
+            local projected=view.last_closed.rows[i]
+            check(not rawequal(projected,rows[i]) and table.isfrozen(projected)
+                and projected.name==rows[i].name and projected.channel==rows[i].channel
+                and projected.body_serial==rows[i].body_serial and projected.accepted_sequence==rows[i].accepted_sequence
+                and projected.state==rows[i].state,"exact five scalar fields are independently copied for row"..i)
+        end
+        rows[1].name="Changed after view";rows[1].state="force_applied_observed"
+        check(view.last_closed.rows[1].name=="Barspin" and view.last_closed.rows[1].state=="prediction_only",
+            "later source mutations cannot rewrite a published closed label")
+        f.ride:stop("constructed closed projection cleanup")
+    end)
+    case("closed labels remain optional and an empty list invents no names",function()
+        local f=fixture({closed_view=closed_view(nil,0)})
+        local view=f.ride:score_view()
+        check(view and not view.stopped and view.last_closed and view.last_closed.rows==nil,
+            "legacy closed views without rows retain their original shape")
+        local g=fixture({closed_view=closed_view({},0)})
+        local empty=g.ride:score_view()
+        check(empty and not empty.stopped and #empty.last_closed.rows==0 and table.isfrozen(empty.last_closed.rows),
+            "an explicitly empty closed list stays empty and immutable")
+        f.ride:stop("constructed nil labels cleanup");g.ride:stop("constructed empty labels cleanup")
+    end)
+    case("bad closed labels refuse only the point view while the drive remains usable",function()
+        local mutations={
+            {"sparse",function(c)c.rows={[2]=closed_row("Barspin","barspin")}end},
+            {"container cycle",function(c)c.rows[1]=c.rows end},
+            {"row cycle",function(c)c.rows[1].self=c.rows[1]end},
+            {"oversized",function(c)c.tricks=5;c.rows={};for i=1,5 do c.rows[i]=closed_row("Barspin","barspin")end end},
+            {"more labels than tricks",function(c)c.tricks=0 end},
+            {"empty name",function(c)c.rows[1].name=""end},
+            {"zero identity",function(c)c.rows[1].body_serial="0"end},
+            {"native state",function(c)c.rows[1].state="native_caught"end},
+        }
+        for _,mutation in ipairs(mutations) do
+            local closed=closed_view({closed_row("Barspin","barspin")},1)
+            mutation[2](closed)
+            local f=fixture({closed_view=closed})
+            local view=f.ride:score_view()
+            check(view and view.stopped and view.issue=="mod score view unavailable" and view.banked_total==0,
+                mutation[1].." is refused without fabricating a closed record")
+            local drive=f.tick(true)
+            check(not drive.stop_requested and #f.commands==1 and f.landing.cancelled==1,
+                mutation[1].." disables only scoring, not the original force path")
+            f.ride:stop("constructed malformed closed projection cleanup")
+        end
     end)
     return {cases=cases,assertions=assertions,constructed=true,native_authority=false,qualification="SOURCE_FIXTURE_ONLY"}
 end

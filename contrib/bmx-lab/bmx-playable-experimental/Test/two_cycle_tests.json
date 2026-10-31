@@ -4,8 +4,8 @@
   "flat_file_count": 83,
   "quota_file_count": 84,
   "expected_processes": 42,
-  "expected_cases": 271.0,
-  "expected_assertions": 11711.0,
+  "expected_cases": 272.0,
+  "expected_assertions": 11771.0,
   "source_admission": "UNCHANGED_FALSE",
   "files": [
     {
@@ -276,8 +276,8 @@
     {
       "source": "plugin/forces.lua",
       "destination": "forces.lua",
-      "bytes": 42259,
-      "sha256": "61648323F32A10BA3A5413BC72364B757A664570EDF123CEAA29BF617F659458"
+      "bytes": 42684,
+      "sha256": "479F9B2FCA53677A4D6E1DEA56CCB25059D7B61806A720F85E4C19ADB94C4715"
     },
     {
       "source": "plugin/ride_inflight.lua",
@@ -450,8 +450,8 @@
     {
       "source": "Test/rolling_contact_envelope_tests.lua",
       "destination": "rolling_contact_envelope_tests.lua",
-      "bytes": 11909,
-      "sha256": "7C9B92554BC0642191C66298BE26E68D2AC4480B3CEBD4C59E2B671549C257E1"
+      "bytes": 15116,
+      "sha256": "4D1E57176536DAEADCDEF02DA4BC9BF5196BE8C5FD90F2F1F44C32ABBEB3B932"
     },
     {
       "source": "Test/two_hop_landing_tests.lua",
@@ -602,8 +602,8 @@
     },
     {
       "source": "plugin/forces.lua",
-      "bytes": 42259,
-      "sha256": "61648323F32A10BA3A5413BC72364B757A664570EDF123CEAA29BF617F659458"
+      "bytes": 42684,
+      "sha256": "479F9B2FCA53677A4D6E1DEA56CCB25059D7B61806A720F85E4C19ADB94C4715"
     },
     {
       "source": "plugin/frame_identity.lua",
@@ -941,8 +941,8 @@
       "suite": "rolling_contact_envelope_tests",
       "context": "flat",
       "invoked": "rolling_contact_envelope_tests",
-      "expected_cases": 3,
-      "expected_assertions": 124
+      "expected_cases": 4,
+      "expected_assertions": 184
     },
     {
       "suite": "two_hop_landing_tests",

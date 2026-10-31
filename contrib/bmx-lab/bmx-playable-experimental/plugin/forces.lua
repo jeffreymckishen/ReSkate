@@ -222,6 +222,14 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
                 end
                 contact.point=M.sub(s.wheel_center,M.mul(basis.normal,s.separation+s.wheel_radius))
             end
+            -- Use the same stopping-distance target on both sides of the
+            -- positive contact band. Switching to gap/h below 5 mm permits
+            -- more descent at a smaller gap, despite identical geometry.
+            local floor_descent
+            if floor_plane and s.separation>0 and s.separation<=landing.approach_gap then
+                local ah=landing.approach_acceleration*h
+                floor_descent=math.sqrt(ah*ah+2*landing.approach_acceleration*s.separation)-ah
+            end
             local approach=floor_plane and s.separation>landing.contact_gap and s.separation<=landing.approach_gap
             if approach then
                 -- Retain the legacy hit-only approach path. A folded sample
@@ -236,8 +244,7 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
                 -- For semi-implicit steps, v^2/(2*a)+v*h bounds the stopping
                 -- distance. This leaves distance for a finite normal deceleration
                 -- instead of demanding a full landing stop in one 60 Hz step.
-                local ah=landing.approach_acceleration*h
-                local allowed=math.sqrt(ah*ah+2*landing.approach_acceleration*s.separation)-ah
+                local allowed=floor_descent
                 -- Preserve distant unilateral anticipation. Across the last
                 -- contact band its impedance joins the tyre law continuously,
                 -- rather than changing from rigid to soft in one delayed step.
@@ -274,7 +281,7 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
                     history.verified_plane=s.verified_plane history.recovery_seconds=actual and 0 or (prior_normals[i].recovery_seconds or 0)+h
                     history.recovery_seeded=c.recovery_step_verified and s.verified_plane and s.separation<0 and (actual or prior_normals[i].recovery_seeded)
                 end
-                local target=bias-math.max(0,s.separation)/h
+                local target=bias-(floor_descent or math.max(0,s.separation)/h)
                 if floor_plane then
                     -- Supported rolling keeps its original gross envelope,
                     -- with the same finite impedance as touchdown/recovery.

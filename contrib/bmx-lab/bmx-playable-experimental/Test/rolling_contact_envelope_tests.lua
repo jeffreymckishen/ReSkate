@@ -178,6 +178,61 @@ function T.run()
   "guard refusal cannot fabricate support, balance or a hop")
  local adopted=pcall(function() near_stage:_adopt(candidate) end)
  check(not adopted,"refused candidate has no accepted history authority")
- return {cases=3,assertions=n,constructed=true,native_qualified=false}
+ -- One source-proven stopping-target boundary group; all earlier cases stay intact.
+ do
+ local function samples_at(body,gap)
+  local samples={}
+  for i,hub in ipairs(World.hubs(body))do
+   local height=hub[2]-World.wheel_radius-gap
+   local plane={height=function()return height end,slope=function()return 0 end}
+   samples[i]=World.contacts(plane,body,gravity)[i]
+   samples[i].wheel_center=M.copy(hub);samples[i].wheel_radius=World.wheel_radius
+  end
+  return samples
+ end
+ local function packet(speed,gap)
+  local body,wheels=World.place(terrain,{speed=speed})
+  body.linear_velocity[2]=-.4 -- authored shallow closing input, not a captured frame
+  local samples=samples_at(body,gap)
+  local eligible=gap<=.005
+  for i=1,2 do
+   check(samples[i].contact.status=="hit" and math.abs(samples[i].separation-gap)<1e-9,
+    "constructed static planes retain their exact current measured gap")
+   check(Forces.eligible_support(body,samples[i],.005,.10)==eligible,
+    "original5mm eligibility remains exact on each side")
+  end
+  local out=Stage.new():preview(h,body,wheels,samples,{pedal=0,brake=0,steer=0})
+  local raw=out.valid and out or out.diagnostic
+  check(out.valid,"bounded shallow floor packet: "..tostring(out.issue))
+  check(out.contact_scale==1 and M.length(out.force)<=6000 and M.length(out.torque)<=2000 and not out.hop_applied,
+   "boundary continuity cannot clip, enlarge original caps or generate hop authority")
+  check(out.grounded==eligible and out.balance_support_mask==(eligible and 3 or 0),
+   "a continuous normal target does not widen ground or balance support")
+  local normal_impulse=out.normal_impulse[1]+out.normal_impulse[2]
+   +out.approach_normal_impulse[1]+out.approach_normal_impulse[2]
+  print(string.format("constructed_floor_boundary speed=%.9g gap=%.12g F=(%.9g,%.9g,%.9g) T=(%.9g,%.9g,%.9g) normal_j=%.12g grounded=%s approach=%d",
+   speed,gap,raw.force[1],raw.force[2],raw.force[3],raw.torque[1],raw.torque[2],raw.torque[3],
+   normal_impulse,tostring(out.grounded),out.landing_approach_mask))
+  return normal_impulse
+ end
+ -- A true target jump does not shrink when the two measured gaps approach
+ -- the same boundary. Check actual unilateral output convergence, rather
+ -- than restating the target formula or inventing a native comfort limit.
+ for _,speed in ipairs({0,2})do
+  local coarse=math.abs(packet(speed,.005-1e-4)-packet(speed,.005+1e-4))
+  local fine=math.abs(packet(speed,.005-1e-8)-packet(speed,.005+1e-8))
+  check(coarse>0 and fine<coarse*.1,"normal impulse boundary jump shrinks with the measured gap interval")
+ end
+ local body,wheels=World.place(terrain,{speed=2})
+ body.linear_velocity[2]=-.4
+ local unknown=samples_at(body,.004)
+ unknown[1].forecast_geometry_unavailable=true
+ local refused=Stage.new():preview(h,body,wheels,unknown,{pedal=0,brake=0,steer=0})
+ check(not refused.valid and refused.issue=="landing_geometry_unavailable","unknown forecast geometry still refuses inside the band")
+ local deep=samples_at(body,-.101)
+ local penetration=Stage.new():preview(h,body,wheels,deep,{pedal=0,brake=0,steer=0})
+ check(not penetration.valid and penetration.issue=="penetration_limit","original gross penetration guard remains unchanged")
+ end
+ return {cases=4,assertions=n,constructed=true,native_qualified=false}
 end
 return T

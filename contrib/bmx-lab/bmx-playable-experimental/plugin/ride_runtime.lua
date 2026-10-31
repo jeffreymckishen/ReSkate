@@ -177,7 +177,7 @@ local function score_snapshot(v)
     for i=1,n do
         local r=v.rows[i]
         if not score_plain(r) or type(r.name)~="string" or #r.name==0 or #r.name>80
-            or (r.channel~="barspin" and r.channel~="tailwhip" and r.channel~="one_hander")
+            or (r.channel~="barspin" and r.channel~="tailwhip" and r.channel~="one_hander" and r.channel~="one_footer")
             or not Identity.is_nonzero_u64(r.body_serial) or not Identity.is_nonzero_u64(r.accepted_sequence)
             or (r.state~="prediction_only" and r.state~="force_applied_observed") then return nil end
         out.rows[i]={name=r.name,channel=r.channel,body_serial=r.body_serial,accepted_sequence=r.accepted_sequence,state=r.state}
@@ -203,7 +203,7 @@ local function score_snapshot(v)
             for i=1,count do
                 local r=c.rows[i]
                 if not score_plain(r) or type(r.name)~="string" or #r.name==0 or #r.name>80
-                    or (r.channel~="barspin" and r.channel~="tailwhip" and r.channel~="one_hander")
+                    or (r.channel~="barspin" and r.channel~="tailwhip" and r.channel~="one_hander" and r.channel~="one_footer")
                     or not Identity.is_nonzero_u64(r.body_serial) or not Identity.is_nonzero_u64(r.accepted_sequence)
                     or (r.state~="prediction_only" and r.state~="force_applied_observed") then return nil end
                 -- Only these scalar fields may survive the display boundary.

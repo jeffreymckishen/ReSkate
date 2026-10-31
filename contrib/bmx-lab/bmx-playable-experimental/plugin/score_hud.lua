@@ -58,7 +58,7 @@ local function closed_names(closed,rows)
         if not plain(row) then return nil end
         local name,channel,state=rawget(row,"name"),rawget(row,"channel"),rawget(row,"state")
         if type(name)~="string" or #name==0 or #name>80
-            or (channel~="barspin" and channel~="tailwhip" and channel~="one_hander")
+            or (channel~="barspin" and channel~="tailwhip" and channel~="one_hander" and channel~="one_footer")
             or (state~="prediction_only" and state~="force_applied_observed")
             or not serial(rawget(row,"body_serial")) or not serial(rawget(row,"accepted_sequence")) then return nil end
         names[i]=label(name,20,"Trick")

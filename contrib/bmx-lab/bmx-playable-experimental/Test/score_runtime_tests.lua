@@ -32,8 +32,8 @@ local function fixture()
         return {valid=true,scope="predictive_accepted_ray_barspin_only",serial=frame.serial,
             accepted_sequence=sequence,realized=false,completion_qualified=false,authored_events=events}
     end
-    function f:pose(frame,sequence,movement_id,side)
-        local p=self:presentation(frame,sequence,{"one_hander"})
+    function f:pose(frame,sequence,movement_id,side,channel)
+        local p=self:presentation(frame,sequence,{channel or "one_hander"})
         local e=p.authored_events[1]
         e.kind="authored_pose_recovery";e.movement_id=movement_id;e.side=side;e.direction=nil
         return p
@@ -320,6 +320,109 @@ function Tests.run()
         check(not f.score:observe(f:at(2),f:receipt(0,"1"))
             and f.score:view().last_closed.rows[1].state=="prediction_only",
             "late application cannot promote a cancelled right recovery")
+    end)
+    case("one footer exact pairs retain original labels and catalog difficulty1 points",function()
+        for _,side in ipairs({
+            {id=66,side="left",name="One Footer Left"},
+            {id=72,side="right",name="One Footer Right"},
+        }) do
+            local f=fixture();local frame=f:at(0);local p=f:pose(frame,"1",side.id,side.side,"one_footer")
+            if side.id==72 then p.authored_events[1].name=side.name end
+            check(f.score:queue(frame,p),"exact catalog pair and optional matching name only")
+            local pending=f.score:view()
+            check(pending.rows[1].name==side.name and pending.rows[1].channel=="one_footer"
+                and pending.pending_points==100 and pending.banked_total==0,
+                "catalog difficulty1 is authored100, pending and not native score")
+            p.authored_events[1].movement_id=side.id==66 and 72 or 66
+            p.authored_events[1].side=side.side=="left" and "right" or "left"
+            p.authored_events[1].name="forged"
+            check(f.score:observe(f:at(2),f:receipt(0,"1")),"exact applied force command and coherent successor")
+            check(f.score:view().banked_total==0,"completed authored pose and application do not replace landing")
+            local land=f:at(6);local ok,closed=f.score:land(land,f:quality(land))
+            check(ok and closed.points==100 and closed.score==150 and closed.tricks==1
+                and closed.authored and not closed.native_score and not closed.native_landing,
+                "qualified measured mod landing alone closes the local authored award")
+            check(closed.rows[1].name==side.name and closed.rows[1].channel=="one_footer"
+                and closed.rows[1].body_serial=="100" and closed.rows[1].accepted_sequence=="1"
+                and closed.rows[1].state=="force_applied_observed",
+                "original validated label and command identity survive caller mutation")
+        end
+    end)
+    case("one footer mismatched identity side label and event shape refuse credit",function()
+        for _,bad in ipairs({
+            {id=66,side="right"},{id=72,side="left"},{id=66},{id=72},
+            {id=36,side="left"},{id=42,side="right"},{id=65,side="left"},{id=73,side="right"},
+            {id=66,side="left",name="One Footer Right"},{id=72,side="right",name="One Footer Left"},
+            {id=72,side="right",name="One Footer"},{id=72,side="right",name=72},
+            {id=72,side="right",direction=1},{id=72,side="right",kind="authored_channel_catch"},
+            {id=72,side="right",sequence="2"},
+        }) do
+            local f=fixture();local frame=f:at(0);local p=f:pose(frame,"1",bad.id,bad.side,"one_footer")
+            local e=p.authored_events[1];e.name=bad.name;e.direction=bad.direction
+            if bad.kind then e.kind=bad.kind end
+            if bad.sequence then e.accepted_sequence=bad.sequence end
+            local ok,why=f.score:queue(frame,p);local view=f.score:view()
+            check(not ok and why=="invalid_catch_event" and view.stopped and not view.active
+                and view.banked_total==0 and view.last_closed==nil,
+                "mismatched catalog/side/name/shape/identity cannot enter the ledger")
+        end
+        local f=fixture();local frame=f:at(0);local p=f:pose(frame,"1",66,"left","one_footer")
+        p.authored_events[2]=f:pose(frame,"1",72,"right","one_footer").authored_events[1]
+        local ok,why=f.score:queue(frame,p)
+        check(not ok and why=="invalid_catch_event" and f.score:view().banked_total==0,
+            "different foot sides remain one channel within one accepted edge")
+    end)
+    case("one footer side switches never reset repeats or add a category bonus",function()
+        for _,pattern in ipairs({
+            {{id=66,side="left",name="One Footer Left"},{id=66,side="left",name="One Footer Left"}},
+            {{id=66,side="left",name="One Footer Left"},{id=72,side="right",name="One Footer Right"}},
+            {{id=72,side="right",name="One Footer Right"},{id=66,side="left",name="One Footer Left"}},
+        }) do
+            local f=fixture()
+            for i,side in ipairs(pattern) do
+                local at=(i-1)*4;local frame=f:at(at)
+                check(f.score:queue(frame,f:pose(frame,tostring(i),side.id,side.side,"one_footer")),
+                    "advancing authored one-footer completion")
+                check(f.score:observe(f:at(at+2),f:receipt(at,tostring(i))),
+                    "each occurrence independently matches its applied successor")
+            end
+            local pending=f.score:view()
+            check(pending.pending_points==175 and pending.pending_score==262 and pending.multiplier==1.5
+                and pending.combo_factor==1 and pending.banked_total==0,
+                "all foot-side patterns share one repeat and category family")
+            local land=f:at(10);local ok,closed=f.score:land(land,f:quality(land))
+            check(ok and closed.points==175 and closed.score==262 and closed.multiplier==1.5
+                and closed.combo_factor==1 and closed.tricks==2,
+                "switching foot side gives exactly the same local total as repeating left")
+            check(#closed.rows==2 and closed.rows[1].name==pattern[1].name and closed.rows[2].name==pattern[2].name
+                and closed.rows[1].channel=="one_footer" and closed.rows[2].channel=="one_footer",
+                "original side labels remain ordered without splitting the score family")
+        end
+        local f=fixture();local first=f:at(0);local second=f:at(4)
+        check(f.score:queue(first,f:pose(first,"1",42,"right"))
+            and f.score:observe(f:at(2),f:receipt(0,"1")),"existing right one-hander stays accepted")
+        check(f.score:queue(second,f:pose(second,"2",66,"left","one_footer"))
+            and f.score:observe(f:at(6),f:receipt(4,"2")),"distinct one-footer family stays accepted")
+        local land=f:at(10);local ok,closed=f.score:land(land,f:quality(land))
+        check(ok and closed.points==200 and closed.combo_factor==1.2 and closed.multiplier==2
+            and closed.score==480 and closed.rows[1].name=="One Hander Right"
+            and closed.rows[2].name=="One Footer Left",
+            "genuinely distinct hand/foot families use the unchanged combination formula")
+    end)
+    case("unconfirmed one footer loss retains its label without promoting recovery",function()
+        local f=fixture();local frame=f:at(0);local p=f:pose(frame,"1",72,"right","one_footer")
+        check(f.score:queue(frame,p),"right one-footer authored edge queued")
+        check(f.score:cancel("bail"),"bail discards rather than banks pending footer")
+        local view=f.score:view();local closed=view.last_closed
+        check(closed.outcome=="lost" and closed.points==100 and closed.score==0 and view.banked_total==0
+            and closed.rows[1].name=="One Footer Right" and closed.rows[1].channel=="one_footer"
+            and closed.rows[1].state=="prediction_only","loss retains only actual pending authored facts")
+        check(table.isfrozen(closed.rows) and table.isfrozen(closed.rows[1])
+            and not pcall(function() closed.rows[1].name="One Footer Left" end),
+            "closed footer label remains detached and immutable")
+        check(not f.score:observe(f:at(2),f:receipt(0,"1"))
+            and f.score:view().last_closed.rows[1].state=="prediction_only",
+            "late application cannot invent an observed completion after bail")
     end)
     return {cases=cases,assertions=assertions,constructed=true,native_authority=false,qualification="SOURCE_FIXTURE_ONLY"}
 end

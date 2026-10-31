@@ -114,6 +114,16 @@ function Tests.run()
     v.last_closed=closed("landed",{recorded("One Hander","one_hander")})
     v.last_closed.tricks=1;v.last_closed.points=100;v.last_closed.score=100
     check(HUD.lines(v,"none","qualified")[3]=="Last landed: One Hander","existing authored one-hander metadata retains its landed name")
+    for _,name in ipairs({"One Footer Left","One Footer Right"}) do
+        v=view();v.rows={{name=name,channel="one_footer"}};v.tricks=1
+        v.last_closed=closed("landed",{recorded("Old One Hander","one_hander")})
+        check(HUD.lines(v,"none","airborne")[3]=="Tricks: "..name,"active pending One Footer name takes priority over old closed labels")
+        v.active=false;v.rows={};v.last_closed=closed("landed",{recorded(name,"one_footer")})
+        v.last_closed.tricks=1;v.last_closed.points=100;v.last_closed.score=100
+        check(HUD.lines(v,"none","qualified")[3]=="Last landed: "..name,"either validated One Footer side retains its authored landed name")
+        v.last_closed.outcome="lost"
+        check(HUD.lines(v,"none","unavailable")[3]=="Last lost: "..name,"either One Footer side keeps lost provenance without relabelling it banked")
+    end
     return {cases=1,assertions=n}
 end
 return Tests

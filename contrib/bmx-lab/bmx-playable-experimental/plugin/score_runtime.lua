@@ -10,6 +10,7 @@ local channels=table.freeze({
     tailwhip=table.freeze({name="Tailwhip",base=350}),
     -- Legacy mod difficulty1; an authored local value, C0 still uncalibrated.
     one_hander=table.freeze({name="One Hander",base=100}),
+    one_footer=table.freeze({name="One Footer",base=100}),
 })
 -- These are the legacy mod's authored difficulty2/3 bases and local repeat,
 -- combination and category defaults. C0 has not calibrated them to Skate.
@@ -110,9 +111,14 @@ function Score.new()
         for i=1,n do
             local e=presentation.authored_events[i]
             local c=plain(e) and channels[e.channel] or nil
-            local pose=c and e.channel=="one_hander"
+            local pose=c and (e.channel=="one_hander" or e.channel=="one_footer")
+            local footer_name=c and e.channel=="one_footer"
+                and (e.movement_id==66 and e.side=="left" and "One Footer Left"
+                    or e.movement_id==72 and e.side=="right" and "One Footer Right") or nil
             local shape=c and (pose and e.kind=="authored_pose_recovery"
-                and (e.movement_id==36 and e.side=="left" or e.movement_id==42 and e.side=="right")
+                and (e.channel=="one_hander"
+                    and (e.movement_id==36 and e.side=="left" or e.movement_id==42 and e.side=="right")
+                    or footer_name~=nil and (e.name==nil or e.name==footer_name))
                 and e.direction==nil
                 or not pose and e.kind=="authored_channel_catch" and (e.direction==-1 or e.direction==1))
             if not c or not shape or seen[e.channel]
@@ -125,7 +131,7 @@ function Score.new()
                 return lose("invalid_catch_event",true)
             end
             seen[e.channel]=true
-            local name=pose and e.movement_id==42 and "One Hander Right" or c.name
+            local name=footer_name or pose and e.movement_id==42 and "One Hander Right" or c.name
             additions[i]={channel=e.channel,name=name,direction=e.direction,serial=f.serial,time=f.time,
                 seconds=f.seconds,sequence=presentation.accepted_sequence,confirmed=false}
         end

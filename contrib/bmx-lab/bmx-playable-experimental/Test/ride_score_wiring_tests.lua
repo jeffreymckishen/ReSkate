@@ -50,7 +50,7 @@ local function fixture(options)
             view=function() return real:view() end,
         }
     end
-    if options.closed_view~=nil then
+    if options.closed_view~=nil or options.pending_rows~=nil then
         local real=Score.new()
         models.scoring={
             queue=function(_,...) return real:queue(...) end,
@@ -60,6 +60,10 @@ local function fixture(options)
             view=function()
                 local view=copy(real:view())
                 view.last_closed=options.closed_view
+                if options.pending_rows~=nil then
+                    -- Constructed metadata only: leave the real point totals unchanged.
+                    view.rows=options.pending_rows;view.tricks=#options.pending_rows;view.active=true
+                end
                 return view
             end,
         }
@@ -239,6 +243,49 @@ function Tests.run()
             check(not drive.stop_requested and #f.commands==1 and f.landing.cancelled==1,
                 mutation[1].." disables only scoring, not the original force path")
             f.ride:stop("constructed malformed closed projection cleanup")
+        end
+    end)
+    case("one footer metadata survives pending and closed consumers without broadening channels",function()
+        local rows={closed_row("One Footer Left","one_footer","prediction_only"),
+            closed_row("One Footer Right","one_footer","prediction_only")}
+        rows[2].body_serial=inc(rows[1].body_serial)
+        rows[2].accepted_sequence=inc(rows[1].accepted_sequence)
+        local f=fixture({pending_rows=rows})
+        local pending=f.ride:score_view()
+        check(pending and not pending.stopped and pending.active and #pending.rows==2,"both catalog labels pass the pending metadata projection")
+        check(not rawequal(pending.rows,rows) and table.isfrozen(pending.rows),"pending row array remains an independent immutable snapshot")
+        for i=1,2 do
+            local r=pending.rows[i]
+            check(table.isfrozen(r) and r.name==rows[i].name and r.channel=="one_footer"
+                and r.body_serial==rows[i].body_serial and r.accepted_sequence==rows[i].accepted_sequence
+                and r.state=="prediction_only","pending One Footer row preserves the exact five original fields")
+        end
+        check(pending.banked_total==0 and pending.calibration=="C0_UNRUN" and not pending.native_score,
+            "metadata acceptance invents neither banked points nor native qualification")
+        local g=fixture({closed_view=closed_view(rows,2)})
+        local closed=g.ride:score_view()
+        check(closed and not closed.stopped and closed.last_closed.outcome=="lost"
+            and #closed.last_closed.rows==2 and closed.last_closed.tricks==2,"closed One Footer labels preserve the original loss and count")
+        for i=1,2 do
+            local r=closed.last_closed.rows[i]
+            check(table.isfrozen(r) and r.name==rows[i].name and r.channel=="one_footer"
+                and r.body_serial==rows[i].body_serial and r.accepted_sequence==rows[i].accepted_sequence
+                and r.state=="prediction_only","closed One Footer metadata is copied without a catch-state upgrade")
+        end
+        rows[1].name="Changed after projection"
+        check(pending.rows[1].name=="One Footer Left" and closed.last_closed.rows[1].name=="One Footer Left",
+            "later source mutations cannot rewrite either metadata snapshot")
+        f.ride:stop("constructed pending One Footer cleanup");g.ride:stop("constructed closed One Footer cleanup")
+        for _,mode in ipairs({"pending","closed"}) do
+            local bad_rows={closed_row("One Footer Left","future_footer","prediction_only")}
+            local bad=fixture(mode=="pending" and {pending_rows=bad_rows} or {closed_view=closed_view(bad_rows,1)})
+            local refused=bad.ride:score_view()
+            check(refused and refused.stopped and refused.issue=="mod score view unavailable" and refused.banked_total==0,
+                mode.." still refuses an unrecognized channel")
+            local drive=bad.tick(true)
+            check(not drive.stop_requested and #bad.commands==1 and bad.landing.cancelled==1,
+                mode.." channel refusal disables scoring only, not the existing drive/cleanup owner")
+            bad.ride:stop("constructed unknown One Footer consumer cleanup")
         end
     end)
     return {cases=cases,assertions=assertions,constructed=true,native_authority=false,qualification="SOURCE_FIXTURE_ONLY"}

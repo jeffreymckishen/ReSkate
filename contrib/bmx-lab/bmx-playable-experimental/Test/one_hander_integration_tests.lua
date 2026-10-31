@@ -68,10 +68,11 @@ local function fixture()
         if f.started then f.advance() end
         f.started=true;f.clear=not grounded
         local tail=selection=="tail_right" or selection=="tail_left"
-        f.pad.right_x=(selection=="tail_right" or selection=="one_hand_right") and 1 or (selection=="tail_left" or selection=="one_hand_left") and -1 or 0
+        local foot_left,foot_right=selection=="one_foot_left",selection=="one_foot_right"
+        f.pad.right_x=(selection=="tail_right" or selection=="one_hand_right" or foot_right) and 1 or (selection=="tail_left" or selection=="one_hand_left" or foot_left) and -1 or 0
         f.pad.right_y=selection=="bar_left" and -1 or 0
         f.pad.buttons.lb=selection=="bar_left" or selection=="one_hand_left";f.pad.buttons.rb=selection=="one_hand_right"
-        f.pad.left_trigger=tail and 1 or 0;f.pad.right_trigger=tail and 1 or 0
+        f.pad.left_trigger=(tail or foot_left) and 1 or 0;f.pad.right_trigger=(tail or foot_right) and 1 or 0
         return f.observe()
     end
     return f
@@ -493,6 +494,137 @@ function Tests.run()
         check(one_event(ground)==nil and ground.presentation_pose.release_right_hand==nil
             and ground.presentation_pose.release_left_hand==nil,"actual fixture recontact resets hand state without an airborne recovery event")
         landed.ride:stop("constructed recontact cleanup")
+    end)
+    -- The existing authored footer masks4/8 use the same .18/.12 pose phase.
+    -- These four groups remain constructed Ride/Core/pose traces only.
+    local function foot_event(row)
+        local p=row.presentation_trick
+        if p and p.authored_events then
+            for _,e in ipairs(p.authored_events) do if e.channel=="one_footer" then return e end end
+        end
+        return nil
+    end
+    local function foot_full(side)
+        local selection=side=="left" and "one_foot_left" or "one_foot_right"
+        local r=fixture();r.tick(true);r.tick(false)
+        local selected=r.tick(false,selection)
+        check(not selected.stop_requested and r.mapped_actions.movement==(side=="left" and 66 or 72)
+            and not r.pad.buttons.lb and not r.pad.buttons.rb
+            and r.pad.left_trigger==(side=="left" and 1 or 0) and r.pad.right_trigger==(side=="right" and 1 or 0)
+            and r.pad.right_x==(side=="left" and -1 or 1)
+            and r.mapped_actions.handlebar=="none" and r.mapped_actions.tailwhip=="none",
+            "existing single trigger and lateral rear stick select the exact footer catalog ID")
+        check(selected.presentation_pose.release_left_foot==nil and selected.presentation_pose.release_right_foot==nil,
+            "footer selection starts at accepted sample end")
+        local held
+        for _=1,12 do held=r.tick(false,selection) end
+        local release,opposite="release_"..side.."_foot","release_"..(side=="left" and "right" or "left").."_foot"
+        check(not held.stop_requested and held.presentation_pose[release]==1 and held.presentation_pose[opposite]==nil
+            and held.presentation_pose.release_left_hand==nil and held.presentation_pose.release_right_hand==nil
+            and held.presentation_pose.barspin==0 and held.presentation_pose.tailwhip==0 and foot_event(held)==nil,
+            "full footer entry releases only the selected foot without rotation or completion")
+        return r,held,selection,release,opposite
+    end
+    local function complete_footer(side)
+        local r,held,selection,release,opposite=foot_full(side)
+        local input=capture(held.presentation_pose)
+        check(input.articulation[release]==1 and input.articulation[opposite]==0,
+            "unchanged Core forwards the existing independent footer pose field")
+        local posed=plan(input);local normal_plan=plan({bike=input.bike,articulation=normal(held.presentation_pose)})
+        local index=side=="left" and 1 or 2;local other=index==1 and 2 or 1
+        check(distance2(posed.targets.ankles[index],normal_plan.targets.ankles[index])>1e-8
+            and same(posed.targets.ankles[other],normal_plan.targets.ankles[other])
+            and same(posed.targets.wrists,normal_plan.targets.wrists),
+            "existing mounted pose moves the selected ankle while the other foot and both hands retain contacts")
+        local onset=r.tick(false)
+        check(onset.presentation_pose[release]==1 and foot_event(onset)==nil,
+            "neutral begins the existing recovery rather than completing it immediately")
+        local completed,count,completion_source
+        count=0
+        for _=1,8 do
+            local row=r.tick(false);local e=foot_event(row)
+            if e then completed=row;count+=1;completion_source=r.input_serial end
+        end
+        check(completed~=nil and count==1,"one full adopted footer recovery emits one bounded completion")
+        local e=foot_event(completed)
+        check(e.kind=="authored_pose_recovery" and e.scope=="mod_authored_accepted_step" and e.channel=="one_footer"
+            and e.movement_id==(side=="left" and 66 or 72) and e.side==side and e.direction==nil and e.name==nil,
+            "footer event names the latched catalog ID and side without extra metadata")
+        check(e.body_serial==completed.model_history.serial and e.accepted_sequence==completed.model_history.sequence
+            and e.source_observation_serial==completion_source and e.catch_phase=="regrip_complete" and e.authored_completion,
+            "footer event binds exact adopted completion body source sequence and phase")
+        check(e.prediction_only and e.native_application=="unobserved" and e.native_application_observed==false
+            and e.native_catch==false and e.native_landing==false and e.landing_quality_available==false
+            and e.completion_qualified==false and table.isfrozen(e),"footer authored completion grants no physical authority")
+        check(fields(completed.presentation_pose)==8 and completed.presentation_pose[release]==nil
+            and completed.presentation_pose[opposite]==nil,"full footer recovery restores the unchanged normal pose")
+        for _=1,3 do check(foot_event(r.tick(false))==nil,"footer completion does not repeat") end
+        r.ride:stop("constructed full footer cleanup")
+    end
+    right_case("left footer full entry recovery and existing ankle target",function() complete_footer("left") end)
+    right_case("right footer full entry recovery and existing ankle target",function() complete_footer("right") end)
+    right_case("partial refused stopped and recontact footer paths never fabricate completion",function()
+        local r=fixture();r.tick(true);r.tick(false);r.tick(false,"one_foot_left")
+        for _=1,4 do r.tick(false,"one_foot_left") end
+        check((r.ride:status().presentation_pose.release_left_foot or 0)>0,"partial footer has an authored release")
+        check(foot_event(r.tick(false))==nil,"early neutral does not finish full footer entry")
+        local last
+        for _=1,8 do last=r.tick(false);check(foot_event(last)==nil,"partial footer recovery never emits full-entry completion") end
+        check(fields(last.presentation_pose)==8,"partial footer restores the normal pose")
+        r.ride:stop("constructed partial footer cleanup")
+        local refused=foot_full("right");refused.tick(false)
+        for _=1,7 do refused.tick(false) end
+        local previous=refused.ride:status();refused.refusal="force_pipeline_full"
+        local blocked=refused.tick(false)
+        check(not blocked.stop_requested and blocked.presentation_pose==previous.presentation_pose
+            and blocked.model.accepted_barspin.revision==previous.model.accepted_barspin.revision and foot_event(blocked)==nil,
+            "refused completion candidate changes no accepted footer phase or event")
+        refused.refusal=nil
+        local count=#refused.commands;local stopped=refused.ride:stop("constructed switch or fall recovery")
+        check(stopped.presentation_trick==nil and fields(stopped.presentation_pose)==8 and #refused.commands==count,
+            "stop clears footer presentation and candidate without an extra force command")
+        local landed=foot_full("left");local ground=landed.tick(true)
+        check(foot_event(ground)==nil and fields(ground.presentation_pose)==8,
+            "measured fixture recontact resets footer state without an airborne recovery event")
+        landed.ride:stop("constructed footer recontact cleanup")
+    end)
+    right_case("footer side is latched and busy hand or turn requests never queue",function()
+        local r=foot_full("left");r.tick(false)
+        local count=0
+        for _=1,8 do
+            local row=r.tick(false,"one_foot_right");local e=foot_event(row)
+            check(row.presentation_pose.release_right_foot==nil,"opposite footer side stays held during original recovery")
+            if e then count+=1;check(e.movement_id==66 and e.side=="left","footer event retains its original latched side") end
+        end
+        check(count==1,"opposite busy footer selection neither replaces nor duplicates the original completion")
+        for _=1,3 do
+            local row=r.tick(false,"one_foot_right")
+            check(fields(row.presentation_pose)==8 and foot_event(row)==nil,"held busy footer selection cannot start later")
+        end
+        r.tick(false);r.tick(false,"one_foot_right")
+        local fresh=r.tick(false,"one_foot_right")
+        check((fresh.presentation_pose.release_right_foot or 0)>0 and fresh.presentation_pose.release_left_foot==nil,
+            "only a new neutral then fresh selection may deliberately choose the other foot")
+        r.ride:stop("constructed latched footer cleanup")
+        local busy=foot_full("left");busy.tick(false)
+        local hand=busy.tick(false,"one_hand_right")
+        check(busy.mapped_actions.movement==42 and hand.presentation_pose.release_right_hand==nil
+            and (hand.presentation_pose.release_left_foot or 0)>0,"active footer consumes a fresh hand selection without releasing that hand")
+        busy.tick(false)
+        local bars=busy.tick(false,"bar_left")
+        check(busy.mapped_actions.movement==34 and not bars.model.accepted_barspin.rotation_reserved
+            and bars.presentation_pose.barspin==0,"active footer consumes fresh bar rotation selection")
+        busy.tick(false)
+        local tails=busy.tick(false,"tail_right")
+        check(busy.mapped_actions.movement==52 and not tails.model.accepted_barspin.rotation_reserved
+            and tails.presentation_pose.tailwhip==0,"active footer consumes fresh tail rotation selection")
+        local events=0
+        for _=1,5 do local row=busy.tick(false,"tail_right");if foot_event(row) then events+=1 end end
+        check(events==1,"only the original footer recovery completes while busy turn selections stay consumed")
+        local held=busy.tick(false,"tail_right")
+        check(not held.model.accepted_barspin.rotation_reserved and fields(held.presentation_pose)==8,
+            "a held busy turn does not start after footer recovery")
+        busy.ride:stop("constructed busy footer cleanup")
     end)
     bar.ride:stop("constructed bar cleanup");tail.ride:stop("constructed tail cleanup");c.core:request_stop("constructed receiver cleanup")
     return {cases=cases,assertions=assertions}

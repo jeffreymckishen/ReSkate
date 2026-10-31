@@ -547,6 +547,119 @@ void owner_lock_contention() {
             "post-press acknowledgement cannot erase the first owner-lock refusal");
     }
 }
+void opening_inspection_lock_contention() {
+    namespace observed = dingosdk::actor_observation;
+    const actor::Observation busy{observed::Phase::inspect_owner_lock, actor::Reason::unavailable};
+    {
+        constexpr std::uint64_t base = 54000;
+        prime(base); const auto handle = request();
+        Frame value; value.raw_packet = 0x55667788; value.prior_packet = 0x11223344;
+        const auto before = frame(base, value).value;
+        const auto acquired = env.acquire_calls, inspections = env.inspect_calls, clocks = env.clock_reads;
+        env.inspect_ok = false; env.inspect_failure = busy;
+        for (const auto offset : {20u, 40u, 60u}) {
+            SetLastError(0x1234); const auto output = frame(base + offset, value);
+            const auto waiting = read(handle);
+            check(GetLastError() == 0x1234 && output.value.dwPacketNumber == before.dwPacketNumber &&
+                std::memcmp(&output.value.Gamepad, &value.raw, sizeof(value.raw)) == 0,
+                "opening inspection contention preserves the original report and caller error");
+            check(waiting.status == model::Status::warming && waiting.requested_ms == base && waiting.expires_ms == base + 1000 &&
+                !waiting.press_candidates && !waiting.press_publications && !waiting.neutral_publications &&
+                !waiting.report_debt && !waiting.claim_released && !waiting.first_actor_observation.known &&
+                waiting.first_rejection_stage == model::RejectionStage::none && !waiting.first_rejection_mask,
+                "missing inspection authority cannot publish, become a successful witness or extend the request");
+        }
+        check(read(handle).warmup_deferrals == 3 && env.acquire_calls == acquired &&
+            env.inspect_calls == inspections + 3 && env.clock_reads == clocks,
+            "exact opening inspect misses keep one claim and never probe a skipped clock");
+        env.inspect_ok = true;
+        for (const auto offset : {94u, 127u, 160u})
+            check(frame(base + offset).value.Gamepad.wButtons == 0, "inspection resumption needs an entirely fresh dwell");
+        check(frame(base + 194).value.Gamepad.wButtons == 0x1000 && read(handle).press_publications == 1 &&
+            read(handle).warmup_deferrals == 3 && read(handle).expires_ms == base + 1000 &&
+            env.acquire_calls == acquired && env.clock_reads > clocks,
+            "only four fresh fully inspected samples over100ms can publish on the original handle");
+        check(service::cancel(1, handle), "resumed inspection-wait request remains cancellable");
+        (void)frame(base + 220); retire(base + 221);
+        check(service::acknowledge(1, handle), "resumed inspection wait joins actual neutral cleanup");
+    }
+    {
+        constexpr std::uint64_t base = 56000;
+        prime(base); const auto handle = request(); (void)frame(base);
+        env.inspect_ok = false; env.inspect_failure = busy;
+        const auto acquired = env.acquire_calls, clocks = env.clock_reads;
+        for (unsigned offset = 50; offset < 1000; offset += 50)
+            check(frame(base + offset).value.Gamepad.wButtons == 0 && read(handle).status == model::Status::warming,
+                "permanent opening inspect contention emits no SDK input while the original request is live");
+        (void)frame(base + 1000); retire(base + 1001);
+        const auto expired = read(handle);
+        check(expired.status == model::Status::expired && expired.expires_ms == base + 1000 &&
+            expired.warmup_deferrals == 19 && !expired.press_candidates && !expired.press_publications &&
+            !expired.neutral_publications && !expired.report_debt && expired.claim_released &&
+            expired.first_rejection_mask == pulse_policy::failure_bit(pulse_policy::FailedCheck::deadline) &&
+            expired.first_rejection_stage == model::RejectionStage::service_plan &&
+            env.acquire_calls == acquired && env.clock_reads == clocks && service::acknowledge(1, handle),
+            "opening inspect contention cannot restart, renew or outlive its original deadline");
+        env.inspect_ok = true;
+    }
+    for (unsigned fault = 0; fault < 14; ++fault) {
+        const auto base = 58000 + static_cast<std::uint64_t>(fault) * 1100;
+        prime(base); const auto handle = request(); (void)frame(base);
+        env.inspect_ok = false; env.inspect_failure = busy;
+        (void)frame(base + 20);
+        check(read(handle).warmup_deferrals == 1, "one exact opening miss precedes a separate safety refusal");
+        Frame value;
+        if (fault == 0) env.inspect_failure.reason = actor::Reason::none;
+        if (fault == 1) env.inspect_failure.phase = observed::Phase::final_owner_lock;
+        if (fault == 2) env.inspect_failure = {observed::Phase::inspect_ownership, actor::Reason::motion_owned};
+        if (fault == 3) env.inspect_failure = {observed::Phase::not_attempted, actor::Reason::none};
+        if (fault == 4) value.raw = value.transformed = {0x2000, 0, 0, 0, 0, 0, 0};
+        if (fault == 5) value.original = value.returned = ERROR_DEVICE_NOT_CONNECTED;
+        if (fault == 6) value.clean = false;
+        if (fault == 7) env.focus = false;
+        if (fault == 8) env.gameplay = false;
+        if (fault == 9) env.menu = false;
+        if (fault == 10) env.interference = false;
+        if (fault == 11) value.transformed.bLeftTrigger = 1;
+        if (fault == 12) env.inspect_failure = {observed::Phase::qualified, actor::Reason::none};
+        if (fault == 13) {
+            env.forged_enter_observation = true;
+            env.enter_failure = {observed::Phase::enter_owner_lock, actor::Reason::unavailable};
+        }
+        const auto clocks = env.clock_reads;
+        SetLastError(0x1234); const auto output = frame(base + 50, value);
+        const auto refused = read(handle); const auto witness = refused.first_actor_observation;
+        check(GetLastError() == 0x1234 && std::memcmp(&output.value.Gamepad, &value.transformed, sizeof(value.transformed)) == 0 &&
+            refused.warmup_deferrals == 1 && refused.first_rejection_stage != model::RejectionStage::none &&
+            !refused.press_candidates && !refused.press_publications && !refused.neutral_publications &&
+            !refused.report_debt && env.clock_reads == clocks,
+            "different or unknown phase/reason and every independent input/environment guard remain fatal");
+        env.inspect_ok = env.focus = env.gameplay = env.menu = env.interference = true;
+        env.forged_enter_observation = false; env.inspect_failure = busy;
+        (void)frame(base + 70); retire(base + 71);
+        const auto terminal = read(handle);
+        check(terminal.status == model::Status::revoked && terminal.claim_released && terminal.first_actor_observation == witness &&
+            terminal.warmup_deferrals == 1 && service::acknowledge(1, handle),
+            "later positive inspection cannot revive a refused request or rewrite its initial witness");
+    }
+    {
+        constexpr std::uint64_t base = 80000;
+        const auto handle = press(1, base);
+        env.inspect_ok = false; env.inspect_failure = busy;
+        check(frame(base + 150).value.Gamepad.wButtons == 0, "opening inspection contention after assertion stops output immediately");
+        const auto refused = read(handle);
+        check(refused.warmup_deferrals == 0 && refused.press_candidates == 1 && refused.press_publications == 1 &&
+            refused.neutral_publications == 1 && !refused.report_debt && refused.first_actor_observation.known &&
+            refused.first_actor_observation.inspect == busy &&
+            refused.first_rejection_mask == (pulse_policy::failure_bit(pulse_policy::FailedCheck::actor) |
+                pulse_policy::failure_bit(pulse_policy::FailedCheck::native_clock)),
+            "after a publication opening inspection failure still revokes and requires a genuine neutral release");
+        env.inspect_ok = true; retire(base + 151);
+        check(read(handle).first_actor_observation == refused.first_actor_observation && service::acknowledge(1, handle),
+            "post-publication cleanup cannot erase the observed inspection refusal");
+    }
+}
+
 void actor_clock_lost() {
     namespace observed = dingosdk::actor_observation;
     prime(100); const auto deferred_handle = request();
@@ -633,11 +746,12 @@ void actor_clock_lost() {
         const auto reads = env.clock_reads, inspections = env.inspect_calls;
         check(frame(base + 100).value.Gamepad.wButtons == 0, "diagnostic observations do not bypass a failed warmup guard");
         const auto receipt = read(handle); const auto witness = receipt.first_actor_observation;
-        if (fault && phases[fault - 1] == observed::Phase::controls_profile_lock) {
+        if (fault && (phases[fault - 1] == observed::Phase::controls_profile_lock ||
+            phases[fault - 1] == observed::Phase::inspect_owner_lock)) {
             check(receipt.status == model::Status::warming && receipt.warmup_deferrals == 1 &&
                 receipt.first_rejection_mask == 0 && !witness.known && !receipt.press_candidates &&
                 !receipt.press_publications && !receipt.neutral_publications && env.clock_reads == reads,
-                "only the exact profile-lock phase defers without publishing or retaining a rejection");
+                "only the exact opening owner/profile inspection lock defers without publishing or retaining a rejection");
             env.inspect_ok = true;
             for (const auto offset : {134u, 167u, 200u})
                 check(frame(base + offset).value.Gamepad.wButtons == 0, "resumption needs a wholly new warmup suffix");
@@ -731,6 +845,7 @@ void actor_clock_lost() {
             "post-press cleanup and acknowledgement cannot erase the original failure");
     }
     owner_lock_contention();
+    opening_inspection_lock_contention();
 }
 void environment_guards() {
     for (unsigned guard = 0; guard < 5; ++guard) {

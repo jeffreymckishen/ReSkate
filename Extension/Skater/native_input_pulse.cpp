@@ -217,11 +217,12 @@ bool warmup_lock_contention(const Entry& entry, const model::ActorObservation& o
         observation.enter.phase == Phase::enter_owner_lock && observation.enter.reason == Reason::unavailable &&
         !observation.inspect_attempted && observation.inspect.phase == Phase::not_attempted &&
         observation.inspect.reason == Reason::none;
-    const bool profile_lock = observation.call_active &&
+    const bool inspection_lock = observation.call_active &&
         observation.enter.phase == Phase::qualified && observation.enter.reason == Reason::none &&
-        observation.inspect_attempted && observation.inspect.phase == Phase::controls_profile_lock &&
-        observation.inspect.reason == Reason::unavailable;
-    return untouched && (owner_lock || profile_lock);
+        observation.inspect_attempted && observation.inspect.reason == Reason::unavailable &&
+        (observation.inspect.phase == Phase::inspect_owner_lock ||
+            observation.inspect.phase == Phase::controls_profile_lock);
+    return untouched && (owner_lock || inspection_lock);
 }
 model::Reason native_issue(actor_control_native::Reason reason) noexcept {
     using Native = actor_control_native::Reason;

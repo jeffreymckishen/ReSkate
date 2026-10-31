@@ -436,6 +436,66 @@ function BikeRuntime.force_transaction_adapter(identity,binding,guard,read_seria
     return table.freeze(api)
 end
 
+-- Private operator copies bind one fresh prelaunch nonce. The tracked Core
+-- emits nothing; this adds no module, permission, clock read or actuator.
+local MOUNTED_EVIDENCE_NONCE=false
+function BikeRuntime.mounted_evidence_producer(nonce,emit)
+    if type(nonce)~="string" or #nonce~=32 or not nonce:match("^[a-f0-9]+$") or type(emit)~="function" then return nil end
+    local sequence,last_ms,last_at,last_serial,last_ready,attempt=0,nil,nil,nil,nil,nil
+    local busy,disabled=false,false
+    local function number(v) return type(v)=="number" and v==v and v>=0 and v<=MAX end
+    local function count(v) return number(v) and v%1==0 end
+    local function serial(v)
+        return type(v)=="string" and (v=="0" or #v<=20 and v:match("^[1-9][0-9]*$")
+            and (#v<20 or v<="18446744073709551615"))
+    end
+    local function greater(a,b) return #a>#b or #a==#b and a>b end
+    local api={}
+    function api:observe(row)
+        if busy or disabled or type(row)~="table" or getmetatable(row)~=nil then return false end
+        if not number(row.observed_ms) or last_ms and row.observed_ms<last_ms
+            or (row.attempt~=1 and row.attempt~=2) or attempt and row.attempt~=attempt then disabled=true;return false end
+        last_ms=row.observed_ms
+        if not serial(row.body_serial) or not (number(row.native_time) or row.native_time==-1)
+            or not (count(row.slot) and row.slot<=3 or row.slot==-1)
+            or not (count(row.applied) or row.applied==-1) or not (count(row.acknowledged) or row.acknowledged==-1)
+            or type(row.core_phase)~="string" or #row.core_phase>32 or not row.core_phase:match("^[a-z_]+$")
+            or type(row.pose_state)~="string" or #row.pose_state>32 or not row.pose_state:match("^[a-z_]+$") then return false end
+        for _,key in ipairs({"published","authority","stop","unloaded","pending","unknown","current","same_read","input_current","pose_current"}) do
+            if type(row[key])~="boolean" then return false end
+        end
+        -- ACK counts are historical: with no Ride stop/unknown they follow an
+        -- applied receipt and validated successor. Current ownership comes from
+        -- this tick's same read and gates, not from those cumulative counters.
+        local ready=row.current and row.same_read and row.input_current and row.pose_current
+            and row.core_phase=="following" and row.pose_state=="mounted" and row.slot==0
+            and row.body_serial~="0" and row.native_time>0 and row.published and row.authority
+            and not row.stop and not row.unloaded and not row.pending and not row.unknown
+            and row.acknowledged>0 and row.applied>=row.acknowledged
+        if ready and last_serial and not greater(row.body_serial,last_serial) then return false end
+        -- Denying a previously positive row and stopping are immediate. The
+        -- ordinary stream is at most ten small lines a second; it never waits.
+        if not row.stop and last_at and row.observed_ms-last_at<100 and not (last_ready and not ready) then return false end
+        if sequence>=MAX then disabled=true;return false end
+        sequence+=1;attempt=row.attempt;last_at=row.observed_ms;last_ready=ready
+        if ready then last_serial=row.body_serial end
+        if row.stop or row.unloaded then disabled=true end
+        local function bit(v) return v and 1 or 0 end
+        local stamp=math.floor(row.observed_ms*1000)/1000
+        local line=string.format("BMX_READY_V1|%s|%d|%.0f|%.3f|%s|%.9f|%d|%d|%s|%s|%d|%d|%d|%d|%d|%d|%.0f|%.0f",
+            nonce,attempt,sequence,stamp,row.body_serial,row.native_time,row.slot,bit(ready),row.core_phase,row.pose_state,
+            bit(row.published),bit(row.authority),bit(row.stop),bit(row.unloaded),bit(row.pending),bit(row.unknown),row.applied,row.acknowledged)
+        -- Consume before the log callback. Silence/filtering/write failure is
+        -- unavailable evidence to the reader, never a reason to replay or wait.
+        busy=true
+        local result=table.pack(pcall(emit,line))
+        busy=false
+        if not result[1] or result.n~=1 then disabled=true;return false end
+        return true -- Log API return only; not a file visibility/durability ACK.
+    end
+    return table.freeze(api)
+end
+
 local function new_core(services,options,shared_state,session)
 local supplied=services or reskate
 local R=type(supplied)=="table" and supplied or {}
@@ -445,6 +505,10 @@ local T=shared_state or {phase="idle",detail="Stock switching and inspection onl
     generation=0,cancel_version=0,calls={},counts={},receipts={},omitted_calls=0,omitted_receipts=0,
     remove_attempted={},remove_accepted={}}
 local object={}
+local mounted_evidence=BikeRuntime.mounted_evidence_producer(MOUNTED_EVIDENCE_NONCE,function(line)
+    if type(R.log)~="function" then error("mounted evidence log unavailable",0) end
+    return R.log(line)
+end)
 local mount_attempt_used=false
 local stop_all,latch_stop,source,spawn,equipment,facts,closed_ready,snapshot,flush_removals
 local ride,ride_binding,selected_source_frame,stop_ride,drain_ride,observe_ride
@@ -910,10 +974,33 @@ local function follow_stop_once()
     local r=call("follow.stop",lookup("world.physics.stop_follow"),T.follow)
     T.follow_stop_accepted=yes(r)
 end
+local function emit_mounted_evidence(sample,observed_ms)
+    if not mounted_evidence then return end
+    local r=T.ride_status
+    local metrics=type(r)=="table" and r.metrics or nil
+    local pose=T.pose_status
+    mounted_evidence:observe({attempt=session and session.index or 0,observed_ms=observed_ms,
+        body_serial=type(sample)=="table" and sample.serial or "0",native_time=type(sample)=="table" and sample.time or -1,
+        slot=T.slot or -1,core_phase=T.phase,pose_state=type(pose)=="table" and pose.state or "unavailable",
+        published=T.published_seen==true,authority=T.active==true and T.body~=nil and T.follow~=nil,
+        stop=T.stop_latched==true,unloaded=T.unloaded==true,
+        pending=T.stop_latched==true and not T.bike_cleanup_complete or T.gear_requested==true
+            or T.reload_blocked==true or T.marker_unknown==true,
+        unknown=unknown_duty()==true,
+        applied=type(metrics)=="table" and metrics.applied_count or -1,
+        acknowledged=type(r)=="table" and r.acknowledged or -1,
+        current=T.phase=="following" and not T.stop_latched and not T.unloaded,
+        same_read=type(sample)=="table" and type(r)=="table" and r.last_serial==sample.serial
+            and r.unknown==false and r.stop_requested==false and T.ride_unknown~=true,
+        input_current=T.input_current==true,
+        pose_current=type(pose)=="table" and pose.state=="mounted" and pose.stopped==false
+            and pose.issue==nil and T.pose_issue==nil and not T.pose_dead and not T.pose_stopped})
+end
 latch_stop=function(why)
     if not T.stop_latched then
         T.stop_latched=true;T.generation+=1;T.stop_at=T.now;T.stop_reason=short(why)
         T.phase="stopping";T.detail=T.stop_reason;T.stop_needs_cleanup=true
+        if mounted_evidence then pcall(emit_mounted_evidence,nil,T.now) end
         -- Pure local Ride stop precedes any reentrant Follow/Source callback.
         if stop_ride then stop_ride(T.stop_reason) end
     end
@@ -1967,6 +2054,7 @@ local function tick(dt)
                     local measured_body=T.body
                     local r=call("body.read",lookup("world.physics.read"),measured_body)
                     now=clock()
+                    local observed_ms=now -- The body read bookend, never a later log/pose timestamp.
                     if not lease_live(now) then stop_all("ride window or Follow lease ended during body read")
                     elseif not r[1] or r.n~=2 or type(r[2])~="table" then stop_all("following body observation unavailable")
                     elseif RIDE_COMPOSITION_QUALIFIED and T.body~=measured_body then
@@ -1983,6 +2071,7 @@ local function tick(dt)
                         elseif not lease_live(now) then stop_all("ride window or Follow lease ended during visual update")
                         -- S2 declared change: the rider posed on the bike just drawn, from the same read and pose.
                         elseif poser then pose_tick(r[2],pose,now) end
+                        if mounted_evidence and current(generation) then pcall(emit_mounted_evidence,r[2],observed_ms) end
                     end
                 end
             end

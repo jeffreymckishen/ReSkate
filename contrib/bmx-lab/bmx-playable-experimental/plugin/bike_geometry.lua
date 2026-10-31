@@ -10,6 +10,35 @@ G.rear_axle = scaled(0,.3399312125684516,-.6019780285252407)
 G.bottom_bracket = scaled(0,.4009181147792979,-.13677059002727915)
 G.steering_pivot = scaled(0,.9602538008020781,.3685461188163388)
 G.steering_axis = {0,.9601195908265842,-.279589648075517}
+-- The fork has offset from its head tube, so steering moves its hub as well
+-- as its tyre direction. Use the same fitted pivot/axis as bike_visual. This
+-- is an accepted Lua articulation, not an observed native steering joint.
+-- A geometry snapshot is explicit so private/custom frames keep their anchors.
+local function finite(v) return type(v)=="number" and v==v and math.abs(v)<math.huge end
+local function point(v)
+    if type(v)~="table" then return false end
+    for i=1,3 do if not finite(v[i]) or math.abs(v[i])>10 then return false end end
+    return true
+end
+function G.front_axle_at(geometry,steer)
+    if type(geometry)~="table" or not point(geometry.front_axle)
+        or not finite(steer) or math.abs(steer)>1 then return nil end
+    local p=geometry.front_axle
+    -- Keep the original neutral path exact, including snapshots that only
+    -- supply the neutral contact geometry.
+    if steer==0 then return {p[1],p[2],p[3]} end
+    local c,k=geometry.steering_pivot,geometry.steering_axis
+    if not point(c) or not point(k) then return nil end
+    local length=math.sqrt(k[1]*k[1]+k[2]*k[2]+k[3]*k[3])
+    if length<1e-8 then return nil end
+    local k1,k2,k3=k[1]/length,k[2]/length,k[3]/length
+    local v1,v2,v3=p[1]-c[1],p[2]-c[2],p[3]-c[3]
+    local co,si=math.cos(steer),math.sin(steer)
+    local e=(k1*v1+k2*v2+k3*v3)*(1-co)
+    return {v1*co+(k2*v3-k3*v2)*si+k1*e+c[1],
+        v2*co+(k3*v1-k1*v3)*si+k2*e+c[2],
+        v3*co+(k1*v2-k2*v1)*si+k3*e+c[3]}
+end
 G.left_grip = scaled(.33457504536745686,1.2319480593290573,.3406239453545827)
 G.right_grip = scaled(-.33457504173973396,1.2319480453628473,.34062398104089797)
 G.pedals = {scaled(.084980725506,.211285091841,.011246842761),

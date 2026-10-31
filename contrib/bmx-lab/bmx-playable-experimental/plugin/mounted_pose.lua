@@ -710,7 +710,10 @@ function MP.compose(input, options)
     end
     local fit = length(sub(fitted, hip_world))
     local fit_limited = fit > o.max_fit
-    if fit > 1e-9 and not fit_limited then
+    if fit > 1e-9 and o.max_fit > 0 then
+        -- Keep the fit continuous at its budget: discarding an over-budget
+        -- correction snaps the hips back by the whole allowed displacement.
+        if fit_limited then fitted = add(hip_world, mul(sub(fitted, hip_world), o.max_fit / fit)) end
         local seat2, saddle2, raise2
         hip, seat2, saddle2 = seated(bike_local(fitted))
         hip, raise2 = knee_floor(hip)

@@ -4,6 +4,7 @@ local Qualified=require("./ride_runtime_qualified_fixture")
 local Mapping=require("./ride_input_mapping")
 local Forces=require("./forces")
 local Contact=require("./contact_runtime")
+local G=require("./bike_geometry")
 local Tests={}
 local function copy(v)
     if type(v)~="table" then return v end
@@ -77,10 +78,32 @@ local function fixture(options)
         return out
     end
     function f.tricks:cancel() self.cancelled+=1 end
+    -- Fixed constructed backend facts for the selected real decoder lane;
+    -- requests never establish exclusions in production code.
+    f.category_lane=options.actual_contact and Contact.CATEGORY_WHEEL_LANE_QUALIFIED==true or false
+    f.wheel_probes,f.tripwire_probes=0,0
+    function f.contact_batch(epoch,rays)
+        local batch={status="available",epoch=epoch,native_casts=#rays,budget_exhausted=false,
+            local_actor_excluded=not f.category_lane,owned_bodies_excluded=true,rays=rays}
+        if f.category_lane then
+            batch.requested_query_preset="camera";batch.named_actor_categories_absent=true
+        end
+        return batch
+    end
     f.api={};f.transactions={}
     function f.api.probe_batch(epoch,rays,settings)
         table.insert(f.calls,"probe")
-        assert(epoch==f.read.epoch and #rays==2 and settings.require_contact and settings.exclude_local_actor)
+        assert(epoch==f.read.epoch and settings.require_contact==true)
+        if f.category_lane then
+            assert((#rays==2 or #rays==3) and settings.query_preset=="camera"
+                and settings.require_named_actor_categories_absent==true and settings.exclude_local_actor==nil)
+        else assert(#rays==2 and settings.exclude_local_actor==true) end
+        if #rays==3 then
+            f.tripwire_probes+=1
+            if f.on_tripwire then return f.on_tripwire(epoch,rays,settings) end
+            return f.contact_batch(epoch,{{status="clear"},{status="clear"},{status="clear"}})
+        end
+        f.wheel_probes+=1
         if f.on_probe then return f.on_probe(epoch,rays,settings) end
         return {status="available",epoch=epoch,rays={},local_actor_excluded=true,owned_bodies_excluded=true}
     end
@@ -282,11 +305,12 @@ function Tests.run(case_done)
     next_case() do
         local f=fixture({actual_contact=true})
         f.on_probe=function(epoch)
-            return {status="available",epoch=epoch,native_casts=2,budget_exhausted=false,
-                local_actor_excluded=true,owned_bodies_excluded=true,rays={{status="clear"},{status="clear"}}}
+            return f.contact_batch(epoch,{{status="clear"},{status="clear"}})
         end
         local s=f.observe()
         check(s.submitted==1 and f.last_frame==nil,"actual Contact decoder clear joins paired force kernel")
+        check(f.wheel_probes==1 and f.tripwire_probes==(f.category_lane and 1 or 0)
+            and count(f,"probe")==1+f.tripwire_probes,"selected actor lane retains independent query duties")
     end
     next_case() do
         -- Constructed SDK-shaped facts join actual Contact, Mapping and Forces.
@@ -301,14 +325,15 @@ function Tests.run(case_done)
             local real_preview=f.force.preview
             function f.force:preview(h,body,wheels,samples,controls,speculative)
                 f.preview_calls=(f.preview_calls or 0)+1;f.preview_samples=copy(samples)
+                f.preview_body=copy(body)
                 local model,candidate=real_preview(self,h,body,wheels,samples,controls,speculative)
                 f.preview_result=copy(model)
                 return model,candidate
             end
             f.on_probe=function(epoch,plan)
                 f.plan=plan
-                local batch={status="available",epoch=epoch,native_casts=2,budget_exhausted=false,
-                    local_actor_excluded=true,owned_bodies_excluded=true,rays={}}
+                local batch=f.contact_batch(epoch,{})
+                batch.native_casts=2 -- The same two constructed wheel-hit rows below.
                 for i=1,2 do
                     local from,to=plan[i].from,plan[i].to
                     batch.rays[i]={status="hit",fraction=Forces.wheel_radius/(from.y-to.y),
@@ -323,21 +348,37 @@ function Tests.run(case_done)
             return f
         end
         local f=measured_fixture();local s=f.observe();local model=f.preview_result
-        -- Native vector copies leave tiny positive gaps; zero-gap rest is not
-        -- this row's exact constraint. Solve two vertical normal constraints
-        -- and two free-rolling constraints independently of iterative Solver.
+        -- InFlight forecasts one interval even with no pending command. Solve
+        -- the actual folded hard-contact rows independently of iterative Solver:
+        -- current recovery policy supplies a bounded penetration target, while
+        -- the kernel's next gravity interval acts on that already falling body.
         local first,second=f.preview_samples[1],f.preview_samples[2]
         local h=f.read.seconds
-        local front_z,rear_z=first.contact.point[3]-f.read.position.z,second.contact.point[3]-f.read.position.z
-        local front_target,rear_target=-first.separation/h,-second.separation/h
+        local body,t=f.preview_body,Forces.tuning()
+        local expected_center={f.read.position.x+f.read.velocity.x*h,
+            f.read.position.y+(f.read.velocity.y-9.8*h)*h,
+            f.read.position.z+f.read.velocity.z*h}
+        check(body.mass==83 and math.abs(body.linear_velocity[2]-(f.read.velocity.y-9.8*h))<1e-12
+            and math.abs(body.center_of_mass[1]-expected_center[1])<1e-12
+            and math.abs(body.center_of_mass[2]-expected_center[2])<1e-12
+            and math.abs(body.center_of_mass[3]-expected_center[3])<1e-12,
+            "first command retains the independent one-gravity-interval body forecast")
+        local function normal_target(sample)
+            local bias=math.min(t.recovery_speed_limit,t.recovery_fraction*math.max(0,-sample.separation)/h)
+            return sample.contact.surface_velocity[2]+bias-math.max(0,sample.separation)/h
+        end
+        local front_z,rear_z=first.contact.point[3]-body.center_of_mass[3],second.contact.point[3]-body.center_of_mass[3]
+        local front_target,rear_target=normal_target(first),normal_target(second)
         local expected_spin=(rear_target-front_target)/(front_z-rear_z)
         local expected_vy=front_target+expected_spin*front_z
-        local expected_load=83*(9.8+expected_vy/h)
-        local hub_y_sum=first.contact.point[2]+second.contact.point[2]+2*(Forces.wheel_radius-f.read.position.y)
+        local expected_load=83*(9.8+(expected_vy-body.linear_velocity[2])/h)
+        local hub_y_sum=first.contact.point[2]+second.contact.point[2]+2*(Forces.wheel_radius-body.center_of_mass[2])
         local expected_vz=-expected_spin*hub_y_sum/(2+83*Forces.wheel_radius^2/.23)
-        local expected_force_z,expected_pitch=83*expected_vz/h,26*expected_spin/h
+        local expected_force_z,expected_pitch=83*expected_vz/h,26*(expected_spin-body.angular_velocity[1])/h
         check(s.submitted==1 and not s.stop_requested and s.model_steps==1,"actual measured-hit decoder reaches one force submission")
-        check(count(f,"probe")==1 and count(f,"decode")==0 and f.preview_calls==1,"one real decoder/force path, no substitute decoder")
+        check(f.wheel_probes==1 and f.tripwire_probes==(f.category_lane and 1 or 0)
+            and count(f,"probe")==1+f.tripwire_probes and count(f,"decode")==0 and f.preview_calls==1,
+            "one actual wheel decoder/force path plus required tripwire, no substitute decoder")
         check(count(f,"trick")==0,"measured-hit force test grants no Trick support qualification")
         check(model.valid and model.grounded,"actual force kernel accepts both plan-derived measured-hit rows")
         check(math.abs(f.command.force.y-expected_load)<=.002,"co-moving measured gaps carry analytic 83kg normal response")
@@ -350,10 +391,15 @@ function Tests.run(case_done)
         for i=1,2 do
             local sample,hit=f.preview_samples[i],f.batch.rays[i]
             local contact=sample.contact
-            check(contact.status=="hit" and math.abs(sample.separation)<=.000001
-                and sample.verified_plane==false and sample.balance_normal_available==false,"wheel separation is authored geometry, not verified plane "..i)
-            check(contact.point[1]==hit.position.x and contact.point[2]==hit.position.y
-                and contact.point[3]==hit.position.z,"wheel row keeps actual decoded point "..i)
+            local axle=i==1 and G.front_axle or G.rear_axle
+            local hub={expected_center[1]+axle[1]-G.com[1],expected_center[2]+axle[2]-G.com[2],
+                expected_center[3]+axle[3]-G.com[3]}
+            local gap=hub[2]-hit.position.y-Forces.wheel_radius
+            check(contact.status=="hit" and math.abs(sample.separation-gap)<1e-12
+                and sample.verified_plane==false and sample.balance_normal_available==false
+                and sample.forecast_geometry_unavailable==false,"rigid forecast keeps authored wheel geometry, not a verified plane "..i)
+            check(math.abs(contact.point[1]-hub[1])<1e-12 and math.abs(contact.point[2]-hit.position.y)<1e-12
+                and math.abs(contact.point[3]-hub[3])<1e-12,"decoded plane is re-intersected by the independently forecast gravity ray "..i)
             check(contact.normal[1]==0 and contact.normal[2]==1 and contact.normal[3]==0
                 and contact.forward[1]==0 and contact.forward[2]==0 and contact.forward[3]==1,"wheel row keeps level normal and projected heading "..i)
             check(contact.surface_velocity[1]==.75 and contact.surface_velocity[2]==0
@@ -361,7 +407,10 @@ function Tests.run(case_done)
         end
         local variants={
             {"epoch",function(batch) batch.epoch=newproxy() end},
-            {"local actor exclusion",function(batch) batch.local_actor_excluded=false end},
+            {"required actor exclusion",function(batch)
+                if Contact.CATEGORY_WHEEL_LANE_QUALIFIED then batch.named_actor_categories_absent=false
+                else batch.local_actor_excluded=false end
+            end},
             {"owned body exclusion",function(batch) batch.owned_bodies_excluded=false end},
             {"missing normal",function(batch) batch.rays[2].normal_available=false;batch.rays[2].normal=nil end},
             {"missing surface velocity",function(batch)
@@ -374,6 +423,7 @@ function Tests.run(case_done)
             {"whole-batch refusal",function(batch)
                 batch.status="unavailable";batch.reason="local_actor_exclusion_unavailable";batch.native_casts=0
                 batch.local_actor_excluded=false;batch.owned_bodies_excluded=false
+                if batch.named_actor_categories_absent~=nil then batch.named_actor_categories_absent=false end
                 batch.rays={{status="unavailable"},{status="unavailable"}}
             end},
         }
@@ -384,6 +434,27 @@ function Tests.run(case_done)
             check(rejected.preview_calls==nil and rejected.command==nil,variant[1].." never reaches actual force preview")
             check(count(rejected,"probe")==1 and count(rejected,"decode")==0,variant[1].." does not retry or substitute the decoder")
             check(count(rejected,"trick")==0,variant[1].." grants no companion support authority")
+        end
+    end
+    if Contact.CATEGORY_WHEEL_LANE_QUALIFIED then
+        next_case() do
+            local f=fixture({actual_contact=true,models={tricks=false}})
+            f.on_probe=function(epoch)
+                return f.contact_batch(epoch,{{status="clear"},{status="clear"}})
+            end
+            f.on_tripwire=function(epoch,plan)
+                local a,b=plan[1].from,plan[1].to
+                return f.contact_batch(epoch,{{status="hit",fraction=.5,
+                    position=vector.create((a.x+b.x)/2,(a.y+b.y)/2,(a.z+b.z)/2),
+                    normal_available=true,normal=vector.create(-1,0,0),motion="measured",
+                    surface_velocity_available=true,surface_velocity=vector.create(0,0,0)},
+                    {status="clear"},{status="clear"}})
+            end
+            local state=f.observe()
+            check(state.stop_requested and state.submitted==0 and f.command==nil,
+                "actual category tripwire hit refuses before force admission")
+            check(f.wheel_probes==1 and f.tripwire_probes==1 and count(f,"probe")==2 and count(f,"decode")==0,
+                "tripwire uses actual decoder once without retry or substitute")
         end
     end
     next_case() do

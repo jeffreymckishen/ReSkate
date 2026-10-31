@@ -192,7 +192,12 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
             -- inside the existing contact band, not at the rear floor far below.
             local impact=landing_plane and s.separation<=landing.contact_gap and closing>t.recovery_speed_limit
             local impact_envelope=landing_plane and (impact or recovering)
-            self.landing_impact[i]=impact_envelope==true
+            -- Loaded rolling already admitted this compression envelope. Keep
+            -- it through an opening zero-load step until the measured tyre is
+            -- back inside the landing band or clear. This carries deflection
+            -- policy only; current support still requires fresh evidence.
+            local carry_envelope=floor_plane and supported and s.separation < -landing.maximum_deflection
+            self.landing_impact[i]=(impact_envelope or carry_envelope)==true
             if impact_envelope then out.landing_recovery_mask=bit32.bor(out.landing_recovery_mask,2^(i-1)) end
             -- Late one-wheel impacts cannot stop within 15 mm in one packet.
             -- Use softer finite compliance inside the unchanged gross-penetration
@@ -341,12 +346,17 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
         end
     end
     local motor_speed=math.max(0,speed,wheels[2].angular_speed*wheels[2].radius)
-    local cadence,next_latch=F.pedal_cadence(prior_latch,{enabled=c.enabled,pedal=math.clamp(c.pedal,0,1),motor_speed=motor_speed,
+    local brake=c.enabled and math.clamp(c.brake,0,1) or 0
+    local braking=brake>0 and (t.front_brake_torque>0 or t.rear_brake_torque>0)
+    -- The brake takes priority over a held pedal. Feed the same decision to
+    -- the motor, pump and drawn crank rather than driving against the brake.
+    -- Keeping the existing latch still prevents a brake tap from resetting
+    -- a spin-out while speed remains above the resume threshold.
+    local cadence,next_latch=F.pedal_cadence(prior_latch,{enabled=c.enabled,pedal=braking and 0 or math.clamp(c.pedal,0,1),motor_speed=motor_speed,
         top_speed=t.pedal_top_speed,resume_speed=t.pedal_resume_speed})
     if not cadence.valid then return out end out.pedaling=cadence.pedaling
     local pedal_scale=math.clamp((t.pedal_cutoff-motor_speed)/(t.pedal_cutoff-t.pedal_fade_start),0,1)
-    local pedal=cadence.pedaling and math.clamp(c.pedal,0,1)*pedal_scale or 0 local brake=c.enabled and math.clamp(c.brake,0,1) or 0
-    local braking=brake>0 and (t.front_brake_torque>0 or t.rear_brake_torque>0)
+    local pedal=cadence.pedaling and math.clamp(c.pedal,0,1)*pedal_scale or 0
     local pitch=c.enabled and math.clamp(c.nose_manual,0,1)-math.clamp(c.manual,0,1) or 0
     local assist={0,0,0} local world_up=M.unit(M.mul(t.gravity,-1)) if not world_up then return out end
     if support_mask~=0 then

@@ -48,7 +48,7 @@ function Entry.new(R,Runtime,Survey,options)
     local second_prepare_pending=false
     local second_admitted_at,second_quiet_at,second_quiet_last,second_quiet_samples=nil,nil,nil,0
     local attempt_limit=two_cycle and 2 or 1
-    local fallen,recover_pending=nil,false
+    local fallen,recover_pending,recover_wait_context=nil,false,nil
     local stopped,cancel_sent,cancelled,unloaded,ticking=false,false,false,false,false
     local generation,latest,known=0,nil,false
     local prep_at,prep_last,prep_calls,last_clock,survey=nil,nil,0,nil,nil
@@ -330,6 +330,7 @@ function Entry.new(R,Runtime,Survey,options)
         local w,a=watch[2],actor[2]
         -- Last-value diagnostics from these EXISTING reads only. Absence is
         -- unknown, never zero/false; this projection grants no effect authority.
+        local previous_sample_ms=return_position.sample_ms
         return_position.sample_ms=now
         return_position.actual_state=nil;return_position.actual_pending=nil
         return_position.actual_position=nil;return_position.actual_heading_rad=nil
@@ -366,6 +367,11 @@ function Entry.new(R,Runtime,Survey,options)
             local matched=w.teleport_pending==false and a.airborne==false and w.airborne==false
                 and dx*dx+dz*dz<=.25*.25 and math.abs(dy)<=.25 and math.abs(turn)<=math.rad(5)
             if matched then
+                -- Sparse matching endpoints do not establish a sustained suffix.
+                -- Use the equipment owner's existing maximum observation gap.
+                if not previous_sample_ms or now<=previous_sample_ms or now-previous_sample_ms>250 then
+                    return_position.first_match=nil;return_position.samples=0
+                end
                 return_position.first_match=return_position.first_match or now
                 return_position.samples=(return_position.samples or 0)+1
                 if now-return_position.first_match>=100 and return_position.samples>=3 then
@@ -602,6 +608,57 @@ function Entry.new(R,Runtime,Survey,options)
         else stop_once("explicit return to skateboard",false) end
         return true
     end
+    local function recovery_stock_wait(version)
+        -- Only a positively known fallen300 may wait; this grants no stock
+        -- input authority and never changes the ordinary Return state contract.
+        local out=call(R.skater and R.skater.telemetry)
+        if generation~=version or cancelled or unloaded then return false end
+        local w=out[2];local watch=plain(w) and w.watch or nil
+        if not out[1] or out.n~=2 or not plain(w) or not plain(watch) or watch.valid~=true
+            or not finite(watch.state) or watch.state%1~=0
+            or watch.state~=300 and watch.state~=100 and watch.state~=504 then
+            fail("Fall recovery stock observation unavailable or unqualified.");return false
+        end
+        if not recover_wait_context and watch.state~=300 then return false end
+        local initial=known and latest.initial_readiness
+        if not out[1] or out.n~=2 or not plain(w) or w.skater~=true or w.teleport_pending~=false
+            or type(w.airborne)~="boolean" or not plain(watch) or watch.valid~=true
+            or watch.ragdoll_known~=true or type(watch.ragdoll)~="boolean"
+            or not plain(initial) or type(initial.level)~="string" or #initial.level==0 or #initial.level>200
+            or not finite(initial.wipeouts) or initial.wipeouts<0 or initial.wipeouts%1~=0
+            or watch.wipeouts~=initial.wipeouts or not finite(latest.stop_ms) or latest.stop_ms<0
+            or latest.stop_latched~=true or latest.stock_requested~=false then
+            fail("Fall recovery needs known same-owner stock context and original stop time.");return false
+        end
+        if not recover_wait_context then
+            recover_wait_context={stop_ms=latest.stop_ms,level=initial.level,wipeouts=initial.wipeouts}
+        end
+        local c=recover_wait_context
+        local level=call(R.level and R.level.current)
+        if generation~=version or cancelled or unloaded then return false end
+        local now=clock()
+        if generation~=version or cancelled or unloaded then return false end
+        if not now or now<c.stop_ms or now>=c.stop_ms+20000 then
+            fail("Original fall cleanup deadline expired before stock recovery.");return false
+        end
+        if latest.stop_ms~=c.stop_ms or initial.level~=c.level or initial.wipeouts~=c.wipeouts
+            or not level[1] or level.n~=2 or not plain(level[2]) or level[2].name~=c.level then
+            fail("Fall recovery stock context changed; no switch was sent.");return false
+        end
+        if watch.state==300 then
+            detail="Fall recovery: waiting for known stock300 to settle within the original cleanup window."
+            return true
+        end
+        if watch.state~=100 and watch.state~=504 then
+            fail("Fall recovery stock state is no longer qualified.");return false
+        end
+        local a=actor()
+        if generation~=version or cancelled or unloaded then return false end
+        if not a or a.airborne~=false or w.airborne~=false or watch.ragdoll~=false then
+            fail("Fall recovery requires actual grounded stock before its existing switch.");return false
+        end
+        return false -- Existing Return, stock target/ACK and successor checks decide.
+    end
     local function recoverable()
         return admitted and two_cycle and attempts_used==1 and mount_issued and fallen~=nil
             and not recover_pending and not return_pending and not unloaded and not ticking and not cancelled
@@ -611,6 +668,7 @@ function Entry.new(R,Runtime,Survey,options)
     function object:recover()
         if not recoverable() then return false,"Recovery needs a known fall, cleanable first attempt and one remaining attempt." end
         recover_pending=true -- One explicit intent before any Return callback can reenter.
+        recover_wait_context=nil
         if phase=="skateboard" then return true end
         local out=call(self.return_to_skateboard,self)
         if not out[1] or out[2]~=true or cancelled or unloaded then
@@ -640,7 +698,14 @@ function Entry.new(R,Runtime,Survey,options)
                 fail("Recovery stopped by unknown lifecycle cleanup; no fresh Mount.");return
             end
             if not cancelled and phase~="blocked" then
-            if return_pending then return_step()
+            if return_pending then
+                if recover_pending and not stock_attempted and known and clean(latest) then
+                    local version=generation
+                    local waiting=recovery_stock_wait(version)
+                    if generation~=version or cancelled or unloaded or phase=="blocked" then return end
+                    if waiting then return end
+                end
+                return_step()
             elseif phase=="stepping_off" or phase=="preparing" or phase=="surveying" or phase=="awaiting_mount" then
                 local now=clock()
                 if now then
@@ -672,6 +737,13 @@ function Entry.new(R,Runtime,Survey,options)
             local out=call(self.mount,self)
             if not out[1] or out[2]~=true then fail(text(out[3],"Recovery Mount refused; the intent is spent.")) end
         end
+    end
+    -- Core already detached this small score view in the last normal step.
+    -- HUD reads never poll the lifecycle or turn presentation into evidence.
+    function object:score_view()
+        local ride=known and plain(latest) and latest.ride or nil
+        if not plain(ride) then return nil,"ride_unavailable","unavailable" end
+        return ride.mod_score,ride.mod_score_issue,ride.mod_landing_phase
     end
     function object:status()
         local history=table.clone(terrain_refusals);table.freeze(history)

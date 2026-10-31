@@ -1,5 +1,6 @@
 -- Test-only exact-main wrapper and constructor/event/menu wiring. No game APIs.
 local Main=require("./playable_main_fixture")
+local ScoreHUD=require("./score_hud")
 local Tests={}
 function Tests.run()
     local cases,assertions=0,0
@@ -21,6 +22,7 @@ function Tests.run()
         function controller:cancel() f.cancels+=1;return true end
         function controller:step(dt) f.steps+=1;f.last_dt=dt end
         function controller:unload() f.unloads+=1 end
+        function controller:score_view() return nil,"ride_unavailable","unavailable" end
         function controller:status()
             f.status_reads+=1
             if f.report then return f.report end
@@ -36,7 +38,7 @@ function Tests.run()
             check(options.admitted==false and options.slot==0,"source admission stays closed and slot unchanged")
             return controller
         end
-        local modules={["./bike_runtime"]=Runtime,["./ride_r1_record"]=Survey,["./bmx_playable_entry"]=E}
+        local modules={["./bike_runtime"]=Runtime,["./ride_r1_record"]=Survey,["./bmx_playable_entry"]=E,["./score_hud"]=ScoreHUD}
         local function require_one(name) check(modules[name]~=nil,"no undeclared main dependency");f.requires[#f.requires+1]=name;return modules[name] end
         Main(R,require_one)
         local ui={}
@@ -44,9 +46,9 @@ function Tests.run()
         function ui:button(id,_) return f.buttons[id]==true end
         f.ui=ui;return f
     end
-    case("one inert controller and three declared Lua dependencies",function()
-        local f=setup();check(f.new_calls==1 and #f.requires==3,"main creates one owner coordinator once")
-        check(type(f.callbacks.tick)=="function" and type(f.callbacks.unload)=="function" and type(f.callbacks.action)=="function" and type(f.menu)=="function","entry binds normal events/menu")
+    case("one inert controller and four declared Lua dependencies",function()
+        local f=setup();check(f.new_calls==1 and #f.requires==4,"main creates one owner coordinator once")
+        check(type(f.callbacks.tick)=="function" and type(f.callbacks.draw)=="function" and type(f.callbacks.unload)=="function" and type(f.callbacks.action)=="function" and type(f.menu)=="function","entry binds normal events/menu")
     end)
     case("explicit Mount Return Cancel reach the same controller",function()
         local f=setup();f.menu(f.ui);check(f.mounts==0 and f.returns==0 and f.cancels==0,"draw alone dispatches no command")

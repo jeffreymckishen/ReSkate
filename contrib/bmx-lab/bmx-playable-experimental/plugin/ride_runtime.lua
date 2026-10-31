@@ -8,6 +8,8 @@ local Identity = require("./lease_identity")
 local Geometry = require("./bike_geometry")
 local InFlight = require("./ride_inflight")
 local TrickAdapter = require("./trick_adapter")
+local ModScore = require("./score_runtime")
+local MeasuredLanding = require("./measured_landing")
 local Ride, Object = {}, {}
 local states = setmetatable({}, {__mode="k"})
 local MAX_SAFE = 9007199254740991
@@ -146,6 +148,142 @@ local function invoke(s, fn, ...)
     return result
 end
 local function exact_true(result) return result[1] and result[2] == true and result.current end
+local function score_plain(v) return type(v)=="table" and getmetatable(v)==nil end
+local function score_number(v,lo,hi) return M.finite(v) and v>=lo and v<=hi end
+local function score_count(v,hi) return score_number(v,0,hi) and v%1==0 end
+-- Project the bounded mod view before putting it in status. A scoring fault
+-- must not introduce callback tables, cycles or unbounded data into Ride.
+local function score_snapshot(v)
+    if not score_plain(v) or v.scope~="authored_mod_score_only" or v.calibration~="C0_UNRUN"
+        or v.native_score~=false or type(v.active)~="boolean" or type(v.stopped)~="boolean"
+        or type(v.issue)~="string" or #v.issue>180 then return nil end
+    local out={scope=v.scope,calibration=v.calibration,native_score=false,active=v.active,stopped=v.stopped,issue=v.issue}
+    for _,name in ipairs({"pending_points","pending_score","eligible_pending_score","banked_total","best_combo","landed_combos"}) do
+        if not score_count(v[name],999999999) then return nil end
+        out[name]=v[name]
+    end
+    for _,name in ipairs({"tricks","observed_command_tricks"}) do
+        if not score_count(v[name],16) then return nil end
+        out[name]=v[name]
+    end
+    if not score_number(v.multiplier,1,4) or not score_number(v.combo_factor,1,2) or not score_plain(v.rows) then return nil end
+    out.multiplier,out.combo_factor,out.rows=v.multiplier,v.combo_factor,{}
+    local n,high=0,0
+    for k in next,v.rows do
+        n+=1;if n>4 or not score_count(k,4) or k==0 then return nil end
+        high=math.max(high,k)
+    end
+    if n~=high then return nil end
+    for i=1,n do
+        local r=v.rows[i]
+        if not score_plain(r) or type(r.name)~="string" or #r.name==0 or #r.name>80
+            or (r.channel~="barspin" and r.channel~="tailwhip")
+            or not Identity.is_nonzero_u64(r.body_serial) or not Identity.is_nonzero_u64(r.accepted_sequence)
+            or (r.state~="prediction_only" and r.state~="force_applied_observed") then return nil end
+        out.rows[i]={name=r.name,channel=r.channel,body_serial=r.body_serial,accepted_sequence=r.accepted_sequence,state=r.state}
+    end
+    if v.last_closed~=nil then
+        local c=v.last_closed
+        if not score_plain(c) or (c.outcome~="lost" and c.outcome~="landed")
+            or type(c.reason)~="string" or #c.reason==0 or #c.reason>100
+            or not score_count(c.score,999999999) or not score_count(c.points,999999999)
+            or not score_count(c.tricks,16) or c.authored~=true or c.native_score~=false or c.native_landing~=false
+            or c.multiplier~=nil and not score_number(c.multiplier,1,4)
+            or c.combo_factor~=nil and not score_number(c.combo_factor,1,2) then return nil end
+        out.last_closed={outcome=c.outcome,reason=c.reason,score=c.score,points=c.points,tricks=c.tricks,
+            authored=true,native_score=false,native_landing=false,multiplier=c.multiplier,combo_factor=c.combo_factor}
+    end
+    return freeze(out)
+end
+local function score_disable(s,why)
+    if s.score_disabled then return end
+    s.score_disabled=true;s.score_stopped=true;s.score_issue=detail(why);s.score_sequences={}
+    if s.score_ledger then pcall(s.score_ledger.cancel,s.score_ledger,s.score_issue) end
+    if s.score_landing then pcall(s.score_landing.cancel,s.score_landing,s.score_issue) end
+    local old=s.mod_score
+    s.mod_score=freeze({scope="authored_mod_score_only",calibration="C0_UNRUN",native_score=false,
+        active=false,stopped=true,issue=s.score_issue,pending_points=0,pending_score=0,eligible_pending_score=0,
+        tricks=0,observed_command_tricks=0,multiplier=1,combo_factor=1,rows={},
+        banked_total=old and old.banked_total or 0,best_combo=old and old.best_combo or 0,
+        landed_combos=old and old.landed_combos or 0,last_closed=old and old.last_closed or nil})
+end
+local function score_refresh(s)
+    if not s.score_ledger or s.score_disabled then return end
+    local out=table.pack(pcall(s.score_ledger.view,s.score_ledger))
+    local view=out[1] and out.n==2 and score_snapshot(out[2]) or nil
+    if not view then score_disable(s,"mod score view unavailable");return end
+    s.mod_score=view
+end
+local function score_stop(s,why)
+    if s.score_stopped then return end
+    s.score_stopped=true;s.score_sequences={};s.score_accept_catches=false;s.score_frame_serial=nil
+    if s.score_ledger then pcall(s.score_ledger.cancel,s.score_ledger,detail(why)) end
+    if s.score_landing then pcall(s.score_landing.cancel,s.score_landing,detail(why)) end
+    score_refresh(s)
+end
+local function score_action(s,name,...)
+    if not s.score_ledger or s.score_disabled or s.score_stopped then return nil end
+    local generation=s.generation
+    local out=table.pack(pcall(s.score_ledger[name],s.score_ledger,...))
+    if s.generation~=generation or s.stopped then return nil end
+    if not out[1] or out.n~=3 or type(out[2])~="boolean"
+        or (type(out[3])~="string" and type(out[3])~="table") then
+        score_disable(s,"mod score "..name.." unavailable");return nil
+    end
+    s.score_issue=type(out[3])=="string" and detail(out[3]) or "none"
+    score_refresh(s)
+    if s.mod_score and s.mod_score.stopped then score_stop(s,s.mod_score.issue) end
+    return out[2],out[3]
+end
+local function score_queue(s,frame,presentation)
+    if not s.score_ledger or s.score_disabled or s.score_stopped or s.stopped then return end
+    if not presentation.authored_events then return end
+    if s.score_frame_serial~=frame.serial or s.score_accept_catches~=true then
+        s.score_issue="mod landing air unavailable";return
+    end
+    local accepted=score_action(s,"queue",frame,presentation)
+    if accepted and not s.score_stopped and s.mod_score and s.mod_score.active then
+        s.score_sequences[presentation.accepted_sequence]=true
+    end
+end
+local function score_frame(s,frame,contact,proofs,authored_steer)
+    if not s.score_ledger or s.score_disabled or s.score_stopped or s.stopped or not frame or not contact then return end
+    s.score_frame_serial=frame.serial;s.score_accept_catches=false
+    for _,proof in ipairs(proofs or {}) do
+        local row=proof.receipt
+        if s.score_sequences[row.sequence] then
+            local accepted,why=score_action(s,"observe",frame,row)
+            if accepted and why=="pending_landing" then s.score_sequences[row.sequence]=nil end
+            if s.score_disabled or s.score_stopped or s.stopped then return end
+        end
+    end
+    if s.score_landing then
+        local generation=s.generation
+        local out=table.pack(pcall(s.score_landing.step,s.score_landing,frame,contact,{applied_successors=proofs or {},authored_steer=authored_steer}))
+        if s.generation~=generation or s.stopped then return end
+        local value=out[1] and out.n==2 and out[2] or nil
+        if not score_plain(value) or value.serial~=frame.serial or type(value.landed)~="boolean" or type(value.accepting_catches)~="boolean"
+            or type(value.phase)~="string" or #value.phase>80 then
+            score_disable(s,"measured mod landing unavailable");return
+        end
+        s.score_landing_phase=value.phase;s.score_accept_catches=value.accepting_catches
+        if value.landed then
+            if s.mod_score and s.mod_score.active then
+                score_action(s,"land",frame,score_plain(value.quality) and value.quality or {available=false})
+            end
+            s.score_sequences={}
+        end
+    else
+        -- Pending HUD facts may still be shown without a landing producer.
+        -- Known recontact discards them; missing quality never becomes credit.
+        s.score_accept_catches=contact.grounded==false
+        if s.score_grounded==false and contact.grounded==true then
+            if s.mod_score and s.mod_score.active then score_action(s,"land",frame,{available=false}) end
+            s.score_sequences={}
+        end
+    end
+    s.score_grounded=contact.grounded
+end
 local pad_keys={left_x=true,left_y=true,right_x=true,right_y=true,left_trigger=true,right_trigger=true,playstation=true,buttons=true}
 local button_keys={up=true,down=true,left=true,right=true,start=true,back=true,left_stick=true,right_stick=true,
     lb=true,rb=true,a=true,b=true,x=true,y=true}
@@ -405,6 +543,7 @@ local function stop(s, reason)
     count_stop(s,text)
     if not s.stopped then
         s.stopped=true;s.generation+=1;s.issue=detail(text)
+        score_stop(s,text)
         if s.accepted_barspin then
             pcall(s.accepted_barspin.cancel,s.accepted_barspin,text)
             local ok,row=pcall(s.accepted_barspin.status,s.accepted_barspin)
@@ -476,6 +615,7 @@ local function status(s)
         observed_steps=s.observed_steps,model_steps=s.model_steps,receipt=s.last_receipt,
         model_history=s.model_history,hop_disposition=s.hop_disposition,metrics=s.metrics,
         presentation_pose=s.pose,presentation_trick=s.barspin_presentation,
+        mod_score=s.mod_score,mod_score_issue=s.score_issue,mod_landing_phase=s.score_landing_phase,
         model={trick_status=s.trick_status,trick_fallbacks=s.trick_fallbacks,
             accepted_barspin=s.barspin_state,barspin_issue=s.barspin_issue,
             alignment_status=s.alignment_status,recovery_status=s.recovery_status}})
@@ -499,13 +639,14 @@ local function receipt_valid(row,p)
     end
     return (row.outcome=="rejected" or row.outcome=="expired") and not row.force_attempted and not row.torque_attempted
 end
-local function poll_pending(s)
+local function poll_pending(s,frame,contact,authored_steer)
     -- Inspect every retained command before choosing this poll's stop cause
     -- and ACKing its eligible prefix. Retained/quarantined are body-level SDK
     -- flags, so an older generic row must not hide a younger explicit outcome.
     -- Unknown evidence outranks native failure, which outranks park cleanup.
     -- Equal priority keeps receipt order; stop() preserves any earlier latch.
     local causes={}
+    local score_proofs=s.score_ledger and {} or nil
     local function propose(reason,rank)
         causes[#causes+1]={reason=reason,rank=rank,order=#causes+1}
     end
@@ -550,7 +691,11 @@ local function poll_pending(s)
                                 p.unknown=true;s.unknown=true;propose("applied successor incoherent",80)
                             else
                                 p.ack_ready=true
-                                if not sample_copy(row.successor) then propose("native successor outside drive policy",50) end
+                                if not sample_copy(row.successor) then propose("native successor outside drive policy",50)
+                                elseif score_proofs and frame and contact and not row.retained and not row.quarantined
+                                    and row.cleanup_disposition=="none" then
+                                    score_proofs[#score_proofs+1]={request={sequence=p.sequence,serial=p.serial,time=p.time,seconds=p.seconds},receipt=row}
+                                end
                             end
                         end
                     elseif row.outcome~="queued" then
@@ -566,6 +711,8 @@ local function poll_pending(s)
         return a.rank>b.rank or a.rank==b.rank and a.order<b.order
     end)
     for _,cause in ipairs(causes) do stop(s,cause.reason) end
+    -- Only fresh measured frames may inform local points, before the same ACK loop.
+    score_frame(s,frame,contact,score_proofs,authored_steer)
     local index=1
     while index<=#s.pending do
         local p=s.pending[index]
@@ -655,15 +802,19 @@ local function companion_result(s,frame,contact,actions)
     end
     return out
 end
-local function wheel_plan(frame,geometry,gravity,probe_extra)
+local function wheel_plan(frame,geometry,gravity,probe_extra,steer)
     if type(geometry)~="table" or not M.vec(geometry.com,10) or not M.vec(geometry.front_axle,10)
         or not M.vec(geometry.rear_axle,10) or not M.finite(geometry.wheel_radius)
         or geometry.wheel_radius<.01 or geometry.wheel_radius>2
         or not M.finite(probe_extra) or probe_extra<.15 or probe_extra>.75 then return nil end
     local down=M.unit(gravity)
     if not down then return nil end
+    -- Contact rays follow the last accepted steer drawn on this measured body.
+    -- Current input and an unaccepted force preview cannot move their hubs.
+    local front=Geometry.front_axle_at(geometry,steer)
+    if not front then return nil end
     local rays,centers={},{}
-    for i,axle in ipairs({geometry.front_axle,geometry.rear_axle}) do
+    for i,axle in ipairs({front,geometry.rear_axle}) do
         local center=M.add(frame.body.center_of_mass,M.turn(frame.body.orientation,M.sub(axle,geometry.com)))
         local target=M.add(center,M.mul(down,geometry.wheel_radius+probe_extra))
         if not M.vec(center,100000) or not M.vec(target,100000) then return nil end
@@ -855,7 +1006,8 @@ local function observe(s,source_frame,raw,context)
         serial=sample.serial,time=sample.time,seconds=sample.seconds,body=body,sample=sample,source=model_source,
         owner={body_handle=s.body,lease_handle=model_source.lease_handle},gates={focused=true,menu_open=false},
         now_ms=s.now,active=true,loaded=true,telemetry=copy(context.telemetry),observed=copy(context.observed)})
-    local plan,centers=wheel_plan(frame,s.geometry,s.force.tuning.gravity,s.wheel_probe_extra)
+    local authored_steer=s.pose.steer
+    local plan,centers=wheel_plan(frame,s.geometry,s.force.tuning.gravity,s.wheel_probe_extra,authored_steer)
     if not plan then stop(s,"authored wheel geometry unavailable");return end
     local category_lane=s.contact.CATEGORY_WHEEL_LANE_QUALIFIED==true
     local query_options=category_lane
@@ -967,7 +1119,7 @@ local function observe(s,source_frame,raw,context)
         else s.barspin_issue=value and detail(value.issue) or "adapter unavailable" end
     end
     -- Every coherent observed model step happens before the command gate.
-    poll_pending(s)
+    poll_pending(s,frame,contact,authored_steer)
     if s.stopped or s.unknown then return end
     s.backpressure=command_backpressure(s)
     if s.backpressure then
@@ -1066,6 +1218,7 @@ local function observe(s,source_frame,raw,context)
             end
             pose.barspin=target.barspin;pose.tailwhip=target.tailwhip
             s.barspin_presentation=freeze(value);s.barspin_state=s.accepted_barspin:status()
+            score_queue(s,frame,value)
             s.barspin_issue="predictive_accepted"
             s.barspin_candidate,s.barspin_preview=nil,nil
         end
@@ -1116,7 +1269,40 @@ function Ride.new(force_api,models,options)
         pose=freeze(NEUTRAL_POSE),trick_fallbacks=0,
         submitted=0,acknowledged=0,pending={},metrics=new_metrics(),backpressure_steps=0,
         continuity_pending=false,continuity_skipped_steps=0,continuity_invalidations=0,body_read_recoveries=0,
-        input_queue={},input_staged=0,input_consumed=0,observed_steps=0,model_steps=0}
+        input_queue={},input_staged=0,input_consumed=0,observed_steps=0,model_steps=0,
+        score_sequences={},score_issue=models.scoring==false and "disabled" or "waiting_for_mod_catch",score_landing_phase="unavailable"}
+    -- Pure optional services. Failure disables only local points; it never
+    -- grants or withholds force, body, Source, Follow or cleanup authority.
+    if models.scoring~=false then
+        s.score_ledger=models.scoring
+        if s.score_ledger==nil then
+            local made=table.pack(pcall(ModScore.new))
+            s.score_ledger=made[1] and made.n==2 and made[2] or nil
+        end
+        if type(s.score_ledger)~="table" then
+            s.score_ledger=nil;s.score_issue="mod score construction unavailable"
+        else
+            local valid=true
+            for _,name in ipairs({"queue","observe","land","cancel","view"}) do
+                if type(s.score_ledger[name])~="function" then valid=false end
+            end
+            if not valid then score_disable(s,"mod score capability unavailable")
+            else
+                if models.score_landing~=false then
+                    s.score_landing=models.score_landing
+                    if s.score_landing==nil then
+                        local landing=table.pack(pcall(MeasuredLanding.new))
+                        s.score_landing=landing[1] and landing.n==2 and landing[2] or nil
+                    end
+                    if type(s.score_landing)~="table" or type(s.score_landing.step)~="function"
+                        or type(s.score_landing.cancel)~="function" then
+                        s.score_landing=nil;s.score_issue="measured mod landing unavailable"
+                    end
+                end
+                score_refresh(s)
+            end
+        end
+    end
     if ACTIVATION_QUALIFIED then
         -- Snapshot an immutable model capability once. Raw Forces has no hop
         -- policy and retains its receipt-owned hop behavior unchanged.
@@ -1176,4 +1362,5 @@ function Object:drain()
 end
 function Object:stop(reason) local s=states[self];stop(s,reason or "Core stop");return status(s) end
 function Object:status() return status(states[self]) end
+function Object:score_view() local s=states[self];return s.mod_score,s.score_issue,s.score_landing_phase end
 return table.freeze(Ride)

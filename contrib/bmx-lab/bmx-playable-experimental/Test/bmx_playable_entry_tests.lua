@@ -330,6 +330,23 @@ function Tests.run()
         f.heading=.2;f.tick(12)
         check(f.placements==1 and f.toggles==1 and f.entry:status().return_position.observed
             and f.entry:status().phase=="skateboard","only grounded100 root/heading convergence spanning100ms completes Return")
+        -- A paused callback cannot turn three distant endpoints into100ms
+        -- continuous Return evidence. The same one queued placement remains.
+        local gap=after_stock()
+        gap.pending=false;gap.position=vector.create(55,5.8,80);gap.heading=.2
+        gap.tick(4)
+        check(gap.entry:status().return_position.samples==1 and gap.entry:status().phase=="returning",
+            "first grounded target match starts an incomplete convergence suffix")
+        gap.now+=1000;gap.tick()
+        check(gap.entry:status().return_position.samples==1 and not gap.entry:status().return_position.observed,
+            "an unobserved gap over250ms resets the suffix instead of crediting elapsed time")
+        gap.tick(4)
+        check(gap.entry:status().phase=="returning" and gap.entry:status().return_position.samples==2,
+            "only two new matching samples cannot finish Return after the gap")
+        gap.tick(4)
+        check(gap.entry:status().phase=="skateboard" and gap.entry:status().return_position.observed
+            and gap.placements==1 and gap.toggles==1,
+            "three fresh matches spanning100ms complete the existing placement without a retry")
         for _,options in ipairs({{refuse=true},{raise=true}})do
             local g=after_stock(options);g.tick(5)
             check(g.placements==1 and g.toggles==1 and g.entry:status().phase=="blocked",

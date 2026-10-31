@@ -30,7 +30,9 @@ function Model.advance(previous,seconds,grounded,request,neutral,duration,allowe
     end
     if neutral and request=="none" then c.armed=true end
     if request~="none" then
+        -- Consume busy requests while the prior catch is still blending.
         local start=allowed~=false and c.armed and not c.rotating and not c.waiting and not c.failed
+            and c.blend_remaining==0 and c.release==0
         c.armed=false
         if start then
             c.rotating,c.caught,c.elapsed=true,false,0
@@ -203,6 +205,27 @@ local function reject(why)
     return table.freeze({valid=false,issue=why,scope="accepted_step_ray_barspin_only",
         realized=false,completion_qualified=false})
 end
+-- Catch facts name an adopted, completed re-grip prediction only. A queue is not proof
+-- of native application, physical catch, landing, or progression.
+local function authored_events(before_bar,before_tail,chosen,accepted_sequence)
+    if not (before_bar.caught and before_bar.blend_remaining>0
+        or before_tail.caught and before_tail.blend_remaining>0) then return nil end
+    local rows={}
+    local function caught(channel,before,after)
+        if before.airborne and after.airborne and before.caught and before.blend_remaining>0
+            and before.blend_remaining-chosen.frame.seconds<=0 and after.blend_remaining==0 and after.release==0 then
+            rows[#rows+1]=table.freeze({kind="authored_channel_catch",scope="mod_authored_accepted_step",
+                channel=channel,direction=before.direction,body_serial=chosen.frame.serial,
+                accepted_sequence=accepted_sequence,source_observation_serial=chosen.action.observation_serial,
+                catch_phase="regrip_complete",authored_completion=true,
+                prediction_only=true,native_application="unobserved",native_application_observed=false,
+                native_catch=false,native_landing=false,landing_quality_available=false,completion_qualified=false})
+        end
+    end
+    caught("barspin",before_bar,chosen.state)
+    caught("tailwhip",before_tail,chosen.tail_state)
+    return #rows>0 and table.freeze(rows) or nil
+end
 function Runtime.new()
     local state,tail_state,hand_state=Model.new(),Model.new(),OneHand.new()
     local observed,accepted,action_seen,consumed,sequence,draft,air_started
@@ -279,11 +302,14 @@ function Runtime.new()
         -- Root alone calls this after exact native admission and force-history
         -- adoption. This local sequence check is not a native receipt itself.
         local chosen=draft
+        local events=authored_events(state,tail_state,chosen,accepted_sequence)
         state,tail_state,hand_state,accepted,consumed,sequence=chosen.state,chosen.tail_state,chosen.hand_state,chosen.frame,chosen.action.observation_serial,accepted_sequence
         air_started=chosen.air_started;revision+=1;draft=nil
-        return true,table.freeze({valid=true,scope="predictive_accepted_ray_barspin_only",realized=false,
+        local receipt={valid=true,scope="predictive_accepted_ray_barspin_only",realized=false,
             completion_qualified=false,serial=accepted.serial,accepted_sequence=sequence,
-            visual_targets=chosen.result.visual_targets,requests=chosen.result.requests})
+            visual_targets=chosen.result.visual_targets,requests=chosen.result.requests}
+        if events then receipt.authored_events=events end
+        return true,table.freeze(receipt)
     end
     function object:cancel(reason)
         if stopped then return end

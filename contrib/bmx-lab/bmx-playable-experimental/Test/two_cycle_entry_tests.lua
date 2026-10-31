@@ -363,6 +363,46 @@ function Tests.run()
         check(not f.entry:recover() and not f.entry:status().recovery_available and f.mounts==2,"second fall cannot allocate a third attempt")
         check(f.entry:return_to_skateboard(),"ordinary Return remains available after the final fall")
     end)
+    case("explicit recovery can wait for known300 within its original stop window",function()
+        local function pending_fall()
+            local f=fixture({two=true});f.riding()
+            fall(f,"measured tilt 55.8 deg over the 55 deg Ride stop")
+            local stop=f.now
+            check(f.entry:recover(),"one explicit Recover starts existing stop/Return")
+            f.latest=cleaned();f.latest.stop_ms=stop;f.latest.stock_requested=false
+            f.latest.initial_readiness={level="constructed",wipeouts=0}
+            f.stock=300;f.level="constructed";f.ragdoll_known=true
+            f.R.level={current=function()return{name=f.level}end}
+            function f.R.skater.telemetry()
+                return{skater=true,airborne=false,teleport_pending=false,
+                    watch={valid=true,state=f.stock,ragdoll_known=f.ragdoll_known,ragdoll=f.stock==300,wipeouts=0}}
+            end
+            return f
+        end
+        local f=pending_fall();f.tick(5)
+        check(f.entry:status().phase=="returning" and f.entry:status().recovery_pending
+            and f.toggles==0 and f.mounts==1,"known300 waits after full cleanup without stock input or allocation")
+        f.stock=504;f.tick()
+        check(f.toggles==1 and f.mounts==1,"actual grounded504 permits exactly the existing stock transaction")
+        f.latest=cleaned();f.stock=100
+        f.latest.equipment={phase="done",outcome="target_observed",initial_state=504,expected_state=100,
+            retained=false,acknowledged=true,qualified_transition=true,current_transition=true,unloaded=false,storage_fault=false,
+            terminal_receipt={terminal=true,claim_released=true,report_debt=false,quarantined=false}}
+        f.tick();f.await_stepoff()
+        check(f.stepoffs==1 and f.entry:status().attempts_used==2,"supplied clean stock100ACK precedes one remaining explicit recovery handoff")
+        f.latest=cleaned();f.stock=504;f.on_ready504=function()return true,2 end
+        f.tick();f.await_mount();f.tick()
+        check(f.mounts==2 and f.entry:status().phase=="riding","fresh504ACK and full survey still precede the new mounted session")
+        local expired=pending_fall();expired.tick();expired.now+=20000;expired.tick()
+        check(expired.entry:status().phase=="blocked" and not expired.entry:status().recovery_pending
+            and expired.toggles==0 and expired.mounts==1,"original stop+20s is never restarted or extended for known300")
+        local unknown=pending_fall();unknown.ragdoll_known=false;unknown.tick()
+        check(unknown.entry:status().phase=="blocked" and unknown.toggles==0,"unknown ragdoll context is never treated as a recoverable wait")
+        local missing=pending_fall();missing.latest.stop_ms=nil;missing.tick()
+        check(missing.entry:status().phase=="blocked" and missing.toggles==0,"missing original stop time cannot create a new recovery deadline")
+        local changed=pending_fall();changed.tick();changed.level="other";changed.tick()
+        check(changed.entry:status().phase=="blocked" and changed.toggles==0,"fresh level mismatch ends waiting before any stock request")
+    end)
     case("roll fall can recover after a separately completed Return",function()
         local f=fixture({two=true});f.riding()
         fall(f,"measured roll rate 8.25 rad/s over the 8 rad/s Ride stop")

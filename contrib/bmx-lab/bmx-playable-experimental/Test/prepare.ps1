@@ -20,10 +20,10 @@ Assert-PlainPath $Package
 Assert-PlainPath $TestRoot
 $manifestPath=Join-Path $PSScriptRoot 'two_cycle_tests.json'
 Assert-PlainPath $manifestPath
-if((Get-FileHash -LiteralPath $manifestPath).Hash -cne 'DDA226930F4D2A8E3274656AFE3B3AC6D560CB3F7AF9F1D694D1D3501F9E0172'){throw 'Exact matrix manifest changed'}
+if((Get-FileHash -LiteralPath $manifestPath).Hash -cne '503FBE9F8705BB37200CA5B7FB448505EE5FD3B84A1C4C4891F206DA012C1E5C'){throw 'Exact matrix manifest changed'}
 $plan=Get-Content -LiteralPath $manifestPath -Raw|ConvertFrom-Json
-if($plan.schema -ne 1 -or $plan.flat_file_count -ne 68 -or $plan.quota_file_count -ne 69 -or
-    @($plan.files).Count -ne 68 -or @($plan.runtime_files).Count -ne 33 -or @($plan.suites).Count -ne 30){throw 'Unexpected matrix shape'}
+if($plan.schema -ne 1 -or $plan.flat_file_count -ne 82 -or $plan.quota_file_count -ne 83 -or
+    @($plan.files).Count -ne 82 -or @($plan.runtime_files).Count -ne 36 -or @($plan.suites).Count -ne 41){throw 'Unexpected matrix shape'}
 function Assert-Source($Row){
     if($Row.source -notmatch '^(plugin|Test)/[A-Za-z0-9_-]+\.lua$' -and $Row.source -notin @('README.md','reskate-plugin.json')){throw 'Non-relative matrix input refused'}
     $source=Join-Path $Package $Row.source
@@ -51,15 +51,27 @@ foreach($wrapper in $plan.wrappers){
     $expected=$utf.GetBytes($wrapper.prefix+[IO.File]::ReadAllText($source)+$wrapper.suffix)
     if([Convert]::ToBase64String($expected) -cne [Convert]::ToBase64String([IO.File]::ReadAllBytes($fixture))){throw 'Wrapper raw inverse differs'}
 }
-$entryNames=@('bmx_playable_entry.lua','ride_r1_record.lua','bmx_playable_entry_tests.lua','playable_main_fixture.lua','bmx_playable_main_tests.lua','force_math.lua','bike_geometry.lua')
+$entryNames=@('bmx_playable_entry.lua','ride_r1_record.lua','bmx_playable_entry_tests.lua','playable_main_fixture.lua','bmx_playable_main_tests.lua','force_math.lua','bike_geometry.lua','score_hud.lua')
 $files=if($Matrix -ceq 'entry'){@($plan.files|Where-Object {$_.destination -in $entryNames})}else{@($plan.files)}
-if($Matrix -ceq 'entry' -and $files.Count -ne 7){throw 'Seven-file legacy unit differs'}
+if($Matrix -ceq 'entry' -and $files.Count -ne 8){throw 'Eight-file entry unit differs'}
 $null=New-Item -ItemType Directory -Path $TestRoot -ErrorAction Stop
 function Copy-Files([string]$Destination,$Rows){
     foreach($row in $Rows){
         $to=Join-Path $Destination $row.destination
-        [IO.File]::Copy((Join-Path $Package $row.source),$to,$false)
-        if((Get-Item -LiteralPath $to).Length -ne $row.bytes -or (Get-FileHash -LiteralPath $to).Hash -cne $row.sha256){throw 'Copied source differs; preserve partials'}
+        $expectedBytes=$row.bytes;$expectedHash=$row.sha256
+        if($null -ne $row.test_transform){
+            $t=$row.test_transform
+            if($row.source -cne 'plugin/ride_runtime.lua' -or $row.destination -cne 'ride_runtime.lua' -or
+                $t.kind -cne 'inert_raw_ride_fixture' -or $t.before -cne 'local ACTIVATION_QUALIFIED = true' -or
+                $t.after -cne 'local ACTIVATION_QUALIFIED = false'){throw 'Unrecognized test-only alias transform'}
+            $raw=[IO.File]::ReadAllText((Join-Path $Package $row.source))
+            if(([regex]::Matches($raw,[regex]::Escape($t.before))).Count -ne 1){throw 'Raw Ride activation literal differs'}
+            $inert=$raw.Replace($t.before,$t.after)
+            if($inert.Replace($t.after,$t.before) -cne $raw){throw 'Inert Ride test alias inverse differs'}
+            [IO.File]::WriteAllText($to,$inert,$utf)
+            $expectedBytes=$t.bytes;$expectedHash=$t.sha256
+        }else{[IO.File]::Copy((Join-Path $Package $row.source),$to,$false)}
+        if((Get-Item -LiteralPath $to).Length -ne $expectedBytes -or (Get-FileHash -LiteralPath $to).Hash -cne $expectedHash){throw 'Copied source differs; preserve partials'}
     }
 }
 $invocations=@()
@@ -76,6 +88,6 @@ if($Matrix -ceq 'entry'){
     if((Get-FileHash -LiteralPath $alias).Hash -cne $plan.quota.sha256){throw 'Quota alias differs; preserve partials'}
     foreach($run in $plan.suites){$invocations+=[ordered]@{directory=(Join-Path $TestRoot $run.context);module=$run.invoked;suite=$run.suite;expected_cases=$run.expected_cases;expected_assertions=$run.expected_assertions}}
 }
-$result=[ordered]@{matrix=$Matrix;flat_files=$files.Count;quota_files=$(if($Matrix -ceq 'two-cycle'){69}else{0});destination=$TestRoot;source_admission='UNCHANGED_FALSE';executed=$false;invocations=$invocations}
+$result=[ordered]@{matrix=$Matrix;flat_files=$files.Count;quota_files=$(if($Matrix -ceq 'two-cycle'){83}else{0});destination=$TestRoot;source_admission='UNCHANGED_FALSE';executed=$false;invocations=$invocations}
 [IO.File]::WriteAllText((Join-Path $TestRoot 'preparation.json'),($result|ConvertTo-Json -Depth 8),$utf)
 $result|ConvertTo-Json -Depth 8 -Compress

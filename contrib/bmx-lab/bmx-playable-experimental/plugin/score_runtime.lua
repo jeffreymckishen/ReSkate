@@ -112,7 +112,8 @@ function Score.new()
             local c=plain(e) and channels[e.channel] or nil
             local pose=c and e.channel=="one_hander"
             local shape=c and (pose and e.kind=="authored_pose_recovery"
-                and e.movement_id==36 and e.side=="left" and e.direction==nil
+                and (e.movement_id==36 and e.side=="left" or e.movement_id==42 and e.side=="right")
+                and e.direction==nil
                 or not pose and e.kind=="authored_channel_catch" and (e.direction==-1 or e.direction==1))
             if not c or not shape or seen[e.channel]
                 or e.scope~="mod_authored_accepted_step" or e.catch_phase~="regrip_complete" or e.authored_completion~=true
@@ -124,7 +125,8 @@ function Score.new()
                 return lose("invalid_catch_event",true)
             end
             seen[e.channel]=true
-            additions[i]={channel=e.channel,name=c.name,direction=e.direction,serial=f.serial,time=f.time,
+            local name=pose and e.movement_id==42 and "One Hander Right" or c.name
+            additions[i]={channel=e.channel,name=name,direction=e.direction,serial=f.serial,time=f.time,
                 seconds=f.seconds,sequence=presentation.accepted_sequence,confirmed=false}
         end
         -- Consume the entire bounded batch only after every edge is checked.

@@ -61,16 +61,16 @@ function Model.advance(previous,seconds,grounded,request,neutral,duration,allowe
     end
     return c
 end
--- Closed authored motions.lua entry36: One Hander Left, release mask1,
+-- Closed authored motions.lua entries36/42: One Hander Left/Right, release masks1/2,
 -- pose enter .18s/recover .12s, no bar/tail/crank/bike rotation. This is one
 -- presentation channel, not the full catalog or a physical completion model.
-local ONE_HAND=table.freeze({id=36,enter_seconds=.18,recover_seconds=.12})
+local ONE_HAND=table.freeze({id=36,right_id=42,enter_seconds=.18,recover_seconds=.12})
 local OneHand={}
 function OneHand.new()
     return {armed=false,active=false,holding=false,recovering=false,elapsed=0,
         recover_elapsed=0,progress=0,phase=0,release=0}
 end
-function OneHand.advance(previous,seconds,grounded,takeoff,request,neutral,allowed)
+function OneHand.advance(previous,seconds,grounded,takeoff,request,neutral,allowed,side)
     local m=table.clone(previous)
     if grounded then return OneHand.new() end
     if takeoff then
@@ -81,6 +81,9 @@ function OneHand.advance(previous,seconds,grounded,takeoff,request,neutral,allow
         local start=m.armed and not m.active and allowed
         m.armed=false -- Busy selections are consumed, never queued.
         if start then
+            -- Latch the selected hand until its accepted recovery or reset.
+            -- An opposite busy selection is consumed without changing sides.
+            m.side=side
             m.active,m.holding,m.recovering=true,false,false
             m.elapsed,m.recover_elapsed,m.progress,m.phase,m.release=0,0,0,0,0
             return m -- Selection arrived at the end of this accepted sample.
@@ -114,8 +117,8 @@ function Model.target(c,tail,hand)
         pose_provenance="measured_rays_authored_wheel_geometry",native_collision_contact=false,
         landing_quality_available=false,completion_qualified=false,barspin=angle,
         tailwhip=tail_angle,movement_bike_pitch=0,movement_bike_roll=0,movement_crank_angle=0,
-        barspin_release=c.release,tailwhip_release=tail_release,release_left_hand=math.max(c.release,hand and hand.release or 0),
-        release_right_hand=c.release,release_left_foot=tail_release,release_right_foot=tail_release})
+        barspin_release=c.release,tailwhip_release=tail_release,release_left_hand=math.max(c.release,hand and hand.side~="right" and hand.release or 0),
+        release_right_hand=math.max(c.release,hand and hand.side=="right" and hand.release or 0),release_left_foot=tail_release,release_right_foot=tail_release})
 end
 function Model.reserved(c) return c.airborne and (c.rotating or c.waiting) end
 table.freeze(Model)
@@ -199,7 +202,9 @@ local function actions_copy(raw,frame)
     local movement=rawget(raw,"movement")
     if not Catalog.valid(movement) then return nil end
     return {request=request,neutral=raw.bar_neutral,tail_request=tail_request,tail_neutral=raw.rear_neutral,
-        one_hand_request=movement==ONE_HAND.id,observation_serial=frame.source.observation_serial}
+        one_hand_request=movement==ONE_HAND.id or movement==ONE_HAND.right_id,
+        one_hand_side=movement==ONE_HAND.id and "left" or movement==ONE_HAND.right_id and "right" or nil,
+        observation_serial=frame.source.observation_serial}
 end
 local function reject(why)
     return table.freeze({valid=false,issue=why,scope="accepted_step_ray_barspin_only",
@@ -212,6 +217,7 @@ local function authored_events(before_bar,before_tail,before_hand,chosen,accepte
     -- A released hand is not a completed pose. Require the full authored
     -- entry, then its accepted neutral recovery, all before measured recontact.
     local hand_complete=before_bar.airborne and chosen.state.airborne
+        and (before_hand.side=="left" or before_hand.side=="right") and after_hand.side==before_hand.side
         and before_hand.active and before_hand.recovering and before_hand.progress==1
         and before_hand.recover_elapsed<ONE_HAND.recover_seconds
         and not after_hand.active and not after_hand.recovering and after_hand.progress==1
@@ -235,7 +241,7 @@ local function authored_events(before_bar,before_tail,before_hand,chosen,accepte
     caught("tailwhip",before_tail,chosen.tail_state)
     if hand_complete then
         rows[#rows+1]=table.freeze({kind="authored_pose_recovery",scope="mod_authored_accepted_step",
-            channel="one_hander",movement_id=ONE_HAND.id,side="left",body_serial=chosen.frame.serial,
+            channel="one_hander",movement_id=before_hand.side=="right" and ONE_HAND.right_id or ONE_HAND.id,side=before_hand.side,body_serial=chosen.frame.serial,
             accepted_sequence=accepted_sequence,source_observation_serial=chosen.action.observation_serial,
             catch_phase="regrip_complete",authored_completion=true,
             prediction_only=true,native_application="unobserved",native_application_observed=false,
@@ -278,7 +284,8 @@ function Runtime.new()
         if action_seen and action_seen.observation_serial==action.observation_serial
             and (action_seen.request~=action.request or action_seen.neutral~=action.neutral
                 or action_seen.tail_request~=action.tail_request or action_seen.tail_neutral~=action.tail_neutral
-                or action_seen.one_hand_request~=action.one_hand_request) then
+                or action_seen.one_hand_request~=action.one_hand_request
+                or action_seen.one_hand_side~=action.one_hand_side) then
             return reject("actions_duplicate_changed")
         end
         -- Observe every eligible physical frame, including an eventual refused
@@ -300,7 +307,7 @@ function Runtime.new()
         local can_pose=not next_state.rotating and not next_state.waiting and next_state.release==0
             and not next_tail.rotating and not next_tail.waiting and next_tail.release==0
         local next_hand=OneHand.advance(hand_state,frame.seconds,support.grounded,
-            not state.airborne and next_state.airborne,hand_request,action.tail_neutral,can_pose)
+            not state.airborne and next_state.airborne,hand_request,action.tail_neutral,can_pose,action.one_hand_side)
         local out=result(frame,support,next_state,next_tail,next_hand)
         local candidate=table.freeze({scope="private_ray_barspin_candidate_v1"})
         local next_air=next_state.airborne and (state.airborne and air_started or frame.time) or nil

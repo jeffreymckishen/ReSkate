@@ -32,6 +32,12 @@ local function fixture()
         return {valid=true,scope="predictive_accepted_ray_barspin_only",serial=frame.serial,
             accepted_sequence=sequence,realized=false,completion_qualified=false,authored_events=events}
     end
+    function f:pose(frame,sequence,movement_id,side)
+        local p=self:presentation(frame,sequence,{"one_hander"})
+        local e=p.authored_events[1]
+        e.kind="authored_pose_recovery";e.movement_id=movement_id;e.side=side;e.direction=nil
+        return p
+    end
     function f:receipt(n,sequence)
         return {sequence=sequence,requested_serial=tostring(100+n),produced_serial=tostring(101+n),
             outcome="applied",force_attempted=true,torque_attempted=true,retained=false,quarantined=false,
@@ -224,6 +230,96 @@ function Tests.run()
         check(not pcall(function() closed.rows[2].state="force_applied_observed" end),"caller cannot promote lost command evidence")
         check(not f.score:observe(f:at(6),f:receipt(4,"2")) and f.score:view().last_closed.rows[2].state=="prediction_only",
             "late application cannot alter a frozen terminal loss")
+    end)
+    case("one hander exact catalog pairs preserve their authored side labels",function()
+        for _,side in ipairs({
+            {id=36,side="left",name="One Hander"},
+            {id=42,side="right",name="One Hander Right"},
+        }) do
+            local f=fixture();local frame=f:at(0);local p=f:pose(frame,"1",side.id,side.side)
+            check(f.score:queue(frame,p),"only a validated authored recovery enters the ledger")
+            local pending=f.score:view()
+            check(pending.rows[1].name==side.name and pending.rows[1].channel=="one_hander"
+                and pending.pending_points==100 and pending.banked_total==0,
+                "side affects only the original label, not channel, value or bank")
+            p.authored_events[1].movement_id=side.id==36 and 42 or 36
+            p.authored_events[1].side=side.side=="left" and "right" or "left"
+            check(f.score:observe(f:at(2),f:receipt(0,"1")),"exact applied command and successor still required")
+            check(f.score:view().banked_total==0,"application observation alone cannot bank a pose")
+            local land=f:at(6);local ok,closed=f.score:land(land,f:quality(land))
+            check(ok and closed.points==100 and closed.score==150 and closed.tricks==1,
+                "both catalog sides retain the same authored value")
+            check(closed.rows[1].name==side.name and closed.rows[1].channel=="one_hander"
+                and closed.rows[1].body_serial=="100" and closed.rows[1].accepted_sequence=="1"
+                and closed.rows[1].state=="force_applied_observed"
+                and closed.authored and not closed.native_score and not closed.native_landing,
+                "original validated label survives mutation and qualified local closure without native claims")
+        end
+    end)
+    case("one hander catalog side mismatches and nonpose shapes are refused",function()
+        for _,bad in ipairs({
+            {id=36,side="right"},{id=42,side="left"},{id=36},{id=42},
+            {id=37,side="left"},{id=43,side="right"},{id=42,side="RIGHT"},
+            {id=42,side="right",direction=1},{id=42,side="right",kind="authored_channel_catch"},
+            {id=42,side="right",sequence="2"},
+        }) do
+            local f=fixture();local frame=f:at(0);local p=f:pose(frame,"1",bad.id,bad.side)
+            local e=p.authored_events[1]
+            e.direction=bad.direction
+            if bad.kind then e.kind=bad.kind end
+            if bad.sequence then e.accepted_sequence=bad.sequence end
+            local ok,why=f.score:queue(frame,p);local view=f.score:view()
+            check(not ok and why=="invalid_catch_event" and view.stopped and not view.active
+                and view.banked_total==0 and view.last_closed==nil,
+                "invalid side/catalog/shape/identity pair cannot enter or bank the ledger")
+        end
+        local f=fixture();local frame=f:at(0);local p=f:pose(frame,"1",36,"left")
+        p.authored_events[2]=f:pose(frame,"1",42,"right").authored_events[1]
+        local ok,why=f.score:queue(frame,p)
+        check(not ok and why=="invalid_catch_event" and f.score:view().banked_total==0,
+            "two side variants remain one channel and cannot duplicate the same accepted edge")
+    end)
+    case("switching one hander sides shares the same repeat and category bucket",function()
+        for _,pattern in ipairs({
+            {{id=36,side="left",name="One Hander"},{id=36,side="left",name="One Hander"}},
+            {{id=36,side="left",name="One Hander"},{id=42,side="right",name="One Hander Right"}},
+            {{id=42,side="right",name="One Hander Right"},{id=36,side="left",name="One Hander"}},
+        }) do
+            local f=fixture()
+            for i,side in ipairs(pattern) do
+                local at=(i-1)*4;local frame=f:at(at)
+                check(f.score:queue(frame,f:pose(frame,tostring(i),side.id,side.side)),"distinct advancing pose edge")
+                check(f.score:observe(f:at(at+2),f:receipt(at,tostring(i))),"each pose needs its own full application successor")
+            end
+            local pending=f.score:view()
+            check(pending.pending_points==175 and pending.pending_score==262 and pending.multiplier==1.5
+                and pending.combo_factor==1 and pending.banked_total==0,
+                "same-side and alternating-side pending values use one repeat/category family")
+            local land=f:at(10);local ok,closed=f.score:land(land,f:quality(land))
+            check(ok and closed.points==175 and closed.score==262 and closed.multiplier==1.5
+                and closed.combo_factor==1 and closed.tricks==2,
+                "switching sides adds no separate-category or repeat-reset bonus")
+            check(#closed.rows==2 and closed.rows[1].name==pattern[1].name and closed.rows[2].name==pattern[2].name
+                and closed.rows[1].channel=="one_hander" and closed.rows[2].channel=="one_hander"
+                and closed.rows[1].accepted_sequence=="1" and closed.rows[2].accepted_sequence=="2",
+                "side-specific original names remain ordered while scoring stays in the shared channel")
+        end
+    end)
+    case("unconfirmed right one hander remains honestly named and lost",function()
+        local f=fixture();local frame=f:at(0);local p=f:pose(frame,"1",42,"right")
+        check(f.score:queue(frame,p),"right authored edge queued")
+        check(f.score:cancel("bail"),"unconfirmed pose loses rather than banks")
+        local view=f.score:view();local closed=view.last_closed
+        check(closed.outcome=="lost" and closed.score==0 and closed.points==100 and view.banked_total==0
+            and #closed.rows==1 and closed.rows[1].name=="One Hander Right"
+            and closed.rows[1].channel=="one_hander" and closed.rows[1].state=="prediction_only",
+            "lost right label retains only the actual unconfirmed state")
+        check(table.isfrozen(closed.rows) and table.isfrozen(closed.rows[1])
+            and not pcall(function() closed.rows[1].name="One Hander" end),
+            "closed right label is a detached immutable authored row")
+        check(not f.score:observe(f:at(2),f:receipt(0,"1"))
+            and f.score:view().last_closed.rows[1].state=="prediction_only",
+            "late application cannot promote a cancelled right recovery")
     end)
     return {cases=cases,assertions=assertions,constructed=true,native_authority=false,qualification="SOURCE_FIXTURE_ONLY"}
 end

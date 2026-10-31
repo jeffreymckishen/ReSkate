@@ -68,9 +68,9 @@ local function fixture()
         if f.started then f.advance() end
         f.started=true;f.clear=not grounded
         local tail=selection=="tail_right" or selection=="tail_left"
-        f.pad.right_x=selection=="tail_right" and 1 or (selection=="tail_left" or selection=="one_hand_left") and -1 or 0
+        f.pad.right_x=(selection=="tail_right" or selection=="one_hand_right") and 1 or (selection=="tail_left" or selection=="one_hand_left") and -1 or 0
         f.pad.right_y=selection=="bar_left" and -1 or 0
-        f.pad.buttons.lb=selection=="bar_left" or selection=="one_hand_left";f.pad.buttons.rb=false
+        f.pad.buttons.lb=selection=="bar_left" or selection=="one_hand_left";f.pad.buttons.rb=selection=="one_hand_right"
         f.pad.left_trigger=tail and 1 or 0;f.pad.right_trigger=tail and 1 or 0
         return f.observe()
     end
@@ -273,7 +273,7 @@ local function normal(pose)
         steer=pose.steer or 0,crank_phase=pose.crank_phase or 0}
 end
 function Tests.run()
-    local assertions=0
+    local cases,assertions=1,0
     local function check(v,why) assertions+=1;assert(v,why) end
     local f=fixture()
     local neutral=f.tick(true)
@@ -374,7 +374,127 @@ function Tests.run()
     local t=tail.tick(false);local tp=tail.read.seconds/.55
     check(not t.stop_requested and math.abs(t.presentation_pose.tailwhip-2*math.pi*tp*tp*(3-2*tp))<1e-9,
         "existing tailwhip equation remains unchanged when one-hander is idle")
+    -- Four more constructed adapter paths; the original complete left trace above
+    -- remains the compatibility oracle. Neither side proves physical catch/landing.
+    local function one_event(row)
+        local p=row.presentation_trick
+        if p and p.authored_events then
+            for _,e in ipairs(p.authored_events) do if e.channel=="one_hander" then return e end end
+        end
+        return nil
+    end
+    local function right_full()
+        local r=fixture();r.tick(true);r.tick(false)
+        local selected=r.tick(false,"one_hand_right")
+        check(not selected.stop_requested and r.mapped_actions.movement==42 and r.pad.buttons.rb and not r.pad.buttons.lb
+            and r.pad.right_x==1 and r.mapped_actions.handlebar=="none" and r.mapped_actions.tailwhip=="none",
+            "existing RB plus right-stick-right mapping selects catalog ID42")
+        check(selected.presentation_pose.release_right_hand==nil,"right selection arrives at accepted sample end")
+        local held
+        for _=1,12 do held=r.tick(false,"one_hand_right") end
+        check(not held.stop_requested and held.presentation_pose.release_right_hand==1
+            and held.presentation_pose.release_left_hand==nil and one_event(held)==nil,
+            "full .18 second entry releases only the right hand without a completion event")
+        return r,held
+    end
+    local function right_case(name,body)
+        cases+=1;local ok,why=pcall(body);if not ok then error(name..": "..tostring(why),0) end
+    end
+    right_case("right full entry and accepted neutral recovery",function()
+        local r,held=right_full()
+        local received=capture(held.presentation_pose)
+        check(received.articulation.release_right_hand==1 and received.articulation.release_left_hand==0,
+            "existing Core forwards the right release through its existing field")
+        local right_plan=plan(received)
+        local right_base=plan({bike=received.bike,articulation=normal(held.presentation_pose)})
+        check(distance2(right_plan.targets.wrists[2],right_base.targets.wrists[2])>1e-8
+            and same(right_plan.targets.wrists[1],right_base.targets.wrists[1])
+            and same(right_plan.targets.ankles,right_base.targets.ankles),
+            "existing mounted pose moves the right wrist only")
+        local onset=r.tick(false)
+        check(onset.presentation_pose.release_right_hand==1 and one_event(onset)==nil,
+            "neutral starts .12 second recovery at sample end rather than completing it")
+        local completed,completion_source,count
+        count=0
+        for _=1,8 do
+            local row=r.tick(false)
+            local e=one_event(row)
+            if e then completed=row;completion_source=r.input_serial;count+=1 end
+        end
+        check(completed~=nil and count==1,"one accepted recovery emits one right-hand completion")
+        local e=one_event(completed)
+        check(e.kind=="authored_pose_recovery" and e.channel=="one_hander" and e.movement_id==42
+            and e.side=="right" and e.direction==nil and e.scope=="mod_authored_accepted_step",
+            "right recovery preserves the existing bounded authored event schema")
+        check(e.body_serial==completed.model_history.serial and e.accepted_sequence==completed.model_history.sequence
+            and e.source_observation_serial==completion_source,"right event names exact accepted body/source/sequence")
+        check(e.prediction_only and e.native_application=="unobserved" and e.native_application_observed==false
+            and e.native_catch==false and e.native_landing==false and e.landing_quality_available==false
+            and e.completion_qualified==false and table.isfrozen(e),"right authored event invents no native completion")
+        check(completed.presentation_pose.release_right_hand==nil and fields(completed.presentation_pose)==8,
+            "completed right recovery restores the unchanged normal pose")
+        for _=1,3 do check(one_event(r.tick(false))==nil,"right completion never repeats") end
+        r.ride:stop("constructed right full cleanup")
+    end)
+    right_case("partial right entry is not completion",function()
+        local r=fixture();r.tick(true);r.tick(false);r.tick(false,"one_hand_right")
+        for _=1,4 do r.tick(false,"one_hand_right") end
+        check((r.ride:status().presentation_pose.release_right_hand or 0)>0,
+            "partial right entry has an authored release")
+        check(one_event(r.tick(false))==nil,"early neutral does not complete entry")
+        local last
+        for _=1,8 do last=r.tick(false);check(one_event(last)==nil,"partial recovery never fabricates a full-entry event") end
+        check(last.presentation_pose.release_right_hand==nil and last.presentation_pose.release_left_hand==nil,
+            "partial pose returns both hands to normal")
+        r.ride:stop("constructed partial cleanup")
+    end)
+    right_case("busy opposite selection cannot switch or queue a hand",function()
+        local r=fixture();r.tick(true);r.tick(false);r.tick(false,"one_hand_right")
+        local held
+        for _=1,12 do held=r.tick(false,"one_hand_left") end
+        check(held.presentation_pose.release_right_hand==1 and held.presentation_pose.release_left_hand==nil,
+            "opposite busy selections keep the original right side latched")
+        r.tick(false)
+        local count=0
+        for _=1,8 do
+            local row=r.tick(false,"one_hand_left");local e=one_event(row)
+            check(row.presentation_pose.release_left_hand==nil,"opposite side stays gripped throughout right recovery")
+            if e then count+=1;check(e.movement_id==42 and e.side=="right","recovery event retains its original side") end
+        end
+        check(count==1,"busy opposite selection does not replace or duplicate the right completion")
+        for _=1,3 do
+            local row=r.tick(false,"one_hand_left")
+            check(row.presentation_pose.release_left_hand==nil and row.presentation_pose.release_right_hand==nil
+                and one_event(row)==nil,"consumed opposite request cannot start later")
+        end
+        r.tick(false);r.tick(false,"one_hand_left")
+        local fresh=r.tick(false,"one_hand_left")
+        check((fresh.presentation_pose.release_left_hand or 0)>0 and fresh.presentation_pose.release_right_hand==nil,
+            "new neutral then fresh selection may deliberately start the other hand")
+        r.ride:stop("constructed side-change cleanup")
+    end)
+    right_case("refusal stop and measured recontact cancel right completion",function()
+        local r=right_full();r.tick(false)
+        for _=1,7 do r.tick(false) end
+        local before_stop=r.ride:status()
+        r.refusal="force_pipeline_full"
+        local refused=r.tick(false)
+        check(not refused.stop_requested and refused.presentation_pose==before_stop.presentation_pose
+            and refused.model.accepted_barspin.revision==before_stop.model.accepted_barspin.revision
+            and one_event(refused)==nil,"refused recovery cannot adopt its would-be completion")
+        r.refusal=nil
+        local commands=#r.commands
+        local stopped_right=r.ride:stop("constructed switch or fall recovery")
+        check(stopped_right.presentation_trick==nil and stopped_right.presentation_pose.release_right_hand==nil
+            and fields(stopped_right.presentation_pose)==8 and #r.commands==commands,
+            "stop clears right presentation without an extra force or completion")
+        local landed=right_full()
+        local ground=landed.tick(true)
+        check(one_event(ground)==nil and ground.presentation_pose.release_right_hand==nil
+            and ground.presentation_pose.release_left_hand==nil,"actual fixture recontact resets hand state without an airborne recovery event")
+        landed.ride:stop("constructed recontact cleanup")
+    end)
     bar.ride:stop("constructed bar cleanup");tail.ride:stop("constructed tail cleanup");c.core:request_stop("constructed receiver cleanup")
-    return {cases=1,assertions=assertions}
+    return {cases=cases,assertions=assertions}
 end
 return table.freeze(Tests)

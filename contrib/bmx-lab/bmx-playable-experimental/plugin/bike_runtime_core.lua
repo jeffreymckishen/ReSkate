@@ -849,19 +849,19 @@ local pose_api={skater={pose=function(...)
     if not r[1] then error(r[2],0) end
     return table.unpack(r,2,r.n)
 end}}
--- S2c declared change: the rider drops his skateboard as he mounts and has it back when the ride ends
--- (board_drop.lua, byte for byte from work/board-drop b043e07a). Its three SDK functions, board.bones,
--- board.toss and board.clear, go through call(), so the call ledger and the per-call timing see them; one
+-- The accepted mounted pose opts into local board hiding; no tossed board remains inside the bike.
+-- board_drop keeps default toss compatibility for other callers. Its SDK functions, board.bones,
+-- board.toss, board.hide and board.clear, go through call(), so the ledger/timing see them; one
 -- the services table lacks reads as missing, and the Dropper then refuses with no call. A raise is raised
 -- again with its own value. prepare_backend requires the module under pcall and makes the Dropper (it calls
 -- nothing); a module that does not load leaves board nil, so every board step below does nothing. pose_step
--- drops the board once, right after the Poser's first mount and only when that mount was accepted, onto the
--- floor height Spawn's one floor ray measured (without one the Dropper refuses with no call and keeps why).
+-- hides the board once, right after the Poser's first mount and only when that mount was accepted.
+-- The local hide needs no floor/bone read. Refusal leaves visibility alone and creates no cleanup claim.
 -- pose_stop gives it back, so every stop_all and the unload do, and so does pose_tick as soon as the pose is
 -- lost mid-ride. A board result is kept in T.board_status and never stops the ride or raises.
 local BD,board
 local board_calls={}
-for _,name in ipairs({"bones","toss","clear"}) do
+for _,name in ipairs({"bones","toss","hide","clear"}) do
     local label="board."..name
     board_calls[name]=function(...)
         local r=call(label,lookup(label),...)
@@ -878,26 +878,23 @@ end})}
 local function board_status()
     if not board then return end
     local st=board:status()
-    T.board_status=freeze_tree({state=st.state,reason=st.reason~=nil and short(st.reason) or nil,ground=st.ground,
+    T.board_status=freeze_tree({state=st.state,presentation=st.presentation,reason=st.reason~=nil and short(st.reason) or nil,ground=st.ground,
         floor=T.board_floor,up_y=st.up_y,upside=st.upside,place_above_floor=st.place_above_floor,
-        toss_calls=st.toss_calls,clear_calls=st.clear_calls,bones_calls=st.bones_calls,
+        toss_calls=st.toss_calls,hide_calls=st.hide_calls,hide_result=st.hide_result,clear_calls=st.clear_calls,bones_calls=st.bones_calls,
         toss_result=st.toss_result,clear_result=st.clear_result,
         bones_result=st.bones_result~=nil and short(st.bones_result) or nil,calibration=st.calibration,
-        drop_ms=T.board_drop_ms,restore_ms=T.board_restore_ms,issue=T.board_issue})
+        drop_ms=T.board_drop_ms,hide_ms=T.board_hide_ms,restore_ms=T.board_restore_ms,issue=T.board_issue})
 end
 local function board_drop(mounted,now)
     if not board or T.board_drop_tried or T.pose_stopped then return end
     T.board_drop_tried=true
     local ok,why=pcall(function()
         if not mounted then T.board_issue="the pose did not mount: the board stays in the hand";return end
-        -- Spawn's own accessor: what its one floor ray returned, not an SDK call.
-        local got,floor=false,nil
-        if spawn and type(spawn.floor_height)=="function" then got,floor=pcall(spawn.floor_height,spawn) end
-        T.board_floor=got and finite(floor) and floor or nil
-        local r=board:drop(T.board_floor)
-        if r.called then T.board_drop_ms=now end
+        -- Local visibility only: no dropped piece or new floor/calibration observation.
+        local r=board:drop()
+        if r.called then T.board_hide_ms=now end
     end)
-    if not ok then T.board_issue=short("board drop raised: "..tostring(why)) end
+    if not ok then T.board_issue=short("board presentation raised: "..tostring(why)) end
     pcall(board_status)
 end
 local function board_restore()
@@ -935,7 +932,7 @@ local function pose_step(sample,pose,now)
         T.pose_mount_ms=now
         local m=poser:mount(now/1000)
         if m.ok~=true then T.pose_issue=T.pose_issue or short("mount: "..tostring(m.reason)) end
-        board_drop(m.ok==true,now) -- S2c declared change: the rider drops his board as he mounts
+        board_drop(m.ok==true,now) -- Local board hide only after the pose accepted this mount.
     end
     local a=type(pose)=="table" and pose or {}
     local articulation=table.clone(POSE_RELEASED)
@@ -966,7 +963,7 @@ local function pose_stop()
     local ok,why=pcall(poser.stop,poser)
     if not ok then T.pose_issue=T.pose_issue or short("pose stop raised: "..tostring(why)) end
     pcall(pose_status,nil)
-    board_restore() -- S2c declared change: the board back in his hand as the pose ends
+    board_restore() -- Release this plugin's local board override as the pose ends.
 end
 local function follow_stop_once()
     if not T.follow or T.follow_stop_attempted then return end
@@ -1710,11 +1707,11 @@ function object:prepare_backend()
     -- not load leaves the ride without the drop (board stays nil; Core's board status says why) rather than
     -- ending the startup. The Dropper calls nothing when made.
     do
-        local loaded,mod,made=pcall(function() local m=require("./board_drop");return m,m.new(board_api) end)
+        local loaded,mod,made=pcall(function() local m=require("./board_drop");return m,m.new(board_api,{presentation="hide"}) end)
         if loaded and type(made)=="table" then BD,board=mod,made
         else
             T.board_issue=short("board_drop.lua did not load; the board stays in his hand: "..tostring(mod))
-            T.board_status=freeze_tree({state="unavailable",issue=T.board_issue,toss_calls=0,clear_calls=0,bones_calls=0})
+            T.board_status=freeze_tree({state="unavailable",presentation="hide",issue=T.board_issue,toss_calls=0,hide_calls=0,clear_calls=0,bones_calls=0})
         end
     end
     if type(Ride)~="table" or type(Ride.new)~="function" or type(Contact)~="table"

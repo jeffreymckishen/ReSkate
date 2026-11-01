@@ -1,11 +1,11 @@
 {
   "schema": 1,
   "matrix": "closed-experimental-two-cycle-v1",
-  "flat_file_count": 84,
-  "quota_file_count": 85,
-  "expected_processes": 43,
-  "expected_cases": 275.0,
-  "expected_assertions": 11844.0,
+  "flat_file_count": 85,
+  "quota_file_count": 86,
+  "expected_processes": 44,
+  "expected_cases": 280,
+  "expected_assertions": 11926,
   "source_admission": "UNCHANGED_FALSE",
   "files": [
     {
@@ -179,8 +179,8 @@
     {
       "source": "plugin/bike_runtime_core.lua",
       "destination": "bike_runtime_core.lua",
-      "bytes": 136701,
-      "sha256": "BB98B282DDE84D3EF03D49B9BA85B3E22A05CD6B8D165D5D4BBCB751484A0A6A"
+      "bytes": 136628,
+      "sha256": "94B4CDBBDD1CB74DB3522FE21CB9D4B65C1E2344E13D096A4DDA16DA1F5715CC"
     },
     {
       "source": "plugin/force_math.lua",
@@ -258,8 +258,8 @@
     {
       "source": "plugin/board_drop.lua",
       "destination": "board_drop.lua",
-      "bytes": 16458,
-      "sha256": "6B22154BDDAFFC5536B97946E4A57CEAA4E091B9C87E0FDD621FA1F3C52D1760"
+      "bytes": 18792,
+      "sha256": "86AE1D8CF4BEB9F6C800DFDE84273584E87C6CAA523C6B0B383AAC8DCBD9EF43"
     },
     {
       "source": "plugin/equipment_transition.lua",
@@ -402,8 +402,8 @@
     {
       "source": "Test/core_session_renewable_fixture.lua",
       "destination": "core_session_renewable_fixture.lua",
-      "bytes": 130425,
-      "sha256": "EA5364C4CA9627E483BE20E62F646D79F948685403C9BA26CD01CBA96440BEC6"
+      "bytes": 136658,
+      "sha256": "A2A17B91948C30C74F79D69D56140B608D5EB37F7116E392FD1EDB78060E2783"
     },
     {
       "source": "Test/tailwhip_integration_tests.lua",
@@ -518,6 +518,12 @@
       "destination": "one_hander_score_tests.lua",
       "bytes": 9763,
       "sha256": "C1B4901D4591C537676448C839369C212B8A6305A4286D702ACF84A634D798CE"
+    },
+    {
+      "source": "Test/mounted_board_hidden_tests.lua",
+      "destination": "mounted_board_hidden_tests.lua",
+      "bytes": 8194,
+      "sha256": "49AF2E65A3A37304D1FF594600693D8CE5E8B20A86AE018B80D38A281176698D"
     }
   ],
   "runtime_files": [
@@ -533,8 +539,8 @@
     },
     {
       "source": "plugin/bike_runtime_core.lua",
-      "bytes": 136701,
-      "sha256": "BB98B282DDE84D3EF03D49B9BA85B3E22A05CD6B8D165D5D4BBCB751484A0A6A"
+      "bytes": 136628,
+      "sha256": "94B4CDBBDD1CB74DB3522FE21CB9D4B65C1E2344E13D096A4DDA16DA1F5715CC"
     },
     {
       "source": "plugin/bike_runtime.lua",
@@ -558,8 +564,8 @@
     },
     {
       "source": "plugin/board_drop.lua",
-      "bytes": 16458,
-      "sha256": "6B22154BDDAFFC5536B97946E4A57CEAA4E091B9C87E0FDD621FA1F3C52D1760"
+      "bytes": 18792,
+      "sha256": "86AE1D8CF4BEB9F6C800DFDE84273584E87C6CAA523C6B0B383AAC8DCBD9EF43"
     },
     {
       "source": "plugin/bones.lua",
@@ -716,6 +722,14 @@
       "fixture": "Test/two_cycle_facade_fixture.lua",
       "source_sha256": "8713EC8F1D577B081BF675966AAFAA3AA0F4611501BB70D96E06AEEE2189ABC0",
       "fixture_sha256": "A78CB74B0C57BD4C1195DAF2FABEC795C25DA6C564679A9E6CC054EFF98DEF35",
+      "prefix": "return function(require)\n",
+      "suffix": "\nend\n"
+    },
+    {
+      "source": "plugin/bike_runtime_core.lua",
+      "fixture": "Test/core_session_renewable_fixture.lua",
+      "source_sha256": "94B4CDBBDD1CB74DB3522FE21CB9D4B65C1E2344E13D096A4DDA16DA1F5715CC",
+      "fixture_sha256": "A2A17B91948C30C74F79D69D56140B608D5EB37F7116E392FD1EDB78060E2783",
       "prefix": "return function(require)\n",
       "suffix": "\nend\n"
     }
@@ -1026,6 +1040,13 @@
       "context": "flat",
       "expected_cases": 4,
       "expected_assertions": 51
+    },
+    {
+      "suite": "mounted_board_hidden_tests",
+      "invoked": "mounted_board_hidden_tests",
+      "context": "flat",
+      "expected_cases": 5,
+      "expected_assertions": 82
     }
   ]
 }

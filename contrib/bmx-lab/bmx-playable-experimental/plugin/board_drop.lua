@@ -3,7 +3,12 @@
 -- foot in state 504, and 504 is the state in which the skater carries his board, so without this the
 -- board is drawn in his hand all through the ride.
 --
--- Dropper:drop tosses the visible board with reskate.board.toss: bone 2, the deck's mount, which the
+-- An opt-in constructor presentation="hide" locally hides the board's deck mount instead.
+-- It creates no tossed piece, samples no floor/bones, and uses the same one-owner clear on restore.
+-- Hiding an already tossed mount would not work: the native piece transform is applied after hide.
+-- A refused/missing hide owns nothing to clear; an uncertain result keeps a cleanup duty.
+--
+-- Default Dropper:drop tosses the visible board with reskate.board.toss: bone 2, the deck's mount, which the
 -- deck, trucks and wheels hang on (board_pose.h), leaves as one piece from where the board is drawn that
 -- frame, rises a little, falls under gravity, lands flat pointing the way it was, slides a little and
 -- lies there (board_pose.cpp toss and fly). Dropper:restore ends it with reskate.board.clear, and the
@@ -138,12 +143,22 @@ end
 local Dropper = {}
 Dropper.__index = Dropper
 
--- api is the reskate table, or any table with board.toss and board.clear (board.bones optional).
--- Constructing one calls nothing and reads nothing of it.
-function BD.new(api)
-    return setmetatable({api = api, state = "idle", reason = nil, ground = nil, floor = nil, up_y = nil, upside = nil,
+-- api is the reskate table: toss/clear (bones optional), or hide/clear for presentation="hide".
+-- Constructing one calls nothing and reads nothing of api. Omitted options preserve default toss.
+function BD.new(api, options)
+    local presentation = "toss"
+    if options ~= nil then
+        if type(options) ~= "table" then presentation = "invalid"
+        else
+            local requested = rawget(options, "presentation")
+            if requested ~= nil then
+                presentation = (requested == "hide" or requested == "toss") and requested or "invalid"
+            end
+        end
+    end
+    return setmetatable({api = api, presentation = presentation, state = "idle", reason = nil, ground = nil, floor = nil, up_y = nil, upside = nil,
         place_above_floor = nil, tried = false, restore_tried = false,
-        toss_calls = 0, clear_calls = 0, bones_calls = 0, toss_result = nil, clear_result = nil, bones_result = nil,
+        toss_calls = 0, hide_calls = 0, clear_calls = 0, bones_calls = 0, toss_result = nil, hide_result = nil, clear_result = nil, bones_result = nil,
         calibration = nil}, Dropper)
 end
 
@@ -177,7 +192,31 @@ function Dropper:_calibrate()
     end
 end
 
--- Drops the board onto the floor at height ground_y (world metres, measured): one board.toss of the deck's
+-- Opt-in local presentation: the existing SDK takes one owner for the deck mount. No piece is made.
+function Dropper:_hide()
+    local hide, missing = board_function(self.api, "hide")
+    if not hide then self.hide_result = "missing"; return self:_refuse(missing) end
+    self.hide_calls += 1
+    local r = table.pack(pcall(hide, BD.DECK_MOUNT, {others = false}))
+    if not r[1] then
+        self.state, self.reason, self.hide_result = "unknown", "board.hide raised: " .. short(r[2]), "raised"
+        return self:_result(false, true)
+    end
+    if r[2] == true then
+        self.state, self.reason, self.hide_result = "hidden", nil, "accepted"
+        return self:_result(true, true)
+    end
+    if r[2] == false then
+        self.state, self.hide_result = "refused", "refused"
+        self.reason = "board.hide refused: " .. (type(r[3]) == "string" and short(r[3]) or "no reason given")
+        return self:_result(false, true)
+    end
+    self.state, self.hide_result = "unknown", "malformed"
+    self.reason = "board.hide answered " .. short(r[2]) .. ", not true or false"
+    return self:_result(false, true)
+end
+
+-- Default presentation drops onto the floor at ground_y (world metres): one board.toss of the deck's
 -- mount, at most once per Dropper, onto ground_y + GROUND_OFFSET_M + REST_LIFT_M, plus UPSIDE_LIFT_M when
 -- bone 1's up axis pointed down in the hand. Returns {ok, called, state, reason}: ok only when toss accepted it;
 -- called when board.toss was called. A height that is not finite, or a missing board.toss, refuses with
@@ -188,6 +227,8 @@ function Dropper:drop(ground_y)
     if not mine(self) then return {ok = false, called = false, state = "refused", reason = "drop is a method: dropper:drop(ground_y)"} end
     if self.tried then return {ok = false, called = false, state = self.state, reason = BD.ONCE} end
     self.tried = true
+    if self.presentation == "hide" then return self:_hide() end
+    if self.presentation ~= "toss" then return self:_refuse("unsupported board presentation") end
     if not finite(ground_y) or math.abs(ground_y) > BD.HEIGHT_LIMIT then
         return self:_refuse("no measured floor: the ground is not a finite height within 100 km (" .. short(ground_y) .. ")")
     end
@@ -229,14 +270,14 @@ function Dropper:drop(ground_y)
     return self:_result(false, true)
 end
 
--- Gives the board back: one board.clear(), only after a drop that toss accepted or that may have taken
--- effect (state dropped or unknown), and at most once. Without such a drop it calls nothing and changes
+-- Releases this plugin's board override: one board.clear(), after an accepted hide/drop or an effect that may have taken
+-- effect (state hidden, dropped or unknown), and at most once. Without such ownership it calls nothing and changes
 -- nothing. Returns {ok, called, state, reason}; state restored, or restore_unknown when clear raised or
 -- was missing.
 function Dropper:restore()
     if not mine(self) then return {ok = false, called = false, state = "refused", reason = "restore is a method: dropper:restore()"} end
     if self.restore_tried then return self:_result(self.state == "restored", false) end
-    if self.state ~= "dropped" and self.state ~= "unknown" then return self:_result(true, false) end
+    if self.state ~= "hidden" and self.state ~= "dropped" and self.state ~= "unknown" then return self:_result(true, false) end
     self.restore_tried = true
     local clear, missing = board_function(self.api, "clear")
     if not clear then
@@ -254,7 +295,7 @@ function Dropper:restore()
     return self:_result(false, true)
 end
 
--- A fresh table: state (idle, dropped, refused, unknown, restored or restore_unknown), reason, ground
+-- A fresh table: presentation, state (idle, hidden, dropped, refused, unknown, restored or restore_unknown), reason, ground
 -- (the height passed to toss, or nil), floor (the measured floor it was laid on), up_y and upside (how far
 -- bone 1's up axis pointed up in the hand, and whether it pointed down; nil when unknown),
 -- place_above_floor (bone 1's height above that floor at the drop: about hand height when bone 1 is a
@@ -262,8 +303,8 @@ end
 -- {place = bone 1, mount = bone 2} or nil.
 function Dropper:status()
     if not mine(self) then return {state = "refused", reason = "status is a method: dropper:status()"} end
-    return {state = self.state, reason = self.reason, ground = self.ground, floor = self.floor, up_y = self.up_y,
-        upside = self.upside, place_above_floor = self.place_above_floor, toss_calls = self.toss_calls,
+    return {state = self.state, presentation = self.presentation, reason = self.reason, ground = self.ground, floor = self.floor, up_y = self.up_y,
+        upside = self.upside, place_above_floor = self.place_above_floor, toss_calls = self.toss_calls, hide_calls = self.hide_calls, hide_result = self.hide_result,
         clear_calls = self.clear_calls, bones_calls = self.bones_calls, toss_result = self.toss_result,
         clear_result = self.clear_result, bones_result = self.bones_result, calibration = copy(self.calibration)}
 end

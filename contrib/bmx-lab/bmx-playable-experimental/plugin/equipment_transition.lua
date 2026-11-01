@@ -136,6 +136,23 @@ local function standing(f,state)
     local o=f.observation
     return common(f) and o.grounded and o.ragdoll_known and not o.ragdoll and not o.fallen and o.state==state
 end
+-- First failed standing predicate on the most recent valid settling observation.
+-- This single witness is not a history, timestamp or native-consumption claim.
+local function standing_failure(f,state)
+    local o=f.observation
+    if not f.allowed then return "allowed_false" end
+    if not f.loaded then return "loaded_false" end
+    if not o.focused then return "focused_false" end
+    if not o.menu_closed then return "menu_open" end
+    if not o.gameplay then return "gameplay_false" end
+    if not o.local_player then return "local_absent" end
+    if o.teleport_pending then return "teleport_pending" end
+    if not o.grounded then return "grounded_false" end
+    if not o.ragdoll_known then return "ragdoll_unknown" end
+    if o.ragdoll then return "ragdoll_true" end
+    if o.fallen then return "fallen_true" end
+    if o.state~=state then return "state_mismatch" end
+end
 
 function Transition.new() return setmetatable({_attempt=0,_armed=false,_phase="idle",_outcome="idle"},Policy) end
 function Policy:_owned() return self._awaiting or self._unknown or (self._handle~=nil and not self._acked) end
@@ -245,6 +262,7 @@ function Policy:update(f)
             if not standing(f,self._initial) then self._quiet_first,self._quiet_last=nil,nil end
         elseif self._phase=="settling" and not standing(f,self._expected) then
             self._suffix.first_ms,self._suffix.last_ms,self._suffix.qualified_samples,self._suffix.seconds=nil,nil,0,0
+            self._suffix.last_failure=standing_failure(f,self._expected)
         end
     end
     if not clock or not valid then

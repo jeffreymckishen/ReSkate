@@ -1,13 +1,19 @@
 {
   "schema": 1,
   "matrix": "closed-experimental-two-cycle-v1",
-  "flat_file_count": 83,
-  "quota_file_count": 84,
-  "expected_processes": 42,
-  "expected_cases": 272.0,
-  "expected_assertions": 11771.0,
+  "flat_file_count": 84,
+  "quota_file_count": 85,
+  "expected_processes": 43,
+  "expected_cases": 275.0,
+  "expected_assertions": 11844.0,
   "source_admission": "UNCHANGED_FALSE",
   "files": [
+    {
+      "source": "Test/equipment_settle_witness_tests.lua",
+      "destination": "equipment_settle_witness_tests.lua",
+      "bytes": 11011,
+      "sha256": "C56B8EFA6F920227B0D1A20A175053AFDAB6C8186F63BC985423D780D7558DD0"
+    },
     {
       "source": "Test/preflight_retry_entry_tests.lua",
       "destination": "preflight_retry_entry_tests.lua",
@@ -258,8 +264,8 @@
     {
       "source": "plugin/equipment_transition.lua",
       "destination": "equipment_transition.lua",
-      "bytes": 21184,
-      "sha256": "8848E1DCCB874FA48AE3BCBEE2F5A94F5F5396C4476CF2AFA728553D503F5B54"
+      "bytes": 22138,
+      "sha256": "2AB8AFF7A6F1E8CB3F8B1B67B3698DF61B9725F0836E2CB3033C57CE490CA13F"
     },
     {
       "source": "plugin/bike_visual.lua",
@@ -582,8 +588,8 @@
     },
     {
       "source": "plugin/equipment_transition.lua",
-      "bytes": 21184,
-      "sha256": "8848E1DCCB874FA48AE3BCBEE2F5A94F5F5396C4476CF2AFA728553D503F5B54"
+      "bytes": 22138,
+      "sha256": "2AB8AFF7A6F1E8CB3F8B1B67B3698DF61B9725F0836E2CB3033C57CE490CA13F"
     },
     {
       "source": "plugin/force_math.lua",
@@ -720,6 +726,13 @@
     "sha256": "3E415D1E0A53301A9562944172FE1EE190A6F179E2B6F2FAC5BDDF22646B4DFD"
   },
   "suites": [
+    {
+      "suite": "equipment_settle_witness_tests",
+      "invoked": "equipment_settle_witness_tests",
+      "context": "flat",
+      "expected_cases": 3,
+      "expected_assertions": 73
+    },
     {
       "suite": "two_cycle_entry_tests",
       "invoked": "two_cycle_entry_tests",

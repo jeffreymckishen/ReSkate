@@ -116,4 +116,5 @@ end
 -- height in the overlay, so these font sizes must not be multiplied again.
 HUD.header_style=table.freeze({colour="#BDFB77",size=20,font="bold",shadow=true})
 HUD.row_style=table.freeze({colour="#FFFFFF",size=18,font="body",shadow=true})
+HUD.panel_style=table.freeze({colour="#10151DE6",fill=true,rounding=8})
 return table.freeze(HUD)

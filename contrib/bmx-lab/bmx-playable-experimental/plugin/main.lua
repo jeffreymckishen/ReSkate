@@ -21,10 +21,23 @@ local function draw_score_lines(d)
     local scale=height/1080
     if width/scale<400 then return end
     local limit=math.clamp(math.floor((width/scale-72)/20),16,ScoreHUD.MAX_TEXT)
-    for i=1,math.min(#score_lines,ScoreHUD.MAX_LINES) do
+    local count=math.min(#score_lines,ScoreHUD.MAX_LINES)
+    if count==0 then return end
+    local rows,right,bottom={},36*scale,36*scale
+    for i=1,count do
         local text=ScoreHUD.fit(score_lines[i],limit)
-        d:text(vector.create(36*scale,(36+(i-1)*24)*scale,0),text,
-            i==1 and ScoreHUD.header_style or ScoreHUD.row_style)
+        local style=i==1 and ScoreHUD.header_style or ScoreHUD.row_style
+        -- d:measure already returns display pixels; scale only the padding.
+        local extent=d:measure(text,style)
+        rows[i]={text=text,style=style}
+        right=math.max(right,36*scale+extent.x)
+        bottom=math.max(bottom,(36+(i-1)*24)*scale+extent.y)
+    end
+    local padding=12*scale
+    d:rect(vector.create(24*scale,24*scale,0),
+        vector.create(math.min(width-24*scale,right+padding),math.min(height-24*scale,bottom+padding),0),ScoreHUD.panel_style)
+    for i=1,count do
+        d:text(vector.create(36*scale,(36+(i-1)*24)*scale,0),rows[i].text,rows[i].style)
     end
 end
 reskate.input.bind("bmx_return","F8")

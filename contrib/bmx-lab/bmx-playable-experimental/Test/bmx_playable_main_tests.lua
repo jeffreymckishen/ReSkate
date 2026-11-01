@@ -196,18 +196,35 @@ function Tests.run()
             rows={{name="Barspin"},{name="Tailwhip"}}}
         local f=setup(score)
         local expected=ScoreHUD.lines(score,"none","unavailable")
-        local draw={calls={},sizes=0}
+        local draw={calls={},sizes=0,measures=0,panels={},order={}}
         function draw:size() self.sizes+=1;return vector.create(2560,1440,0) end
+        function draw:measure(text,style)
+            self.measures+=1
+            return vector.create(#text*8*(1440/1080),style.size*(1440/1080),0)
+        end
+        function draw:rect(a,b,style)
+            self.panels[#self.panels+1]={a=a,b=b,style=style};self.order[#self.order+1]="rect"
+        end
         function draw:text(position,text,style)
+            self.order[#self.order+1]="text"
             self.calls[#self.calls+1]={position=position,text=text,style=style}
         end
         f.callbacks.draw(draw)
-        check(#draw.calls==0 and draw.sizes==0 and f.steps==0 and f.score_reads==0,
+        check(#draw.calls==0 and draw.sizes==0 and draw.measures==0 and #draw.panels==0 and f.steps==0 and f.score_reads==0,
             "draw before a tick has no score cache or lifecycle work")
         f.callbacks.tick(16)
         check(f.steps==1 and f.last_dt==16 and f.score_reads==1,"only tick refreshes the cached score view")
         f.callbacks.draw(draw)
-        check(draw.sizes==1 and #draw.calls==6,"one size read and the same six bounded text calls")
+        check(draw.sizes==1 and draw.measures==6 and #draw.calls==6 and #draw.panels==1,"one size read, bounded text measurements, one backing and the same six text calls")
+        local panel=draw.panels[1]
+        local measured_width=0
+        for _,text in expected do measured_width=math.max(measured_width,#text*8*(1440/1080)) end
+        check(panel.style==ScoreHUD.panel_style and table.isfrozen(panel.style) and panel.style.fill==true
+            and panel.style.colour=="#10151DE6" and panel.style.rounding==8
+            and #draw.order==7 and draw.order[1]=="rect","one frozen translucent dark fill precedes the unchanged six texts")
+        check(panel.a.x==32 and panel.a.y==32 and panel.b.y==248
+            and math.abs(panel.b.x-(64+measured_width))<.001 and panel.b.x<=2560-32 and panel.b.y<=1440-32,
+            "compact backing uses measured pixels once with scaled padding inside the viewport")
         for i=1,6 do
             local call=draw.calls[i]
             check(call.position.x==48 and call.position.y==48+(i-1)*32 and call.position.z==0,
@@ -219,7 +236,7 @@ function Tests.run()
             and f.mounts==0 and f.returns==0 and f.recovers==0 and f.cancels==0,
             "drawing reads only cached text and never opens menus or drives lifecycle actions")
         f.callbacks.unload();f.callbacks.draw(draw)
-        check(f.unloads==1 and #draw.calls==6 and draw.sizes==1 and f.score_reads==1,
+        check(f.unloads==1 and #draw.calls==6 and draw.sizes==1 and draw.measures==6 and #draw.panels==1 and f.score_reads==1,
             "unload clears the display cache without any late draw or score read")
     end)
     return {cases=cases,assertions=assertions,game_evidence=false,native_actions=0}

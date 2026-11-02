@@ -228,7 +228,7 @@ function Tests.run()
         local before=f.probes
         check(f.entry:mount(),"intent is accepted before its deferred callback")
         f.await_stepoff()
-        check(f.entry:status().attempts_used==2 and f.entry:status().phase=="blocked","deferred refusal remains visible and spent")
+        check(f.entry:status().attempts_used==1 and f.entry:status().phase=="blocked","deferred refusal stays visible and spends no mount")
         check(f.probes==before and f.mounts==1,"no hidden allocation or survey retry")
     end)
     case("old sampled504 cannot replace private newer equipment ACK",function()
@@ -300,7 +300,7 @@ function Tests.run()
         local f=fixture({two=true});f.riding();f.failed_cycle=true
         check(f.entry:return_to_skateboard(),"explicit cleanup Return remains available")
         f.latest=cleaned();f.stock=100;f.tick()
-        check(f.entry:status().phase=="spent" and f.entry:mount(),"Mount from the board starts a new cycle, which Core still has to qualify")
+        check(f.entry:status().phase=="spent" and not f.entry:mount(),"a cycle Core will not qualify refuses Mount and says so")
         check(f.stepoffs==nil and f.mounts==1,"no step-off or allocation before that cycle's own checks")
     end)    case("Root-approved narrower second Mount refuses already-onfoot504",function()
         local f=fixture({two=true});first_return(f);f.stock=504
@@ -347,7 +347,7 @@ function Tests.run()
         check(f.entry:mount(),"second intent armed")
         f.stock=504;f.overlay=false;f.tick()
         check(f.entry:status().phase=="blocked" and f.stepoffs==nil,"fresh100 still required after menus close")
-        check(not f.entry:mount() and f.entry:status().attempts_used==2,"state failure remains spent")
+        check(not f.entry:mount() and f.entry:status().attempts_used==1,"a step-off that never ran spends no mount")
     end)
     case("request callback reentry cannot resend deferred step-off",function()
         local f=fixture({two=true});first_return(f)
@@ -524,12 +524,15 @@ function Tests.run()
             elseif kind=="state" then f.stock=100
             else f.on_pad=function()return nil end end
             local accepted=f.entry:mount()
-            if kind=="pad" then check(accepted,"pending retry before malformed new pad read");f.tick()
+            if kind=="state" then check(accepted and f.entry:status().phase=="stepping_off","back on the board, this Mount starts a new cycle")
+            elseif kind=="pad" then check(accepted,"pending retry before malformed new pad read");f.tick()
             else check(not accepted,"exact prior proof required before retry") end
             -- Back on the board with a clean ride, Mount starts a whole new cycle rather than a terrain retry.
-            check(f.entry:status().phase=="blocked" and (kind=="state" or not f.entry:mount()),"proof loss cannot become another terrain retry")
+            if kind~="state" then
+            check(f.entry:status().phase=="blocked" and not f.entry:mount(),"proof loss cannot become another terrain retry")
             check(f.mounts==1 and f.stepoffs==1 and f.probes==probes and f.prepares==prepares,
                 "no body request, Y or survey after unknown proof")
+            end
         end
     end)
     case("second terrain retry never resets original60second deadline",function()
@@ -562,7 +565,7 @@ function Tests.run()
         check(f.entry:mount(),"second intent before unknown obstacle result");f.await_stepoff()
         f.latest=cleaned();f.stock=504;f.on_ready504=function()return true,2 end;f.obstacle="unavailable"
         local s=await_terrain(f)
-        check(s.phase=="blocked" and s.terrain_refusal_count==0 and not f.entry:mount(),"unknown query is not a terrain-only refusal")
+        check(s.phase=="preflight_refused" and s.terrain_refusal_count==1,"an obstacle is somewhere to move away from")
         check(f.mounts==1 and f.stepoffs==1,"unknown query never sends new allocation or Y")
         local g=fixture({two=true,playable=true});second_terrain(g);g.rough=false
         g.on_mount=function()return false,"constructed native refusal" end

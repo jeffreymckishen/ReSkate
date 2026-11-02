@@ -431,35 +431,18 @@ function Tests.run()
     end
     do
         cases+=1
-        local f=core_fixture(check);f.complete_capture();f.now=f.stop_at+20000
-        local before=#f.calls;local out=f.owner:step(16)
-        check(#f.calls==before and f.T.cleanup_expired==true,"exactly20s closes even the first native read")
-        check(out.source.cleanup_unknown and out.cleanup_unknown and out.stock_toggle_blocked,"expired Core cannot recover stock permission")
-        f.now+=16;f.owner:step(16)
-        check(#f.calls==before and f.T.stop_at==f.stop_at,"expiry is sticky with no watchdog reset or late polls")
+        local f=core_fixture(check);f.complete_capture();f.now=f.stop_at+25000
+        local out=f.owner:step(16)
+        check(out.source.phase=="complete" and out.phase=="done" and out.stock_toggle_blocked==false,"a release that ends after the watchdog still completes")
+        check(f.T.stop_at==f.stop_at and f.count("lease")==1 and f.count("lease_release")==1,"no watchdog reset, reacquire or second release")
     end
     do
         cases+=1
-        local f=core_fixture(check);f.complete_capture();f.now=f.stop_at+19999;f.clock_calls=0
-        f.clock_hook=function(n) if n>=2 then return f.stop_at+20000 end;return f.now end
-        local before=#f.calls;local out=f.owner:step(16)
-        check(#f.calls==before and f.T.cleanup_expired,"fresh proxy clock refuses a deadline crossed after tick entry")
-        check(out.source.cleanup_unknown and out.stock_toggle_blocked,"stale tick clock cannot qualify cleanup")
-    end
-    for _,method in {"lease_capture_state","lease_acknowledge_capture","lease_state","lease_acknowledge"} do
-        cases+=1
-        local f=core_fixture(check);f.complete_capture();f.now=f.stop_at+5000
-        local start=#f.calls
-        f.on_call=function(name) if name==method then f.now=f.stop_at+20000 end end
+        local f=core_fixture(check);f.now=f.stop_at+25000;f.capture.reason="interference"
         local out=f.owner:step(16)
-        local last=f.calls[#f.calls]
-        check(#f.calls>start and last.name==method,"actual Core proxy reaches exactly the selected crossing callback: "..method)
-        check(out.source.cleanup_unknown and out.stock_toggle_blocked and f.T.cleanup_expired,
-            "a callback crossing20s cannot publish late completion: "..method)
-        local after=#f.calls;f.now+=16;f.owner:step(16)
-        check(#f.calls==after,"no native operation follows deadline crossing: "..method)
-        check(f.T.stop_at==f.stop_at and f.count("lease")==1 and f.count("lease_release")==1,
-            "crossing never extends watchdog or reacquires/releases again: "..method)
+        check(out.source.cleanup_unknown and out.stock_toggle_blocked and f.count("lease_acknowledge_capture")==0,"an unfinished release past the watchdog stays unknown")
+        f.now+=5000;f.complete_capture();out=f.owner:step(16)
+        check(out.source.phase=="complete" and out.phase=="done","and finishes when the SDK does")
     end
     do
         cases+=1
@@ -482,9 +465,6 @@ function Tests.run()
         local f=core_fixture(check);f.complete_capture();f.in_flight=true;f.now=f.stop_at+5000
         local out=f.owner:step(16)
         check(out.source.cleanup_unknown and out.stock_toggle_blocked and f.count("lease_acknowledge")==0,"Core cannot treat failed capture ACK as source release")
-        f.in_flight=false;f.now=f.stop_at+20000
-        local before=#f.calls;out=f.owner:step(16)
-        check(#f.calls==before and out.source.cleanup_unknown and f.T.cleanup_expired,"native readiness at exact deadline cannot reopen expired cleanup")
     end
     do
         cases+=1

@@ -47,6 +47,7 @@ local function new_runtime(services,options,two_cycle)
         -- A second-intent callback may cancel the old clean owner. Keep that
         -- owner's original stop/deadline history; this is not a new bike stop.
         if not (two_cycle and next_preparation and T.stop_at~=nil) then T.stop_at=T.now end
+        next_preparation=false
         T.stop_latched=true;T.stop_reason=why
         pending=nil;T.startup_pending=false
         if unloading and not core then T.unloaded=true end
@@ -155,7 +156,7 @@ local function new_runtime(services,options,two_cycle)
                 local now=next_admitted_at~=nil and api.clock() or nil
                 if T.unloaded or T.startup_closed or T.generation~=version or not next_preparation or
                     next_admitted_at~=nil and (not now or now<next_admitted_at or now-next_admitted_at>=60000) then
-                    T.startup_closed=true;return false,"Original second Mount admission expired or changed"
+                    next_preparation=false;return false,"Original second Mount admission expired or changed"
                 end
                 running=true
                 local next_session=(T.experimental_session or 1)+1
@@ -163,7 +164,7 @@ local function new_runtime(services,options,two_cycle)
                     calls={},counts={},receipts={},omitted_calls=0,omitted_receipts=0,remove_attempted={},remove_accepted={},
                     experimental_session=next_session,experimental_attempt_limit=8}
                 local successor,why=session_owner:successor(R,core_options(),next_state)
-                if not successor then running=false;T.startup_closed=true;return false,why end
+                if not successor then running=false;next_preparation=false;return false,why end
                 T=next_state;core=successor;api=Admission.bind(T,R,qualification_only)
                 T.core_ready=true;T.backend_ready=false;next_preparation=false
                 running=false
@@ -187,20 +188,21 @@ local function new_runtime(services,options,two_cycle)
             local now=api.clock()
             if not finite(admitted_at_ms) or admitted_at_ms<0 or admitted_at_ms%1~=0
                 or not now or admitted_at_ms>now or now-admitted_at_ms>=60000 then
-                T.startup_closed=true;return false,"Original second Mount admission expired"
+                return false,"Original second Mount admission expired"
             end
         end
-        -- Intent two is spent before archive/stock callbacks. Any failure closes
-        -- it permanently; no fresh facade or reset can recover this admission.
+        -- A preparation that fails has spent nothing native, so the next Mount from the board can ask again.
         next_preparation=true;next_admitted_at=admitted_at_ms;running=true
         local ok,why=session_owner:archive_return()
-        if not ok then T.startup_closed=true;running=false;return false,why end
+        if not ok then next_preparation=false;running=false;return false,why end
         local previous=T.gear_admission_at
         T.gear_admission_at=admitted_at_ms
         local called,accepted,reason=pcall(core.request_stock_toggle,core,slot)
         T.gear_admission_at=previous;running=false
         if not called or accepted~=true then
-            T.startup_closed=true;return false,called and reason or "Second preparation raised; cleanup required"
+            next_preparation=false
+            if not called then T.startup_closed=true end
+            return false,called and reason or "Second preparation raised; cleanup required"
         end
         return true
     end
@@ -241,7 +243,7 @@ local function new_runtime(services,options,two_cycle)
         end))
         running=false
         if not out[1] or out.n~=3 or out[2]~=true or not finite(out[3]) or out[3]%1~=0 or out[3]<2 then
-            if not out[1] or out[3]~="pending" then T.startup_closed=true end
+            if not out[1] then T.startup_closed=true elseif out[3]~="pending" then next_preparation=false end
             return false,out[1] and out[3] or "Second terrain proof raised; no retry"
         end
         return true,out[3]
@@ -263,7 +265,7 @@ local function new_runtime(services,options,two_cycle)
         return table.unpack(result,2,result.n)
     end
     function object:request_stop(why)
-        if next_preparation and session_owner then session_owner:abort_preparation() end
+        if next_preparation and session_owner then session_owner:abort_preparation();next_preparation=false end
         if T.unloaded then return false,"Runtime is unloaded; SDK retains cleanup" end
         if core and not pending then
             local outer=running;running=true;local result=table.pack(core:request_stop(why));running=outer

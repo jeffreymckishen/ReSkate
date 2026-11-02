@@ -25,6 +25,21 @@ local function fall_cause(s)
         or issue=="rider came off the bike") then return text(issue) end
     return nil
 end
+-- One line of what the lifecycle says, for the log. The ledger is cleared at the next load, so this is what outlives a launch.
+local function lifecycle_line(s)
+    local e=plain(s.equipment) and s.equipment or {}
+    local r=plain(e.receipt) and e.receipt or {}
+    local f=plain(e.first_fall) and e.first_fall or {}
+    local ride=plain(s.ride) and s.ride or {}
+    local source=plain(s.source) and s.source or {}
+    return string.format("core=%s detail=%q stop=%q ride_issue=%q bike_clean=%s pending=%s unknown=%s blocked=%s gear_unknown=%s late=%s closed=%s"
+        .." source=%s gear=%s/%s/%s attempt=%s retained=%s pulse=%s press=%s neutral=%s debt=%s mask=%s fall_state=%s fall_ragdoll=%s fall_wipeouts=%s/%s",
+        tostring(s.phase),text(s.detail,""),text(s.stop_reason,""),text(ride.issue,""),tostring(s.bike_cleanup_complete),tostring(s.cleanup_pending),
+        tostring(s.cleanup_unknown),tostring(s.stock_toggle_blocked),tostring(s.gear_unknown),tostring(s.cleanup_expired),tostring(s.startup_closed),
+        tostring(source.phase),tostring(e.phase),tostring(e.outcome),tostring(e.reason),tostring(e.attempt),tostring(e.retained),
+        tostring(r.status),tostring(r.press_publications),tostring(r.neutral_publications),tostring(r.report_debt),tostring(r.first_rejection_mask),
+        tostring(f.state),tostring(f.ragdoll),tostring(f.wipeouts),tostring(f.baseline_wipeouts))
+end
 function Entry.new(R,Runtime,Survey,options)
     assert(type(R)=="table" and type(Runtime)=="table" and type(Survey)=="table","entry dependencies required")
     local slot=type(options)=="table" and options.slot or 0
@@ -49,6 +64,14 @@ function Entry.new(R,Runtime,Survey,options)
     local attempts_used=0
     local STOCK_RETRIES,STOCK_RETRY_MS,NOTICE_MS,RETURN_LIMIT_MS=4,500,4000,45000
     local return_since
+    local notice,notice_until,last_clock=nil,0,nil
+    local mount_charged,last_stop,logged_phase,logged_line=false,nil,nil,nil
+    local function trace(line) call(R.log,"[BMX] "..line) end
+    -- Shown without reading the clock: fail, which reports a bad clock, comes here too.
+    local function announce(message)
+        trace(message)
+        notice,notice_until=text(message,""),(last_clock or 0)+NOTICE_MS
+    end
     local stock_retries,stock_retry_at=0,nil
     local second_prepare_pending,second_terrain_pending=false,false
     local second_admitted_at,second_quiet_at,second_quiet_last,second_quiet_samples=nil,nil,nil,0
@@ -57,7 +80,7 @@ function Entry.new(R,Runtime,Survey,options)
     local fallen,recover_pending,recover_wait_context=nil,false,nil
     local stopped,cancel_sent,cancelled,unloaded,ticking=false,false,false,false,false
     local generation,latest,known=0,nil,false
-    local prep_at,prep_last,prep_calls,last_clock,survey=nil,nil,0,nil,nil
+    local prep_at,prep_last,prep_calls,survey=nil,nil,0,nil
     local object={}
     local return_plan,return_position
     local MAX_TERRAIN_REFUSALS=8
@@ -103,6 +126,10 @@ function Entry.new(R,Runtime,Survey,options)
     local function fail(why)
         phase,detail="blocked",text(why,"Operation failed; no retry in this session.")
         return_pending=false;second_prepare_pending=false;second_terrain_pending=false;recover_pending=false;generation+=1
+        -- A preparation that never asked for a bike used none of the launch's mounts.
+        if mount_charged and not mount_issued then attempts_used-=1 end
+        mount_charged=false
+        announce("Stopped: "..detail)
         -- A later equipment transaction has independent authority from the ride stop.
         stop_once("experimental entry: "..detail,stock_attempted)
     end
@@ -164,7 +191,9 @@ function Entry.new(R,Runtime,Survey,options)
             return false
         end
         -- Records from an earlier launch describe a ride that ended with that game. Left here they would refuse
-        -- every later Mount, here and in Core's marker check.
+        -- every later Mount, here and in Core's marker check. What they say goes to the log first, the one place it lasts.
+        local previous=call(R.storage and R.storage.get,"bmx_bike_lifecycle_v1")
+        if previous[1] and plain(previous[2]) then trace("previous launch: "..lifecycle_line(previous[2])) end
         for key,value in pairs(out[2]) do
             local name=type(key)=="string" and key or value
             local cleared=call(R.storage.set,name,nil)
@@ -185,6 +214,9 @@ function Entry.new(R,Runtime,Survey,options)
         phase,detail="surveying","Checking the full clear area; stay still."
     end
     local function terrain_only(verdict,displayed)
+        -- Something in the way is somewhere to move away from, the same as a slope: no mount has been asked for.
+        if plain(verdict) and verdict.pass==false and survey and (survey.misses~=0 or survey.hits~=0
+            or survey.unavailable~=0 or verdict.blocked~=0) then return true end
         if not plain(verdict) or type(verdict.pass)~="boolean" or not survey
             or survey.misses~=0 or survey.hits~=0 or survey.unavailable~=0
             or verdict.floor_misses~=0 or verdict.floor_rays~=#survey.floor or verdict.blocked~=0
@@ -305,6 +337,7 @@ function Entry.new(R,Runtime,Survey,options)
         if not fresh then fail(text(why,"Survey is no longer fresh."));return end
         if generation~=version or cancelled or unloaded then return end
         mount_issued=true -- Burn before callback, even if the owner refuses or raises.
+        mount_charged=false
         local grade
         if gentle_grade and survey.verdict.grade_required==true then
             grade=table.freeze({policy=Survey.PLAYABLE_GRADE_POLICY,
@@ -433,7 +466,7 @@ function Entry.new(R,Runtime,Survey,options)
         return_since=return_since or started
         if started and return_since and started-return_since>=RETURN_LIMIT_MS then
             return_since=nil
-            fail("Return did not finish.");return
+            fail("Return did not finish: "..text(known and latest.detail,"lifecycle unknown"));return
         end
         if not known or not clean(latest) then detail="Returning: waiting for confirmed cleanup; no stock input sent.";return end
         if return_plan and stock_attempted then
@@ -621,13 +654,22 @@ function Entry.new(R,Runtime,Survey,options)
         phase,detail="preparing","On-foot504 + ACK observed. Preparing a fresh survey for attempt two."
     end
     -- A Mount that cannot start says why on the HUD for a few seconds, rather than doing nothing.
-    local notice,notice_until=nil,0
     local function tell(message)
         notice,notice_until=message,(clock() or 0)+NOTICE_MS
         return false,message
     end
+    -- What the player can do about cleanup that has not finished, or that nothing they do will help.
+    local function waiting_text()
+        local e=known and plain(latest) and latest.equipment
+        local s=known and plain(latest) and latest.source
+        if plain(e) and e.retained==true and e.phase~="done" then return "Let go of every control for a moment, then hold LB and press A." end
+        if plain(s) and s.phase~="complete" and s.phase~="idle" then return "Close menus and let go of the controls, then hold LB and press A." end
+        return "The bike is stuck: restart the game to ride again."
+    end
     function object:mount()
         if not admitted then return false,"Experimental source admission is closed." end
+        -- Riding the board to a better spot ends that step-off: this Mount starts again from the board.
+        if phase=="preflight_refused" and attempts_used>=2 and state()==100 then fail("Moved on the board after the step-off.") end
         if phase=="preflight_refused" then
             if unloaded or ticking or cancelled or not namespace_clear then return false,"Preflight retry unavailable." end
             local version=generation
@@ -651,8 +693,10 @@ function Entry.new(R,Runtime,Survey,options)
             return true
         end
         -- A Return that could not finish leaves a cleaned-up ride: Mount from the board may go again.
-        if (phase=="blocked" or phase=="spent") and attempts_used>=1 and two_cycle then
-            if not known or not clean(latest) then return tell("The bike is stuck: restart the game to ride again.") end
+        if (phase=="blocked" or phase=="spent" or phase=="fallen") and attempts_used>=1 and two_cycle then
+            if not known or not clean(latest) then return tell(waiting_text()) end
+            local ready=call(owner.can_prepare_next_mount,owner)
+            if not ready[1] or ready[2]~=true then return tell("The bike is stuck: restart the game to ride again.") end
             phase="skateboard"
         end
         if attempts_used>=attempt_limit then return tell("All "..attempt_limit.." mounts are used: restart the game to ride again.") end
@@ -661,6 +705,7 @@ function Entry.new(R,Runtime,Survey,options)
         if attempts_used>=1 and state()~=100 then return tell("Get on your skateboard, then hold LB and press A.") end
         if attempts_used==0 and state()~=504 then return tell("Step off your skateboard with Y, then hold LB and press A.") end
         attempts_used+=1;used=true;generation+=1
+        mount_charged=attempts_used>=2
         local version=generation
         if attempts_used>=2 then
             -- Burn the second intent before ALL fallible callbacks. Return's
@@ -828,6 +873,8 @@ function Entry.new(R,Runtime,Survey,options)
                     fallen=nil;phase,detail="riding","One-session bike active. Return or Cancel remains available."
                 elseif latest.stop_latched==true or latest.phase=="done" then
                     fallen=fall_cause(latest) or fallen
+                    local why=fallen or text(latest.stop_reason,"Ride stopped")
+                    if why~=last_stop then last_stop=why;announce("Ride ended: "..why) end
                     if fallen then phase,detail="fallen","Bike stopped after a fall: "..fallen
                         ..(attempts_used<attempt_limit and ". Recover can return and prepare the remaining attempt."
                             or ". Both attempts are spent; Return remains available.")
@@ -838,6 +885,12 @@ function Entry.new(R,Runtime,Survey,options)
         end
         local advanced=pcall(advance)
         ticking=false
+        -- One line for each change of what Entry and Core say, and none for the ticks of a ride.
+        if known and not (phase=="riding" and logged_phase=="riding") then
+            local line="entry="..phase.." attempts="..attempts_used.." "..lifecycle_line(latest)
+            if line~=logged_line then logged_line=line;trace(line.." pad="..(pad_released() and "rest" or "held")) end
+        end
+        logged_phase=phase
         if not advanced then known=false;fail("Entry step failed; cleanup remains required.")
         -- A ride that ended on its own hands the player back straight away: a fall gets back on the bike, anything
         -- else returns to the skateboard, ready to mount again.
@@ -857,6 +910,7 @@ function Entry.new(R,Runtime,Survey,options)
         awaiting_mount="Close menus and let go of the controls.",mounting="Getting on the bike: let go of the controls.",
         stepping_off="Stepping off the board: stand still and let go of the controls.",
         returning="Going back to the skateboard: let go of the controls.",
+        fallen="The ride ended. Hold LB and press A to ride again.",
         preflight_refused="No room here or too steep: move, then hold LB and press A.",
         blocked="That didn't finish. Get on your skateboard, then hold LB and press A.",
         spent="That didn't finish. Get on your skateboard, then hold LB and press A."}
@@ -879,7 +933,7 @@ function Entry.new(R,Runtime,Survey,options)
             terrain_refusal_count=#history,terrain_refusal_limit=MAX_TERRAIN_REFUSALS,terrain_refusals=history,
             preflight_retry_available=phase=="preflight_refused" and not cancelled and not unloaded,
             mount_requested=mount_issued,return_requested=return_pending,stock_attempted=stock_attempted,cancelled=cancelled,
-            fall_reason=fallen,recovery_pending=recover_pending,recovery_available=recoverable(),
+            fall_reason=fallen,last_stop=last_stop,recovery_pending=recover_pending,recovery_available=recoverable(),
             prepare_calls=prep_calls,survey_state=survey and survey.state or "not_started",
             core_phase=known and latest.phase or "unknown",return_position=return_position and table.freeze(table.clone(return_position)) or nil,
             lifecycle_detail=known and (plain(latest.spawn) and text(latest.spawn.detail,nil) or text(latest.detail,nil)

@@ -72,6 +72,7 @@ local LEASE_READS_PER_TICK=1
 local FOLLOW_POLL_MS=50
 local CLEANUP_WATCHDOG_MS=20000
 local CLEANUP_READS=400
+local CLEANUP_LATE_POLL_MS=1000
 assert(2+PROBE_BATCHES_PER_SERIAL<=FOLLOW_READS_PER_TICK and FOLLOW_READS_PER_TICK+1<=SDK_FOLLOW_READS_PER_TICK
     and LEASE_READS_PER_TICK<=SDK_LEASE_READS_PER_TICK and CLEANUP_READS*FOLLOW_POLL_MS>=CLEANUP_WATCHDOG_MS
     and RENEWALS_PER_TICK<=SDK_RENEWALS_PER_TICK,
@@ -665,6 +666,9 @@ local function status_of(object)
     return ok and type(value)=="table" and value or nil
 end
 local function force_clear()
+    -- A completed, acknowledged Follow proves the body parked with its command mailbox cancelled and sealed. Nothing Ride
+    -- could not retire can reach the body after that: what is left is Ride's own bookkeeping.
+    if T.completed_ack==true then return true end
     if T.ride_unknown==true then return false end
     if not ride_binding then return T.ride_construct_attempted~=true end
     if not BikeRuntime.force_transactions_clear(ride_binding) then return false end
@@ -715,7 +719,7 @@ local function unknown_duty(read_status)
     local s=read(source);local b=read(spawn);local e=read(equipment)
     return T.reload_blocked==true or T.marker_unknown==true or T.storage_fault==true or T.clock_unknown==true
         or T.handoff_unknown==true or T.reserve_unknown==true or T.gear_unknown==true
-        or T.cleanup_expired==true or T.protocol_unknown==true or T.ride_unknown==true
+        or T.protocol_unknown==true or T.ride_unknown==true and T.completed_ack~=true
         or T.stop_latched==true and not force_clear()
         or T.ack_attempted==true and T.acknowledged~=true
         or T.release_attempted==true and T.release_accepted~=true
@@ -751,6 +755,7 @@ snapshot=function()
             or T.reload_blocked==true or T.marker_unknown==true,
         cleanup_unknown=unknown_duty(read_cached)==true,stock_toggle_blocked=stock_blocked(read_cached),
         retained_reload_marker=T.reload_blocked==true,marker_unknown=T.marker_unknown==true,
+        gear_unknown=T.gear_unknown==true,cleanup_expired=T.cleanup_expired==true,startup_closed=T.startup_closed==true,
         bike_cleanup_complete=T.bike_cleanup_complete==true,
         stock_requested=T.gear_requested==true,equipment_purpose=T.gear_purpose,
         native_follow_lease_ms=BASE_LEASE_MS,qualification_ms=session_renewable and 0 or RIDE_WINDOW_MS,ride_window_ms=session_renewable and 0 or RIDE_WINDOW_MS,
@@ -1056,8 +1061,10 @@ end
 -- a callback crossing the deadline must not authorize the next call or completion.
 local function source_cleanup_open(now)
     local start=T.stop_at or T.effect_at
-    return T.stop_latched==true and not T.unloaded and not T.cleanup_expired and not T.clock_unknown
-        and finite(now) and finite(start) and now>=start and now-start<CLEANUP_WATCHDOG_MS
+    -- No end: a release waits for a clean report, so a menu left open can hold it for as long as it stays open, and the
+    -- lease contract says not to replace unobserved cleanup with a caller timeout. Reading it changes nothing native.
+    return T.stop_latched==true and not T.unloaded and not T.clock_unknown
+        and finite(now) and finite(start) and now>=start
 end
 local input_proxy={}
 local input_methods={"lease","lease_read","lease_renew","lease_state","lease_release","lease_acknowledge",
@@ -1243,26 +1250,31 @@ local function release_once()
     T.release_accepted=yes(r)
     if T.release_accepted then T.body=nil end
 end
-local function accept_terminal(dto)
-    if T.terminal then return end
-    stop_all("native follow terminal receipt observed")
-    T.terminal=dto
-    if not persist(true) or T.unloaded then return end
+local function acknowledge_terminal()
     T.ack_attempted=true
     local r=call("follow.acknowledge",lookup("world.physics.acknowledge_follow"),T.follow)
     T.acknowledged=yes(r)
     if T.acknowledged then
         T.follow=nil
-        if dto.phase=="completed" then T.completed_ack=true;T.body=nil else release_once() end
+        if T.terminal.phase=="completed" then T.completed_ack=true;T.body=nil else release_once() end
     end
     stop_spawn_when_allowed(T.stop_reason)
     persist(true)
 end
+local function accept_terminal(dto)
+    if T.terminal then return end
+    stop_all("native follow terminal receipt observed")
+    T.terminal=dto
+    if not persist(true) or T.unloaded then return end
+    acknowledge_terminal()
+end
 local function read_follow(force)
     if not T.follow or T.ack_attempted then return false end
-    if not force and T.follow_read_at and T.now and T.now-T.follow_read_at<FOLLOW_POLL_MS then return false end
+    local poll=T.cleanup_expired and CLEANUP_LATE_POLL_MS or FOLLOW_POLL_MS
+    if not force and T.follow_read_at and T.now and T.now-T.follow_read_at<poll then return false end
     local stopping=T.stop_latched==true
-    if not BikeRuntime.follow_read_admitted(T.follow_reads_tick or 0,T.cleanup_reads or 0,stopping) then
+    -- Past the watchdog the SDK still owes this receipt: its read budget gives way to a slow poll, never to silence.
+    if not T.cleanup_expired and not BikeRuntime.follow_read_admitted(T.follow_reads_tick or 0,T.cleanup_reads or 0,stopping) then
         -- Core's own cap stops the ride before the SDK's quota would refuse.
         if not stopping then stop_all("Follow receipt reads for this tick exhausted") end
         return false
@@ -1600,9 +1612,14 @@ local function cleanup_tick()
     -- fallback when no clock had been read when the stop latched.
     local start=T.stop_at or T.effect_at
     if not T.cleanup_expired and T.now and start and T.now-start>=CLEANUP_WATCHDOG_MS then
-        T.cleanup_expired=true;T.detail="Cleanup watchdog expired; unresolved duty retained for SDK VM close."
+        T.cleanup_expired=true;T.detail="Cleanup is past its watchdog; still watching what the SDK has left to finish."
     end
-    if not T.cleanup_expired then read_follow(false) end
+    read_follow(false)
+    -- The SDK's ACK is a Try-lock, so a refusal means not this tick. Asking again changes nothing it has not finished.
+    if T.terminal and T.follow and not T.acknowledged and not T.unloaded and not T.storage_fault
+        and (not T.follow_read_at or not T.now or T.now-T.follow_read_at>=FOLLOW_POLL_MS) then
+        T.follow_read_at=T.now;acknowledge_terminal()
+    end
     release_once()
     stop_spawn_when_allowed(T.stop_reason)
     flush_removals()
@@ -2127,7 +2144,7 @@ local function cycle_ready(expected,after_attempt)
     -- A mount refused before it reserved anything has no Follow, visual, pose or board to account for.
     local untouched=T.reserve_attempted~=true and T.handoff_attempted~=true and T.capture_attempted~=true
     if not session or not mount_attempt_used or T.session_retired or T.unloaded or T.busy or T.saving
-        or T.gear_requested or T.intent_inflight or T.cleanup_expired or T.storage_fault or T.clock_unknown
+        or T.gear_requested or T.intent_inflight or T.storage_fault or T.clock_unknown
         or not T.ledger_owned or T.reload_blocked or T.marker_unknown or T.phase~="done"
         or T.bike_cleanup_complete~=true or stock_blocked() or not source_clean() or not force_clear()
         or T.follow~=nil or T.body~=nil or not untouched and (T.completed_ack~=true or T.acknowledged~=true
@@ -2143,14 +2160,15 @@ local function cycle_ready(expected,after_attempt)
         or board.issue~=nil) then return false,"Pose and board cleanup must be confirmed" end
     local e=status_of(equipment)
     -- A rider who got back on the board themselves after a Return that could not finish has no target to wait
-    -- for: the state read in cycle_checkpoint says they are on it.
-    local boarded=expected==100 and not after_attempt and e and e.phase=="done" and e.retained==false
+    -- for: the state read in cycle_checkpoint says they are on it. A first ride starts on foot, so a rider who boards
+    -- before the mod's switch has made no equipment attempt at all.
+    local boarded=expected==100 and not after_attempt and e and (e.phase=="done" or e.phase=="idle") and e.retained==false
         and not e.unloaded and not e.storage_fault
     if not e or not boarded and (e.phase~="done" or e.retained~=false or e.unloaded or e.storage_fault
         or e.storage_accepted~=true or e.acknowledged~=true or e.qualified_transition~=true
         or e.current_transition~=true or e.expected_state~=expected or e.outcome~="target_observed"
         or after_attempt and type(e.attempt)=="number" and e.attempt<=after_attempt)
-        or type(e.attempt)~="number" or e.attempt%1~=0 or e.attempt<1 then return false,"Fresh target and equipment ACK required" end
+        or type(e.attempt)~="number" or e.attempt%1~=0 or e.attempt<(boarded and 0 or 1) then return false,"Fresh target and equipment ACK required" end
     local receipt=e.terminal_receipt
     if not boarded and (type(receipt)~="table" or receipt.terminal~=true or receipt.report_debt~=false
         or receipt.claim_released~=true or receipt.quarantined~=false or receipt.orphaned~=false) then
@@ -2219,7 +2237,8 @@ function BikeRuntime.experimental_two_cycle_owner()
     experimental_owner_created=true
     local made,hooks,failed,return_attempt,epoch=0,nil,false,nil,0
     local owner={}
-    function owner:abort_preparation() epoch+=1;failed=true end
+    -- Stopping a preparation stops that preparation: the old owner stays clean and the next Mount can ask again.
+    function owner:abort_preparation() epoch+=1 end
     function owner:first(services,options,state)
         if failed or made~=0 or vm_attempt_used then return nil,"First private session unavailable" end
         made=1
@@ -2228,18 +2247,18 @@ function BikeRuntime.experimental_two_cycle_owner()
         return object
     end
     function owner:can_archive_return()
-        if failed or made<1 or return_attempt then return false,"Next intent unavailable" end
+        if failed or made<1 then return false,"Next intent unavailable" end
+        if return_attempt then return true end -- A retried step-off: that Return is already archived.
         return hooks.can_return()
     end
     function owner:archive_return()
         if failed or made<1 then return false,"Next intent already consumed or unavailable" end
         if return_attempt then return true end -- A retried step-off: that Return is already archived.
-        -- Burn before fallible callbacks: a failed archive can never be retried.
-        failed=true
+        -- A refused archive wrote nothing and started nothing; a refused write sets T.storage_fault, which stays refused.
         local version=epoch
         local ok,attempt=hooks.checkpoint(100,nil,"bmx_bike_cycle_1_stock100_v1",false)
         if not ok or epoch~=version then return false,epoch~=version and "Preparation cancelled" or attempt end
-        return_attempt=attempt;failed=false
+        return_attempt=attempt
         return true
     end
     function owner:ready()
@@ -2251,10 +2270,10 @@ function BikeRuntime.experimental_two_cycle_owner()
     end
     function owner:successor(services,options,state)
         if failed or made<1 or not return_attempt then return nil,"No private successor available" end
-        failed=true;made+=1
         local version=epoch
         local ok,why=hooks.checkpoint(504,return_attempt,"bmx_bike_cycle_1_onfoot504_v1",true)
-        if not ok then return nil,why end
+        if not ok then return nil,why end -- Refused before retiring: this owner is still clean and can ask again.
+        failed=true;made+=1
         state.ledger_owned=true
         local object,next_hooks=new_core(services,options,state,{index=made})
         -- Replace the active marker only after both old snapshots were saved

@@ -13,13 +13,11 @@ function Tests.run()
         {"Source pending",function(t)t.source_armed=true;t.source_record={cleanup_pending=true}end},
         {"Follow unACKed",function(t)t.acknowledged=false end},
         {"Follow incomplete",function(t)t.completed_ack=false end},
-        {"force unknown",function(t)t.ride_unknown=true end},
         {"pose not released",function(t)t.pose_status={state="off",stopped=true,nil_accepted=false}end},
         {"board restore unknown",function(t)t.board_status={state="restore_unknown",clear_result="raised"}end},
         {"park absent",function(t)local x=Fixture.copy(t.terminal);x.park_observed=false;t.terminal=x end},
         {"unmatched revision",function(t)local x=Fixture.copy(t.terminal);x.returned_revision="8";t.terminal=x end},
         {"pending final",function(t)local x=Fixture.copy(t.terminal);x.pending={1};t.terminal=x end},
-        {"expired cleanup",function(t)t.cleanup_expired=true end},
         {"clock unknown",function(t)t.clock_unknown=true end},
         {"marker unknown",function(t)t.marker_unknown=true end},
     }

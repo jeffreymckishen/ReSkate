@@ -76,6 +76,7 @@ reskate.menu.page("BMX",function(ui)
     if ui:button("bmx_play_mount","Mount bike") then bike:mount() end
     if ui:button("bmx_play_return","Return to skateboard") then bike:return_to_skateboard() end
     if s.fall_reason then ui:warn("Fallen: "..s.fall_reason) end
+    if s.last_stop then ui:info("Last ride ended",s.last_stop) end
     if s.phase=="blocked" or s.phase=="stopped" then ui:note(s.lifecycle_detail) end
     ui:info("State",s.phase)
     ui:note(s.detail)

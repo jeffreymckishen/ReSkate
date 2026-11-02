@@ -126,18 +126,17 @@ function Tests.run()
         f.slope=0;check(f.entry:mount(),"fresh flat survey intent")
         check(f.await().mount_requested,"only new passing terrain reaches owner")
     end)
-    case("07 obstruction and unavailable rays stay sticky",function()
+    case("07 obstruction and unavailable rays can be walked away from",function()
         for _,kind in ipairs({"hit","unavailable"})do
             local f=fixture();f.rough=false;f.obstacle=kind
             check(f.entry:mount(),"first intent");local s=f.await()
-            check(s.phase=="blocked" and s.terrain_refusal_count==0 and not f.entry:mount(),"hit/unknown is not geometric retry")
-            check(f.mounts==0 and f.stops==1,"original stop path")
+            check(s.phase=="preflight_refused" and s.terrain_refusal_count==1 and f.mounts==0,"no bike requested, retry offered")
         end
     end)
-    case("08 missing floor ray stays sticky",function()
+    case("08 missing floor ray can be walked away from",function()
         local f=fixture();f.on_probe=function()return{status="unavailable"}end
         check(f.entry:mount(),"first intent");local s=f.await()
-        check(s.phase=="blocked" and not f.entry:mount() and s.terrain_refusal_count==0,"missing floor never becomes terrain retry")
+        check(s.phase=="preflight_refused" and s.terrain_refusal_count==1,"no bike requested, retry offered")
     end)
     case("09 changing floor stays sticky",function()
         local f=fixture();f.rough=false;f.change_floor=true

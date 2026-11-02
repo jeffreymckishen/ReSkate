@@ -82,6 +82,10 @@ function Adapter:_facts()
             if watch.wipeouts>self._wipeouts then fallen=true
             elseif watch.wipeouts<self._wipeouts then state=nil end
         end
+        -- The first fall seen during a transaction, the only witness of what ended it.
+        if active and fallen and not self._first_fall then
+            self._first_fall={at_ms=t,state=state,ragdoll=ragdoll,wipeouts=watch and watch.wipeouts,baseline_wipeouts=self._wipeouts}
+        end
     end
     local menu_closed
     if f and type(f.interface_open)=="boolean" then menu_closed=not f.interface_open end
@@ -116,7 +120,7 @@ function Adapter:request(slot,admitted_at_ms)
     -- Only the model's strictly newer attempt can credit its sampled target.
     self._request_after_attempt=out.attempt
     self._pending={slot=slot,at=admitted_at_ms or f.now_ms,last=f.now_ms,context=f.context,level=f.level,state=f.observation.state,neutral=false}
-    self._wipeouts=f.wipeouts
+    self._wipeouts=f.wipeouts;self._first_fall=nil
     self._ever_requested=true
     self._detail="Armed for60s: close the menu; leave the physical controller neutral."
     if not self:_progress(true) then self._pending=nil;return false,"Arm refused: progress cache unavailable" end
@@ -271,7 +275,7 @@ function Adapter:status()
         qualified_transition=current_attempt and not self._closed and currently_ready==true and o.qualified_transition==true,
         current_transition=current_attempt and o.historical_transition==true,historical_transition=o.historical_transition==true,
         calls=copy(self._calls),receipt=copy(o.receipt),terminal_receipt=copy(o.terminal_receipt),suffix=copy(o.suffix),
-        request_result=copy(self._request_response),
+        request_result=copy(self._request_response),first_fall=copy(self._first_fall),
         storage_key=storage_key,progress_key=progress_key,storage_accepted=self._cached~=nil,
         storage_fault=self._storage_fault==true,
         unloaded=self._closed==true,unload_cancel=copy(self._unload_cancel),scope="Stock board/on-foot only; BMX is not mounted"}

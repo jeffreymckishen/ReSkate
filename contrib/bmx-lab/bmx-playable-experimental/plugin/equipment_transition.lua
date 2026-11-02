@@ -156,6 +156,9 @@ end
 
 function Transition.new() return setmetatable({_attempt=0,_armed=false,_phase="idle",_outcome="idle"},Policy) end
 function Policy:_owned() return self._awaiting or self._unknown or (self._handle~=nil and not self._acked) end
+-- A handle the SDK still answers for. The intent deadline ends the wait for the switch, not the watch on the handle: cancel
+-- ends a press at once, and one report at rest clears whatever a press left.
+function Policy:_draining() return self._handle~=nil and not self._acked and not self._unsafe and not self._unknown end
 function Policy:_fault(why,unsafe)
     self._armed=false
     if self._phase~="idle" and self._phase~="done" then
@@ -268,7 +271,7 @@ function Policy:update(f)
     if not clock or not valid then
         if f.loaded==true and self._phase~="done" then self:_cancel(intents) end
     elseif fresh then
-        if active and f.now_ms-self._start>=limits.intent_ms then
+        if active and f.now_ms-self._start>=limits.intent_ms and not self:_draining() then
             if f.loaded then self:_cancel(intents) end
             self:_done(self:_owned() and "unresolved" or "failed","intent_deadline")
         elseif active then

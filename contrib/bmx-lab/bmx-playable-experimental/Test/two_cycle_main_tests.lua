@@ -15,7 +15,7 @@ function T.run()
         core_phase="idle",attempts_used=0,attempt_limit=2,cleanup_pending=false,cleanup_unknown=false}end}
     function object:score_view() return nil,"ride_unavailable","unavailable" end
     function R.on(name,fn)check((name=="tick" or name=="unload" or name=="action" or name=="draw")and type(fn)=="function","normal callbacks only")end
-    function R.menu.page(name,fn)check(name=="BMX experimental" and type(fn)=="function","same explicit menu")end
+    function R.menu.page(name,fn)check(name=="BMX" and type(fn)=="function","same explicit menu")end
     local Runtime,Survey={},{}
     local E={new=function(actual,r,s,options)
         count+=1;check(actual==R and r==Runtime and s==Survey,"exact dependencies")

@@ -166,8 +166,8 @@ function Tests.run()
     end)
     case("09 stock-board state does not bypass Root3 foot-only admission",function()
         local f=fixture();f.overlay=false;f.stock=100
-        check(f.entry:mount(),"intent may survey before current state check");f.await_mount()
-        check(f.mounts==0 and f.entry:status().phase=="blocked","board100 cannot directly enter unproven board-to-bike path")
+        check(not f.entry:mount(),"board100 cannot directly enter unproven board-to-bike path")
+        check(f.mounts==0 and f.entry:status().attempts_used==0,"the refused first Mount spends nothing")
     end)
     case("10 cancel during survey immediately revokes remaining queries",function()
         local f=fixture();f.overlay=false
@@ -214,11 +214,11 @@ function Tests.run()
         f.latest=cleaned();f.stock=100;f.tick()
         check(f.entry:status().phase=="skateboard" and f.toggles==1,"actual returned state, not submit acceptance, completes return")
     end)
-    case("16 stock refusal and exception remain visible with no retry",function()
+    case("16 a refused stock switch waits and asks again slowly",function()
         for _,answer in ipairs({function() return false,"constructed stock refusal" end,function() error("stock raised") end}) do
             local f=fixture();f.riding();f.on_stock=answer;check(f.entry:return_to_skateboard(),"return accepted")
             f.latest=cleaned();f.tick();f.tick(10)
-            check(f.toggles==1 and f.entry:status().phase=="blocked","stock failure cannot become repeated input")
+            check(f.toggles==1 and f.entry:status().phase=="returning","stock refusal cannot become repeated input")
         end
     end)
     case("17 Cancel can revoke a stock transaction independently of prior ride stop",function()
@@ -357,8 +357,8 @@ function Tests.run()
         check(noack.placements==0 and noack.toggles==1 and noack.entry:status().phase=="blocked",
             "stock100 without exact equipment ACK cannot queue placement")
         local late=prepared();late.now+=14900;late.latest=cleaned();late.tick(3)
-        check(late.placements==0 and late.toggles==0 and late.entry:status().phase=="blocked",
-            "native5s queue plus100ms convergence must fit original20s before stock even starts")
+        check(late.placements==0 and late.toggles==1 and late.entry:status().phase=="returning",
+            "a Return too late to place the rider goes back to the board where they stand")
         local slow=prepared();slow.latest=cleaned();slow.tick();slow.now+=14900;stock_done(slow);slow.tick()
         check(slow.placements==0 and slow.toggles==1 and slow.entry:status().phase=="blocked",
             "time spent obtaining stock ACK is charged to original20s; no late placement")

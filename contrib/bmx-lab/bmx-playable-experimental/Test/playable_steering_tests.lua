@@ -10,9 +10,13 @@ function T.run()
  local recorded=Forces.proposed_body()
  recorded.linear_velocity={-.13,0,3.04};recorded.angular_velocity={.04,.95,-.20}
  check(stage:admit_measured(recorded),"recorded human turning sample must stay admitted")
- local invalid=Forces.proposed_body();invalid.linear_velocity={0,0,13}
+ local invalid=Forces.proposed_body();invalid.linear_velocity={0,0,41}
  check(not stage:admit_measured(invalid),"bounded overspeed stop remains")
- invalid.linear_velocity={0,7,0}
+ local downhill=Forces.proposed_body();downhill.linear_velocity={0,0,13}
+ check(stage:admit_measured(downhill),"rolling down a hill past pedalling speed rides on")
+ local drop=Forces.proposed_body();drop.linear_velocity={0,-7,0}
+ check(stage:admit_measured(drop),"dropping off a ledge rides on")
+ invalid.linear_velocity={0,41,0}
  check(not stage:admit_measured(invalid),"vertical stop remains unchanged")
  local terrain=World.terrain.flat()
  local body,wheels=World.place(terrain,{speed=2.9})

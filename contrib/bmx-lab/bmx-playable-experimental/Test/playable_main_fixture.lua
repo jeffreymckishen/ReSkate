@@ -7,7 +7,7 @@ local Runtime=require("./bike_runtime")
 local Survey=require("./ride_r1_record")
 local Entry=require("./bmx_playable_entry")
 local ScoreHUD=require("./score_hud")
-local bike=Entry.new(reskate,Runtime,Survey,{admitted=EXPERIMENTAL_ADMITTED,slot=SLOT,experimental_two_cycle=true,session_renewable=SESSION_RENEWABLE})
+local bike=Entry.new(reskate,Runtime,Survey,{admitted=EXPERIMENTAL_ADMITTED,slot=SLOT,experimental_two_cycle=true,session_renewable=SESSION_RENEWABLE,auto_return=true})
 local unloaded=false
 local score_lines
 local function score_snapshot()
@@ -60,42 +60,21 @@ reskate.on("tick",function(dt_ms)
     score_lines=ok and text or nil
 end)
 reskate.on("draw",function(d) pcall(draw_score_lines,d) end)
-reskate.menu.page("BMX experimental",function(ui)
+reskate.menu.page("BMX",function(ui)
     local s=bike:status()
-    ui:warn("Experimental: at most TWO attempts; each uses a new retained body slot. Start on foot on flat ground with 1.25 m clear around you for spawning.")
-    if not s.admitted then ui:note("This reviewed source build is inactive; no Mount action is admitted.") end
-    ui:warn("Opening Insert ends an active ride. F8 or LB + RB + R3 returns; F9 or LB + RB + L3 recovers after a fall.")
+    if not s.admitted then ui:note("This build is inactive; Mount does nothing.") end
+    ui:note("First ride of a launch: on foot on flat ground with a little room around you, hold LB, then press A, and let go of the controls while the bike gets ready.")
+    ui:note("A pedals, B brakes, the left stick steers, clicking the right stick hops.")
+    ui:note("F8 or LB + RB + R3 goes back to the skateboard. A ride that ends any other way goes back on its own, and a fall gets you back on the bike.")
+    ui:note("Back on the skateboard, hold LB, then press A to ride again, standing still with the controls released. Pausing or opening Insert ends the ride.")
+    ui:note("Each game launch allows "..tostring(s.attempt_limit).." mounts; restart the game for more. All of these controls can be changed in Binds.")
     if ui:button("bmx_play_mount","Mount bike") then bike:mount() end
     if ui:button("bmx_play_return","Return to skateboard") then bike:return_to_skateboard() end
-    if ui:button("bmx_play_cancel","Cancel / stop and keep cleanup") then bike:cancel() end
-    if s.fall_reason then
-        ui:warn("Fallen: "..s.fall_reason)
-        if s.recovery_available then
-            if ui:button("bmx_play_recover","Recover bike") then bike:recover() end
-        elseif s.recovery_pending then ui:note("Recover requested. Close menus and release controls while Return completes.")
-        elseif s.attempts_used>=s.attempt_limit then ui:note("Both bike attempts are spent. Return to skateboard remains available.") end
-        if s.attempts_used<s.attempt_limit then ui:note("Recovery uses the remaining attempt and checks fresh flat ground.") end
-        ui:note("The stopped bike is removed during normal cleanup.")
-    end
-    s=bike:status()
+    if s.fall_reason then ui:warn("Fallen: "..s.fall_reason) end
+    if s.phase=="blocked" or s.phase=="stopped" then ui:note(s.lifecycle_detail) end
     ui:info("State",s.phase)
     ui:note(s.detail)
-    ui:note("Hold LB, then press A to request Mount. Start on foot and release all controls while preparing (remappable in Binds).")
-    ui:note("F8: return to skateboard (remappable in Binds).")
-    ui:note("Hold LB + RB, then click R3 to return to skateboard. Release all controls while Return runs (remappable in Binds).")
-    ui:note("F9: recover bike after a fall (remappable in Binds).")
-    ui:note("LB + RB + L3: recover after a fall; release all controls while recovery runs (remappable in Binds).")
-    if s.phase=="blocked" or s.phase=="stopped" then ui:note(s.lifecycle_detail) end
-    ui:note("First Mount requires on-foot504. Second Mount requires current stock100 after clean Return, then visibly obtains504 before a NEW survey. Stay still and neutral.")
-    if SESSION_RENEWABLE then
-        ui:note("Ride continues until Return or stop. After clean stock Return, Mount once more first obtains on-foot504. Slots are never reclaimed. Only proven first preflight terrain refusals can retry; other failures end the attempt.")
-    else
-        ui:note("Each ride is bounded to60s. After clean stock Return, Mount once more first obtains on-foot504. Slots are never reclaimed. Only proven first preflight terrain refusals can retry; other failures end the attempt.")
-    end
-    ui:info("Attempts used / limit",tostring(s.attempts_used).." / "..tostring(s.attempt_limit))
-    ui:info("Terrain refusals / limit",tostring(s.terrain_refusal_count).." / "..tostring(s.terrain_refusal_limit))
-    ui:info("Lifecycle",tostring(s.core_phase))
-    ui:info("Cleanup pending / unknown",tostring(s.cleanup_pending).." / "..tostring(s.cleanup_unknown))
+    ui:info("Mounts used",tostring(s.attempts_used).." of "..tostring(s.attempt_limit))
 end)
 reskate.on("unload",function() unloaded=true;score_lines=nil;bike:unload() end)
 

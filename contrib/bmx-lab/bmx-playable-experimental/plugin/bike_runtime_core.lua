@@ -7,6 +7,8 @@ local BikeRuntime={}
 local PROBE_BATCHES_PER_SERIAL=4
 BikeRuntime.probe_batches_per_serial=PROBE_BATCHES_PER_SERIAL
 local vm_attempt_used=false
+-- How far the rider's body may be from the bike's, and for how many steps, before they have come off.
+local RIDER_OFF_METRES,RIDER_OFF_STEPS=2.5,12
 local KEY="bmx_bike_lifecycle_v1"
 local MAX=9007199254740991
 -- Source proposal only. No option, public request or manifest can open this.
@@ -761,7 +763,7 @@ snapshot=function()
         lease_renew_last=T.lease_renew_last,lease_renew_off=T.lease_renew_off==true,
         renewals_this_tick=T.renewals_tick or 0,
         one_attempt_per_vm=session==nil,experimental_session=session and session.index or nil,
-        experimental_attempt_limit=session and 2 or nil,native_retirement_known=native_retirement_known,session_retired=session and T.session_retired==true or nil,retained_body_slot_limit=8,
+        experimental_attempt_limit=session and 8 or nil,native_retirement_known=native_retirement_known,session_retired=session and T.session_retired==true or nil,retained_body_slot_limit=8,
         limit_scope=T.lease_renewable and "Eight retained native body slots may already be exhausted; not a retry budget. Core renews its one Follow and requests no body reuse."
             or "Eight retained native body slots may already be exhausted; not a retry budget. Core requests no Follow renewal or body reuse.",
         source_freshness_scope=T.lease_renewable and "Selected-input lease renewal. The Follow lease moves later only by an accepted Follow renewal; a copied lease report can only shorten it."
@@ -1760,7 +1762,7 @@ function object:request_mount(slot,admitted,grade)
         if T.intent_inflight or T.active or T.gear_requested then stop_all("reentrant mount request") end
         return false,"Bike lifecycle operation already in progress"
     end
-    if (T.used and admitted~=T) or mount_attempt_used or T.session_retired or (vm_attempt_used and not (session and session.index==2)) or T.unloaded or stock_blocked() then return false,session and "Consumed attempt, busy or retained duty prevents admission" or "One attempt per VM; busy or retained duty prevents rearm" end
+    if (T.used and admitted~=T) or mount_attempt_used or T.session_retired or (vm_attempt_used and not (session and session.index>=2)) or T.unloaded or stock_blocked() then return false,session and "Consumed attempt, busy or retained duty prevents admission" or "One attempt per VM; busy or retained duty prevents rearm" end
     mount_attempt_used=true;T.busy=true;T.intent_inflight=true;T.used=true;vm_attempt_used=true;T.slot=slot
     local generation=T.generation
     local clear=marker_clear()
@@ -2068,6 +2070,17 @@ local function tick(dt)
                         elseif not lease_live(now) then stop_all("ride window or Follow lease ended during visual update")
                         -- S2 declared change: the rider posed on the bike just drawn, from the same read and pose.
                         elseif poser then pose_tick(r[2],pose,now) end
+                        -- The rider's own collision can catch on what the bike rolls through, a parked car say.
+                        -- A rider left behind has come off: the same stop as a fall, so the ride recovers.
+                        if current(generation) then
+                            local a=call("skater.get",lookup("skater.get"))
+                            local at=a[1] and type(a[2])=="table" and a[2].position or nil
+                            local body=r[2].position
+                            if typeof(at)=="vector" and typeof(body)=="vector" and vector.magnitude(at-body)>RIDER_OFF_METRES then
+                                T.rider_off_steps=(T.rider_off_steps or 0)+1
+                                if T.rider_off_steps>=RIDER_OFF_STEPS then stop_all("rider came off the bike") end
+                            else T.rider_off_steps=0 end
+                        end
                         if mounted_evidence and current(generation) then pcall(emit_mounted_evidence,r[2],observed_ms) end
                     end
                 end
@@ -2204,11 +2217,11 @@ function BikeRuntime.experimental_two_cycle_owner()
         return object
     end
     function owner:can_archive_return()
-        if failed or made~=1 or return_attempt then return false,"Second intent unavailable" end
+        if failed or made<1 or return_attempt then return false,"Next intent unavailable" end
         return hooks.can_return()
     end
     function owner:archive_return()
-        if failed or made~=1 or return_attempt then return false,"Second intent already consumed or unavailable" end
+        if failed or made<1 or return_attempt then return false,"Next intent already consumed or unavailable" end
         -- Burn before fallible callbacks: a failed archive can never be retried.
         failed=true
         local version=epoch
@@ -2218,23 +2231,25 @@ function BikeRuntime.experimental_two_cycle_owner()
         return true
     end
     function owner:ready()
-        if failed or made~=1 or not return_attempt then return false,"Second preparation is unavailable" end
+        if failed or made<1 or not return_attempt then return false,"Next preparation is unavailable" end
         local version=epoch
         local ok,why=hooks.ready(return_attempt)
         if failed or epoch~=version then return false,"Preparation cancelled" end
         return ok,why
     end
     function owner:successor(services,options,state)
-        if failed or made~=1 or not return_attempt then return nil,"No private successor available" end
-        failed=true;made=2
+        if failed or made<1 or not return_attempt then return nil,"No private successor available" end
+        failed=true;made+=1
         local version=epoch
         local ok,why=hooks.checkpoint(504,return_attempt,"bmx_bike_cycle_1_onfoot504_v1",true)
         if not ok then return nil,why end
         state.ledger_owned=true
-        local object,next_hooks=new_core(services,options,state,{index=2})
+        local object,next_hooks=new_core(services,options,state,{index=made})
         -- Replace the active marker only after both old snapshots were saved
         -- and old callbacks are inert, before any successor actuator exists.
         if not next_hooks.initialize() or epoch~=version then return nil,"Successor active marker failed or intent cancelled" end
+        -- The successor owns the next cycle in turn.
+        hooks,return_attempt,failed=next_hooks,nil,false
         return object
     end
     return table.freeze(owner)

@@ -363,8 +363,6 @@ function Tests.run()
         menu(ui)
         check(options_seen.admitted==false and options_seen.session_renewable==false
             and options_seen.experimental_two_cycle==true,"no source admission or continuous activation")
-        local finite=false;for _,text in notes do if text:find("Each ride is bounded to60s.",1,true)then finite=true end end
-        check(finite,"legacy60s UI remains the default")
     end)
     case("Entry forwards only a boolean opt-in without admission",function()
         for _,value in {{},{value=false},{value=true},{value="true"},{value=1}} do
@@ -378,7 +376,7 @@ function Tests.run()
             local state=entry:status()
             check(calls==1 and captured.qualification_only==true and type(captured.session_renewable)=="boolean",
                 "one inert constructor receives boolean options")
-            check(captured.session_renewable==(value.value==true) and state.admitted==false and state.attempt_limit==2,
+            check(captured.session_renewable==(value.value==true) and state.admitted==false and state.attempt_limit==8,
                 "only explicit true selects session and no option admits source or extra attempts")
         end
     end)

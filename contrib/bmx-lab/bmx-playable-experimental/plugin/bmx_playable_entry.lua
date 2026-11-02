@@ -21,7 +21,8 @@ local function fall_cause(s)
     local ride=plain(s) and s.stop_latched==true and s.ride or nil
     local issue=plain(ride) and ride.stop_requested==true and ride.issue or nil
     if type(issue)=="string" and (issue:match("^measured tilt [%d%.]+ deg over the %d+ deg Ride stop$")
-        or issue:match("^measured roll rate [%d%.]+ rad/s over the %d+ rad/s Ride stop$")) then return text(issue) end
+        or issue:match("^measured roll rate [%d%.]+ rad/s over the %d+ rad/s Ride stop$")
+        or issue=="rider came off the bike") then return text(issue) end
     return nil
 end
 function Entry.new(R,Runtime,Survey,options)
@@ -29,6 +30,7 @@ function Entry.new(R,Runtime,Survey,options)
     local slot=type(options)=="table" and options.slot or 0
     assert(finite(slot) and slot%1==0 and slot>=0 and slot<=3,"controller slot required")
     local two_cycle=type(options)=="table" and options.experimental_two_cycle==true
+    local auto_return=type(options)=="table" and options.auto_return==true
     local session_renewable=type(options)=="table" and options.session_renewable==true
     local made=call(two_cycle and Runtime.new_experimental_two_cycle or Runtime.new,R,{qualification_only=true,session_renewable=session_renewable})
     assert(made[1] and made.n==2 and type(made[2])=="table","one inert lifecycle owner required")
@@ -45,9 +47,12 @@ function Entry.new(R,Runtime,Survey,options)
     local phase,detail="idle",admitted and "On foot, choose Mount in a flat clear area." or "This experimental source build is closed."
     local used,mount_issued,return_pending,stock_attempted=false,false,false,false
     local attempts_used=0
+    local STOCK_RETRIES,STOCK_RETRY_MS=4,500
+    local stock_retries,stock_retry_at=0,nil
     local second_prepare_pending,second_terrain_pending=false,false
     local second_admitted_at,second_quiet_at,second_quiet_last,second_quiet_samples=nil,nil,nil,0
-    local attempt_limit=two_cycle and 2 or 1
+    -- The SDK retains eight owned bodies and input leases a game launch; each mount spends one of each.
+    local attempt_limit=two_cycle and 8 or 1
     local fallen,recover_pending,recover_wait_context=nil,false,nil
     local stopped,cancel_sent,cancelled,unloaded,ticking=false,false,false,false,false
     local generation,latest,known=0,nil,false
@@ -69,7 +74,7 @@ function Entry.new(R,Runtime,Survey,options)
             and s.startup.core_ready==false and s.startup.backend_ready==false
     end
     local function preflight_clear()
-        if attempts_used==2 and two_cycle then
+        if attempts_used>=2 and two_cycle then
             if not used or mount_issued or return_pending or stock_attempted or second_prepare_pending
                 or stopped or cancel_sent or cancelled or unloaded or not known or not clean(latest)
                 or not finite(second_admitted_at) then return false end
@@ -128,11 +133,26 @@ function Entry.new(R,Runtime,Survey,options)
         end
         return a
     end
+    -- Every button up and both sticks and triggers at rest. An unreadable pad delays nothing.
+    local function pad_released()
+        local pad=call(R.input and R.input.gamepad)
+        local p=pad[2]
+        if not pad[1] or pad.n~=2 or not plain(p) or not plain(p.buttons) then return true end
+        for _,name in {"up","down","left","right","start","back","left_stick","right_stick","lb","rb","a","b","x","y"} do
+            if p.buttons[name]==true then return false end
+        end
+        for _,name in {"left_x","left_y","right_x","right_y","left_trigger","right_trigger"} do
+            if not finite(p[name]) then return true end
+        end
+        return p.left_x^2+p.left_y^2<=(7849/32767)^2 and p.right_x^2+p.right_y^2<=(8689/32767)^2
+            and p.left_trigger<=30/255 and p.right_trigger<=30/255
+    end
     local function state()
         local out=call(R.skater and R.skater.telemetry)
         if not out[1] or out.n~=2 or not plain(out[2]) or not plain(out[2].watch)
             or (out[2].watch.state~=100 and out[2].watch.state~=504) then
-            fail("Stock rider state unavailable; no switch was sent.");return nil
+            -- Mid grind, mid fall, mid air: the stock switch waits for a state it can act on.
+            detail="Waiting for the rider to settle.";return nil
         end
         return out[2].watch.state
     end
@@ -427,9 +447,7 @@ function Entry.new(R,Runtime,Survey,options)
         -- reaches this fresh state check and final Return path.
         local observed=state();if observed==nil or generation~=version or cancelled or unloaded then return end
         if observed==100 then
-            if return_plan and (not stock_attempted or return_position.observed~=true) then
-                fail("Matched stock100 ACK and position convergence required for final Return.");return
-            end
+            if return_plan and (not stock_attempted or return_position.observed~=true) then return_plan,return_position=nil,nil end
             return_pending=false
             if two_cycle and attempts_used<attempt_limit then
                 local ready=call(owner.can_prepare_next_mount,owner)
@@ -443,20 +461,32 @@ function Entry.new(R,Runtime,Survey,options)
             phase,detail="skateboard",two_cycle and attempts_used<attempt_limit and "Skateboard observed. One fresh-allocation attempt remains; Mount first obtains on-foot504 again." or "Skateboard observed; the bounded attempts are spent."
             return
         end
-        if stock_attempted then fail("Stock transition ended without an observed skateboard; no retry.");return end
+        if stock_attempted then
+            -- Pressing something during the switch ends it on foot. A few more goes before giving up.
+            stock_retries+=1
+            if stock_retries>STOCK_RETRIES then fail("Stock transition ended without an observed skateboard.");return end
+            stock_attempted=false;return
+        end
         if not environment(false) then return end
         if generation~=version or cancelled or unloaded then return end
+        local retry_clock=clock()
+        if stock_retry_at and (not retry_clock or retry_clock<stock_retry_at) then return end
+        -- The stock switch fails if the rider is still holding anything, and someone who has just crashed usually is.
+        if not pad_released() then detail="Let go of the controls to go back to the skateboard.";return end
         if return_plan then
             local now=clock()
             if generation~=version or cancelled or unloaded then return end
             if not now or now<return_plan.stop_ms or now+5100>=return_plan.expires_ms then
-                fail("Too little original Return time before stock transition.");return
+                return_plan,return_position=nil,nil
             end
         end
         stock_attempted=true -- One existing equipment transaction, never a per-tick pulse.
         local out=call(owner.request_stock_toggle,owner,slot)
         if generation~=version or cancelled or unloaded then return end
-        if not out[1] or out[2]~=true then fail(text(out[3],"Stock switch refused; cleanup remains owned by the lifecycle."));return end
+        if not out[1] or out[2]~=true then
+            -- Still moving or just landed: no transaction started, so this tries again as the rider settles.
+            stock_attempted=false;stock_retry_at=(clock() or 0)+STOCK_RETRY_MS;detail="Waiting for the rider to settle.";return
+        end
         phase,detail="returning","Stock transition armed. Release all controls and wait for the skateboard."
     end
     local function reset_second_quiet()
@@ -586,22 +616,26 @@ function Entry.new(R,Runtime,Survey,options)
             if current~=504 then fail("Preflight retry requires on-foot504; no retry.");return false,detail end
             local now=clock()
             if not now or generation~=version or cancelled or unloaded then return false,detail end
-            if attempts_used==2 and (not second_admitted_at or now<second_admitted_at or now-second_admitted_at>=60000) then
+            if attempts_used>=2 and (not second_admitted_at or now<second_admitted_at or now-second_admitted_at>=60000) then
                 fail("Original second Mount admission deadline expired; no terrain retry.");return false,detail
             end
             -- Keep the reserved attempt and its original second-intent deadline.
             -- Only a NEW survey/preparation is allowed; no old-owner Y repeats.
             generation+=1;prep_at=now;prep_last=nil;prep_calls=0;survey=nil
-            second_terrain_pending=attempts_used==2
+            second_terrain_pending=attempts_used>=2
             if second_terrain_pending then reset_second_quiet() end
             phase,detail="preparing","Retrying terrain preflight; stay on foot and still. Prior refusals remain recorded."
             return true
         end
+        -- A Return that could not finish leaves a cleaned-up ride: Mount from the board may go again.
+        if phase=="blocked" and attempts_used>=1 and two_cycle and known and clean(latest) then phase="skateboard" end
         if unloaded or ticking or cancelled or not namespace_clear or attempts_used>=attempt_limit
             or used and (not two_cycle or phase~="skateboard") then return false,"Consumed, busy or retained attempt; not available." end
+        if attempts_used>=1 and state()~=100 then return false,"Get on your skateboard, then Mount." end
+        if attempts_used==0 and state()~=504 then return false,"Step off your skateboard, then Mount." end
         attempts_used+=1;used=true;generation+=1
         local version=generation
-        if attempts_used==2 then
+        if attempts_used>=2 then
             -- Burn the second intent before ALL fallible callbacks. Return's
             -- old stock100 history is archived by the private owner first.
             phase,detail="stepping_off","Attempt two is spent. Close menus and release controls before the guarded stock100 to on-foot504 transition."
@@ -628,7 +662,7 @@ function Entry.new(R,Runtime,Survey,options)
         if unloaded or ticking or cancelled or not mount_issued or return_pending or stock_attempted then
             return false,"Return is unavailable; Cancel may stop an unfinished preparation."
         end
-        return_pending=true;return_plan=nil;return_position=nil;generation+=1;phase,detail="returning","Stopping the bike before returning to the skateboard."
+        return_pending=true;return_plan=nil;return_position=nil;stock_retries=0;stock_retry_at=nil;generation+=1;phase,detail="returning","Stopping the bike before returning to the skateboard."
         if type(owner.request_return)=="function" then
             stopped=true -- one capture/stop callback, even if it refuses or raises
             local version=generation
@@ -705,7 +739,7 @@ function Entry.new(R,Runtime,Survey,options)
         return false -- Existing Return, stock target/ACK and successor checks decide.
     end
     local function recoverable()
-        return admitted and two_cycle and attempts_used==1 and mount_issued and fallen~=nil
+        return admitted and two_cycle and attempts_used>=1 and attempts_used<attempt_limit and mount_issued and fallen~=nil
             and not recover_pending and not return_pending and not unloaded and not ticking and not cancelled
             and namespace_clear and known and latest.cleanup_unknown==false
             and (phase=="fallen" or phase=="skateboard")
@@ -739,9 +773,6 @@ function Entry.new(R,Runtime,Survey,options)
             local out=call(owner.step,owner,dt_ms)
             if out[1] and out.n==2 and plain(out[2]) then latest=out[2];known=true
             else known=false;fail("Lifecycle step unavailable; cleanup remains required.") end
-            if recover_pending and known and latest.cleanup_unknown~=false then
-                fail("Recovery stopped by unknown lifecycle cleanup; no fresh Mount.");return
-            end
             if not cancelled and phase~="blocked" then
             if return_pending then
                 if recover_pending and not stock_attempted and known and clean(latest) then
@@ -754,7 +785,7 @@ function Entry.new(R,Runtime,Survey,options)
             elseif phase=="stepping_off" or phase=="preparing" or phase=="surveying" or phase=="awaiting_mount" then
                 local now=clock()
                 if now then
-                    if attempts_used==2 and (not second_admitted_at or now<second_admitted_at or now-second_admitted_at>=60000) then
+                    if attempts_used>=2 and (not second_admitted_at or now<second_admitted_at or now-second_admitted_at>=60000) then
                         fail("Original second Mount admission deadline expired; no new survey or mount.");return
                     end
                     if phase=="stepping_off" then step_off(now)
@@ -781,6 +812,11 @@ function Entry.new(R,Runtime,Survey,options)
         local advanced=pcall(advance)
         ticking=false
         if not advanced then known=false;fail("Entry step failed; cleanup remains required.")
+        -- A ride that ended on its own hands the player back straight away: a fall gets back on the bike, anything
+        -- else returns to the skateboard, ready to mount again.
+        elseif auto_return and phase=="fallen" and recoverable() then call(self.recover,self)
+        elseif auto_return and phase=="stopped" and not return_pending and not recover_pending and not cancelled and not unloaded then
+            call(self.return_to_skateboard,self)
         elseif recover_pending and not cancelled and not unloaded and phase=="skateboard" then
             recover_pending=false -- Consume before fresh Mount callbacks; no automatic retry.
             local out=call(self.mount,self)

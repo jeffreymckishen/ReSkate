@@ -23,7 +23,9 @@ local METRIC_STOP_REASON_LIMIT, METRIC_STOP_KEY_BYTES = 8, 1024
 -- kernel lean (about 27 deg) and steering reversals (about 1.6 rad/s).
 -- These fixed limits retain a measured-body stop beyond ordinary riding.
 local TILT_STOP_DEG = 55
-local ROLL_STOP_RATE = 8
+-- Steps in a row the force model may refuse before Ride stops: a second and a half.
+local MAX_REFUSED_STEPS = 90
+local ROLL_STOP_RATE = 14
 -- Authored display gearing for the drawn cranks: ride_composer's
 -- Composer.crank_ratio (a 25/9 BMX drive), written here so Ride does not load
 -- the composer; ride_runtime_presentation_tests pins the two together. Only
@@ -650,6 +652,15 @@ local function stop(s, reason)
     s.phase="stopped"
     s.input_queue={}
 end
+-- A step the model refuses (a wheel deep in a parked car, a landing past its envelope) goes unsent, as a
+-- backpressured step does, and the next starts over from what is measured. A ride ends only if it stays refused.
+local function refused_step(s,why)
+    s.refused_steps=(s.refused_steps or 0)+1
+    s.refused_issue=why
+    if s.refused_steps>MAX_REFUSED_STEPS then return false end
+    s.continuity_pending=true
+    return true
+end
 local function discard_barspin(s)
     local candidate=s.barspin_candidate
     s.barspin_candidate,s.barspin_preview=nil,nil
@@ -971,6 +982,36 @@ local function contact_binding(s,frame,decoded,count)
         or decoded.query.actor_lane~=expected then return nil,"contact actor lane unavailable" end
     return true
 end
+-- One shape the contact readers refuse makes the whole native batch unavailable. That costs a wheel a step of
+-- support, not the ride: ask again a wheel at a time, on the terrain preset for a wheel that still fails, and
+-- carry a wheel neither query can read as clear.
+local function wheel_batch(s,epoch,plan,options)
+    local probed=invoke(s,s.api.probe_batch,epoch,plan,options)
+    if not probed[1] or probed.n~=2 or not probed.current or s.stopped then return probed end
+    local batch=probed[2]
+    if type(batch)~="table" or batch.status~="unavailable" or batch.reason~="contact_measurement_unavailable" then return probed end
+    local function read(ray,query)
+        local one=invoke(s,s.api.probe_batch,epoch,{ray},query)
+        if not one[1] or one.n~=2 or not one.current or s.stopped then return nil,one end
+        local row=one[2]
+        if type(row)=="table" and row.status=="available" and type(row.rays)=="table" then return row.rays[1] end
+        return nil
+    end
+    local rays={}
+    for i,ray in ipairs(plan) do
+        local row,failed=read(ray,options)
+        if failed then return failed end
+        if not row then
+            row,failed=read(ray,{require_contact=true,query_preset="terrain"})
+            if failed then return failed end
+        end
+        rays[i]=row or {status="clear"}
+    end
+    s.wheel_rereads=(s.wheel_rereads or 0)+1
+    return {true,{status="available",native_casts=#plan,budget_exhausted=false,epoch=epoch,local_actor_excluded=false,
+        owned_bodies_excluded=true,rays=rays,requested_query_preset=options.query_preset,
+        named_actor_categories_absent=options.require_named_actor_categories_absent==true or nil},n=2,current=true}
+end
 local function wheel_contacts(s,frame,decoded,centers,geometry)
     local bound,why=contact_binding(s,frame,decoded,2)
     if not bound then return nil,why end
@@ -983,17 +1024,17 @@ local function wheel_contacts(s,frame,decoded,centers,geometry)
         elseif ray.status=="hit" and ray.normal_available==true and ray.surface_velocity_available==true
             and ray.motion=="measured" and M.vec(ray.position,100000) and M.vec(ray.normal,1)
             and M.vec(ray.surface_velocity,50) then
-            if math.abs(M.length(ray.normal)-1)>.001 then return nil,"measured normal is not unit" end
-            local basis=M.basis(ray.normal,forward)
-            if not basis then return nil,"measured wheel tangent unavailable" end
-            local separation=M.dot(M.sub(centers[i],ray.position),basis.normal)-geometry.wheel_radius
-            if not M.finite(separation) or separation<-.10 then return nil,"wheel penetration unavailable or excessive" end
-            samples[i]={contact={status="hit",point=copy(ray.position),normal=basis.normal,
-                forward=basis.forward,surface_velocity=copy(ray.surface_velocity)},separation=separation,
-                wheel_center=copy(centers[i]),wheel_radius=geometry.wheel_radius,
-                verified_plane=false,balance_normal_available=false}
-            grounded=grounded or Forces.eligible_support(frame.body,samples[i],.005,.10)
-        else return nil,"measured wheel surface unavailable" end
+            -- A wheel shoved into a kerb or a face it cannot roll on loses a step of support, not the ride.
+            local basis=math.abs(M.length(ray.normal)-1)<=.001 and M.basis(ray.normal,forward) or nil
+            local separation=basis and M.dot(M.sub(centers[i],ray.position),basis.normal)-geometry.wheel_radius
+            if basis and M.finite(separation) and separation>=-.10 then
+                samples[i]={contact={status="hit",point=copy(ray.position),normal=basis.normal,
+                    forward=basis.forward,surface_velocity=copy(ray.surface_velocity)},separation=separation,
+                    wheel_center=copy(centers[i]),wheel_radius=geometry.wheel_radius,
+                    verified_plane=false,balance_normal_available=false}
+                grounded=grounded or Forces.eligible_support(frame.body,samples[i],.005,.10)
+            else samples[i]={contact={status="clear"}} end
+        else samples[i]={contact={status="clear"}} end
     end
     -- Contact.decode returns a new table frozen all through: kept as it is,
     -- where detaching copied it. Anything else is detached as before.
@@ -1092,10 +1133,13 @@ local function observe(s,source_frame,raw,context)
             stop(s,"native sample regressed");return
         end
         local steps=Identity.bounded_delta(sample.serial,s.last_sample.serial,64)
-        if steps~=1 or math.abs(sample.time-s.last_sample.time-sample.seconds)>1e-6 then
+        if not steps or math.abs(sample.time-s.last_sample.time-steps*sample.seconds)>steps*1e-6 then
             -- No manufactured update(0), missed step, heading or landing.
             stop(s,"unobserved native body step gap");return
         end
+        -- A frame long enough to run two physics steps is a hitch to ride through: this model step starts from
+        -- what is measured now, with no derivative across the gap.
+        if steps>1 then s.continuity_pending=true;s.step_gaps=(s.step_gaps or 0)+1 end
     end
     s.last_sample=sample -- Consume before callbacks. This native serial cannot submit twice.
     -- A tipping or rolling body stops here, on its consumed sample, before any
@@ -1141,7 +1185,7 @@ local function observe(s,source_frame,raw,context)
     local query_options=category_lane
         and {require_contact=true,query_preset="camera",require_named_actor_categories_absent=true}
         or {require_contact=true,exclude_local_actor=true}
-    local probed=invoke(s,s.api.probe_batch,sample.epoch,plan,query_options)
+    local probed=wheel_batch(s,sample.epoch,plan,query_options)
     if not probed[1] or probed.n~=2 or not probed.current or s.stopped then stop(s,"native contact batch unavailable");return end
     local contacted=invoke(s,s.contact.decode,frame,plan,probed[2])
     if not contacted[1] or contacted.n~=2 or not contacted.current or s.stopped then stop(s,"contact decode unavailable");return end
@@ -1157,8 +1201,8 @@ local function observe(s,source_frame,raw,context)
         if since and since>0 then
             contact.support.actor_tripwire="authored_rider_crossings_clear_previous_epoch_v1"
         else
-            local clear,tripwire_issue=rider_tripwire(s,frame,query_options)
-            if not clear then stop(s,tripwire_issue);return end
+            -- Something beside the rider is scenery to ride past. The wheel lane's own answer decides support.
+            rider_tripwire(s,frame,query_options)
             s.tripwire_serial=sample.serial
             contact.support.actor_tripwire="authored_rider_crossings_clear_v1"
         end
@@ -1280,6 +1324,7 @@ local function observe(s,source_frame,raw,context)
     end
     local folded=invoke(s,InFlight.fold,sample.seconds,s.force.tuning.gravity,inflight,body,contact.samples)
     if not folded[1] or not folded.current or s.stopped or type(folded[2])~="table" or type(folded[3])~="table" then
+        if folded[1] and folded.current and not s.stopped and refused_step(s,tostring(folded[3])) then return end
         stop(s,"in-flight fold unavailable: "..tostring(folded[3]));return
     end
     local preview=invoke(s,s.force.preview,s.force,sample.seconds,folded[2],s.wheels,folded[3],force_controls)
@@ -1298,8 +1343,10 @@ local function observe(s,source_frame,raw,context)
             local v,w=b.linear_velocity,b.angular_velocity
             why..=string.format(" v(%.2f,%.2f,%.2f) w(%.2f,%.2f,%.2f)",v[1],v[2],v[3],w[1],w[2],w[3])
         end
+        if refused_step(s,why) then return end
         stop(s,"bounded force packet unavailable: "..why);return
     end
+    s.refused_steps=0
     local wheels=wheel_copy(model.wheels,s.wheels)
     if not wheels then stop(s,"bounded wheel model unavailable");return end
     local pose=presentation(s.pose,model,wheels,sample.seconds)

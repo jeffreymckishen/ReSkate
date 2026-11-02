@@ -1,21 +1,44 @@
-# Local BMX one-session playtest
+# BMX beta
 
-This package is an experimental Lua entry over the exact runtime modules used by the successful Root3 mounted ride and observational hop. The new Mount/Return/Cancel entry itself has not yet been tested in the game. It is not a completed BMX Streets port or a distributable visible-bike release.
+Ride a BMX in skate. It is a plugin mod: the bike's physics, the rider's pose, hops, tricks and the score panel
+are all Luau on ReSkate's general plugin APIs.
 
-It requires the separately installed private BMX_Prototype asset pack. That pack, its FBX/material payloads, game content, game binaries and controller tools are not included. The original-asset dependency is being resolved separately. Missing assets remain a visible lifecycle refusal; this entry does not substitute assets or bypass spawning guards.
+It needs the separately installed `BMX_Prototype` asset pack for the bike's model, which is not part of this
+package, and a ReSkate build with the session follow API.
 
-Use only Root's separately reviewed compatible ReSkate/SDK binding and the supported Skate20260929 installation. Root3 used R3 DLL04806F90471A46C2EEF269E0905621838D1C3D8ADF60B78E7E50FAF45F1E94E3; a newer SDK/build or this changed entry needs its own validation. This package does not install or select an SDK. Its source admission is closed by default; Root owns the exact reviewed experimental build identity and any deployment decision.
+## Playing
 
-Once Root validates and admits a local playtest build:
+Put this folder in `Mods`, start the game and turn the plugin on when it asks.
 
-1. Start on foot, upright and still, in a flat area with10m clear all round. This profile preserves Root3's on-foot-only Mount; direct skateboard-to-bike and repeat mounting are not enabled.
-2. Open BMX experimental and choose Mount bike. The entry performs bounded native preparation and a fresh survey of the bike-sized 1.25 m spawn clearance. Stay still; when prompted, close menus and release every control. The lifecycle owns all input/physics/pose work.
-3. Ride within the existing bounded profile. The pinned runtime keeps its60s window, force/speed/tilt/envelope/lease/watchdog/cleanup limits and existing hop policy.
-4. Choose Return to skateboard. Stop and full bike/input cleanup come first. One existing stock transition then needs its actual100 target, ACK and clean lifecycle. The single measured placement runs only after that stock transition completes; release controls and wait for actual grounded100 position/heading convergence before Return completes or another Mount becomes available.
-5. Cancel revokes a pending entry or equipment transaction and leaves the lifecycle ticking cleanup. Refusal, uncertainty and failure are shown; no retry is hidden. Unload never requests a stock switch.
+Stand on foot on fairly level ground with a little room around you, hold LB, then press A, and let go of the
+controls while the bike gets ready. The BMX page in the Insert menu says the same and shows what the mod is doing.
 
-One BikeRuntime owner is created. Its once-per-VM mount policy is unchanged and never reset. After one intent, failure, cancellation or completed ride, remounting is unavailable in this session. A repeat-session contract, full fall recovery, complete tricks/scoring, multiplayer presentation and public release assets are separate work. Do not delete or reset retained lifecycle evidence to force another attempt.
+- A pedals, B brakes, the left stick steers.
+- Click the right stick to hop.
+- F8, or hold LB + RB and click R3, goes back to the skateboard.
+- From the skateboard, hold LB, then press A to ride again. Stand still and let go while the rider steps off.
 
-The benchmark recorder, scripted HID timeline and formal HopTrial qualification framework are not needed to use this entry. The original lifecycle's real readiness, permissions, lease/authority, neutral/closed-menu, physics, equipment and cleanup guards remain. Source tests and Root3's old game result do not qualify this new entry, Return behavior, performance, durability or a different SDK.
+All of these can be changed in Binds.
 
-Return captures the current live measured bike/support location before stopping. After full bike/input cleanup AND the original stock100 target+ACK, it makes ONE permissioned skater.teleport request with explicit {on_board=true}, preserving measured actor-root height. Actual grounded100 position/heading convergence inside the original stop+20s remains mandatory before final Return or remount; the existing5s queue plus100ms observation is still reserved. There is no further stock pulse, second placement or retry. Cached numeric state, pending, root and heading errors come from the existing polling reads;504 or a heading mismatch cannot be treated as100. R51 retained the target position but failed the100 gate after legacy teleport, so the native per-request equipment option and this Lua caller need fresh matching validation. This is source-only, not a new Return/native success or momentum/recovery qualification.
+## Smooth riding
+
+Set Settings, Graphics, Target frame rate to **60 FPS** and VSync to **Off**. On a high refresh screen VSync On
+makes the game's 60 steps a second land on uneven refreshes, which reads as judder in everything, the bike
+included. Measured on a 170 Hz screen, frames arrive 16.7 ms apart with VSync Off, and at a mix of 12, 18 and 24 ms
+with it On. Every 2nd refresh with Uncapped is also steady, at 85 frames a second.
+
+## What to expect
+
+- Each game launch allows eight mounts. ReSkate keeps the bodies and input leases of a mount for the whole launch,
+  so a ninth needs a restart.
+- Pausing, opening Insert or leaving the game ends the ride. The rider goes back to the skateboard on their own once
+  the menu is closed and the controls are released.
+- A crash (tipping past 55 degrees, a hard roll, or the rider being knocked off) gets back on the bike after
+  a few seconds, which spends a mount.
+- The bike rolls through parked cars. The rider does not, which counts as a crash.
+- Mounting refuses ground steeper than 12 degrees and anywhere without room for the bike.
+- The score panel is the mod's own, and its numbers are not yet tuned against the game's scoring.
+
+## Tests
+
+`Test/` holds the Lua suites and `Test/two_cycle_tests.json` lists them. See `Test/README.md`.

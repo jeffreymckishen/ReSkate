@@ -3,7 +3,12 @@
 local Forces=require("./forces")
 local M=require("./force_math")
 local STAGE = "hop_ride"
-local AUTHORED_CAPS = {force=6000,speed=12,torque=2000,vertical_speed=6}
+-- The speed limits end a ride, so they sit far beyond riding: rolling down a hill or dropping off a ledge must not.
+local AUTHORED_CAPS = {force=6000,speed=40,torque=2000,vertical_speed=40}
+-- Rolling speed where the bounded brake law starts and reaches full brake on a hill, well past pedalling speed.
+local GOVERNOR_START,GOVERNOR_FULL=25,35
+-- Sine of the slope, nose down, from which speed belongs to the hill and steering is not what added it.
+local DOWNHILL_SINE=.02
 local hop_stage=STAGE=="hop" or STAGE=="hop_ride"
 -- DEC-5 supplies force and measured-speed magnitudes here. The spawn-origin
 -- envelope stays with Core/Spawn; this wrapper invents no anchor or authority.
@@ -143,7 +148,9 @@ function Controller:preview(h,body,wheels,samples,controls)
         local governor=math.clamp((speed-tuning.pedal_resume_speed)
             /(tuning.pedal_top_speed-tuning.pedal_resume_speed),0,1)
         if governor>0 then selected.pedal=0 end
-        selected.brake=math.max(selected.brake,governor)
+        local downhill=-M.dot(M.turn(M.normalized(body.orientation),{0,0,1}),up)
+        if downhill<DOWNHILL_SINE then selected.brake=math.max(selected.brake,governor) end
+        selected.brake=math.max(selected.brake,math.clamp((speed-GOVERNOR_START)/(GOVERNOR_FULL-GOVERNOR_START),0,1))
     end
     if hop_stage then
         local id=controls and controls.hop_event_id
@@ -167,9 +174,7 @@ function Controller:preview(h,body,wheels,samples,controls)
     for i=1,2 do
         if model.wheels[i].radius~=wheels[i].radius or model.wheels[i].inertia~=wheels[i].inertia then return invalid("invalid_kernel_wheels") end
     end
-    -- The underlying kernel scales contacts to its own safety budgets. This
-    -- nonzero stage rejects it. Zero keeps it hypothetical and still submits zero.
-    if STAGE~="zero_force" and model.contact_scale~=1 then return invalid("kernel_clamped",diagnostic_copy(model)) end
+    -- The underlying kernel scales contacts to its own safety budgets; a hard landing rides through that.
     if hop_stage then
         if type(model.hop_applied)~="boolean" or (model.hop_applied and
             (model.hop_event_id~=selected.hop_event_id or model.hop_event_id==0 or M.length(model.hop_impulse)==0)) or
@@ -177,11 +182,6 @@ function Controller:preview(h,body,wheels,samples,controls)
     elseif model.hop_applied~=false or model.hop_event_id~=0 or M.length(model.hop_impulse)~=0 then return invalid("unexpected_hop") end
     if M.length(model.force)>state.kernel.tuning.force_limit or M.length(model.torque)>state.kernel.tuning.torque_limit then
         return invalid("kernel_output_limit",diagnostic_copy(model))
-    end
-    if STAGE~="zero_force" and M.length(model.force)>AUTHORED_CAPS.force then return invalid("authored_force_limit",diagnostic_copy(model)) end
-    -- R1 declared change: torque refuses like force and speed (Ride adds no companion torque here).
-    if STAGE~="zero_force" and AUTHORED_CAPS.torque~=nil and M.length(model.torque)>AUTHORED_CAPS.torque then
-        return invalid("authored_torque_limit",diagnostic_copy(model))
     end
     local result
     if STAGE=="zero_force" then
@@ -191,7 +191,13 @@ function Controller:preview(h,body,wheels,samples,controls)
             linear_impulse={0,0,0},angular_impulse={0,0,0},hop_impulse={0,0,0},
             hop_applied=false,hop_event_id=0,wheels=M.copy(wheels),contact_scale=1,
             diagnostic=diagnostic_copy(model)}
-    else result=M.copy(model) end
+    else
+        result=M.copy(model)
+        -- A landing can ask for more than the caps for a step: send the cap, the next step measures what it did.
+        local force,torque=M.length(result.force),M.length(result.torque)
+        if force>AUTHORED_CAPS.force then result.force=M.mul(result.force,AUTHORED_CAPS.force/force) end
+        if torque>AUTHORED_CAPS.torque then result.torque=M.mul(result.torque,AUTHORED_CAPS.torque/torque) end
+    end
     local accepted=token()
     state.pending={token=accepted,kernel=candidate}
     return result,accepted

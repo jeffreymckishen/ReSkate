@@ -58,8 +58,7 @@ function Tests.run()
         local f=setup();f.menu(f.ui);check(f.mounts==0 and f.returns==0 and f.cancels==0,"draw alone dispatches no command")
         f.buttons.bmx_play_mount=true;f.menu(f.ui);f.buttons={}
         f.buttons.bmx_play_return=true;f.menu(f.ui);f.buttons={}
-        f.buttons.bmx_play_cancel=true;f.menu(f.ui)
-        check(f.mounts==1 and f.returns==1 and f.cancels==1 and f.new_calls==1,"three explicit buttons, no second owner")
+        check(f.mounts==1 and f.returns==1 and f.new_calls==1,"two explicit buttons, no second owner")
     end)
     case("tick and unload delegate without constructing sessions",function()
         local f=setup();for _=1,20 do f.callbacks.tick(16) end;f.callbacks.unload()
@@ -78,7 +77,7 @@ function Tests.run()
         f.buttons.bmx_play_return=true;f.menu(f.ui)
         check(f.returns==3 and f.new_calls==1,"menu and action use the exact same Return method")
         local noted=false
-        for _,note in ipairs(f.notes) do if note=="F8: return to skateboard (remappable in Binds)." then noted=true end end
+        for _,note in ipairs(f.notes) do if note:find("F8",1,true) and note:find("skateboard",1,true) then noted=true end end
         check(noted,"menu documents the normal gameplay action and remapping")
     end)
     case("F9 requests existing eligible recovery once and is inert after unload",function()
@@ -102,9 +101,7 @@ function Tests.run()
         check(f.new_calls==1 and f.mounts==0 and f.returns==0 and f.cancels==0 and f.steps==0 and #f.notes==0,
             "direct key creates no owner, direct Mount/Return, tick or menu work")
         f.menu(f.ui)
-        local noted=false
-        for _,note in ipairs(f.notes) do if note=="F9: recover bike after a fall (remappable in Binds)." then noted=true end end
-        check(noted and f.recovers==1,"visible F9 instruction draws without automatic recovery")
+        check(f.recovers==1,"drawing the menu recovers nothing")
         f.report.recovery_available=true
         local reads,notes=f.status_reads,#f.notes
         f.callbacks.unload();f.callbacks.action("bmx_recover")
@@ -131,11 +128,8 @@ function Tests.run()
         check(f.recovers==1,"controller repeat and F9 cannot duplicate the same pending intent")
         check(f.new_calls==1 and f.mounts==0 and f.returns==0 and f.cancels==0 and f.steps==0 and #f.notes==0,
             "controller action adds no owner, direct Mount/Return, tick or menu work")
-        f.menu(f.ui);local noted=false
-        for _,note in ipairs(f.notes) do
-            if note=="LB + RB + L3: recover after a fall; release all controls while recovery runs (remappable in Binds)." then noted=true end
-        end
-        check(noted and f.recovers==1,"controller instruction does not auto-recover")
+        f.menu(f.ui)
+        check(f.recovers==1,"drawing the menu does not recover")
         f.report.recovery_available=true;local reads=f.status_reads
         f.callbacks.unload();f.callbacks.action("bmx_recover_pad");f.callbacks.action("bmx_recover")
         check(f.unloads==1 and f.recovers==1 and f.status_reads==reads,"unload blocks both late recovery actions before status or intent calls")
@@ -154,11 +148,8 @@ function Tests.run()
         f.callbacks.action("bmx_return");f.callbacks.action("bmx_return_pad")
         check(f.returns==3 and f.mounts==0 and f.recovers==0 and f.cancels==0 and f.steps==0,
             "F8 and the pad action share refusal semantics without a replacement owner, recovery or input step")
-        f.menu(f.ui);local noted=false
-        for _,note in ipairs(f.notes) do
-            if note=="Hold LB + RB, then click R3 to return to skateboard. Release all controls while Return runs (remappable in Binds)." then noted=true end
-        end
-        check(noted and f.returns==3,"drawing the press-order and release instruction never repeats Return")
+        f.menu(f.ui)
+        check(f.returns==3,"drawing the menu never repeats Return")
         f.callbacks.unload()
         check(f.unloads==1 and f.new_calls==1 and f.returns==3 and f.steps==0,"unload delegates cleanup to the same existing Entry")
         check(#f.binds==5 and f.mounts==0 and f.recovers==0 and f.cancels==0,
@@ -180,11 +171,7 @@ function Tests.run()
             "a separately delivered explicit event preserves Entry refusal instead of queuing an automatic retry")
         f.buttons.bmx_play_mount=true;f.menu(f.ui);f.buttons={}
         check(f.mounts==3 and f.new_calls==1,"the menu button and controller action use exactly the same guarded Mount method")
-        local noted=false
-        for _,note in ipairs(f.notes) do
-            if note=="Hold LB, then press A to request Mount. Start on foot and release all controls while preparing (remappable in Binds)." then noted=true end
-        end
-        check(noted and f.mounts==3,"the on-foot and release instruction performs no automatic Mount")
+        check(f.mounts==3,"drawing the menu performs no automatic Mount")
         f.callbacks.unload()
         check(f.unloads==1 and f.new_calls==1 and f.mounts==3 and f.returns==0 and f.cancels==0 and #f.binds==5,
             "unload uses the existing Entry and SDK binding cleanup without an alternate lifecycle")

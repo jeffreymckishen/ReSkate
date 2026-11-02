@@ -8,6 +8,10 @@ local S={} local Runtime={} Runtime.__index=Runtime
 -- Legacy and unmounted visuals stay within 512 m of the original spawn COM.
 -- Explicit session Follow visuals bound each step from the last accepted sample.
 local ENVELOPE_M=512
+-- The rider's actor is drawn two physics steps behind the body it follows: at every measured speed it trailed
+-- the body by speed * 33.3 ms (247 mm at 7.4 m/s), and frames show the bike sliding forward under the rider as
+-- speed rises. Drawing the bike from the body two steps ago keeps the two together.
+local VISUAL_DELAY_STEPS=2
 -- LUA-5(a) never ships without the measured provisional Follow offset. Only a
 -- reviewed trial copy changes this literal; the tracked spawn stays airborne.
 local FLOOR_SPAWN_QUALIFIED=true
@@ -316,7 +320,13 @@ function Runtime:_follow_visual(sample,now_ms,pose)
         -- its first step on the sample the handoff drew.
         if same_pose(pose,self.pose) then return true end
     end
-    local placed,reason=self:_place(measured)
+    self.visual_delay=self.visual_delay or {}
+    local delay=self.visual_delay
+    if order>0 or #delay==0 then
+        delay[#delay+1]=measured
+        if #delay>VISUAL_DELAY_STEPS+1 then table.remove(delay,1) end
+    end
+    local placed,reason=self:_place(delay[1])
     if not placed then return false,reason end
     if order>0 then self.sample=sample self.follow_observed_at=now_ms end
     self.pose=pose self.follow_wall=now_ms self.updates+=1

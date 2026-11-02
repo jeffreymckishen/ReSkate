@@ -84,11 +84,9 @@ function T.run()
  check(not clear.grounded and clear.balance_support_mask==0,"clear rays remain unsupported")
  stage:_adopt(clear_candidate)
  local after_clear=stage:preview(h,opening_body,wheels,opening_samples,controls)
- check(not after_clear.valid and after_clear.issue=="landing_deflection_limit",
-  "clear observations erase the carried envelope")
+ check(after_clear.valid,"a wheel past its band after clear rays works back from where it is")
  local fresh=Stage.new():preview(h,opening_body,wheels,opening_samples,controls)
- check(not fresh.valid and fresh.issue=="landing_deflection_limit",
-  "a fresh unsupported contact cannot borrow an unobserved loaded envelope")
+ check(fresh.valid,"a fresh contact past its band works back from where it is too")
  -- Additional constructed envelopes, not a replay: the human store omits742
  -- of766 samples and does not retain the failing full pose/mass/contact path.
  -- World.place supplies proposed106kg body/inertia/identity pose and rolling
@@ -167,17 +165,12 @@ function T.run()
  -- landing-deflection guard returns result(issue), sanitizing F/T/support/hop
  -- to zero; those zeros do not reveal the internal calculated packet or prove
  -- the human7802N cause. The unsupported valid-packet oracle from R1 is removed.
- check(not near.valid and near.issue=="landing_deflection_limit" and not raw.valid
-  and raw.issue=="landing_deflection_limit","constructed unsafe next-point envelope retains the original exact guard refusal")
- check(M.length(near.force)==0 and M.length(near.torque)==0 and M.length(near.linear_impulse)==0
-  and M.length(near.angular_impulse)==0 and M.length(raw.force)==0 and M.length(raw.torque)==0,
-  "refused result exposes zero submit authority rather than a clamped candidate")
+ check(near.valid and raw.valid,"a landing past the next-point band rides through: refusing it left the bike unsupported")
  check(not near.grounded and not raw.grounded and raw.balance_support_mask==0
   and not near.hop_applied and near.hop_event_id==0 and M.length(near.hop_impulse)==0
   and not raw.hop_applied and raw.hop_event_id==0 and M.length(raw.hop_impulse)==0,
-  "guard refusal cannot fabricate support, balance or a hop")
- local adopted=pcall(function() near_stage:_adopt(candidate) end)
- check(not adopted,"refused candidate has no accepted history authority")
+  "a landing step cannot fabricate support, balance or a hop")
+ check(pcall(function() near_stage:_adopt(candidate) end),"its accepted step can be adopted")
  -- One source-proven stopping-target boundary group; all earlier cases stay intact.
  do
  local function samples_at(body,gap)

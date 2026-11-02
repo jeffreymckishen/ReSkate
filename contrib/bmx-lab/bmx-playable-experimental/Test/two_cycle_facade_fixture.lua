@@ -26,7 +26,7 @@ local function new_runtime(services,options,two_cycle)
     end
     local T={phase="idle",detail="Stock switching and inspection only; native bike qualification unavailable.",
         generation=0,cancel_version=0,calls={},counts={},receipts={},omitted_calls=0,omitted_receipts=0,
-        remove_attempted={},remove_accepted={},experimental_attempt_limit=two_cycle and 2 or nil}
+        remove_attempted={},remove_accepted={},experimental_attempt_limit=two_cycle and 8 or nil}
     local object={}
     local core,api,pending,running,cancelling
     local session_owner,mounts_burned,next_preparation,next_admitted_at= nil,0,false,nil
@@ -79,7 +79,7 @@ local function new_runtime(services,options,two_cycle)
         end
         local clean_new_stock=kind=="stock" and T.used==true and T.bike_cleanup_complete and not T.marker_unknown
             and not T.reload_blocked and not T.storage_fault and not T.clock_unknown
-        if pending or T.unloaded or T.startup_closed or T.stop_latched and not clean_new_stock or kind=="mount" and (T.used or vm_attempt_used and not (two_cycle and mounts_burned==1 and T.experimental_session==2)) then
+        if pending or T.unloaded or T.startup_closed or T.stop_latched and not clean_new_stock or kind=="mount" and (T.used or vm_attempt_used and not (two_cycle and mounts_burned>=1 and (T.experimental_session or 0)>=2)) then
             return false,"One attempt per VM; busy or retained duty prevents rearm"
         end
         -- Burn private admission and latch before require or any service callback.
@@ -106,7 +106,7 @@ local function new_runtime(services,options,two_cycle)
         local observed=clear and ok and (kind=="stock" or now) and api.facts() or nil
         if now then now=api.clock() end
         local ready=Admission.ready(observed) -- Pure policy; no additional SDK observation.
-        local arm_at=kind=="mount" and two_cycle and T.experimental_session==2 and next_admitted_at or now
+        local arm_at=kind=="mount" and two_cycle and (T.experimental_session or 0)>=2 and next_admitted_at or now
         local accepted=clear and ok and generation==T.generation and not T.unloaded and not T.storage_fault
             and not T.clock_unknown and ready and now~=nil and finite(arm_at) and arm_at<=now and now-arm_at<60000
         T.startup_admission={kind=kind,clear=clear==true,api_available=ok==true,missing_api=missing,
@@ -150,7 +150,7 @@ local function new_runtime(services,options,two_cycle)
         if not qualification_only then return false,"Native bike lifecycle qualification unavailable" end
         if core and T.backend_ready and not pending then
             if running then cancel("reentrant mount request");return false,"Bike lifecycle operation already in progress" end
-            if two_cycle and mounts_burned==1 and next_preparation and session_owner then
+            if two_cycle and mounts_burned>=1 and next_preparation and session_owner then
                 local version=T.generation
                 local now=next_admitted_at~=nil and api.clock() or nil
                 if T.unloaded or T.startup_closed or T.generation~=version or not next_preparation or
@@ -158,9 +158,10 @@ local function new_runtime(services,options,two_cycle)
                     T.startup_closed=true;return false,"Original second Mount admission expired or changed"
                 end
                 running=true
-                local next_state={phase="idle",detail="Second bounded fresh-allocation session.",generation=0,cancel_version=0,
+                local next_session=(T.experimental_session or 1)+1
+                local next_state={phase="idle",detail="Next fresh-allocation session.",generation=0,cancel_version=0,
                     calls={},counts={},receipts={},omitted_calls=0,omitted_receipts=0,remove_attempted={},remove_accepted={},
-                    experimental_session=2,experimental_attempt_limit=2}
+                    experimental_session=next_session,experimental_attempt_limit=8}
                 local successor,why=session_owner:successor(R,core_options(),next_state)
                 if not successor then running=false;T.startup_closed=true;return false,why end
                 T=next_state;core=successor;api=Admission.bind(T,R,qualification_only)
@@ -171,13 +172,13 @@ local function new_runtime(services,options,two_cycle)
         return admission("mount",slot,grade)
     end
     function object:can_prepare_next_mount()
-        if not two_cycle or running or pending or T.unloaded or T.startup_closed or mounts_burned~=1
+        if not two_cycle or running or pending or T.unloaded or T.startup_closed or mounts_burned<1
             or next_preparation or not session_owner then return false,"No clean successor available" end
         return session_owner:can_archive_return()
     end
     function object:prepare_next_mount(slot,admitted_at_ms)
         if not two_cycle or not valid_slot(slot) or running or pending or T.unloaded or T.startup_closed
-            or mounts_burned~=1 or next_preparation or not session_owner or not core then
+            or mounts_burned<1 or next_preparation or not session_owner or not core then
             return false,"Second preparation unavailable"
         end
         -- Entry may wait for its Mount chord to release before admission. Keep
@@ -215,7 +216,7 @@ local function new_runtime(services,options,two_cycle)
     end
     function object:second_preflight_ready(admitted_at_ms)
         if not two_cycle or not qualification_only or running or pending or T.unloaded or T.startup_closed
-            or mounts_burned~=1 or not next_preparation or not session_owner or not core or not api
+            or mounts_burned<1 or not next_preparation or not session_owner or not core or not api
             or not finite(next_admitted_at) or admitted_at_ms~=next_admitted_at then
             return false,"No unrequested second terrain preflight remains"
         end
@@ -231,7 +232,7 @@ local function new_runtime(services,options,two_cycle)
             local ok,why=session_owner:ready()
             if not ok then return false,why end
             local after=api.clock()
-            if T.generation~=version or T.unloaded or T.startup_closed or pending or mounts_burned~=1 or not next_preparation
+            if T.generation~=version or T.unloaded or T.startup_closed or pending or mounts_burned<1 or not next_preparation
                 or not after or after<next_admitted_at or after-next_admitted_at>=60000 then
                 return false,"Second terrain preflight changed or expired"
             end

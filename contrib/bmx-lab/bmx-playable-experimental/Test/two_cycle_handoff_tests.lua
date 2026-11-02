@@ -67,7 +67,7 @@ function Tests.run()
     check(not next_core:request_mount(f.user),"the second Core cannot request a second allocation itself")
     for _=1,42 do f.now+=16;next_core:step(16) end
     check(f.count("lease")==2 and f.handle~=nil,"second Core obtains a NEW selected lease after prior ACK")
-    check(next_core:status().experimental_attempt_limit==2,"scope is explicitly bounded")
+    check(next_core:status().experimental_attempt_limit==8,"scope is explicitly bounded")
     return {cases=1,assertions=n,native_authority=false,constructed=true}
 end
 return Tests

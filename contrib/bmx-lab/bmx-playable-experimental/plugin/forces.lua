@@ -202,9 +202,11 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
             -- Late one-wheel impacts cannot stop within 15 mm in one packet.
             -- Use softer finite compliance inside the unchanged gross-penetration
             -- bound; the packet's force/torque limits still decide admission.
+            -- A wheel already past its band (over a ledge edge, deep in a landing) works back from where it is:
+            -- refusing the step would leave the bike with no support at all and tip it over.
             local deflection_limit=(impact_envelope or supported) and t.maximum_penetration or landing.maximum_deflection
+            if s.separation < -deflection_limit then deflection_limit=math.min(-s.separation,t.maximum_penetration) end
             if floor_plane then contact.normal_deflection_limit=deflection_limit end
-            if landing_plane and s.separation < -deflection_limit-landing.deflection_tolerance then out.issue="landing_deflection_limit" return out end
             -- A gravity ray hits downslope from the tyre's normal projection.
             -- The gap is measured at the hub, so its normal Jacobian must use
             -- this projection in both approach and contact. Switching back to
@@ -442,21 +444,6 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     end
     if not M.vec(out.force) or not M.vec(out.torque) or M.length(out.force)>t.force_limit or M.length(M.mul(M.add(out.linear_impulse,out.hop_impulse),1/h))>t.force_limit or
         M.length(out.torque)>t.torque_limit or math.abs(out.wheels[1].angular_speed)>t.wheel_speed_limit or math.abs(out.wheels[2].angular_speed)>t.wheel_speed_limit then return result("output_limit") end
-    if landing_selected then
-        -- Recheck the actual bounded packet, including any shared budget scale.
-        -- This is a linear point prediction, not a repaired pose or native proof.
-        local bounded=M.copy(measured)
-        bounded.linear_velocity=M.add(M.add(measured.linear_velocity,gravity_delta),M.mul(M.add(out.linear_impulse,out.hop_impulse),1/measured.mass))
-        bounded.angular_velocity=M.add(measured.angular_velocity,M.tensor(measured,out.angular_impulse,true))
-        for i=1,2 do
-            if contacts[i].normal_only or contacts[i].normal_softness then
-                local sample=samples[i]
-                local velocity=M.sub(M.point_velocity(bounded,contacts[i].point),sample.contact.surface_velocity)
-                local gap=sample.separation+M.dot(velocity,contacts[i].normal)*h
-                if not M.finite(gap) or gap < -contacts[i].normal_deflection_limit-landing.deflection_tolerance then return result("landing_deflection_limit") end
-            end
-        end
-    end
     if new_event then self.last_hop_event=c.hop_event_id end
     if support_mask~=0 and not out.hop_applied and c.enabled then
         for i=1,2 do next_normals[i].normal_load=out.normal_load[i] end self.normals=next_normals self.travel_direction=direction~=0 and direction or prior_direction

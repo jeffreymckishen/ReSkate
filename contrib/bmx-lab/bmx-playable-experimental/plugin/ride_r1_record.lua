@@ -104,7 +104,7 @@ Rec.SURVEY_MOVE_M=.25
 Rec.SURVEY_TURN_RAD=math.rad(5)
 -- Separate playable geometry admission; R1/S2 survey limits above stay exact.
 Rec.PLAYABLE_GRADE_POLICY="measured_plane_grade_v1"
-Rec.PLAYABLE_GRADE_SLOPE_DEG=5
+Rec.PLAYABLE_GRADE_SLOPE_DEG=12
 Rec.PLAYABLE_GRADE_RESIDUAL_M=.003
 -- main.lua casts the survey with world.probe ("unavailable", "clear" or "hit"); with nothing excluded a
 -- ray spends one native cast, at most two, of the tick's 64, so 32 rays a tick never run the budget short.

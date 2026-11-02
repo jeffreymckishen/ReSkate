@@ -1,14 +1,18 @@
 -- Fixed playable ride stage; no runtime setting selects a stage or caps.
--- The speed stop leaves margin above the kernel's 8 m/s motor cutoff.
+-- The speed stop leaves margin above the kernel's 8 m/s motor cutoff. Drag and
+-- rolling resistance in the kernel set top speed; nothing here brakes for it.
 local Forces=require("./forces")
 local M=require("./force_math")
 local STAGE = "hop_ride"
 -- The speed limits end a ride, so they sit far beyond riding: rolling down a hill or dropping off a ledge must not.
 local AUTHORED_CAPS = {force=6000,speed=40,torque=2000,vertical_speed=40}
+-- A step that is catching a landing may send this much: a big drop at the rolling cap arrives a wheel deep.
+local LANDING_FORCE=12000
 -- Rolling speed where the bounded brake law starts and reaches full brake on a hill, well past pedalling speed.
 local GOVERNOR_START,GOVERNOR_FULL=25,35
--- Sine of the slope, nose down, from which speed belongs to the hill and steering is not what added it.
-local DOWNHILL_SINE=.02
+-- A rider stopped on a street grade dabs a foot or holds the brake. Under this speed, on a slope whose sine is
+-- under this, a bike with no pedal holds on this much brake. Anything steeper rolls back, so a stall on a ramp does.
+local HOLD_SPEED,HOLD_SINE,HOLD_BRAKE=.3,.12,.35
 local hop_stage=STAGE=="hop" or STAGE=="hop_ride"
 -- DEC-5 supplies force and measured-speed magnitudes here. The spawn-origin
 -- envelope stays with Core/Spawn; this wrapper invents no anchor or authority.
@@ -138,19 +142,16 @@ function Controller:preview(h,body,wheels,samples,controls)
         if not M.finite(steer) or steer<-1 or steer>1 then return invalid("invalid_steer") end
         if not M.finite(brake) or brake<0 or brake>1 then return invalid("invalid_brake") end
         selected.steer,selected.brake=steer,brake
-        -- Steering can add speed beyond the pedal motor cutoff. Use the
-        -- existing bounded brake law before the hard measured-speed stop.
+        -- Far past riding speed, use the existing bounded brake law before
+        -- the hard measured-speed stop.
         local tuning=state.kernel.tuning
         local up=M.unit(M.mul(tuning.gravity,-1))
         if not up then return invalid("invalid_gravity") end
         local vertical=M.dot(body.linear_velocity,up)
         local speed=M.length(M.sub(body.linear_velocity,M.mul(up,vertical)))
-        local governor=math.clamp((speed-tuning.pedal_resume_speed)
-            /(tuning.pedal_top_speed-tuning.pedal_resume_speed),0,1)
-        if governor>0 then selected.pedal=0 end
-        local downhill=-M.dot(M.turn(M.normalized(body.orientation),{0,0,1}),up)
-        if downhill<DOWNHILL_SINE then selected.brake=math.max(selected.brake,governor) end
         selected.brake=math.max(selected.brake,math.clamp((speed-GOVERNOR_START)/(GOVERNOR_FULL-GOVERNOR_START),0,1))
+        local downhill=-M.dot(M.turn(M.normalized(body.orientation),{0,0,1}),up)
+        if selected.pedal==0 and speed<HOLD_SPEED and math.abs(downhill)<HOLD_SINE then selected.brake=math.max(selected.brake,HOLD_BRAKE) end
     end
     if hop_stage then
         local id=controls and controls.hop_event_id
@@ -195,7 +196,8 @@ function Controller:preview(h,body,wheels,samples,controls)
         result=M.copy(model)
         -- A landing can ask for more than the caps for a step: send the cap, the next step measures what it did.
         local force,torque=M.length(result.force),M.length(result.torque)
-        if force>AUTHORED_CAPS.force then result.force=M.mul(result.force,AUTHORED_CAPS.force/force) end
+        local cap=(result.landing_approach_mask~=0 or result.landing_recovery_mask~=0) and LANDING_FORCE or AUTHORED_CAPS.force
+        if force>cap then result.force=M.mul(result.force,cap/force) end
         if torque>AUTHORED_CAPS.torque then result.torque=M.mul(result.torque,AUTHORED_CAPS.torque/torque) end
     end
     local accepted=token()

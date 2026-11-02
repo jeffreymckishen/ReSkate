@@ -22,6 +22,7 @@ local function fall_cause(s)
     local issue=plain(ride) and ride.stop_requested==true and ride.issue or nil
     if type(issue)=="string" and (issue:match("^measured tilt [%d%.]+ deg over the %d+ deg Ride stop$")
         or issue:match("^measured roll rate [%d%.]+ rad/s over the %d+ rad/s Ride stop$")
+        or issue:match("^hit something at [%d%.]+ m/s$")
         or issue=="rider came off the bike") then return text(issue) end
     return nil
 end

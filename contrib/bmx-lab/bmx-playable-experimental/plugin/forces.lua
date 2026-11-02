@@ -7,6 +7,9 @@ local F={native_seconds=.01666666567325592}
 local Controller={} Controller.__index=Controller
 local scale=.7737670588235294
 F.wheel_radius=.34*scale
+-- B is all or nothing, so the lever is squeezed here: this long to full brake, and this long to let go.
+local BRAKE_SQUEEZE_SECONDS,BRAKE_RELEASE_SECONDS=.15,.05
+local MAXIMUM_CAMBER=.8
 local steering_axis={0,.9601196050643921,-.2795896530151367} -- the source float coefficients
 -- Hop-only authored landing policy. The compliance arithmetic comes from our
 -- native contact_compliance.h; earlier braking from a fresh measured ray is a
@@ -27,12 +30,20 @@ local function floor_softness(h,body,contact,basis,fraction)
 end
 local defaults={gravity={0,-9.8,0},wheelbase=1.203956057050485*scale,steer_limit=.4,steer_speed_scale=8,
     pedal_torque=75,front_brake_torque=60,rear_brake_torque=45,friction={longitudinal_friction=1,lateral_friction=1},
-    balance_stiffness=1600,balance_damping=360,balance_torque_limit=1200,lean_limit=.47,manual_pitch=.4,
+    balance_stiffness=1600,balance_damping=360,balance_torque_limit=1200,lean_limit=.52,manual_pitch=.4,
     air_yaw_torque=200,air_pitch_torque=160,neutral_air_damping_rate=2.75,hop_delta_speed=4.5,
     contact_gap=.02,maximum_penetration=.10,recovery_fraction=.15,recovery_speed_limit=.4,
     force_limit=40000,torque_limit=4000,wheel_speed_limit=500,contact_iterations=12,pedal_fade_start=6,pedal_cutoff=8,
-    pedal_top_speed=7.9,pedal_resume_speed=7.4,
-    curvature_rate_limit=6,curvature_step_limit=.2,curvature_min_speed=.5,brake_iterations=96}
+    pedal_top_speed=7.7,pedal_resume_speed=7.2,
+    curvature_rate_limit=6,curvature_step_limit=.2,curvature_min_speed=.5,brake_iterations=96,
+    -- Estimates, not measurements: a street tyre's rolling coefficient, and drag in N per (m/s)^2 for a
+    -- rider sitting up on a BMX (air density 1.2, CdA .5).
+    rolling_resistance=.01,air_drag=.3,
+    -- Half the width of a 2.4 inch tyre: a leaned wheel rolls on its shoulder, this far inside its hub's plane.
+    tyre_section_radius=.03,
+    -- Braking uses grip the corner wanted. Under a full brake the cornering limit gives up this share, and the
+    -- rider eases the rear brake to this share of what the rear tyre can hold, as they would by feel.
+    brake_lateral_cut=.6,rear_brake_load_share=.6}
 function F.tuning(overrides)
     local out=M.copy(defaults) for key,value in overrides or {} do assert(out[key]~=nil,"unknown force tuning") out[key]=M.copy(value) end return out
 end
@@ -67,10 +78,11 @@ local function tuning_valid(t)
     for _,name in {"pedal_torque","front_brake_torque","rear_brake_torque","balance_stiffness","balance_damping","balance_torque_limit",
         "lean_limit","manual_pitch","air_yaw_torque","air_pitch_torque","hop_delta_speed","contact_gap","maximum_penetration",
         "recovery_fraction","recovery_speed_limit","pedal_fade_start","pedal_cutoff","pedal_top_speed","pedal_resume_speed",
-        "curvature_rate_limit","curvature_step_limit","curvature_min_speed","neutral_air_damping_rate"} do if not M.finite(t[name]) or t[name]<0 or t[name]>1e6 then return false end end
+        "curvature_rate_limit","curvature_step_limit","curvature_min_speed","neutral_air_damping_rate",
+        "rolling_resistance","air_drag","tyre_section_radius","brake_lateral_cut","rear_brake_load_share"} do if not M.finite(t[name]) or t[name]<0 or t[name]>1e6 then return false end end
     if type(t.friction)~="table" then return false end
     for _,key in {"longitudinal_friction","lateral_friction"} do local x=t.friction[key] if not M.finite(x) or x<0 or x>10 then return false end end
-    return t.steer_limit<=1 and t.lean_limit<=.8 and t.manual_pitch<=.6 and t.hop_delta_speed<=4.5 and t.contact_gap<=.05 and
+    return t.brake_lateral_cut<=1 and t.rear_brake_load_share<=1 and t.steer_limit<=1 and t.lean_limit<=.8 and t.manual_pitch<=.6 and t.hop_delta_speed<=4.5 and t.contact_gap<=.05 and
         t.maximum_penetration<=.15 and t.recovery_fraction<=1 and t.recovery_speed_limit<=1 and t.pedal_fade_start<t.pedal_cutoff and
         t.pedal_cutoff<=50 and t.pedal_resume_speed<t.pedal_top_speed and t.pedal_top_speed<=t.pedal_cutoff and t.curvature_rate_limit<=10 and t.curvature_step_limit<=.35 and t.curvature_min_speed<=5 and t.neutral_air_damping_rate<=10
 end
@@ -83,7 +95,10 @@ function F.eligible_support(body,sample,tolerance,maximum_penetration)
         sample.separation>tolerance or not M.vec(c.point) or not M.vec(c.surface_velocity,50) then return false end
     local basis=M.basis(c.normal,c.forward) if not basis then return false end
     local relative=M.sub(M.point_velocity(body,c.point),c.surface_velocity)
-    return M.vec(relative) and M.dot(relative,basis.normal)<=.05
+    -- The contact below pushes a deep wheel back out. A wheel rising no faster than that is still on the ground:
+    -- reading it as lifted took balance away for half a second over any small step, with the tyres still cornering.
+    local recovering=math.min(defaults.recovery_speed_limit,defaults.recovery_fraction*math.max(0,-sample.separation)/F.native_seconds)
+    return M.vec(relative) and M.dot(relative,basis.normal)<=.05+recovering
 end
 local function fraction(base,contact,cap)
     if not M.finite(M.length(base)) or not M.finite(M.length(contact)) or M.length(base)>cap then return -1 end
@@ -101,9 +116,10 @@ end
 -- so a held pedal past the speed pedaling can reach spun the legs ever faster
 -- while the fade gave almost no push. At or above top_speed the rider coasts
 -- instead, pedal held or not, and pedals again only at or below resume_speed.
--- top_speed sits just under pedal_cutoff, because with no drag a flat road
--- only creeps toward the cutoff (SIMULATION.md). The band keeps a bike holding
--- its top speed from switching every step on small speed changes. Only a rider
+-- top_speed sits just under where the fading pedal meets drag (7.8 m/s), so
+-- a rider holding the pedal on a flat road really does reach it and coast. The
+-- band keeps a bike holding its top speed from switching every step on small
+-- speed changes: about 1.4 s of pedalling, then 2 s of coasting. Only a rider
 -- who would pedal at the top speed arms the latch. Once armed it follows speed
 -- alone, so letting go and pressing again inside the band does not start a
 -- spin back up, while a bike that coasted down from above can be pedaled at
@@ -127,7 +143,7 @@ end
 -- reset clears the pedal latch with the rest. invalidate_continuity and a
 -- refused step keep it: it holds no derivative, and outside the band this
 -- step's speed decides it alone.
-function Controller:reset() self.last_hop_event=0 self.normals={{},{}} self.landing_impact={false,false} self.travel_direction=0 self.air={} self.steering={} self.pump=Pump.new() self.pump:reset() self.pedal_latch=F.pedal_state() end
+function Controller:reset() self.last_hop_event=0 self.normals={{},{}} self.landing_impact={false,false} self.travel_direction=0 self.air={} self.steering={} self.pump=Pump.new() self.pump:reset() self.pedal_latch=F.pedal_state() self.brake_share=0 self.brake_squeeze=0 end
 function Controller:invalidate_continuity()
     -- A missed command breaks one-step derivative and state-machine history.
     -- Accepted hop consumption and authored tuning remain authoritative.
@@ -147,6 +163,8 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     local prior_normals,prior_direction,air,prior_steering,pump=M.copy(self.normals),self.travel_direction,M.copy(self.air),M.copy(self.steering),M.copy(self.pump)
     setmetatable(pump,getmetatable(self.pump)) local prior_latch=M.copy(self.pedal_latch)
     local prior_impact=M.copy(self.landing_impact)
+    local prior_load={prior_normals[1].normal_load or 0,prior_normals[2].normal_load or 0}
+    local prior_brake_share,prior_squeeze=self.brake_share,self.brake_squeeze
     self.normals={{},{}} self.landing_impact={false,false} self.travel_direction=0 self.air={} self.steering={} self.pump:reset()
     if not M.finite(h) or math.abs(h-F.native_seconds)>1e-8 then out.issue="unsupported_step" return out end
     if not tuning_valid(t) or not M.valid_body(measured) or not M.vec(measured.linear_velocity,50) or not M.vec(measured.angular_velocity,40) or
@@ -167,7 +185,7 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
         local s=samples[i] if type(s)~="table" or type(s.contact)~="table" then return out end
         contacts[i]=M.copy(s.contact) local contact=contacts[i]
         -- Only this step's selected law may create solver policy fields.
-        contact.normal_only,contact.normal_softness,contact.normal_floor_delta,contact.normal_deflection_limit=nil,nil,nil,nil
+        contact.normal_only,contact.normal_softness,contact.normal_floor_delta,contact.normal_deflection_limit,contact.normal_roll_free=nil,nil,nil,nil,nil
         if contact.status=="unavailable" then out.issue="unavailable_contact" return out end
         if contact.status~="hit" and contact.status~="clear" then return out end
         if contact.status=="hit" then
@@ -183,8 +201,10 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
             local prior=prior_normals[i]
             local supported=prior.valid and prior.normal_load>0
             local recovering=prior_impact[i] and s.separation < -landing.maximum_deflection
+            -- A wheel in the air may land on anything up to a 60 degree bank. A rolling wheel keeps the
+            -- rigid law above 18 degrees, which is what carries it up a ramp's foot.
             local floor_plane=landing_selected and c.enabled
-                and M.dot(basis.normal,gravity_up)>=landing.floor_cosine
+                and M.dot(basis.normal,gravity_up)>=(supported and landing.floor_cosine or .5)
                 and M.length(contact.surface_velocity)<=landing.stationary_speed
             local landing_plane=floor_plane
                 and (not supported or recovering or prior_impact[i] and closing>t.recovery_speed_limit)
@@ -198,7 +218,9 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
             -- policy only; current support still requires fresh evidence.
             local carry_envelope=floor_plane and supported and s.separation < -landing.maximum_deflection
             self.landing_impact[i]=(impact_envelope or carry_envelope)==true
-            if impact_envelope then out.landing_recovery_mask=bit32.bor(out.landing_recovery_mask,2^(i-1)) end
+            -- The rider's legs take the first hard steps of a touchdown, which one rigid body cannot show. Levered
+            -- at the tyre, they would throw a leaned bike over.
+            if impact_envelope then out.landing_recovery_mask=bit32.bor(out.landing_recovery_mask,2^(i-1)) contact.normal_roll_free=true end
             -- Late one-wheel impacts cannot stop within 15 mm in one packet.
             -- Use softer finite compliance inside the unchanged gross-penetration
             -- bound; the packet's force/torque limits still decide admission.
@@ -330,6 +352,8 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
         local delta=math.min(rate_delta,joint_delta) out.front_steer_angle=math.clamp(out.requested_front_steer_angle,prior_steering.angle-delta,prior_steering.angle+delta)
     end
     local candidate_angle=out.front_steer_angle
+    local brake_wanted=c.enabled and math.clamp(c.brake,0,1) or 0
+    local brake_share=prior_brake_share+math.clamp(brake_wanted-prior_brake_share,-h/BRAKE_SQUEEZE_SECONDS,h/BRAKE_SQUEEZE_SECONDS)
     local front_heading=contacts[1].status=="hit" and not contacts[1].normal_only and contacts[1].forward or body_forward
     local function heading(angle)
         local front=balance_frame and M.basis(up,M.around(front_heading,axis,angle)) or nil if not front then return nil end
@@ -338,7 +362,7 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     end
     if balance_frame and M.dot(body_up,up)>.2 then
         local turn=heading(out.front_steer_angle) if turn==nil then return out end
-        local maximum=math.atan2(M.length(t.gravity)*t.wheelbase*math.tan(t.lean_limit),speed*speed)
+        local maximum=math.atan2(M.length(t.gravity)*t.wheelbase*math.tan(t.lean_limit)*(1-t.brake_lateral_cut*brake_share),speed*speed)
         if math.abs(turn)>maximum then
             local low,high=0,1 for _=1,40 do local middle=(low+high)*.5 local trial=heading(candidate_angle*middle) if trial==nil then return out end if math.abs(trial)<=maximum then low=middle else high=middle end end
             out.front_steer_angle=candidate_angle*low out.steering_limited=true turn=heading(out.front_steer_angle) if turn==nil then return out end
@@ -361,8 +385,22 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
             else wheel_axes[i]=body_left end
         end
     end
+    -- A tyre grips under its own section, not under the hub. A leaned wheel rolls onto its shoulder, which brings
+    -- the side force in under the rider: with the point under the hub the balance spring held 273 N*m through a
+    -- turn, and let go of it at every hop.
+    for i=1,2 do local contact=contacts[i]
+        if contact.status=="hit" and not contact.normal_only and samples[i].wheel_center then
+            local n,sine=contact.normal,M.dot(contact.normal,body_left)
+            local down=M.mul(M.sub(n,M.mul(body_left,sine)),-1/math.sqrt(math.max(1e-6,1-sine*sine)))
+            local tangent=M.sub(down,M.mul(n,M.dot(down,n)))
+            local lateral=M.cross(n,contact.forward)
+            local want=(wheels[i].radius-t.tyre_section_radius)*M.dot(tangent,lateral)
+            local have=M.dot(M.sub(contact.point,samples[i].wheel_center),lateral)
+            contact.point=M.add(contact.point,M.mul(lateral,want-have))
+        end
+    end
     local motor_speed=math.max(0,speed,wheels[2].angular_speed*wheels[2].radius)
-    local brake=c.enabled and math.clamp(c.brake,0,1) or 0
+    local brake=prior_squeeze+math.clamp(brake_wanted-prior_squeeze,-h/BRAKE_RELEASE_SECONDS,h/BRAKE_SQUEEZE_SECONDS)
     local braking=brake>0 and (t.front_brake_torque>0 or t.rear_brake_torque>0)
     -- The brake takes priority over a held pedal. Feed the same decision to
     -- the motor, pump and drawn crank rather than driving against the brake.
@@ -378,7 +416,14 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     if support_mask~=0 then
         if not balance_frame then return out end out.balance_reference_up=up
         if M.dot(body_up,up)>.2 then
-            local lateral=M.cross(up,forward) local desired=M.around(M.around(up,lateral,pitch*t.manual_pitch),forward,out.turning_lean_angle)
+            -- Two wheels fix pitch to the surface, but nothing fixes roll to it. A bike's roll is set by gravity and
+            -- the corner, so crossing a bank it stays near plumb instead of adding the bank to its lean. The limit
+            -- is the most camber allowed against the surface, which keeps the tyres on a very steep one.
+            local lateral=M.cross(up,forward)
+            local plumb=M.unit(M.sub(world_up,M.mul(forward,M.dot(world_up,forward))))
+            local neutral=plumb and math.atan2(M.dot(forward,M.cross(up,plumb)),M.dot(up,plumb)) or 0
+            local roll=math.clamp(neutral+out.turning_lean_angle,-MAXIMUM_CAMBER,MAXIMUM_CAMBER)
+            local desired=M.around(M.around(up,lateral,pitch*t.manual_pitch),forward,roll)
             out.desired_balance_up=desired
             local omega=M.sub(measured.angular_velocity,M.mul(up,M.dot(measured.angular_velocity,up)))
             local desired_omega=M.sub(out.desired_support_angular_velocity,M.mul(up,M.dot(out.desired_support_angular_velocity,up)))
@@ -402,6 +447,7 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
         out.neutral_air_damping_active=M.length(out.air_damping_torque)>0 assist=M.add(assist,out.air_damping_torque)
     end
     local prediction=M.copy(measured) local gravity_delta=M.mul(t.gravity,h) prediction.linear_velocity=M.add(prediction.linear_velocity,gravity_delta)
+    prediction.linear_velocity=M.add(prediction.linear_velocity,M.mul(measured.linear_velocity,-t.air_drag*M.length(measured.linear_velocity)*h/measured.mass))
     out.pump=pump:step(h,{enabled=c.enabled,operator_available=c.pump_operator_available,supported=out.grounded,inhibited=c.pump_inhibited or c.hop_strength>0,
         input=c.ground_pump,manual=c.manual,nose_manual=c.nose_manual,world_upward_speed=measured.linear_velocity[2],pedal=cadence.pedaling and c.pedal or 0})
     if not out.pump.valid then return result() end
@@ -416,13 +462,19 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     out.wheels=M.copy(wheels)
     for i=1,2 do
         -- The contact-free drive stage needs an axle, not a fabricated clear plane.
-        local b,w=Tire.axle_couple(prediction,out.wheels[i],wheel_axes[i],(i==2 and pedal*t.pedal_torque or 0)*h)
+        -- Rolling resistance slows a wheel by its load, and stops it without ever turning it backward.
+        local spin=out.wheels[i].angular_speed
+        local rolling=-(spin>=0 and 1 or -1)*math.min(t.rolling_resistance*prior_load[i]*wheels[i].radius*h,math.abs(spin)*wheels[i].inertia)
+        local b,w=Tire.axle_couple(prediction,out.wheels[i],wheel_axes[i],(i==2 and pedal*t.pedal_torque or 0)*h+rolling)
         if not b then return result() end prediction=b out.wheels[i]=w
     end
     local actuated,actuated_wheels=M.copy(prediction),M.copy(out.wheels)
     out.pre_contact_prediction=M.copy(actuated) out.pre_contact_prediction_available=true
     local effects
-    prediction,out.wheels,effects=Solver.solve(h,prediction,out.wheels,contacts,t,brake,wheel_axes)
+    -- Last step's load, and no cap in the air, so B still stops the wheels there.
+    local rear_grounded=contacts[2].status=="hit" and not contacts[2].normal_only
+    local rear_limit=rear_grounded and t.rear_brake_load_share*t.friction.longitudinal_friction*prior_load[2]*wheels[2].radius or nil
+    prediction,out.wheels,effects=Solver.solve(h,prediction,out.wheels,contacts,t,brake,wheel_axes,rear_limit)
     if not prediction then return result() end
     local base_linear=M.sub(M.mul(M.sub(M.sub(actuated.linear_velocity,measured.linear_velocity),gravity_delta),measured.mass),out.hop_impulse)
     local base_angular=M.tensor(measured,M.sub(actuated.angular_velocity,measured.angular_velocity),false)
@@ -451,6 +503,7 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     local loaded=false for i=1,2 do loaded=loaded or (out.normal_load[i]>0 and F.eligible_support(measured,samples[i],.005,t.maximum_penetration)) end
     if loaded and not out.hop_applied then reservation(air,c.recovery_step_verified,c.enabled,true,intent,launch) end
     self.air=air out.air_rotation_reserved=air.reserved==true if c.enabled then self.steering={valid=true,angle=out.front_steer_angle} end
+    self.brake_share=brake_share self.brake_squeeze=brake
     self.pump=pump self.pedal_latch=next_latch out.valid=true out.issue="none" return out
 end
 function Controller:_recovery_mask(h,body,samples,c,baseline)
@@ -484,6 +537,7 @@ end
 function Controller:_adopt(other)
     self.last_hop_event=other.last_hop_event self.normals=other.normals self.landing_impact=other.landing_impact self.travel_direction=other.travel_direction
     self.air=other.air self.steering=other.steering self.pump=other.pump self.pedal_latch=other.pedal_latch
+    self.brake_share=other.brake_share self.brake_squeeze=other.brake_squeeze
 end
 function Controller:step(h,body,wheels,samples,controls,speculative)
     local c=F.controls(controls) local baseline_controller=self:clone()

@@ -15,7 +15,8 @@ Stand on foot on fairly level ground with a little room around you, hold LB, the
 controls while the bike gets ready. The BMX page in the Insert menu says the same and shows what the mod is doing.
 
 - A pedals, B brakes, the left stick steers.
-- Click the right stick to hop.
+- Click the right stick to hop. For a smaller hop, pull the right stick back and flick it forward: the longer it was
+  held back, the higher the hop.
 - F8, or hold LB + RB and click R3, goes back to the skateboard.
 - From the skateboard, hold LB, then press A to ride again. Stand still and let go while the rider steps off.
 
@@ -35,8 +36,13 @@ offline the game does not keep it, so set it again each launch.
   so a ninth needs a restart.
 - Pausing, opening Insert or leaving the game ends the ride. The rider goes back to the skateboard on their own once
   the menu is closed and the controls are released.
-- A crash (tipping past 55 degrees, a hard roll, or the rider being knocked off) gets back on the bike after
-  a few seconds, which spends a mount.
+- Top speed is about 7.7 m/s on the flat. The rider stops pedalling there and coasts down to about 7.2 m/s before
+  pedalling again. A hill can take the bike much faster than that, and a coast slows by itself.
+- A stopped bike holds on a street grade, so tap A to start down a gentle hill. Ramps steeper than about 12% roll back.
+- A crash (the bike going over, a hit at speed, or the rider being knocked off) gets back on the bike after a few
+  seconds, which spends a mount. Banks and quarter pipes do not count as going over. If there is no room there, move
+  and mount again.
+- A slower bump into something just stops the bike, and it has no reverse. If it is stuck, go back to the skateboard.
 - The bike rolls through parked cars. The rider does not, which counts as a crash.
 - Mounting refuses ground steeper than 12 degrees and anywhere without room for the bike.
 - The score panel is the mod's own, and its numbers are not yet tuned against the game's scoring.

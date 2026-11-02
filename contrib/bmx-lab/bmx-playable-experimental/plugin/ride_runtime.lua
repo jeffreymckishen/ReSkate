@@ -18,11 +18,36 @@ local MAX_PENDING = 3
 local TRIPWIRE_EVERY = 2
 local METRIC_SAMPLE_LIMIT, METRIC_TRANSITION_LIMIT = 24, 16
 local METRIC_STOP_REASON_LIMIT, METRIC_STOP_KEY_BYTES = 8, 1024
--- Stop measured bodies outside playable tilt or local-roll bounds before
--- any query or command. The old 15 deg/1 rad/s lab bounds clipped normal
--- kernel lean (about 27 deg) and steering reversals (about 1.6 rad/s).
--- These fixed limits retain a measured-body stop beyond ordinary riding.
+-- Stop measured bodies outside playable tilt or local-roll bounds. The old
+-- 15 deg/1 rad/s lab bounds clipped normal kernel lean (about 27 deg) and
+-- steering reversals (about 1.6 rad/s). These fixed limits retain a
+-- measured-body stop beyond ordinary riding. Roll rate is read before any
+-- query. Tilt needs the wheel rays, because a ramp is not a fall.
 local TILT_STOP_DEG = 55
+-- A body this far from both world up and the surface under a wheel, for this
+-- many steps, has fallen. The steps let a bike be saved, or really go down,
+-- rather than the ride cutting off half way over.
+local FALL_SURFACE_DEG, FALL_STEPS = 65, 18
+-- With no surface under a wheel, a ramp can throw a body past TILT_STOP_DEG.
+-- It gets a second and a half to come back, and no further than this.
+local AIR_TILT_STOP_DEG, UNSUPPORTED_TILT_STEPS = 120, 90
+-- A wheel ray that lands this far under the tyre has met a step the bike is
+-- riding onto, not a wall. Flat tops get more, because a kerb is flat. The
+-- row keeps its true depth and pushes from a depth the kernel admits.
+local HELD_DEPTH, HELD_FLOOR, HELD_FLAT_FLOOR = .095, .19, .24
+-- Speed lost along the travel over this many steps. ForceStage's caps take at
+-- most 3.8 m/s over them, on a landing, so this much is the world stopping the
+-- body: a pillar took 7.5 m/s in two steps, and left the rider sitting on a
+-- bike with its nose against it and no way back.
+local HIT_DROP, HIT_STEPS = 4, 2
+-- The rider's weight carries on over the bars. The bike pitches nose down at
+-- this rate per m/s of the hit, up to the limit, on this much torque (ForceStage
+-- keeps 2000 of the 4000 N*m a packet may carry). The ride ends this far over,
+-- where the game's own fall takes the rider, or after this many steps if
+-- whatever the bike hit will not let it go over. Ended level, the rider just
+-- stood up beside the pillar.
+local CRASH_RATE, CRASH_RATE_LIMIT, CRASH_TORQUE = .5, 4, 1900
+local CRASH_TILT_DEG, CRASH_STEPS = 75, 60
 -- Steps in a row the force model may refuse before Ride stops: a second and a half.
 local MAX_REFUSED_STEPS = 90
 local ROLL_STOP_RATE = 14
@@ -130,6 +155,46 @@ local function attitude(body,gravity)
     local roll=w[1]*f1+w[2]*f2+w[3]*f3
     if not M.finite(tilt) or not M.finite(roll) then return nil end
     return tilt,roll
+end
+-- Whether this step's wheels show a fall, as the angle and limit to report, or
+-- nil. Tilt from the surface alone would end a ride on the bevel of a kerb,
+-- with the bike level, so it only ever excuses a tilt from world up: a stop
+-- here is one that world up would have made as well. One count for both
+-- branches, so a fall that keeps losing and finding its wheels still ends.
+local function fall(s,body,tilt,contact)
+    local sum,count={0,0,0},0
+    for _,row in ipairs(contact.samples) do
+        if row.contact.status=="hit" and row.separation<=.02 then sum=M.add(sum,row.contact.normal);count+=1 end
+    end
+    local surface=count>0 and M.unit(sum) or nil
+    local angle,limit,steps=tilt,TILT_STOP_DEG,UNSUPPORTED_TILT_STEPS
+    if surface then
+        local from_surface=attitude(body,M.mul(surface,-1))
+        if from_surface and from_surface<angle then angle=from_surface end
+        limit,steps=FALL_SURFACE_DEG,FALL_STEPS
+    end
+    if angle<=limit then s.fall_steps=0;return nil end
+    s.fall_steps=(s.fall_steps or 0)+1
+    if s.fall_steps>=steps or not surface and tilt>AIR_TILT_STOP_DEG then return angle,limit end
+    return nil
+end
+-- The nose-down torque a bike that has hit something gets this step.
+local function crash_torque(s,body)
+    local left=M.turn(M.normalized(body.orientation),{1,0,0})
+    local rate=math.min(s.crash.speed*CRASH_RATE,CRASH_RATE_LIMIT)
+    return M.mul(left,M.dot(body.angular_velocity,left)<rate and CRASH_TORQUE or 0)
+end
+-- The speed this step's body had when it hit something, or nil.
+local function hit(s,body)
+    local history=s.speed_history or {}
+    s.speed_history=history
+    local v,old=body.linear_velocity,history[HIT_STEPS]
+    table.insert(history,1,v)
+    history[HIT_STEPS+1]=nil
+    if not old then return nil end
+    local speed=math.sqrt(old[1]*old[1]+old[3]*old[3])
+    if speed>=HIT_DROP and speed-(v[1]*old[1]+v[3]*old[3])/speed>=HIT_DROP then return speed end
+    return nil
 end
 local function array(value)
     if typeof(value) ~= "vector" then return nil end
@@ -1027,7 +1092,16 @@ local function wheel_contacts(s,frame,decoded,centers,geometry)
             -- A wheel shoved into a kerb or a face it cannot roll on loses a step of support, not the ride.
             local basis=math.abs(M.length(ray.normal)-1)<=.001 and M.basis(ray.normal,forward) or nil
             local separation=basis and M.dot(M.sub(centers[i],ray.position),basis.normal)-geometry.wheel_radius
-            if basis and M.finite(separation) and separation>=-.10 then
+            if basis and M.finite(separation) and separation<-.10
+                and separation>-(basis.normal[2]>=.95 and HELD_FLAT_FLOOR or HELD_FLOOR) then
+                local down=M.unit(s.force.tuning.gravity)
+                samples[i]={contact={status="hit",point=M.add(centers[i],M.mul(down,(geometry.wheel_radius-HELD_DEPTH)/-M.dot(down,basis.normal))),
+                    normal=basis.normal,forward=basis.forward,surface_velocity=copy(ray.surface_velocity)},separation=-HELD_DEPTH,
+                    ray_point=copy(ray.position),ray_separation=separation,
+                    wheel_center=copy(centers[i]),wheel_radius=geometry.wheel_radius,
+                    verified_plane=false,balance_normal_available=false}
+                grounded=grounded or Forces.eligible_support(frame.body,samples[i],.005,.10)
+            elseif basis and M.finite(separation) and separation>=-.10 then
                 samples[i]={contact={status="hit",point=copy(ray.position),normal=basis.normal,
                     forward=basis.forward,surface_velocity=copy(ray.surface_velocity)},separation=separation,
                     wheel_center=copy(centers[i]),wheel_radius=geometry.wheel_radius,
@@ -1073,10 +1147,10 @@ local function rider_tripwire(s,frame,options)
     end
     return true
 end
-local function packet(model,companions,h)
+local function packet(model,companions,h,crash)
     if type(model) ~= "table" or model.valid ~= true or not M.vec(model.force) or not M.vec(model.torque)
         or not M.vec(model.hop_impulse) then return nil end
-    local torque = copy(model.torque)
+    local torque = crash and M.add(model.torque,crash) or copy(model.torque)
     local request_count=0
     for key in pairs(companions.requests or {}) do
         if type(key)~="number" or key%1~=0 or key<1 or key>#companions.requests then return nil end
@@ -1142,15 +1216,23 @@ local function observe(s,source_frame,raw,context)
         if steps>1 then s.continuity_pending=true;s.step_gaps=(s.step_gaps or 0)+1 end
     end
     s.last_sample=sample -- Consume before callbacks. This native serial cannot submit twice.
-    -- A tipping or rolling body stops here, on its consumed sample, before any
-    -- query or command (TILT_STOP_DEG, ROLL_STOP_RATE).
+    -- A rolling body stops here, on its consumed sample, before any query or
+    -- command (ROLL_STOP_RATE). A tipping body stops once the rays say what it
+    -- is tipping from (fall).
     local tilt,roll=attitude(body,s.force.tuning.gravity)
     if not tilt then stop(s,"measured tilt unavailable");return end
-    if tilt>TILT_STOP_DEG then
-        stop(s,string.format("measured tilt %.1f deg over the %d deg Ride stop",tilt,TILT_STOP_DEG));return
-    end
     if math.abs(roll)>ROLL_STOP_RATE then
         stop(s,string.format("measured roll rate %.2f rad/s over the %d rad/s Ride stop",math.abs(roll),ROLL_STOP_RATE));return
+    end
+    if not s.crash then
+        local hit_speed=hit(s,body)
+        if hit_speed then s.crash={speed=hit_speed,steps=0} end
+    end
+    if s.crash then
+        s.crash.steps+=1
+        if tilt>CRASH_TILT_DEG or s.crash.steps>CRASH_STEPS then
+            stop(s,string.format("hit something at %.1f m/s",s.crash.speed));return
+        end
     end
     s.observed_steps+=1
     s.metrics_step={serial=sample.serial,physics_time=sample.time,report=false}
@@ -1191,6 +1273,10 @@ local function observe(s,source_frame,raw,context)
     if not contacted[1] or contacted.n~=2 or not contacted.current or s.stopped then stop(s,"contact decode unavailable");return end
     local contact,issue=wheel_contacts(s,frame,contacted[2],centers,s.geometry)
     if not contact then stop(s,issue);return end
+    local fallen,fall_limit=fall(s,body,tilt,contact)
+    if fallen then
+        stop(s,string.format("measured tilt %.1f deg over the %d deg Ride stop",fallen,fall_limit));return
+    end
     if category_lane then
         -- The tripwire is cast on the first wheel batch and then every
         -- TRIPWIRE_EVERY measured epochs (S1b in game: 0.34 ms a batch). A
@@ -1212,7 +1298,7 @@ local function observe(s,source_frame,raw,context)
     s.metrics_step.contact={serial=sample.serial,body_height=body.center_of_mass[2],
         front_hit=contact.samples[1].contact.status=="hit",rear_hit=contact.samples[2].contact.status=="hit",
         front_separation=contact.samples[1].separation,rear_separation=contact.samples[2].separation,
-        grounded=contact.grounded}
+        grounded=contact.grounded,tilt=tilt,roll_rate=roll,steer=authored_steer}
     s.metrics_step.measured_rear_hub=centers[2]
     s.metrics_step.measured_rear_hit=contact.samples[2].contact.point
     s.metrics_step.measured_rear_normal=contact.samples[2].contact.normal
@@ -1311,6 +1397,7 @@ local function observe(s,source_frame,raw,context)
         s.continuity_pending=false;s.continuity_invalidations+=1
     end
     local force_controls=copy(controls.force_controls)
+    if s.crash then force_controls.pedal=0 end
     force_controls.rotation_reserved=force_controls.rotation_reserved or companions.rotation_reserved==true
         or (s.barspin_preview~=nil and s.barspin_preview.requests.rotation_reserved==true)
     -- Solve from the state this command will act on. Accepted commands
@@ -1327,12 +1414,21 @@ local function observe(s,source_frame,raw,context)
         if folded[1] and folded.current and not s.stopped and refused_step(s,tostring(folded[3])) then return end
         stop(s,"in-flight fold unavailable: "..tostring(folded[3]));return
     end
+    -- The forecast can carry a wheel past the depth the kernel admits, in the
+    -- same step its ray did not. Hold it at the same depth as wheel_contacts.
+    for _,row in ipairs(folded[3]) do
+        if row.contact.status=="hit" and row.separation< -HELD_DEPTH and row.wheel_center then
+            local down=M.unit(s.force.tuning.gravity)
+            row.separation=-HELD_DEPTH
+            row.contact.point=M.add(row.wheel_center,M.mul(down,(row.wheel_radius-HELD_DEPTH)/-M.dot(down,row.contact.normal)))
+        end
+    end
     local preview=invoke(s,s.force.preview,s.force,sample.seconds,folded[2],s.wheels,folded[3],force_controls)
     local model,candidate=preview[2],preview[3]
     if not preview[1] or preview.n~=3 or not preview.current or s.stopped or type(candidate)~="table" then
         stop(s,"force preview unavailable");return
     end
-    local command=packet(model,companions,sample.seconds)
+    local command=packet(model,companions,sample.seconds,s.crash and crash_torque(s,body) or nil)
     if not command then -- Name the ForceStage refusal and the unsent magnitudes.
         local d=type(model)=="table" and (type(model.diagnostic)=="table" and model.diagnostic or model) or {}
         local b=folded[2]

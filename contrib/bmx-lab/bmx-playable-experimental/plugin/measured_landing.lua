@@ -111,11 +111,11 @@ local function contact_facts(f,c,tripwire,authored_steer)
             local basis=M.vec(ray.normal,1) and M.basis(ray.normal,forward)
             if not basis or math.abs(M.length(ray.normal)-1)>.001 or ray.normal_available~=true or ray.surface_velocity_available~=true or ray.motion~="measured"
                 or not M.vec(ray.position,100000) or not M.vec(ray.surface_velocity,50)
-                or not close(hit.point,ray.position) or not close(hit.normal,basis.normal)
+                or not close(sample.ray_point or hit.point,ray.position) or not close(hit.normal,basis.normal)
                 or not close(hit.forward,basis.forward) or not close(hit.surface_velocity,ray.surface_velocity)
                 or not close(sample.wheel_center,center) or sample.wheel_radius~=G.wheel_radius
                 or not finite(sample.separation)
-                or math.abs(sample.separation-(M.dot(M.sub(center,ray.position),basis.normal)-G.wheel_radius))>1e-8 then
+                or math.abs((sample.ray_separation or sample.separation)-(M.dot(M.sub(center,ray.position),basis.normal)-G.wheel_radius))>1e-8 then
                 return nil,"measured_geometry_mismatch"
             end
             if Forces.eligible_support(f.body,sample,.005,.10) then

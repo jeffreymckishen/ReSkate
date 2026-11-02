@@ -195,6 +195,12 @@ function T.run()
         check(out.valid and out.landing_approach_mask~=0 and out.approach_normal_force[1]>1000,"a leaned bike is braked on the way down")
         local forward=M.turn(M.normalized(leaned.orientation),{0,0,1})
         check(math.abs(M.dot(out.contact_torque,forward))<1,"and that brake has no lever to roll it with: "..M.dot(out.contact_torque,forward))
+        local drop=place(Ground.plane(0,0),0)
+        drop.center_of_mass={0,drop.center_of_mass[2]+.03,0}
+        drop.linear_velocity={0,-9,0}
+        local catch=Stage.new():preview(h,drop,Forces.proposed_wheels(),contacts(Ground.plane(0,0),drop,0),{})
+        check(catch.valid and M.length(catch.force)>6001 and M.length(catch.force)<=12000.001,
+            "a big drop gets more than a rolling step may send: "..M.length(catch.force))
         leaned.center_of_mass={0,.85,0}
         out=Forces.new():preview(h,leaned,Forces.proposed_wheels(),contacts(Ground.plane(0,0),leaned,0),landing)
         check(out.valid and out.landing_recovery_mask~=0 and math.abs(M.dot(out.contact_torque,forward))<600,
@@ -242,6 +248,12 @@ function T.run()
         end
         local stop=run({steps=210,speed=7.4,controls=function() return {brake=1} end})
         check(M.length(stop.body.linear_velocity)<.5,"a straight stop from top speed takes under 3.5 s")
+        local first,squeezed
+        run({steps=45,speed=7.4,controls=function(step) return {brake=step>30 and 1 or 0} end,each=function(step,body,out)
+            if step==31 then first=math.abs(out.brake_impulse[1]) end
+            if step==42 then squeezed=math.abs(out.brake_impulse[1]) end
+        end})
+        check(first>0 and first<.3*squeezed,"B is squeezed on, not snapped: "..first.." then "..squeezed)
         local braked=0
         run({steps=120,speed=7.4,controls=function() return {brake=1} end,hitch=function(step) return step%10==0 end,each=function(step,body,out)
             if step>60 and step%10==0 and math.abs(out.brake_impulse[2])>.1 then braked+=1 end

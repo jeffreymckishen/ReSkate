@@ -4,8 +4,8 @@
   "flat_file_count": 89,
   "quota_file_count": 90,
   "expected_processes": 47,
-  "expected_cases": 308,
-  "expected_assertions": 14982,
+  "expected_cases": 309,
+  "expected_assertions": 14988,
   "source_admission": "UNCHANGED_FALSE",
   "files": [
     {
@@ -492,8 +492,8 @@
     {
       "source": "Test/measured_landing_tests.lua",
       "destination": "measured_landing_tests.lua",
-      "bytes": 9870,
-      "sha256": "17A4FFCC5D712A95F91250823ABD5F1F47AD96A466BB2C63DAC46B4FAD186A85"
+      "bytes": 10601,
+      "sha256": "5852761CBEFC56AC7C830D321942F2A283F80BFC0A23210165BE279189AE1141"
     },
     {
       "source": "Test/ride_score_wiring_tests.lua",
@@ -540,14 +540,14 @@
     {
       "source": "Test/bike_physics_tests.lua",
       "destination": "bike_physics_tests.lua",
-      "bytes": 16343,
-      "sha256": "EEE7AA0AC8DC3F8EAFDD9EE3B80E00BC14C3CD0ED518358D6912201EDADC73ED"
+      "bytes": 17199,
+      "sha256": "2D1864B0550D453A6D937D1808D001C1D47D785E5BB9B067938872F4D2EFE764"
     },
     {
       "source": "Test/ride_fall_tests.lua",
       "destination": "ride_fall_tests.lua",
-      "bytes": 12132,
-      "sha256": "A3858C18F50502558FFC74599B7B909F64AF4D560B6D00341BBD77F0297D2190"
+      "bytes": 12974,
+      "sha256": "65A4CB0C67E016149564141FC7913809AFD6770F4686C1DCFF1C2816D6FBB13B"
     }
   ],
   "runtime_files": [
@@ -1034,8 +1034,8 @@
       "suite": "measured_landing_tests",
       "context": "flat",
       "invoked": "measured_landing_tests",
-      "expected_cases": 4,
-      "expected_assertions": 41
+      "expected_cases": 5,
+      "expected_assertions": 42
     },
     {
       "suite": "ride_score_wiring_tests",
@@ -1084,14 +1084,14 @@
       "invoked": "bike_physics_tests",
       "context": "flat",
       "expected_cases": 9,
-      "expected_assertions": 2836
+      "expected_assertions": 2838
     },
     {
       "suite": "ride_fall_tests",
       "invoked": "ride_fall_tests",
       "context": "flat",
       "expected_cases": 11,
-      "expected_assertions": 78
+      "expected_assertions": 81
     }
   ]
 }

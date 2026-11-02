@@ -49,6 +49,12 @@ local function harness(ground)
     local source={input_ok=true,phase="capturing",generation=1,lease_handle=lease,
         sample={user=0,sequence="77",source_epoch="78",context_generation="79",observation_serial="80",observed_ms="1000",packet=9,pad=pad}}
     local ride=Ride.new(api,{mapping=Mapping.new(),force=Stage.new(),contact=Contact},{body_handle=body,incarnation=incarnation})
+    function w.press_a()
+        local pressed=table.clone(pad)
+        pressed.buttons=table.clone(pad.buttons);pressed.buttons.a=true
+        source={input_ok=true,phase="capturing",generation=1,lease_handle=lease,
+            sample={user=0,sequence="77",source_epoch="78",context_generation="79",observation_serial="81",observed_ms="1016",packet=10,pad=pressed}}
+    end
     function w.step(pose)
         w.serial+=1;w.time+=h
         local v=pose.velocity or {0,0,0}
@@ -160,6 +166,14 @@ function T.run()
         check(steps(back,pose,4)==nil,"rolling backward")
         pose.velocity={0,0,-.5}
         check(steps(back,pose,5)==nil and back.submits[#back.submits].torque.x<0,"backward into something, the tail goes down")
+        local pedalling=harness(flat)
+        pose=level()
+        pose.velocity={0,0,5}
+        check(steps(pedalling,pose,3)==nil,"rolling")
+        pedalling.press_a()
+        check(steps(pedalling,pose,6)==nil and pedalling.submits[#pedalling.submits].force.z>100,"A drives the bike")
+        pose.velocity={0,0,.5}
+        check(steps(pedalling,pose,10)==nil and pedalling.submits[#pedalling.submits].force.z<50,"and stops driving it once it has hit something")
         local tipped=harness(flat)
         pose=level()
         pose.velocity={0,0,7.5}

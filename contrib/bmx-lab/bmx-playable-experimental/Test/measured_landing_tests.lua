@@ -138,6 +138,19 @@ function Tests.run()
         check(wrong.landed and not wrong.quality.available and wrong.issue=="measured_geometry_mismatch",
             "a straight-center assertion cannot qualify a current steered-center query")
     end
+    cases+=1 do
+        -- A row Ride holds at a depth the kernel admits still answers to the ray it came from.
+        local f=fixture()
+        local frame,contact,proofs=f:at(0,-.15)
+        for _,sample in ipairs(contact.samples)do
+            sample.ray_point,sample.ray_separation=sample.contact.point,sample.separation
+            sample.separation=-.095
+            sample.contact.point=M.sub(sample.wheel_center,{0,G.wheel_radius-.095,0})
+        end
+        contact.grounded=true;contact.support.grounded=true
+        local result=f.producer:step(frame,contact,proofs)
+        check(result.issue=="none" and not result.landed,"a wheel held on a kerb is measured, not a broken geometry: "..tostring(result.issue))
+    end
     return {cases=cases,assertions=n,native_actions=0,game_evidence=false,calibration="C0_UNRUN"}
 end
 return table.freeze(Tests)

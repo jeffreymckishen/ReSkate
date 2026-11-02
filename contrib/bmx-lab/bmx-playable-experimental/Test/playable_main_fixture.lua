@@ -12,7 +12,12 @@ local unloaded=false
 local score_lines
 local function score_snapshot()
     local view,issue,landing=bike:score_view()
-    return ScoreHUD.lines(view,issue,landing)
+    local lines=ScoreHUD.lines(view,issue,landing)
+    local help=bike.help_line and bike:help_line()
+    if not help then return lines end
+    local shown=table.clone(lines) -- The panel's six rows are full: this takes the last one while the mod is busy.
+    shown[#shown]=help
+    return shown
 end
 local function draw_score_lines(d)
     if unloaded or not score_lines then return end

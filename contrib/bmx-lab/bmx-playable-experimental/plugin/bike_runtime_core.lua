@@ -2135,14 +2135,18 @@ local function cycle_ready(expected,after_attempt)
         or pose.issue~=nil or type(board)~="table" or board.state~="restored" or board.clear_result~="cleared"
         or board.issue~=nil then return false,"Pose and board cleanup must be confirmed" end
     local e=status_of(equipment)
-    if not e or e.phase~="done" or e.retained~=false or e.unloaded or e.storage_fault
+    -- A rider who got back on the board themselves after a Return that could not finish has no target to wait
+    -- for: the state read in cycle_checkpoint says they are on it.
+    local boarded=expected==100 and not after_attempt and e and e.phase=="done" and e.retained==false
+        and not e.unloaded and not e.storage_fault
+    if not e or not boarded and (e.phase~="done" or e.retained~=false or e.unloaded or e.storage_fault
         or e.storage_accepted~=true or e.acknowledged~=true or e.qualified_transition~=true
         or e.current_transition~=true or e.expected_state~=expected or e.outcome~="target_observed"
-        or type(e.attempt)~="number" or e.attempt%1~=0 or e.attempt<1
-        or after_attempt and e.attempt<=after_attempt then return false,"Fresh target and equipment ACK required" end
+        or after_attempt and type(e.attempt)=="number" and e.attempt<=after_attempt)
+        or type(e.attempt)~="number" or e.attempt%1~=0 or e.attempt<1 then return false,"Fresh target and equipment ACK required" end
     local receipt=e.terminal_receipt
-    if type(receipt)~="table" or receipt.terminal~=true or receipt.report_debt~=false
-        or receipt.claim_released~=true or receipt.quarantined~=false or receipt.orphaned~=false then
+    if not boarded and (type(receipt)~="table" or receipt.terminal~=true or receipt.report_debt~=false
+        or receipt.claim_released~=true or receipt.quarantined~=false or receipt.orphaned~=false) then
         return false,"Equipment terminal debt remains"
     end
     return true,e.attempt
@@ -2221,7 +2225,8 @@ function BikeRuntime.experimental_two_cycle_owner()
         return hooks.can_return()
     end
     function owner:archive_return()
-        if failed or made<1 or return_attempt then return false,"Next intent already consumed or unavailable" end
+        if failed or made<1 then return false,"Next intent already consumed or unavailable" end
+        if return_attempt then return true end -- A retried step-off: that Return is already archived.
         -- Burn before fallible callbacks: a failed archive can never be retried.
         failed=true
         local version=epoch

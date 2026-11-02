@@ -210,7 +210,8 @@ local function new_runtime(services,options,two_cycle)
         running=true
         local ok,why=session_owner:ready()
         running=false
-        if not ok and why~="pending" then T.startup_closed=true end
+        -- A step-off that failed (something pressed during it) can be asked for again from the board.
+        if not ok and why~="pending" then next_preparation=false end
         return ok,why
     end
     function object:second_preflight_ready(admitted_at_ms)

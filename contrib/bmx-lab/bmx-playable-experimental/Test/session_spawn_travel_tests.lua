@@ -6,8 +6,9 @@ local Tests={}
 local function fixture(options,handed_off)
     local f={sets=0,releases=0,removals=0}
     local api={entities={},input={},world={physics={}}}
-    function api.entities.set(id)
+    function api.entities.set(id,_,placement)
         f.sets+=1
+        if id==1 and placement then f.placed=placement.matrix end
         if id==f.refuse_id then return false,"constructed partial placement refusal" end
         return true
     end
@@ -91,6 +92,13 @@ function Tests.run()
     check(not owner:follow_visual(accepted,181),"unchanged native sample still expires after100 ms")
     check(owner.sample==accepted and owner.follow_observed_at==observed and owner.root==root,
         "all rejected paths retain the accepted sample, freshness and original root")
+    -- The rider's actor is drawn two physics steps behind the body, so the bike draws the body from two steps ago.
+    local trailing,tr=fixture({session_renewable=true})
+    for i=1,5 do check(trailing:follow_visual(tr.sample(i+1,i),i*16),"each measured step is accepted") end
+    local expected=assert(Visual.from_sample(tr.sample(99,3)))[1]
+    check(math.abs(tr.placed[13]-expected[13])<1e-5,"step five draws the body of step three")
+    check(trailing.sample.position.x==5,"the measured body stays current; only the drawing trails it")
+
     return {cases=1,assertions=assertions,constructed=true,native_qualified=false}
 end
 return table.freeze(Tests)

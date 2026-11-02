@@ -825,6 +825,14 @@ function Entry.new(R,Runtime,Survey,options)
     end
     -- Core already detached this small score view in the last normal step.
     -- HUD reads never poll the lifecycle or turn presentation into evidence.
+    -- What the player should be doing while the mod is busy, in plain words for the HUD.
+    local HELP={preparing="Getting the bike ready: stand still.",surveying="Checking for room: stand still.",
+        awaiting_mount="Close menus and let go of the controls.",mounting="Getting on the bike: let go of the controls.",
+        stepping_off="Stepping off the board: stand still and let go of the controls.",
+        returning="Going back to the skateboard: let go of the controls.",
+        preflight_refused="No room here or too steep: move, then hold LB and press A.",
+        blocked="That didn't finish. Get on your skateboard, then hold LB and press A."}
+    function object:help_line() return HELP[phase] end
     function object:score_view()
         local ride=known and plain(latest) and latest.ride or nil
         if not plain(ride) then return nil,"ride_unavailable","unavailable" end

@@ -12,7 +12,8 @@ local LANDING_FORCE=12000
 local GOVERNOR_START,GOVERNOR_FULL=25,35
 -- A rider stopped on a street grade dabs a foot or holds the brake. Under this speed, on a slope whose sine is
 -- under this, a bike with no pedal holds on this much brake. Anything steeper rolls back, so a stall on a ramp does.
-local HOLD_SPEED,HOLD_SINE,HOLD_BRAKE=.3,.12,.35
+-- The city's own hills run to 13%, and a bike stopped on one rolled away down it for 70 m.
+local HOLD_SPEED,HOLD_SINE,HOLD_BRAKE=.3,.15,.45
 local hop_stage=STAGE=="hop" or STAGE=="hop_ride"
 -- DEC-5 supplies force and measured-speed magnitudes here. The spawn-origin
 -- envelope stays with Core/Spawn; this wrapper invents no anchor or authority.

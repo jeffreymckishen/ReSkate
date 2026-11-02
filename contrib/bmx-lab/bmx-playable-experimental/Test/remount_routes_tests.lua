@@ -121,6 +121,18 @@ function T.run()
         w.tick(math.ceil(60000/16))
         check(player_remounts(w),"a completed Follow proves the forces are over")
     end)
+    case(function() -- A crash on the last mount of the launch: nothing left to get back on, so the board comes back.
+        local w=start()
+        for used=1,7 do
+            w.tilt_stop(59.7)
+            for _=1,3000 do w.tick();if riding(w,used) then break end end
+            check(riding(w,used),"the fall after mount "..used.." gets back on")
+            w.ride_ms(500)
+        end
+        w.tilt_stop(59.7)
+        for _=1,3000 do w.tick();if w.entry:status().phase=="skateboard" then break end end
+        check(w.entry:status().phase=="skateboard" and w.stock==100,"on the board: "..tostring(w.entry:status().phase))
+    end)
     case(function() -- Nothing else going wrong: the mod remounts by itself.
         local w=start();w.tilt_stop(59.7)
         for _=1,3000 do w.tick();if riding(w,1) then break end end

@@ -95,6 +95,7 @@ local function run(ride)
         local want=ride.controls and ride.controls(step,body) or {}
         local input={pedal=want.pedal or 0,steer=want.steer or 0,brake=want.brake or 0}
         if want.hop then hop_id+=1;input.hop_event_id=hop_id;input.hop_strength=1 end
+        if ride.hitch and ride.hitch(step) then stage:invalidate_continuity() end
         local out,candidate=stage:preview(h,folded,wheels,forecast,input)
         local command
         if out.valid then
@@ -161,7 +162,7 @@ function T.run()
                 radius=v/math.abs(body.angular_velocity[2]);lean=tilt_of(body)
             end
         end})
-        check(radius<10 and radius>8,"radius at top speed: "..radius)
+        check(radius<9.2 and radius>8,"radius at top speed: "..radius)
         check(lean>21 and lean<30,"lean at top speed: "..lean)
     end)
     case(function() -- Rocking the stick, the test the leaner tuning fell over on.
@@ -187,19 +188,32 @@ function T.run()
         end
         local leaned=Forces.proposed_body()
         leaned.orientation={0,0,math.sin(.2),math.cos(.2)}
-        leaned.center_of_mass={0,1.3,0}
+        leaned.center_of_mass={0,1,0}
         leaned.linear_velocity={0,-3,0}
-        local out=Forces.new():preview(h,leaned,Forces.proposed_wheels(),contacts(Ground.plane(0,0),leaned,0),
-            Forces.controls({contact_compliance_available=true,landing_contact_compliance_selected=true}))
-        check(out.valid and out.landing_approach_mask~=0 and M.length(out.force)>0,"a leaned bike is braked on the way down")
+        local landing=Forces.controls({contact_compliance_available=true,landing_contact_compliance_selected=true})
+        local out=Forces.new():preview(h,leaned,Forces.proposed_wheels(),contacts(Ground.plane(0,0),leaned,0),landing)
+        check(out.valid and out.landing_approach_mask~=0 and out.approach_normal_force[1]>1000,"a leaned bike is braked on the way down")
         local forward=M.turn(M.normalized(leaned.orientation),{0,0,1})
         check(math.abs(M.dot(out.contact_torque,forward))<1,"and that brake has no lever to roll it with: "..M.dot(out.contact_torque,forward))
+        leaned.center_of_mass={0,.85,0}
+        out=Forces.new():preview(h,leaned,Forces.proposed_wheels(),contacts(Ground.plane(0,0),leaned,0),landing)
+        check(out.valid and out.landing_recovery_mask~=0 and math.abs(M.dot(out.contact_torque,forward))<600,
+            "nor does the first hard step of a touchdown: "..M.dot(out.contact_torque,forward))
     end)
     case(function() -- A bank does not add to the lean: gravity sets the roll, not the ground.
         local peak=run({steps=360,speed=5,ground=Ground.twist(math.rad(33),2,6)})
         check(peak.tilt<30 and peak.refused==0,"across a 33 degree bank, wheels straight: "..peak.tilt)
         local falling=run({steps=240,speed=7,ground=Ground.plane(math.tan(math.rad(30)),0),controls=function() return {steer=-1} end})
-        check(falling.tilt<55,"full left down a 30 degree plane: "..falling.tilt)
+        check(falling.tilt<=31,"full left down a 30 degree plane: "..falling.tilt)
+        local clamped=false
+        run({steps=30,speed=3,ground=Ground.plane(math.tan(math.rad(50)),0),each=function(step,body,out)
+            if out.valid and M.length(out.desired_balance_up)>.5 then
+                local camber=math.acos(math.clamp(M.dot(out.desired_balance_up,out.balance_reference_up),-1,1))
+                check(camber<=.8+1e-6,"a very steep surface keeps its tyres on it: "..camber)
+                clamped=clamped or camber>=.79
+            end
+        end})
+        check(clamped,"the surface is steep enough for that to bind")
     end)
     case(function() -- A wheel pushing back up out of a step is still on the ground.
         local body=Forces.proposed_body()
@@ -212,21 +226,30 @@ function T.run()
         check(not Forces.eligible_support(body,sample(0,.1),.005,.10),"with nothing to recover from, the old limit stands")
     end)
     case(function() -- A brake in a corner does not swap the ends, flat or down a street grade.
-        for _,row in ipairs({{speed=6,stick=1,grade=0},{speed=7.4,stick=.5,grade=0},{speed=6,stick=1,grade=.05},{speed=7.4,stick=1,grade=.05},{speed=7.4,stick=.5,grade=.1}}) do
-            local locked=0
+        for _,row in ipairs({{speed=6,stick=1,grade=0},{speed=7.4,stick=.5,grade=0},{speed=6,stick=1,grade=.05},{speed=7.4,stick=1,grade=.05},
+            {speed=7.4,stick=.5,grade=.1},{speed=9,stick=1,grade=.1}}) do
+            local locked,rear_load=0,0
             local peak=run({steps=300,speed=row.speed,ground=Ground.plane(0,-row.grade),controls=function(step)
                 return {steer=-row.stick,brake=step>90 and 1 or 0}
             end,each=function(step,body,out,wheels)
-                if step>90 and M.length(body.linear_velocity)>1.5 and wheels[2].angular_speed==0 then locked+=1 end
+                local speed=M.length(body.linear_velocity)
+                if step>90 and speed>1.5 and math.abs(wheels[2].angular_speed)*R<.2*speed then locked+=1 end
+                if step>91 then check(math.abs(out.brake_impulse[2])<=.6*rear_load*R*h+1e-6,"the rear brake eases to what the tyre can hold") end
+                rear_load=out.normal_load[2]
             end})
             check(peak.slip<12,string.format("%.1f m/s, stick %.1f, grade %.2f: peak slip %.1f",row.speed,row.stick,row.grade,peak.slip))
             check(locked==0,"the rear wheel keeps turning")
         end
         local stop=run({steps=210,speed=7.4,controls=function() return {brake=1} end})
         check(M.length(stop.body.linear_velocity)<.5,"a straight stop from top speed takes under 3.5 s")
+        local braked=0
+        run({steps=120,speed=7.4,controls=function() return {brake=1} end,hitch=function(step) return step%10==0 end,each=function(step,body,out)
+            if step>60 and step%10==0 and math.abs(out.brake_impulse[2])>.1 then braked+=1 end
+        end})
+        check(braked==6,"a hitch leaves the rear brake on: "..braked)
     end)
     case(function() -- A stopped bike holds on a street grade, and a stall on a ramp still rolls back.
-        for _,grade in ipairs({-.1,-.05,-.02,.02,.05,.1}) do
+        for _,grade in ipairs({-.14,-.1,-.05,-.02,.02,.05,.1,.14}) do
             local ground=Ground.plane(0,grade)
             local from
             local peak=run({steps=600,ground=ground,each=function(step,body) if step==60 then from=M.copy(body.center_of_mass) end end})
@@ -235,6 +258,10 @@ function T.run()
         local bank=Ground.plane(0,math.tan(math.rad(20)))
         local stall=run({steps=300,speed=.1,ground=bank})
         check(stall.body.linear_velocity[3]< -1,"a 20 degree ramp is too steep to hold")
+        for _,grade in ipairs({-.17,.17}) do
+            local ramp=run({steps=300,ground=Ground.plane(0,grade)})
+            check(M.length(ramp.body.linear_velocity)>1,"past the limit a stall rolls, up or down: "..grade)
+        end
         local hop=run({steps=120,controls=function(step) return {hop=step==60} end})
         check(hop.height>.9,"a hop leaves from a held stop")
         local away=run({steps=60,ground=Ground.plane(0,.08),controls=function(step) return {pedal=step>30 and 1 or 0} end})

@@ -146,8 +146,11 @@ end
 function Controller:reset() self.last_hop_event=0 self.normals={{},{}} self.landing_impact={false,false} self.travel_direction=0 self.air={} self.steering={} self.pump=Pump.new() self.pump:reset() self.pedal_latch=F.pedal_state() self.brake_share=0 self.brake_squeeze=0 end
 function Controller:invalidate_continuity()
     -- A missed command breaks one-step derivative and state-machine history.
-    -- Accepted hop consumption and authored tuning remain authoritative.
-    self.normals={{},{}} self.landing_impact={false,false} self.travel_direction=0 self.air={} self.steering={}
+    -- Accepted hop consumption and authored tuning remain authoritative. The
+    -- last load stays: it holds no support, and the rear brake and rolling
+    -- resistance read it, so a hitch must not free the rear wheel for a step.
+    self.normals={{normal_load=self.normals[1].normal_load},{normal_load=self.normals[2].normal_load}}
+    self.landing_impact={false,false} self.travel_direction=0 self.air={} self.steering={}
     self.pump=Pump.new() self.pump:reset()
 end
 function Controller:clone()

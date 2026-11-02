@@ -20,7 +20,7 @@ controls while the bike gets ready. The BMX page in the Insert menu says the sam
 - F8, or hold LB + RB and click R3, goes back to the skateboard.
 - From the skateboard, hold LB, then press A to ride again. Stand still and let go while the rider steps off.
 
-All of these can be changed in Binds.
+Mounting and going back to the skateboard can be changed in Binds. Pedal, brake, steering and hop cannot.
 
 ## Smooth riding
 
@@ -38,10 +38,10 @@ offline the game does not keep it, so set it again each launch.
   the menu is closed and the controls are released.
 - Top speed is about 7.7 m/s on the flat. The rider stops pedalling there and coasts down to about 7.2 m/s before
   pedalling again. A hill can take the bike much faster than that, and a coast slows by itself.
-- A stopped bike holds on a street grade, so tap A to start down a gentle hill. Ramps steeper than about 12% roll back.
+- A stopped bike holds on a street grade, so hold A for a moment to start down a gentle hill. Ramps steeper than about 15% roll back.
 - A crash (the bike going over, a hit at speed, or the rider being knocked off) gets back on the bike after a few
-  seconds, which spends a mount. Banks and quarter pipes do not count as going over. If there is no room there, move
-  and mount again.
+  seconds, which spends a mount. On the last mount of a launch it goes back to the skateboard instead. Banks and
+  quarter pipes do not count as going over. If there is no room to get back on, move and mount again.
 - A slower bump into something just stops the bike, and it has no reverse. If it is stuck, go back to the skateboard.
 - The bike rolls through parked cars. The rider does not, which counts as a crash.
 - Mounting refuses ground steeper than 12 degrees and anywhere without room for the bike.

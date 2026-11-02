@@ -894,9 +894,10 @@ function Entry.new(R,Runtime,Survey,options)
         logged_phase=phase
         if not advanced then known=false;fail("Entry step failed; cleanup remains required.")
         -- A ride that ended on its own hands the player back straight away: a fall gets back on the bike, anything
-        -- else returns to the skateboard, ready to mount again.
+        -- else returns to the skateboard, ready to mount again. A fall with no mount left to spend is anything else.
         elseif auto_return and phase=="fallen" and recoverable() then call(self.recover,self)
-        elseif auto_return and phase=="stopped" and not return_pending and not recover_pending and not cancelled and not unloaded then
+        elseif auto_return and (phase=="stopped" or phase=="fallen" and attempts_used>=attempt_limit)
+            and not return_pending and not recover_pending and not cancelled and not unloaded then
             call(self.return_to_skateboard,self)
         elseif recover_pending and not cancelled and not unloaded and phase=="skateboard" then
             recover_pending=false -- Consume before fresh Mount callbacks; no automatic retry.

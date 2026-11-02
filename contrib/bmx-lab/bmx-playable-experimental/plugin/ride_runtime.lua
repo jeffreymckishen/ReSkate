@@ -159,8 +159,10 @@ end
 -- Whether this step's wheels show a fall, as the angle and limit to report, or
 -- nil. Tilt from the surface alone would end a ride on the bevel of a kerb,
 -- with the bike level, so it only ever excuses a tilt from world up: a stop
--- here is one that world up would have made as well. One count for both
--- branches, so a fall that keeps losing and finding its wheels still ends.
+-- here is one that world up would have made as well. Air and ground count
+-- apart, so time in the air does not spend a landing's chance to be saved.
+-- Only coming back in bounds clears them, so a fall that keeps losing and
+-- finding its wheels still ends.
 local function fall(s,body,tilt,contact)
     local sum,count={0,0,0},0
     for _,row in ipairs(contact.samples) do
@@ -173,18 +175,21 @@ local function fall(s,body,tilt,contact)
         if from_surface and from_surface<angle then angle=from_surface end
         limit,steps=FALL_SURFACE_DEG,FALL_STEPS
     end
-    if angle<=limit then s.fall_steps=0;return nil end
-    s.fall_steps=(s.fall_steps or 0)+1
-    if s.fall_steps>=steps or not surface and tilt>AIR_TILT_STOP_DEG then return angle,limit end
+    if angle<=limit then s.fall_steps,s.air_fall_steps=0,0;return nil end
+    local count=surface and "fall_steps" or "air_fall_steps"
+    s[count]=(s[count] or 0)+1
+    if s[count]>=steps or not surface and tilt>AIR_TILT_STOP_DEG then return angle,limit end
     return nil
 end
--- The nose-down torque a bike that has hit something gets this step.
+-- The torque a bike that has hit something gets this step: nose down, or tail
+-- down if it hit rolling backward, because the rider's weight carries on the
+-- way the bike was going.
 local function crash_torque(s,body)
-    local left=M.turn(M.normalized(body.orientation),{1,0,0})
+    local over=M.mul(M.turn(M.normalized(body.orientation),{1,0,0}),s.crash.way)
     local rate=math.min(s.crash.speed*CRASH_RATE,CRASH_RATE_LIMIT)
-    return M.mul(left,M.dot(body.angular_velocity,left)<rate and CRASH_TORQUE or 0)
+    return M.mul(over,M.dot(body.angular_velocity,over)<rate and CRASH_TORQUE or 0)
 end
--- The speed this step's body had when it hit something, or nil.
+-- The speed and velocity this step's body had when it hit something, or nil.
 local function hit(s,body)
     local history=s.speed_history or {}
     s.speed_history=history
@@ -193,7 +198,7 @@ local function hit(s,body)
     history[HIT_STEPS+1]=nil
     if not old then return nil end
     local speed=math.sqrt(old[1]*old[1]+old[3]*old[3])
-    if speed>=HIT_DROP and speed-(v[1]*old[1]+v[3]*old[3])/speed>=HIT_DROP then return speed end
+    if speed>=HIT_DROP and speed-(v[1]*old[1]+v[3]*old[3])/speed>=HIT_DROP then return speed,old end
     return nil
 end
 local function array(value)
@@ -1225,8 +1230,11 @@ local function observe(s,source_frame,raw,context)
         stop(s,string.format("measured roll rate %.2f rad/s over the %d rad/s Ride stop",math.abs(roll),ROLL_STOP_RATE));return
     end
     if not s.crash then
-        local hit_speed=hit(s,body)
-        if hit_speed then s.crash={speed=hit_speed,steps=0} end
+        local hit_speed,travel=hit(s,body)
+        if hit_speed then
+            local forward=M.turn(M.normalized(body.orientation),{0,0,1})
+            s.crash={speed=hit_speed,steps=0,way=M.dot(travel,forward)<0 and -1 or 1}
+        end
     end
     if s.crash then
         s.crash.steps+=1

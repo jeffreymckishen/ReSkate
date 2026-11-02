@@ -20,6 +20,10 @@ SOURCE_SHA = '00ce4d383a31b786837a0d229dcb8d651dc7580166aff8741308c202647caa2a'
 TEMPLATE_SHA = '0974fac4e1d0c5828ec68eb02cca0b966da73625cf9389f48f4be7bc2553d0cc'
 PARTS = ('frame', 'fork', 'rear_wheel', 'front_wheel', 'cranks', 'handlebars', 'left_pedal', 'right_pedal')
 PEDAL_OBJECTS = {698532065: 'left_pedal', 709757344: 'right_pedal'}
+# A part that spins has its origin where it spins. The game smooths an object's position and rotation
+# separately between physics steps, so a part spinning about a far origin leaves its axle by the chord of
+# each step's turn: 12 mm on screen at 7.4 m/s for a wheel whose origin was the bike's, 0.53 m from its hub.
+PIVOTS = {'rear_wheel': 'rear_axle', 'front_wheel': 'front_axle', 'cranks': 'bb'}
 TILE = 2048
 GUTTER = 8
 INTERIOR = TILE - 2 * GUTTER
@@ -284,6 +288,8 @@ def prepare(intermediate, output, inspection, geometry_only=False, wheel_radius=
             material_faces['extra' if tile else 'base'] += len(faces)
             uv_degenerate += bad_uv
         joined = [np.concatenate([chunk[i] for chunk in chunks]) for i in range(6)]
+        if part in PIVOTS:
+            joined[0] = joined[0]-np.asarray(selected_anchors[PIVOTS[part]])
         report = write_native(part, *joined, inspection, target, encoder)
         report.update(material_triangles=material_faces, degenerate_uv_triangles=uv_degenerate)
         reports.append(report)
@@ -293,7 +299,7 @@ def prepare(intermediate, output, inspection, geometry_only=False, wheel_radius=
               'manifest_sha256': sha(manifest_path.read_bytes()), 'intermediate_sha256': expected,
               'encoder_sha256': sha(encoder_path.read_bytes()), 'uniform_scale': scale,
               'wheel_radius_m': wheel_radius, 'radius_scale_factor': radius_factor,
-              'selected_normalized_anchors': selected_anchors,
+              'selected_normalized_anchors': selected_anchors, 'part_pivots': PIVOTS,
               'source_origin': origin.tolist(), 'anchors': manifest['anchors'], 'parts': reports, 'atlas': atlas,
               'pedal_platform_objects': [{'geometry_id': ident, 'part': name,
                                           'source_mesh': next(row['name'] for row in manifest['meshes'] if row['geometry_id'] == ident),

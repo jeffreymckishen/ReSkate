@@ -5,7 +5,7 @@
   "quota_file_count": 86,
   "expected_processes": 44,
   "expected_cases": 281,
-  "expected_assertions": 12023,
+  "expected_assertions": 12044,
   "source_admission": "UNCHANGED_FALSE",
   "files": [
     {
@@ -191,8 +191,8 @@
     {
       "source": "plugin/bike_geometry.lua",
       "destination": "bike_geometry.lua",
-      "bytes": 3425,
-      "sha256": "483D14215A23B229806F925F20B7F0BF46BE43ED7D37249654CCD0A264A88AF9"
+      "bytes": 3790,
+      "sha256": "FC27286071504CC98E83A8E9D3C70A16161380F35883619761572A4EE905B011"
     },
     {
       "source": "Test/two_cycle_facade_fixture.lua",
@@ -221,8 +221,8 @@
     {
       "source": "plugin/bike_spawn.lua",
       "destination": "bike_spawn.lua",
-      "bytes": 31066,
-      "sha256": "51175F812E7D33685A79BF42C6430A2220E2E0518D07BB4957CA9F89D7BDF3A0"
+      "bytes": 31362,
+      "sha256": "F776CC9BA878CEDAC04CD7CF8754FCE0B96DF1ED53CB55E9D869606BDA403008"
     },
     {
       "source": "plugin/ride_runtime.lua",
@@ -270,8 +270,8 @@
     {
       "source": "plugin/bike_visual.lua",
       "destination": "bike_visual.lua",
-      "bytes": 6960,
-      "sha256": "B7DC7B1F18C44DD0997BF23A2249BFB07E2C0E2B12A9EEE3D2BB0C73458FFA2E"
+      "bytes": 7098,
+      "sha256": "78655E46AA61389EE006C8B0A737F8E707C5F5D06800CA81CFD683F55D515D2F"
     },
     {
       "source": "plugin/ride_input_mapping.lua",
@@ -480,8 +480,8 @@
     {
       "source": "Test/steered_hub_geometry_tests.lua",
       "destination": "steered_hub_geometry_tests.lua",
-      "bytes": 12556,
-      "sha256": "1DBD1CE76685DD4F349D1A10F55FE1A5F1888510F455F5D884812C46A8CB212A"
+      "bytes": 13258,
+      "sha256": "89EF2F980AE093B9FBE1F9E715D772067E2ABB78F569819AED97E53AFFB67FCB"
     },
     {
       "source": "Test/score_runtime_tests.lua",
@@ -534,8 +534,8 @@
     },
     {
       "source": "plugin/bike_geometry.lua",
-      "bytes": 3425,
-      "sha256": "483D14215A23B229806F925F20B7F0BF46BE43ED7D37249654CCD0A264A88AF9"
+      "bytes": 3790,
+      "sha256": "FC27286071504CC98E83A8E9D3C70A16161380F35883619761572A4EE905B011"
     },
     {
       "source": "plugin/bike_runtime_core.lua",
@@ -549,13 +549,13 @@
     },
     {
       "source": "plugin/bike_spawn.lua",
-      "bytes": 31066,
-      "sha256": "51175F812E7D33685A79BF42C6430A2220E2E0518D07BB4957CA9F89D7BDF3A0"
+      "bytes": 31362,
+      "sha256": "F776CC9BA878CEDAC04CD7CF8754FCE0B96DF1ED53CB55E9D869606BDA403008"
     },
     {
       "source": "plugin/bike_visual.lua",
-      "bytes": 6960,
-      "sha256": "B7DC7B1F18C44DD0997BF23A2249BFB07E2C0E2B12A9EEE3D2BB0C73458FFA2E"
+      "bytes": 7098,
+      "sha256": "78655E46AA61389EE006C8B0A737F8E707C5F5D06800CA81CFD683F55D515D2F"
     },
     {
       "source": "plugin/bmx_playable_entry.lua",
@@ -679,8 +679,8 @@
     },
     {
       "source": "README.md",
-      "bytes": 2343,
-      "sha256": "981C33642B4F17074C79BB68217432DAD5DE483E234F7A10C63181650DF5743F"
+      "bytes": 2457,
+      "sha256": "C89756FEFC28A76509D800DDE0F870F8D6A1F2BF840E3F8787C8087249CD384B"
     },
     {
       "source": "reskate-plugin.json",
@@ -997,7 +997,7 @@
       "context": "flat",
       "invoked": "steered_hub_geometry_tests",
       "expected_cases": 4,
-      "expected_assertions": 259
+      "expected_assertions": 280
     },
     {
       "suite": "score_runtime_tests",

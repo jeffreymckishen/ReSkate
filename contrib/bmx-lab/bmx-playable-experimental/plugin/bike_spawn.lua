@@ -363,6 +363,10 @@ function Runtime:_assets()
         if math.abs(radius-G.wheel_radius)>.002 then
             return nil,string.format("wheel geometry mismatch %s: measured %.6f m, Lua %.6f m",name,radius,G.wheel_radius)
         end
+        -- A pack from before wheels were authored about their hubs would be drawn half a metre off.
+        if math.abs(low.y+high.y)>.01 or math.abs(low.z+high.z)>.01 then
+            return nil,"the BMX_Prototype pack is too old for this mod: "..name.." is not centred on its hub"
+        end
     end
     self.asset_part+=1
     if self.asset_part<=#G.blueprints then return false,"checked loaded mesh bounds: "..name end

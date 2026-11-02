@@ -45,6 +45,9 @@ def decode_literal(codes):
 def source_triangles(name, manifest, arrays, wheel_radius=.34):
     origin = np.array(manifest['anchors']['source_origin'])
     scale = manifest['anchors']['uniform_scale_to_radius_034']*(wheel_radius/.34)
+    # A spinning part is authored about the point it spins on, written out here rather than imported.
+    pivot = {'rear_wheel': 'rear_axle', 'front_wheel': 'front_axle', 'cranks': 'bb'}.get(name)
+    offset = np.asarray(manifest['anchors']['normalized'][pivot])*(wheel_radius/.34) if pivot else np.zeros(3)
     extra = next(m['id'] for m in manifest['materials'] if m['name'] == 'extra')
     positions, normals, coordinates = [], [], []
     for row in manifest['meshes']:
@@ -55,7 +58,7 @@ def source_triangles(name, manifest, arrays, wheel_radius=.34):
         encoding = arrays[key+'_source_polygon_encoding']
         vertices = np.where(encoding < 0, -encoding-1, encoding)
         triangles = arrays[key+'_triangles_wedge_indices']
-        positions.append(((arrays[key+'_world_vertices_m'][vertices[triangles]]-origin)*scale).astype('<f4'))
+        positions.append(((arrays[key+'_world_vertices_m'][vertices[triangles]]-origin)*scale-offset).astype('<f4'))
         normal_indices = arrays[key+'_source_normal_index'][triangles]
         normals.append(arrays[key+'_world_normals'][normal_indices])
         uv = arrays[key+'_source_uv'][arrays[key+'_source_uv_index'][triangles]].copy()

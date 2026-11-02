@@ -46,6 +46,10 @@ G.pedals = {scaled(.084980725506,.211285091841,.011246842761),
 G.blueprints = {"reskate/bmx/frame","reskate/bmx/fork","reskate/bmx/rear_wheel",
     "reskate/bmx/front_wheel","reskate/bmx/cranks","reskate/bmx/handlebars",
     "reskate/bmx/left_pedal","reskate/bmx/right_pedal"}
+-- Each spinning part's mesh has its origin where it spins (prepare_free_native_parts.py): the game
+-- smooths position and rotation separately between ticks, so a far origin walks a wheel off its axle
+-- by the chord of each tick's turn. Every other part's origin is the bike's, at {0,0,0}.
+G.part_origins = {[3]=G.rear_axle,[4]=G.front_axle,[5]=G.bottom_bracket}
 local r = G.wheel_radius-.03-.005
 G.capsules = {
     {a={0,G.front_axle[2]-.005,G.front_axle[3]},b={0,G.front_axle[2]+.005,G.front_axle[3]},radius=r},

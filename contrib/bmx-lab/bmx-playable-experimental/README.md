@@ -4,7 +4,8 @@ Ride a BMX in skate. It is a plugin mod: the bike's physics, the rider's pose, h
 are all Luau on ReSkate's general plugin APIs.
 
 It needs the separately installed `BMX_Prototype` asset pack for the bike's model, which is not part of this
-package, and a ReSkate build with the session follow API.
+package, and a ReSkate build with the session follow API. The pack must have its wheels and cranks authored about
+their own hubs; the mod refuses an older one and says so.
 
 ## Playing
 

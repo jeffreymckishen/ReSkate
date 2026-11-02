@@ -160,10 +160,23 @@ function Tests.run()
                 local matrices=Visual.matrices(root,q,pose)
                 local front=G.front_axle_at(G,steer)
                 local expected=M.add(root,M.turn(q,front))
-                check(near(apply(matrices[4],G.front_axle),expected,1e-11),
+                check(near(apply(matrices[4],{0,0,0}),expected,1e-11),
                     "front hub equals the real visual's steered hub in the same frame")
-                check(near(apply(matrices[3],G.rear_axle),M.add(root,M.turn(q,G.rear_axle)),1e-11),
+                check(near(apply(matrices[3],{0,0,0}),M.add(root,M.turn(q,G.rear_axle)),1e-11),
                     "rear hub stays unchanged by front steering and wheel spin")
+            end
+        end
+        -- The game smooths position apart from rotation between ticks, so a spinning part's
+        -- position must not move as it spins, or it leaves its axle on screen.
+        local still={}
+        for spin=0,6 do
+            local pose=Visual.neutral()
+            pose.front_wheel_phase=spin*.5;pose.rear_wheel_phase=-spin*.5;pose.crank_phase=spin*.2
+            local matrices=Visual.matrices(root,{0,.6,0,.8},pose)
+            for part=3,5 do
+                local at={matrices[part][13],matrices[part][14],matrices[part][15]}
+                still[part]=still[part] or at
+                check(near(at,still[part],1e-11),"a spinning part's position does not move as it spins")
             end
         end
         local left,right=G.front_axle_at(G,.4),G.front_axle_at(G,-.4)
@@ -211,7 +224,7 @@ function Tests.run()
         check(not near(front,unsteered,1e-5),"the regression exercises a real offset, not a neutral-only case")
         local root=M.sub(center,M.turn(f.read.rotation,G.com))
         local matrices=Visual.matrices(root,f.read.rotation,previous)
-        check(near(apply(matrices[4],G.front_axle),front,1e-11),
+        check(near(apply(matrices[4],{0,0,0}),front,1e-11),
             "query and drawn front hub agree after the same body/source transform")
     end)
     case(function() floor_geometry_case(check) end)

@@ -102,14 +102,17 @@ function V.matrices(root,orientation,pose)
     local q1,q2,q3,q4=q[1],q[2],q[3],q[4]
     local out={}
     for part=1,8 do
-        local o1,o2,o3=turn3(q1,q2,q3,q4,posed_point(part,0,0,0))
+        local at=G.part_origins[part]
+        local a1,a2,a3=0,0,0
+        if at then a1,a2,a3=at[1],at[2],at[3] end
+        local o1,o2,o3=turn3(q1,q2,q3,q4,posed_point(part,a1,a2,a3))
         local m=table.create(16,0) m[16]=1
         -- Each unit axis, posed and turned, less the posed origin.
-        local b1,b2,b3=turn3(q1,q2,q3,q4,posed_point(part,1,0,0))
+        local b1,b2,b3=turn3(q1,q2,q3,q4,posed_point(part,a1+1,a2,a3))
         m[1],m[2],m[3]=b1-o1,b2-o2,b3-o3
-        b1,b2,b3=turn3(q1,q2,q3,q4,posed_point(part,0,1,0))
+        b1,b2,b3=turn3(q1,q2,q3,q4,posed_point(part,a1,a2+1,a3))
         m[5],m[6],m[7]=b1-o1,b2-o2,b3-o3
-        b1,b2,b3=turn3(q1,q2,q3,q4,posed_point(part,0,0,1))
+        b1,b2,b3=turn3(q1,q2,q3,q4,posed_point(part,a1,a2,a3+1))
         m[9],m[10],m[11]=b1-o1,b2-o2,b3-o3
         m[13],m[14],m[15]=root[1]+o1,root[2]+o2,root[3]+o3
         out[part]=m

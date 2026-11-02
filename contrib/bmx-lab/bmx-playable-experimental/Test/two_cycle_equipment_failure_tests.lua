@@ -6,7 +6,10 @@ function T.run()
     check(f.owner:archive_return(),"clean old100 terminal archived")
     check(f.core:request_stock_toggle(f.user),"new504 transaction starts once")
     f.bad_pulse=true
+    -- Mid-transaction "unresolved" is not final: the model's 15 s intent deadline is what ends it.
     f.ticks(200)
+    check(not f.T.gear_unknown,"an unresolved transaction still running is not latched")
+    f.ticks(900)
     local ok,why=f.owner:ready()
     check(not ok and why~="pending","real malformed/unresolved504 is a sticky failure, never endless pending")
     check(f.T.gear_unknown or f.T.gear_cancelled,"real Core latched the bad stock transaction")

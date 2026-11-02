@@ -300,8 +300,8 @@ function Tests.run()
         local f=fixture({two=true});f.riding();f.failed_cycle=true
         check(f.entry:return_to_skateboard(),"explicit cleanup Return remains available")
         f.latest=cleaned();f.stock=100;f.tick()
-        check(f.entry:status().phase=="spent" and not f.entry:mount(),"observed100 cannot turn an unqualified cycle into a retry")
-        check(f.stepoffs==nil and f.mounts==1,"no step-off/prepare/allocation after failed first cycle")
+        check(f.entry:status().phase=="spent" and f.entry:mount(),"Mount from the board starts a new cycle, which Core still has to qualify")
+        check(f.stepoffs==nil and f.mounts==1,"no step-off or allocation before that cycle's own checks")
     end)    case("Root-approved narrower second Mount refuses already-onfoot504",function()
         local f=fixture({two=true});first_return(f);f.stock=504
         check(not f.entry:mount(),"second intent is not an optional manual504 rearm")

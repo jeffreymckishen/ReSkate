@@ -16,7 +16,7 @@ function Tests.run()
         options=options or {}
         local f={now=0,slot=0,focused=true,gameplay=true,overlay=true,game_menu=false,stock=504,
             position=vector.create(0,.5,0),heading=0,slope=0,new_calls=0,steps=0,mounts=0,stops=0,toggles=0,
-            unloads=0,prepares=0,probes=0,probe_tick=0,probe_peak=0,events={},keys=options.keys or {},latest=cleaned()}
+            unloads=0,prepares=0,probes=0,probe_tick=0,probe_peak=0,events={},keys=options.keys or {},set_raise=options.set_raise,latest=cleaned()}
         f.latest.phase="idle";f.latest.stop_latched=false
         local R={time={},input={},menu={},skater={},storage={},world={physics={}}}
         function R.time.now() return f.now end
@@ -34,6 +34,10 @@ function Tests.run()
             return {watch={state=f.stock}}
         end
         function R.storage.keys() if f.keys_raise then error("keys unavailable") end;return f.keys end
+        function R.storage.set(key,value)
+            if f.set_raise then error("set unavailable") end
+            if value==nil then table.remove(f.keys,table.find(f.keys,key)) end
+        end
         function R.world.physics.prepare()
             f.prepares+=1;f.events[#f.events+1]="prepare"
             if f.on_prepare then return f.on_prepare(f.prepares) end
@@ -99,13 +103,16 @@ function Tests.run()
         end
         return f
     end
-    case("01 closed admission and prior namespace cannot acquire",function()
+    case("01 closed admission cannot acquire, and an earlier launch's record does not stop this one",function()
         local f=fixture({admitted=false})
         check(not f.entry:mount(),"closed source refuses intent")
         f.tick(30);check(f.prepares==0 and f.probes==0 and f.mounts==0 and f.toggles==0,"no preparation/survey/mount/stock call when closed")
-        local g=fixture({keys={"prior_lifecycle"}})
-        check(not g.entry:mount(),"prior namespace is refused before native work")
-        g.tick(5);check(g.mounts==0 and g.prepares==0,"namespace refusal cannot be retried into acquisition")
+        -- A plugin's storage outlives the game. A ride's record from an earlier launch must not refuse this one.
+        local g=fixture({keys={"bmx_bike_lifecycle_v1"}})
+        check(#g.keys==0 and g.entry:status().phase=="idle","an earlier launch's record is cleared at load")
+        check(g.entry:mount(),"Mount works on the launch after a ride")
+        local h=fixture({keys={"bmx_bike_lifecycle_v1"},set_raise=true})
+        check(not h.entry:mount() and h.entry:status().phase=="blocked","a record that cannot be cleared still refuses")
         check(f.new_calls==1 and g.new_calls==1,"each entry constructs only one inert owner")
     end)
     case("02 preparation and real full survey precede one owner mount",function()

@@ -1018,7 +1018,10 @@ stop_all=function(why)
     if T.source_inflight then T.cleanup_busy=false;return end
     if source then call("source.stop",source.stop,source,T.stop_reason) end
     stop_spawn_when_allowed(T.stop_reason)
-    if equipment and T.gear_requested and not T.gear_cancelled then
+    -- With the bike already cleaned up, a stock switch finishes on its own bounded deadlines: unloading it here left
+    -- gear_requested set with nothing to clear it.
+    local stock_after_ride=T.gear_purpose=="stock" and T.bike_cleanup_complete and not T.unloaded
+    if equipment and T.gear_requested and not T.gear_cancelled and not stock_after_ride then
         T.gear_cancelled=true
         call("equipment.unload",equipment.unload,equipment)
     end
@@ -1194,7 +1197,7 @@ facts=function()
 end
 local function base_ready(f,stock)
     return f and f.focused and f.gameplay and (stock and f.upright_stock or f.upright_onfoot)
-        and (not T.level or f.level==T.level) and (not T.wipeouts or f.wipeouts==T.wipeouts)
+        and (not T.level or f.level==T.level) and (not T.wipeouts or T.bike_cleanup_complete or f.wipeouts==T.wipeouts)
 end
 closed_ready=function(f,grounded,stock)
     return base_ready(f,stock) and f.interface_closed and f.game_menu_closed and f.input_allowed
@@ -1667,7 +1670,9 @@ local function equipment_tick()
     if T.cancel_version~=version or T.gear_cancelled or T.unloaded then
         stop_all("equipment callback cancelled");return
     end
-    if e.outcome=="unresolved" then
+    -- Mid-transaction "unresolved" is the model working through a boundary with the pulse handle still held: it goes
+    -- on to cancel, read the receipt and acknowledge. Only a transaction that has finished that way is stuck.
+    if e.outcome=="unresolved" and (e.phase=="done" or e.phase=="idle") then
         T.gear_unknown=true;stop_all("equipment report cleanup is unresolved");return
     end
     if not e.retained and (e.phase=="done" or e.phase=="idle") then
@@ -2119,21 +2124,23 @@ end
 -- These hooks stay inside one facade-owned experimental factory. They never
 -- expose or recycle native handles, and default Core.new has no such handoff.
 local function cycle_ready(expected,after_attempt)
+    -- A mount refused before it reserved anything has no Follow, visual, pose or board to account for.
+    local untouched=T.reserve_attempted~=true and T.handoff_attempted~=true and T.capture_attempted~=true
     if not session or not mount_attempt_used or T.session_retired or T.unloaded or T.busy or T.saving
         or T.gear_requested or T.intent_inflight or T.cleanup_expired or T.storage_fault or T.clock_unknown
         or not T.ledger_owned or T.reload_blocked or T.marker_unknown or T.phase~="done"
         or T.bike_cleanup_complete~=true or stock_blocked() or not source_clean() or not force_clear()
-        or T.follow~=nil or T.body~=nil or T.completed_ack~=true or T.acknowledged~=true
-        or T.ack_attempted~=true or not visuals_accepted() then return false,"Prior lifecycle is not fully clean" end
+        or T.follow~=nil or T.body~=nil or not untouched and (T.completed_ack~=true or T.acknowledged~=true
+        or T.ack_attempted~=true or not visuals_accepted()) then return false,"Prior lifecycle is not fully clean" end
     local terminal=T.terminal
-    if type(terminal)~="table" or terminal.phase~="completed" or terminal.terminal~=true
+    if not untouched and (type(terminal)~="table" or terminal.phase~="completed" or terminal.terminal~=true
         or terminal.park_observed~=true or terminal.in_flight~=0 or type(terminal.pending)~="table" or next(terminal.pending)~=nil
         or terminal.final_revision=="0" or terminal.final_revision~=terminal.returned_revision
-        or terminal.sequence~=T.sequence or terminal.orphaned~=false then return false,"Matched park/Follow ACK required" end
+        or terminal.sequence~=T.sequence or terminal.orphaned~=false) then return false,"Matched park/Follow ACK required" end
     local pose,board=T.pose_status,T.board_status
-    if type(pose)~="table" or pose.stopped~=true or pose.state~="off" or pose.nil_accepted~=true
+    if not untouched and (type(pose)~="table" or pose.stopped~=true or pose.state~="off" or pose.nil_accepted~=true
         or pose.issue~=nil or type(board)~="table" or board.state~="restored" or board.clear_result~="cleared"
-        or board.issue~=nil then return false,"Pose and board cleanup must be confirmed" end
+        or board.issue~=nil) then return false,"Pose and board cleanup must be confirmed" end
     local e=status_of(equipment)
     -- A rider who got back on the board themselves after a Return that could not finish has no target to wait
     -- for: the state read in cycle_checkpoint says they are on it.

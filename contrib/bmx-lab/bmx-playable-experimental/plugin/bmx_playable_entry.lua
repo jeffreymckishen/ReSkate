@@ -47,7 +47,8 @@ function Entry.new(R,Runtime,Survey,options)
     local phase,detail="idle",admitted and "On foot, choose Mount in a flat clear area." or "This experimental source build is closed."
     local used,mount_issued,return_pending,stock_attempted=false,false,false,false
     local attempts_used=0
-    local STOCK_RETRIES,STOCK_RETRY_MS=4,500
+    local STOCK_RETRIES,STOCK_RETRY_MS,NOTICE_MS,RETURN_LIMIT_MS=4,500,4000,45000
+    local return_since
     local stock_retries,stock_retry_at=0,nil
     local second_prepare_pending,second_terrain_pending=false,false
     local second_admitted_at,second_quiet_at,second_quiet_last,second_quiet_samples=nil,nil,nil,0
@@ -158,9 +159,19 @@ function Entry.new(R,Runtime,Survey,options)
     end
     local function fresh_namespace()
         local out=call(R.storage and R.storage.keys)
-        if not out[1] or out.n~=2 or not plain(out[2]) or next(out[2])~=nil then
-            phase,detail="blocked","Prior or unreadable lifecycle storage; use a fresh experimental session."
+        if not out[1] or out.n~=2 or not plain(out[2]) then
+            phase,detail="blocked","Unreadable lifecycle storage; no Mount in this session."
             return false
+        end
+        -- Records from an earlier launch describe a ride that ended with that game. Left here they would refuse
+        -- every later Mount, here and in Core's marker check.
+        for key,value in pairs(out[2]) do
+            local name=type(key)=="string" and key or value
+            local cleared=call(R.storage.set,name,nil)
+            if not cleared[1] then
+                phase,detail="blocked","Earlier lifecycle storage could not be cleared; no Mount in this session."
+                return false
+            end
         end
         return true
     end
@@ -418,6 +429,12 @@ function Entry.new(R,Runtime,Survey,options)
     end
     local function return_step()
         local version=generation
+        local started=clock()
+        return_since=return_since or started
+        if started and return_since and started-return_since>=RETURN_LIMIT_MS then
+            return_since=nil
+            fail("Return did not finish.");return
+        end
         if not known or not clean(latest) then detail="Returning: waiting for confirmed cleanup; no stock input sent.";return end
         if return_plan and stock_attempted then
                 -- Stock's physical transition can replace its root. Place only
@@ -603,6 +620,12 @@ function Entry.new(R,Runtime,Survey,options)
         prep_at=now;prep_last=nil;prep_calls=0;survey=nil
         phase,detail="preparing","On-foot504 + ACK observed. Preparing a fresh survey for attempt two."
     end
+    -- A Mount that cannot start says why on the HUD for a few seconds, rather than doing nothing.
+    local notice,notice_until=nil,0
+    local function tell(message)
+        notice,notice_until=message,(clock() or 0)+NOTICE_MS
+        return false,message
+    end
     function object:mount()
         if not admitted then return false,"Experimental source admission is closed." end
         if phase=="preflight_refused" then
@@ -628,11 +651,15 @@ function Entry.new(R,Runtime,Survey,options)
             return true
         end
         -- A Return that could not finish leaves a cleaned-up ride: Mount from the board may go again.
-        if phase=="blocked" and attempts_used>=1 and two_cycle and known and clean(latest) then phase="skateboard" end
+        if (phase=="blocked" or phase=="spent") and attempts_used>=1 and two_cycle then
+            if not known or not clean(latest) then return tell("The bike is stuck: restart the game to ride again.") end
+            phase="skateboard"
+        end
+        if attempts_used>=attempt_limit then return tell("All "..attempt_limit.." mounts are used: restart the game to ride again.") end
         if unloaded or ticking or cancelled or not namespace_clear or attempts_used>=attempt_limit
             or used and (not two_cycle or phase~="skateboard") then return false,"Consumed, busy or retained attempt; not available." end
-        if attempts_used>=1 and state()~=100 then return false,"Get on your skateboard, then Mount." end
-        if attempts_used==0 and state()~=504 then return false,"Step off your skateboard, then Mount." end
+        if attempts_used>=1 and state()~=100 then return tell("Get on your skateboard, then hold LB and press A.") end
+        if attempts_used==0 and state()~=504 then return tell("Step off your skateboard with Y, then hold LB and press A.") end
         attempts_used+=1;used=true;generation+=1
         local version=generation
         if attempts_used>=2 then
@@ -662,7 +689,7 @@ function Entry.new(R,Runtime,Survey,options)
         if unloaded or ticking or cancelled or not mount_issued or return_pending or stock_attempted then
             return false,"Return is unavailable; Cancel may stop an unfinished preparation."
         end
-        return_pending=true;return_plan=nil;return_position=nil;stock_retries=0;stock_retry_at=nil;generation+=1;phase,detail="returning","Stopping the bike before returning to the skateboard."
+        return_pending=true;return_plan=nil;return_position=nil;stock_retries=0;stock_retry_at=nil;return_since=nil;generation+=1;phase,detail="returning","Stopping the bike before returning to the skateboard."
         if type(owner.request_return)=="function" then
             stopped=true -- one capture/stop callback, even if it refuses or raises
             local version=generation
@@ -705,7 +732,7 @@ function Entry.new(R,Runtime,Survey,options)
             or watch.ragdoll_known~=true or type(watch.ragdoll)~="boolean"
             or not plain(initial) or type(initial.level)~="string" or #initial.level==0 or #initial.level>200
             or not finite(initial.wipeouts) or initial.wipeouts<0 or initial.wipeouts%1~=0
-            or watch.wipeouts~=initial.wipeouts or not finite(latest.stop_ms) or latest.stop_ms<0
+            or not finite(latest.stop_ms) or latest.stop_ms<0
             or latest.stop_latched~=true or latest.stock_requested~=false then
             fail("Fall recovery needs known same-owner stock context and original stop time.");return false
         end
@@ -720,7 +747,7 @@ function Entry.new(R,Runtime,Survey,options)
         if not now or now<c.stop_ms or now>=c.stop_ms+20000 then
             fail("Original fall cleanup deadline expired before stock recovery.");return false
         end
-        if latest.stop_ms~=c.stop_ms or initial.level~=c.level or initial.wipeouts~=c.wipeouts
+        if latest.stop_ms~=c.stop_ms or initial.level~=c.level
             or not level[1] or level.n~=2 or not plain(level[2]) or level[2].name~=c.level then
             fail("Fall recovery stock context changed; no switch was sent.");return false
         end
@@ -831,8 +858,16 @@ function Entry.new(R,Runtime,Survey,options)
         stepping_off="Stepping off the board: stand still and let go of the controls.",
         returning="Going back to the skateboard: let go of the controls.",
         preflight_refused="No room here or too steep: move, then hold LB and press A.",
-        blocked="That didn't finish. Get on your skateboard, then hold LB and press A."}
-    function object:help_line() return HELP[phase] end
+        blocked="That didn't finish. Get on your skateboard, then hold LB and press A.",
+        spent="That didn't finish. Get on your skateboard, then hold LB and press A."}
+    function object:help_line()
+        if notice then
+            local now=clock()
+            if now and now<notice_until then return notice end
+            notice=nil
+        end
+        return HELP[phase]
+    end
     function object:score_view()
         local ride=known and plain(latest) and latest.ride or nil
         if not plain(ride) then return nil,"ride_unavailable","unavailable" end

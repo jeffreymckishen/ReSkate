@@ -8,6 +8,11 @@ local S={} local Runtime={} Runtime.__index=Runtime
 -- Legacy and unmounted visuals stay within 512 m of the original spawn COM.
 -- Explicit session Follow visuals bound each step from the last accepted sample.
 local ENVELOPE_M=512
+-- Steepest ground to mount on. The survey's Rec.PLAYABLE_GRADE_SLOPE_DEG must agree: a slope the survey passes and
+-- this refuses spends a mount for nothing.
+local GRADE_SLOPE_DEG=12
+-- How far from the rider any part of the bike may spawn on a slope.
+local GRADE_FOOTPRINT_M=.9
 -- The rider's actor is drawn two physics steps behind the body it follows: at every measured speed it trailed
 -- the body by speed * 33.3 ms (247 mm at 7.4 m/s), and frames show the bike sliding forward under the rider as
 -- speed rises. Drawing the bike from the body two steps ago keeps the two together.
@@ -19,7 +24,7 @@ local FLOOR_RAY_DOWN_M=3
 local FLOOR_MAX_DROP_M=2
 local FLOOR_CLEARANCE_M=.02
 local FLOOR_HIT_LIFETIME_MS=100
-S.limits=table.freeze({envelope_m=ENVELOPE_M})
+S.limits=table.freeze({envelope_m=ENVELOPE_M,grade_slope_deg=GRADE_SLOPE_DEG})
 -- Core binds the optional floor API from this same private literal. There is
 -- no caller option and no second activation flag that can drift from Spawn.
 function S.floor_spawn_qualified() return FLOOR_SPAWN_QUALIFIED end
@@ -124,7 +129,7 @@ function Runtime:set_playable_grade(raw)
     end
     local slope=math.deg(math.atan(math.sqrt(raw.b*raw.b+raw.c*raw.c)))
     local now=grade_clock(self)
-    if not now or now<raw.at_ms or now>raw.expires_ms or slope>5 or self.phase~="idle" then
+    if not now or now<raw.at_ms or now>raw.expires_ms or slope>GRADE_SLOPE_DEG or self.phase~="idle" then
         return false,"Grade slope, clock or owner unavailable"
     end
     self.grade=table.freeze({policy=GRADE_POLICY,origin=table.freeze(M.copy(raw.origin)),
@@ -183,11 +188,11 @@ local function grade_place(self)
     local placed=M.add(base,M.mul(normal,lift))
     local clearances={distances[1]+lift,distances[2]+lift}
     for _,value in ipairs(clearances) do if value<0 or value>FLOOR_CLEARANCE_M then return nil,"Measured wheel clearance outside 0..2 cm" end end
-    -- Preserve the survey's authored <=.75 m footprint and its .5 m margin.
-    -- Some near-limit grade/headings may refuse rather than enlarge the survey.
+    -- The bike sits at .75 m on flat ground, so any real slope tips a wheel past that. The survey's obstacle rays
+    -- reach 1.25 m, which leaves .35 m of margin at this limit.
     local function inside(point,radius)
         local p=M.add(M.sub(placed,{self.root[1],floor_y,self.root[3]}),M.turn(rotation,point))
-        return math.sqrt(p[1]*p[1]+p[3]*p[3])+radius<=.75
+        return math.sqrt(p[1]*p[1]+p[3]*p[3])+radius<=GRADE_FOOTPRINT_M
     end
     for _,capsule in ipairs(G.capsules) do
         if not inside(capsule.a,capsule.radius) or not inside(capsule.b,capsule.radius) then return nil,"Tilted capsule leaves surveyed footprint" end

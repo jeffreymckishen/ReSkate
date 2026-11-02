@@ -1053,8 +1053,8 @@ function Rec.playable_survey_judge(heading,floor,misses,plane,blocked)
         out.why=string.format("outer clearance residual %.2f mm (at most 40); footprint %.2f mm, slope %.2f deg",
             out.outer_residual_mm,out.local_residual_mm,out.slope_deg or 0)
     elseif not finite(out.slope_deg) or out.slope_deg>Rec.PLAYABLE_GRADE_SLOPE_DEG then
-        out.why=string.format("playable slope %.2f deg (at most 5); footprint %.2f mm, outer %.2f mm",
-            out.slope_deg or 0,out.local_residual_mm,out.outer_residual_mm)
+        out.why=string.format("playable slope %.2f deg (at most %d); footprint %.2f mm, outer %.2f mm",
+            out.slope_deg or 0,Rec.PLAYABLE_GRADE_SLOPE_DEG,out.local_residual_mm,out.outer_residual_mm)
     elseif type(blocked)~="number" or blocked~=0 then
         out.why=tostring(blocked).." obstacle rays not clear inside the playable area"
     else

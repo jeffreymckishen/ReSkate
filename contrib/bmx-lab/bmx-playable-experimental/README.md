@@ -25,7 +25,8 @@ All of these can be changed in Binds.
 Set Settings, Graphics, Target frame rate to **60 FPS** and VSync to **Off**. On a high refresh screen VSync On
 makes the game's 60 steps a second land on uneven refreshes, which reads as judder in everything, the bike
 included. Measured on a 170 Hz screen, frames arrive 16.7 ms apart with VSync Off, and at a mix of 12, 18 and 24 ms
-with it On. Every 2nd refresh with Uncapped is also steady, at 85 frames a second.
+with it On. Every 2nd refresh with Uncapped is also steady, at 85 frames a second. The change applies at once. Played
+offline the game does not keep it, so set it again each launch.
 
 ## What to expect
 

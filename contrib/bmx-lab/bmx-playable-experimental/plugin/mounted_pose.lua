@@ -730,16 +730,22 @@ function MP.compose(input, options)
     local rear = saddle.rear - rider.standing * STANDING_REACH
     -- Over the saddle the hips stay floor above its top. Behind it, where only a standing rider's go,
     -- there is no saddle under them: the pelvis clears the saddle's back edge by the same margin and
-    -- may then go as low as the limbs take it. That floor applied behind the saddle pushed a manual's
-    -- hips up off a bike drawn nose down, and their straight arms off the grips.
+    -- may then go lower the further back it is. That floor applied behind the saddle pushed a manual's
+    -- hips up off a bike drawn nose down, and their straight arms off the grips. The floor follows the
+    -- margin's arc about the back edge down to where the arc falls at 45 degrees, then goes on down the
+    -- arc's tangent there, so it never falls faster than the hips move back and every hip on or above
+    -- it clears the edge. Dropping to nothing where the arc reached the saddle's top, it moved hips
+    -- under that top 16 cm for 1 mm of travel.
     local margin = floor - saddle.top
+    local bend = margin * math.sqrt(.5)
     local function seated(p)
         local s = to_seat(p)
         local z = clamp(s[3], rear, saddle.front)
         local least = floor
         if z < saddle.rear then
             local behind = saddle.rear - z
-            least = behind < margin and saddle.top + math.sqrt(margin * margin - behind * behind) or -math.huge
+            least = behind < bend and saddle.top + math.sqrt(margin * margin - behind * behind)
+                or saddle.top + 2 * bend - behind
         end
         local out = {clamp(s[1], -saddle.half_width, saddle.half_width), math.max(s[2], least), z}
         return from_seat(out), out[2] ~= s[2], out[1] ~= s[1] or out[3] ~= s[3]

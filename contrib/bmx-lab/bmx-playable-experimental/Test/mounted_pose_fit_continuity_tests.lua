@@ -173,6 +173,34 @@ function Tests.run()
     local sitting=MP.compose({bike=manual,articulation={crank_phase=.4,steer=.05},rider={hip_offset={0,-.2,0}}})
     check(sitting.diagnostics.seat_limited==true and sitting.diagnostics.hip_above_seat>=MP.STANCE.seat_clearance,
         "over the saddle the floor still holds them")
-    return {cases=3,assertions=assertions}
+
+    -- A standing rider's hips moved back past the saddle's back edge a millimetre at a time, wanted from 15 cm under
+    -- its top to 12 cm over it: the floor behind the saddle is continuous, so the hips never jump. It dropped from
+    -- the saddle's top to nothing at the margin's distance behind it, 16 cm for 1 mm of travel. The knee floor has
+    -- its own slope, up to 6 mm for 1 mm with the hips that low, so it is held off here: no fit, and the least fold
+    -- the options take.
+    local saddle=MP.options().geometry.saddle
+    local margin=sitting.diagnostics.seat_floor-saddle.top
+    local steepest,nearest,raised=0,math.huge,0
+    for crank=0,6,.3 do
+        for _,wanted in ipairs({-.15,-.08,-.03,0,.03,.08,.12}) do
+            local last
+            for i=0,300 do
+                local z=saddle.rear+.01-i*.001
+                local out=MP.compose({bike=bike,articulation={crank_phase=crank,steer=0},
+                    rider={standing=1,hip_offset={0,saddle.top+wanted-MP.STANCE.hip_height,z-MP.STANCE.hip_z}}},{max_fit=0,min_knee=.35})
+                raised=math.max(raised,out.diagnostics.knee_raise)
+                local hip=out.diagnostics.hip_seat
+                if last then steepest=math.max(steepest,math.abs(hip[2]-last)) end
+                last=hip[2]
+                -- Behind the saddle the pelvis still clears its back edge by the margin.
+                if hip[3]<saddle.rear then nearest=math.min(nearest,math.sqrt((hip[2]-saddle.top)^2+(hip[3]-saddle.rear)^2)) end
+            end
+        end
+    end
+    check(raised==0,"the knee floor is held off: "..raised)
+    check(steepest<.0015,"a standing rider's hips behind the saddle move at most 1.5 mm up or down for 1 mm back: "..steepest)
+    check(nearest>=margin-1e-9,"and clear the saddle's back edge by the margin: "..nearest.." against "..margin)
+    return {cases=4,assertions=assertions}
 end
 return table.freeze(Tests)

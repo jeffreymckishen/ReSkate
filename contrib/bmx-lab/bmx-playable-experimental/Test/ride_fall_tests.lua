@@ -425,6 +425,103 @@ function T.run()
         local pose=level();pose.velocity={0,0,-1}
         check(steps(w,pose,20)==nil and math.abs(pushed(w))<500,"rolling back from a face is let go: "..pushed(w))
     end)
+    -- Rolls a bike along z, pedal off, over ground(z), which gives the height there and the slope dy/dz. Each hub
+    -- rolls a wheel radius off the plane its ray found the step before, so it meets a new surface a step after its
+    -- ray does, as a hub's ray does in game: a kerb is under the ray while the wheel is still at road height, and a
+    -- hill is followed. lift(i), if given, raises both hubs that far off those planes on step i, at a vertical speed;
+    -- wheels in the air keep the planes they left, and come down onto whatever is under them. ahead, if given,
+    -- answers the rays along the road; they find nothing otherwise. Commands move the bike along z two steps after
+    -- they are sent. Returns the speed after each step, for each wheel the steps it struck a kerb on and the height
+    -- it struck, and the push along z each step sent.
+    local AXLES=Geometry.front_axle[3]-Geometry.rear_axle[3]
+    local function roll_over(ground,speed,count,lift,ahead)
+        local w=harness(function(from,to)
+            if math.abs(to.y-from.y)<math.abs(to.z-from.z) then return ahead and ahead(from,to) or clear() end
+            local y,k=ground(from.z)
+            return hit(from,to,y,M.unit({0,1,-k}))
+        end)
+        w.prompt=true
+        local z,v,sent,speeds,struck,last,flying=0,speed,{},{},{{},{}},{},false
+        local function height(wheel,at)
+            local g=last[wheel] or {at,ground(at)}
+            return g[2]+g[3]*(at-g[1])+R*math.sqrt(1+g[3]*g[3])
+        end
+        for i=1,count do
+            if sent[i-2] then v+=sent[i-2]*h/Geometry.mass end
+            z+=v*h
+            local up,climb=0,0
+            if lift then up,climb=lift(i) end
+            if up~=0 then flying=true elseif flying then flying=false;table.clear(last) end
+            local rear,pitch=height(2,z)+up,0
+            for _=1,4 do pitch=math.asin((height(1,z+AXLES*math.cos(pitch))+up-rear)/AXLES) end
+            local front=z+AXLES*math.cos(pitch)
+            if up==0 then last[1],last[2]={front,ground(front)},{z,ground(z)} end
+            local rotation=pitch_of(-pitch)
+            local before=#w.submits
+            local out=w.step({position=M.add({0,rear,z},M.turn(rotation,M.sub(Geometry.com,Geometry.rear_axle))),
+                rotation=rotation,velocity={0,climb,v}})
+            check(not out.stop_requested,"the bike rides on: "..tostring(out.issue))
+            local row=out.metrics.samples[#out.metrics.samples]
+            if row.front_curb then table.insert(struck[1],{i,row.front_curb}) end
+            if row.rear_curb then table.insert(struck[2],{i,row.rear_curb}) end
+            sent[i]=#w.submits>before and w.submits[#w.submits].force.z or 0
+            speeds[i]=v
+        end
+        return speeds,struck,sent
+    end
+    local function kerb(edge,top) return function(z) return z>=edge and top or 0,0 end end
+    local function ramp(edge,slope) return function(z) if z<edge then return 0,0 end return (z-edge)*slope,slope end end
+    local function none(struck) return #struck[1]==0 and #struck[2]==0 end
+    local STEPS=90
+    local road=roll_over(kerb(math.huge,0),7.4,STEPS)
+    for _,top in ipairs({.15,.18}) do
+        case(function() -- A kerb costs speed, once a wheel, as a tyre striking a step does.
+            local speeds,struck=roll_over(kerb(3,top),7.4,STEPS)
+            check(#struck[1]==1 and #struck[2]==1,"each wheel strikes a "..top.." m kerb once: "..#struck[1].." "..#struck[2])
+            local front,rear=struck[1][1],struck[2][1]
+            check(math.abs(front[2]-top)<.005 and math.abs(rear[2]-top)<.005,"as high as it is: "..front[2].." "..rear[2])
+            local function lost(i) return road[i]-speeds[i] end
+            -- A quarter of the speed per wheel radius of kerb, less what the still spinning wheels give back.
+            local first=.25*speeds[front[1]]*top/R
+            local second=first+.25*speeds[rear[1]]*top/R
+            check(lost(front[1])<.01,"nothing before the front wheel reaches it: "..lost(front[1]))
+            check(lost(rear[1]-1)>.85*first and lost(rear[1]-1)<=first,"the front wheel's share: "..lost(rear[1]-1).." of "..first)
+            check(lost(rear[1]+6)>.85*second and lost(rear[1]+6)<=second,"and the rear wheel's: "..lost(rear[1]+6).." of "..second)
+            check(math.abs(lost(STEPS)-lost(rear[1]+6))<.1,"and nothing more on top of it")
+        end)
+    end
+    case(function() -- A 2 cm step in the road is ridden over for nothing.
+        local speeds,struck=roll_over(kerb(3,.02),7.4,STEPS)
+        check(none(struck) and math.abs(road[STEPS]-speeds[STEPS])<.02,"no strike: "..#struck[1].." "..#struck[2])
+    end)
+    case(function() -- A plain hill costs nothing, met from flat at the speed whose rise in a step reads as a kerb's.
+        for _,degrees in ipairs({4,12,17}) do
+            for phase=0,4 do
+                local _,struck=roll_over(ramp(3+phase*.025,math.tan(math.rad(degrees))),7.4,STEPS)
+                check(none(struck),"a "..degrees.." degree ramp is no kerb: "..#struck[1].." "..#struck[2].." at "..phase)
+            end
+        end
+    end)
+    case(function() -- A landing closes its gaps as fast as a kerb, onto ground that stays where it was.
+        local function drop(i)
+            if i<=20 or i>27 then return 0,0 end
+            return .265-(i-21)*.05,-3
+        end
+        local speeds,struck=roll_over(kerb(math.huge,0),7.4,STEPS,drop)
+        check(none(struck) and math.abs(road[STEPS]-speeds[STEPS])<.05,"a landing is no kerb: "..#struck[1].." "..#struck[2])
+    end)
+    case(function() -- Hopped up a kerb, the wheels pass its edge in the air and strike nothing.
+        local _,struck=roll_over(kerb(3,.15),7.4,STEPS,function(i) return i>12 and i<=32 and .25 or 0,0 end)
+        check(none(struck),"a hop up a kerb costs nothing: "..#struck[1].." "..#struck[2])
+    end)
+    case(function() -- A kerb struck while braking for a car: its push adds to the stop's rather than taking its place.
+        local car=face(3+R+.55)
+        local _,struck,both=roll_over(kerb(3,.15),7.4,24,nil,car)
+        local _,_,stop=roll_over(kerb(math.huge,0),7.4,24,nil,car)
+        local at=struck[1][1] and struck[1][1][1]
+        check(at~=nil and stop[at]<-3000,"the bike brakes for the car as the front wheel strikes: "..tostring(at and stop[at]))
+        check(both[at]-stop[at]<-4000,"and the kerb takes its own share on top: "..both[at].." against "..stop[at])
+    end)
     return {cases=cases,assertions=n,native_authority=false,constructed=true}
 end
 return T

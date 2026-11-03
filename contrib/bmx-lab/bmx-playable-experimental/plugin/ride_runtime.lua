@@ -35,6 +35,12 @@ local AIR_TILT_STOP_DEG, UNSUPPORTED_TILT_STEPS = 120, 90
 -- riding onto, not a wall. Flat tops get more, because a kerb is flat. The
 -- row keeps its true depth and pushes from a depth the kernel admits.
 local HELD_DEPTH, HELD_FLOOR, HELD_FLAT_FLOOR = .095, .19, .24
+-- A tyre that strikes a kerb loses speed to it, where the held row alone lifted the wheel and let it roll on as if
+-- the kerb were not there. A wheel rolling last step, its true gap inside CURB_ROLLING, whose gap closes by
+-- CURB_STEP or more onto a flat top (normal up at least CURB_FLAT) has struck a step that high. It costs this share
+-- of the speed along the ground per wheel radius of step, up to the whole radius, paid against the travel at no
+-- more than CURB_FORCE a step. The share is a feel value, not a measured one: 15 cm at 7.4 m/s costs 1 m/s a wheel.
+local CURB_ROLLING, CURB_STEP, CURB_FLAT, CURB_SHARE, CURB_FORCE = .02, .025, .95, .25, 5400
 -- Speed lost along the travel over this many steps. ForceStage's caps take at
 -- most 3.8 m/s over them, on a landing, so this much is the world stopping the
 -- body: a pillar took 7.5 m/s in two steps, and left the rider sitting on a
@@ -221,6 +227,46 @@ local function hit(s,body)
     local speed=math.sqrt(old[1]*old[1]+old[3]*old[3])
     if speed>=HIT_DROP and speed-(v[1]*old[1]+v[3]*old[3])/speed>=HIT_DROP then return speed,old end
     return nil
+end
+-- Adds what a kerb struck this step costs to what is still to pay. Each wheel keeps its true gap from the last
+-- step, not the held depth, and the point its ray found. A gap that closes is a kerb only when the ground came up
+-- under the wheel by as much, along the new surface's normal: on a hill, or onto a ramp met from flat, the new
+-- point lies on or under the plane the wheel was rolling on, and a landing closes its gap with the wheel coming
+-- down onto ground that stayed where it was. A wheel still in the air over a kerb's edge, hopped up it, was not
+-- rolling. The step's contact metrics name the height a wheel struck.
+local function curb_strike(s,body,contact)
+    local last,rows=s.curb_rows or {},{}
+    local up=M.unit(M.mul(s.force.tuning.gravity,-1))
+    for i,row in ipairs(contact.samples) do
+        if row.contact.status=="hit" then
+            local gap,point,normal=row.ray_separation or row.separation,row.ray_point or row.contact.point,row.contact.normal
+            local before=last[i]
+            rows[i]={gap=gap,point=point}
+            if before and up and math.abs(before.gap)<CURB_ROLLING and M.dot(normal,up)>=CURB_FLAT then
+                local step=math.min(before.gap-gap,M.dot(M.sub(point,before.point),normal))
+                if step>=CURB_STEP then
+                    local v=body.linear_velocity
+                    local speed=M.length(M.sub(v,M.mul(up,M.dot(v,up))))
+                    s.curb_loss=(s.curb_loss or 0)+CURB_SHARE*speed*math.min(step/s.geometry.wheel_radius,1)
+                    s.metrics_step.contact[i==1 and "front_curb" or "rear_curb"]=step
+                end
+            end
+        end
+    end
+    s.curb_rows=rows
+end
+-- The push that pays a kerb strike this step, against the forecast's travel along the ground, and the speed it
+-- takes; nil when nothing is owed. Ride takes the speed off what is owed once the command carrying it is admitted.
+local function curb_push(s,b,h)
+    local owed=s.curb_loss
+    if not owed or owed<=0 then return nil end
+    local down=M.unit(s.force.tuning.gravity)
+    local travel=down and M.sub(b.linear_velocity,M.mul(down,M.dot(b.linear_velocity,down)))
+    local moving=travel and M.length(travel) or 0
+    -- A bike already stopped has nothing left for the kerb to take.
+    if moving<=.05 then s.curb_loss=nil;return nil end
+    local paid=math.min(owed,moving,CURB_FORCE*h/b.mass)
+    return M.mul(travel,-paid*b.mass/(h*moving)),paid
 end
 local function array(value)
     if typeof(value) ~= "vector" then return nil end
@@ -1402,6 +1448,7 @@ local function observe(s,source_frame,raw,context)
     s.metrics_step.measured_rear_hub=centers[2]
     s.metrics_step.measured_rear_hit=contact.samples[2].contact.point
     s.metrics_step.measured_rear_normal=contact.samples[2].contact.normal
+    curb_strike(s,body,contact)
     -- The frame is frozen whole, so a shallow copy shares everything in it.
     local enriched=table.clone(frame)
     -- contact is complete here and only read from now on (the fold and the
@@ -1557,7 +1604,11 @@ local function observe(s,source_frame,raw,context)
     if not preview[1] or preview.n~=3 or not preview.current or s.stopped or type(candidate)~="table" then
         stop(s,"force preview unavailable");return
     end
-    local command=packet(model,companions,sample.seconds,s.crash and crash_torque(s,body) or nil,s.ahead and s.ahead.force)
+    -- A kerb's push rides with a stop's, added to it: both are the world taking speed off the bike.
+    local push=s.ahead and s.ahead.force
+    local curb,curb_paid=curb_push(s,folded[2],sample.seconds)
+    if curb then push=push and M.add(push,curb) or curb end
+    local command=packet(model,companions,sample.seconds,s.crash and crash_torque(s,body) or nil,push)
     if not command then -- Name the ForceStage refusal and the unsent magnitudes.
         local d=type(model)=="table" and (type(model.diagnostic)=="table" and model.diagnostic or model) or {}
         local b=folded[2]
@@ -1592,6 +1643,7 @@ local function observe(s,source_frame,raw,context)
             stop(s,"force admission sequence did not advance");return
         end
         p.sequence=sequence;s.last_sequence=sequence;s.submitted+=1
+        if curb_paid then s.curb_loss-=curb_paid end
         metrics_serial(s,"submitted",p.serial)
         -- The returned sequence is command admission, not application or consumption.
         local metric_step=s.metrics_step

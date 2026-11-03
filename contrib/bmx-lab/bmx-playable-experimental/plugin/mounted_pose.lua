@@ -458,13 +458,16 @@ end
 -- The rider in a manual, from Ride's rider_shift: how far the physics moves the centre of mass, back
 -- positive, in metres (the pitch couple over the weight). Back, the hips go behind the saddle and
 -- down, arms straight and the chest up; forward, the hips come toward the bars and the chest down
--- over them. Standing, so the saddle does not hold the hips. The shift is taken to the centimetre,
--- so a steady manual composes once and is then mapped (compose_memo).
-function MP.manual_rider(shift)
+-- over them. Standing, so the saddle does not hold the hips: as far as standing says, 0 to 1, which
+-- Ride eases in and out with the manual (rider_standing), and all the way without one. The shift is
+-- taken to the centimetre, so a steady manual composes once and is then mapped (compose_memo).
+function MP.manual_rider(shift, standing)
     if not finite(shift) then return nil, "the rider's shift is not a finite distance" end
+    if standing == nil then standing = 1 end
+    if not finite(standing) or standing < 0 or standing > 1 then return nil, "the rider's standing is 0 to 1" end
     local s = math.floor(clamp(shift, -.3, .3) * 100 + .5) / 100
     local back, forward = math.max(s, 0), math.max(-s, 0)
-    return {hip_offset = {0, -.5 * back, -1.2 * s}, lean = MP.STANCE.lean - .6 * back + .8 * forward, standing = 1}
+    return {hip_offset = {0, -.5 * back, -1.2 * s}, lean = MP.STANCE.lean - .6 * back + .8 * forward, standing = standing}
 end
 
 local function bike_of(bike, g)
@@ -669,50 +672,83 @@ function MP.compose(input, options)
     local releases = c.releases
     local hands_held = 1 - math.max(releases[1], releases[2])
 
-    -- The hips turn with the bike, then toward the bars by follow_bars of the steer about the bike's
-    -- up, after leaning forward about its left: the chest comes with them.
-    local hips_local = normalized(multiply(multiply(axis_angle({0, 1, 0}, o.follow_bars * a.steer),
-        axis_angle({1, 0, 0}, rider.lean)), HIPS_REST))
-    local hips_rotation = normalized(multiply(q, hips_local))
-
-    -- The pelvis: over the saddle's midline, the authored standing height less the crouch, then the
-    -- rider's offset. Hands kept on the bars through a whole-bike pitch, roll or lift carry the
-    -- pelvis 0.75 of the grips' displacement instead of stretching the arms, all of it with both feet
-    -- off (bmx_rider_pose.h). The shift is not a move the rider takes up: it only puts the pitched
-    -- bike back so the wheel on the road stays where the physics has it, so the pelvis goes all of it
-    -- with the bars and the saddle. Carrying only .75 of it left the hips 3 cm behind a bike drawn
-    -- 12 cm forward, and with the bars at the kernel's full steer, the arm whose grip they carry
-    -- forward 1.5 cm short of it.
-    -- Letting go of the bars, the pelvis stops following them.
-    local hip = {rider.hip_offset[1], MP.STANCE.hip_height - rider.crouch + rider.hip_offset[2],
-        MP.STANCE.hip_z + rider.hip_offset[3]}
-    if a.movement_bike_pitch ~= 0 or a.movement_bike_roll ~= 0 or a.movement_bike_lift ~= 0
-        or a.movement_bike_shift ~= 0 then
-        local shifted = {0, 0, a.movement_bike_shift}
-        local moved = sub(mul(add(sub(c.local_grips[1], c.grips_neutral[1]), sub(c.local_grips[2], c.grips_neutral[2])), .5),
-            shifted)
-        local floating = .75 + .25 * math.min(releases[3], releases[4])
-        hip = add(hip, mul(add(mul(moved, floating), shifted), hands_held))
-    end
     -- The saddle, where bike_visual draws it: the frame pitches and rolls about the steering pivot
     -- with the rest of the bike, and the seat clamp works in that frame. Only a rider holding the
     -- bars rides the saddle round; letting go, the seat frame turns back to the bike's own and the
     -- bike turns under the rider (the hips are no longer carried either). A tailwhip swings the
     -- saddle out from under the hips, so the clamp keeps the unwhipped saddle. The lift and shift go
     -- with the pitch: as far as the rider holds on.
-    local saddle = g.saddle
+    local drawn = a.movement_bike_pitch ~= 0 or a.movement_bike_roll ~= 0 or a.movement_bike_lift ~= 0
+        or a.movement_bike_shift ~= 0
     local pivot = g.steering_pivot
     local seat_q = slerp({0, 0, 0, 1}, c.whole, hands_held)
     local seat_lift = {0, a.movement_bike_lift * hands_held, a.movement_bike_shift * hands_held}
     local function to_seat(p) return add(pivot, turn(conjugate(seat_q), sub(sub(p, seat_lift), pivot))) end
     local function from_seat(p) return add(add(pivot, turn(seat_q, sub(p, pivot))), seat_lift) end
+
+    -- The hips turn with the bike, then toward the bars by follow_bars of the steer about the bike's
+    -- up, after leaning forward about its left: the chest comes with them. A standing rider (a
+    -- manual's) is up on the pedals with straight arms, held to the bike at both ends, so the bike
+    -- drawn pitched, lifted and shifted carries the whole rider: the hips turn with the seat frame,
+    -- and the elbow and knee poles with them.
+    local hips_local = normalized(multiply(multiply(axis_angle({0, 1, 0}, o.follow_bars * a.steer),
+        axis_angle({1, 0, 0}, rider.lean)), HIPS_REST))
+    local standing_turn = nil
+    if drawn and rider.standing > 0 then
+        standing_turn = slerp({0, 0, 0, 1}, seat_q, rider.standing)
+        hips_local = normalized(multiply(standing_turn, hips_local))
+    end
+    local hips_rotation = normalized(multiply(q, hips_local))
+
+    -- The pelvis: over the saddle's midline, the authored standing height less the crouch, then the
+    -- rider's offset. Hands kept on the bars through a whole-bike pitch, roll or lift carry the
+    -- pelvis 0.75 of the grips' displacement instead of stretching the arms, all of it with both feet
+    -- off (bmx_rider_pose.h). The shift is not a move the rider takes up: it puts the pitched bike
+    -- back so its lower wheel stays where the physics has it, and carries the forward part of a lift
+    -- along a ground's normal that is tilted from the bike's up, as a manual's is. So the pelvis goes
+    -- all of it with the bars and the saddle. Carrying only .75 of it left the hips 3 cm behind a
+    -- bike drawn 12 cm forward, and with the bars at the kernel's full steer, the arm whose grip they
+    -- carry forward 1.5 cm short of it.
+    -- Letting go of the bars, the pelvis stops following them.
+    -- Standing, the pelvis goes where the seat frame carries it, all of the drawn turn, lift and
+    -- shift: a manual's straight arms cannot take up the quarter the seated rider leaves, and with
+    -- the bike drawn on a kerb its hands were 1 to 5 cm off the grips.
+    local hip = {rider.hip_offset[1], MP.STANCE.hip_height - rider.crouch + rider.hip_offset[2],
+        MP.STANCE.hip_z + rider.hip_offset[3]}
+    if drawn then
+        local rest = hip
+        local shifted = {0, 0, a.movement_bike_shift}
+        local moved = sub(mul(add(sub(c.local_grips[1], c.grips_neutral[1]), sub(c.local_grips[2], c.grips_neutral[2])), .5),
+            shifted)
+        local floating = .75 + .25 * math.min(releases[3], releases[4])
+        hip = add(hip, mul(add(mul(moved, floating), shifted), hands_held))
+        if rider.standing > 0 then hip = lerp(hip, from_seat(rest), rider.standing) end
+    end
+    local saddle = g.saddle
     local seat_up = turn(seat_q, {0, 1, 0})
     local half_pelvis = .5 * length(sub(rig.roots.left_up_leg, rig.roots.right_up_leg))
     local floor = saddle.top + half_pelvis + o.seat_clearance
     local rear = saddle.rear - rider.standing * STANDING_REACH
+    -- Over the saddle the hips stay floor above its top. Behind it, where only a standing rider's go,
+    -- there is no saddle under them: the pelvis clears the saddle's back edge by the same margin and
+    -- may then go lower the further back it is. That floor applied behind the saddle pushed a manual's
+    -- hips up off a bike drawn nose down, and their straight arms off the grips. The floor follows the
+    -- margin's arc about the back edge down to where the arc falls at 45 degrees, then goes on down the
+    -- arc's tangent there, so it never falls faster than the hips move back and every hip on or above
+    -- it clears the edge. Dropping to nothing where the arc reached the saddle's top, it moved hips
+    -- under that top 16 cm for 1 mm of travel.
+    local margin = floor - saddle.top
+    local bend = margin * math.sqrt(.5)
     local function seated(p)
         local s = to_seat(p)
-        local out = {clamp(s[1], -saddle.half_width, saddle.half_width), math.max(s[2], floor), clamp(s[3], rear, saddle.front)}
+        local z = clamp(s[3], rear, saddle.front)
+        local least = floor
+        if z < saddle.rear then
+            local behind = saddle.rear - z
+            least = behind < bend and saddle.top + math.sqrt(margin * margin - behind * behind)
+                or saddle.top + 2 * bend - behind
+        end
+        local out = {clamp(s[1], -saddle.half_width, saddle.half_width), math.max(s[2], least), z}
         return from_seat(out), out[2] ~= s[2], out[1] ~= s[1] or out[3] ~= s[3]
     end
     -- The knee floor (bmx_rider_pose.h proposed_hip_band): a held foot's knee folds no tighter than
@@ -785,7 +821,7 @@ function MP.compose(input, options)
         local side = limb.side
         local root_point = add(hip_world, turn(hips_rotation, rig.roots[limb.upper]))
         local pole_local = limb.arm and {side * o.elbow_pole[1], o.elbow_pole[2], o.elbow_pole[3]} or o.knee_pole
-        local pole = turn(q, pole_local)
+        local pole = turn(standing_turn and multiply(q, standing_turn) or q, pole_local)
         local la, lb = rig.lengths[limb.upper], rig.lengths[limb.middle]
         local ik = two_bone(root_point, targets[i], pole, la, lb)
         local tip_rotation = limb.arm and c.hands[i] or c.feet[i - 2]

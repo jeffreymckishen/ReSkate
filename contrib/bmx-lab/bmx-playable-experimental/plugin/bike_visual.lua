@@ -80,14 +80,18 @@ local function posed_point(part,x,y,z)
     x,y,z=about_x(x,y,z,pitch_c,pitch_s,G.steering_pivot)
     x,y,z=about_z(x,y,z,roll_c,roll_s,G.steering_pivot)
     -- The lift raises the whole bike along its own up and the shift moves it along its own forward, after the
-    -- pitch, so G.hub_rise says where each hub goes up and G.pitch_lift's shift keeps the grounded one in place.
+    -- pitch, so G.hub_rise says where each hub goes up, along the ground's normal Ride gives it, and G.pitch_lift's
+    -- lift and shift keep the lower one where the body has it across that normal.
     return x,y+lift,z+shift
 end
 local POSE_KEYS={"steer","front_wheel_phase","rear_wheel_phase","crank_phase",
     "barspin","tailwhip","movement_bike_pitch","movement_bike_roll"}
 -- The lift and shift are in metres, and a pose may leave either out: Ride sends them only while it draws a wheel
--- up out of the ground its ray measured. It lifts the bike at most 23 cm and shifts it at most 15, the shift only
--- undoing what the pitch moved the wheel on the ground, so these bounds refuse anything else.
+-- up out of the ground its ray measured. It lifts the bike at most about 23 cm. The shift undoes what the pitch
+-- moved the lower wheel along the bike, up to 15 cm, and carries the forward part of a lift along the ground's
+-- normal: on one wheel in a manual that normal stands up to 45 degrees off the bike's up (ride_runtime LIFT_TILT),
+-- so the shift reaches about 16 cm with no pitch at all. Ride clamps it to SHIFT_LIMIT, and these bounds refuse
+-- anything else.
 local LIFT_LIMIT,SHIFT_LIMIT=.5,.25
 function V.neutral()
     return {steer=0,front_wheel_phase=0,rear_wheel_phase=0,crank_phase=0,

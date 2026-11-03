@@ -420,6 +420,45 @@ function Tests.run()
         check(not Visual.valid_pose(wild) and MP.compose({bike={root=root,rotation=q},
             articulation={crank_phase=0,movement_bike_shift=.3}})==nil,"neither draws a shift of more than a quarter metre")
     end)
+    case(function() -- A bike pitched off the ground under it, as in a manual, is drawn up along that ground's normal.
+        local root,q={14,3,-21},{0,.6,0,.8}
+        local inverse={-q[1],-q[2],-q[3],q[4]}
+        local function local_point(p) return M.turn(inverse,M.sub(p,root)) end
+        local rest=Visual.neutral();rest.crank_phase=.4
+        local on_body=Visual.matrices(root,q,rest)
+        for _,want in ipairs({{.14,0},{0,.14},{.23,0},{0,.23},{.1,.03},{.05,.05},{.14,.14}}) do
+            local plain={G.pitch_lift(G,want[1],want[2])}
+            local level={G.pitch_lift(G,want[1],want[2],0)}
+            check(plain[1]==level[1] and plain[2]==level[2] and plain[3]==level[3],"no tilt gives the numbers it always gave")
+            -- From 36 degrees nose down to 45 nose up, past any manual.
+            for _,tilt in ipairs({-.63,-.2,.35,.52,.63,math.rad(45)}) do
+                local pitch,lift,shift=G.pitch_lift(G,want[1],want[2],tilt)
+                local front,rear=G.hub_rise(G,pitch,lift,shift,tilt)
+                check(math.abs(front-want[1])<1e-12 and math.abs(rear-want[2])<1e-12,"tilted, pitch_lift is still hub_rise turned round")
+                local pose=table.clone(rest)
+                pose.movement_bike_pitch,pose.movement_bike_lift,pose.movement_bike_shift=pitch,lift,shift
+                -- On one wheel Ride lifts the bike whole. Rises far apart come from both wheels on the ground,
+                -- where the bike stands near square to it, so a steep tilt with them is past anything it draws.
+                local drawable=Visual.valid_pose(pose)
+                check(drawable or want[1]~=want[2],"a bike lifted whole along a tilt is one the visual draws: "..lift.." "..shift)
+                if drawable then
+                    -- The lower hub goes straight off the ground by its rise, along the tilt; the other turns about
+                    -- it. Lifted whole, both go straight up.
+                    local m=Visual.matrices(root,q,pose)
+                    for part,rise in pairs({[4]=want[1],[3]=want[2]}) do
+                        if rise==math.min(want[1],want[2]) then
+                            local hub=M.sub(local_point(apply(m[part],{0,0,0})),local_point(apply(on_body[part],{0,0,0})))
+                            check(near(hub,{0,rise*math.cos(tilt),rise*math.sin(tilt)},1e-9),string.format(
+                                "the lower hub goes up along the tilt, as the ground it is on does: %.4f %.4f %.4f",hub[1],hub[2],hub[3]))
+                        end
+                    end
+                end
+                if want[1]==want[2] then
+                    check(pitch==0,"equal rises lift the whole bike, unpitched")
+                end
+            end
+        end
+    end)
     return {cases=cases,assertions=assertions}
 end
 return Tests

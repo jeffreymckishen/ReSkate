@@ -10,6 +10,7 @@ local Geometry=require("./bike_geometry")
 local Visual=require("./bike_visual")
 local Identity=require("./lease_identity")
 local M=require("./force_math")
+local MP=require("./mounted_pose")
 local T={}
 local h=Forces.native_seconds
 local R=Geometry.wheel_radius
@@ -800,6 +801,199 @@ function T.run()
         local over=harness(flat)
         local at=in_manual(over,wheelie(70,4),40)
         check(at==18-3,"70 degrees from the surface ends after its .3 s: "..tostring(at))
+    end)
+    -- Where a drawn wheel's tyre touches down, the lowest point of its disc, against where the body's does.
+    local function touch(m)
+        local axle=M.unit({m[1],m[2],m[3]})
+        local toward=M.unit(M.sub({0,-1,0},M.mul(axle,-axle[2])))
+        return M.add({m[13],m[14],m[15]},M.mul(toward,R))
+    end
+    local function drawn_touch(sample,pose,part)
+        local body,drawn=Visual.from_sample(sample),Visual.from_sample(sample,pose)
+        return touch(drawn[part]),touch(body[part])
+    end
+    case(function() -- A manual rolled onto a kerb is drawn lifted onto it on its rear wheel, not nodded about the front in the air.
+        local kerb=false
+        local w=harness(function(from,to,count,i)
+            if count==2 and i==2 and kerb then return hit(from,to,from.y-R+.15,{0,1,0}) end
+            return flat(from,to)
+        end)
+        w.prompt=true
+        local pose=wheelie(30,4)
+        check(in_manual(w,pose,12)==nil and w.controls.manual>.4,"a manual on the road")
+        check(w.step(pose).presentation_pose.movement_bike_lift==nil,"on the road the manual draws the bike on its body")
+        kerb=true
+        local lifts={}
+        for i=1,6 do
+            local out=w.step(pose)
+            check(not out.stop_requested,"riding the manual onto the kerb: "..tostring(out.issue))
+            local shown=out.presentation_pose
+            check(math.abs(shown.movement_bike_pitch)<1e-6,
+                "the drawn bike is not pitched about its front wheel in the air: "..shown.movement_bike_pitch)
+            local rear,body=drawn_touch(w.samples[w.serial],shown,3)
+            local front,front_body=drawn_touch(w.samples[w.serial],shown,4)
+            local up=rear[2]-body[2]
+            lifts[i]=string.format("%.3f",up)
+            check(math.abs(rear[1]-body[1])<.002 and math.abs(rear[3]-body[3])<.002,string.format(
+                "the rear tyre is drawn straight up off where the body's touches, not behind it: %.4f %.4f",rear[1]-body[1],rear[3]-body[3]))
+            check(M.length(M.sub(M.sub(front,front_body),M.sub(rear,body)))<.002,"and the front goes up with it: the whole bike is lifted")
+            if i>=3 then
+                -- The ray found the kerb top under the body's rear hub, .15 above where its tyre touches the road.
+                check(math.abs(rear[2]-(.15-.01))<.002,"the rear tyre is drawn on the kerb top, its bottom at "..rear[2].." against .15")
+            end
+        end
+        check(lifts[1]=="0.050" and lifts[2]=="0.100" and lifts[3]=="0.140","it comes up 5 cm a step: "..table.concat(lifts," "))
+        -- A level bike with its rear in the kerb and the front tyre a moment off the road beyond: a wheel just off the
+        -- ground still holds the drawn bike, so the front is drawn where the body has it, give or take what it clears
+        -- past 2 cm, and hovering across that line it does not flick up and down.
+        local gap=.015
+        local level_kerb=harness(function(from,to,count,i)
+            if count~=2 then return flat(from,to) end
+            if i==2 then return hit(from,to,from.y-R+.15,{0,1,0}) end
+            return hit(from,to,from.y-R-gap,{0,1,0})
+        end)
+        level_kerb.prompt=true
+        local highest=0
+        -- Where each hub is drawn, the whole of it: the pitch's swing and the shift move a hub along the bike too.
+        local function hubs(sample,shown)
+            local m=Visual.from_sample(sample,shown)
+            return {m[4][13],m[4][14],m[4][15]},{m[3][13],m[3][14],m[3][15]}
+        end
+        local last_front,last_rear
+        local moved_front,moved_rear=0,0
+        for i=1,12 do
+            gap=i%2==0 and .015 or .025
+            local shown=level_kerb.step(level()).presentation_pose
+            local front=shown.movement_bike_lift and Geometry.hub_rise(Geometry,shown.movement_bike_pitch,shown.movement_bike_lift) or 0
+            highest=math.max(highest,front)
+            local front_hub,rear_hub=hubs(level_kerb.samples[level_kerb.serial],shown)
+            -- Once the rear's rise has come up (three steps at LIFT_RATE), the drawn bike holds still but for the cap.
+            if i>4 then
+                moved_front=math.max(moved_front,M.length(M.sub(front_hub,last_front)))
+                moved_rear=math.max(moved_rear,M.length(M.sub(rear_hub,last_rear)))
+            end
+            last_front,last_rear=front_hub,rear_hub
+        end
+        check(highest<.006,"a front tyre 1.5 to 2.5 cm off the road is drawn within 5 mm of the body's: "..highest)
+        -- Held about the rear while the front was past 2 cm and about the front within it, the pitched bike was drawn
+        -- 1.1 cm along itself back and forth every step for as long as the front hovered.
+        check(moved_front<.006 and moved_rear<.002,string.format(
+            "and the drawn bike does not buzz along itself: the front hub moves %.4f a step, the rear %.4f",moved_front,moved_rear))
+    end)
+    case(function() -- A manual in a kerb whose rear ray now and then finds the kerb's bevelled edge is not thrown along the ground.
+        -- The rear tyre .15 into a kerb, drawn up 14 cm along the ground's normal. On some steps the ray finds a
+        -- 25 degree edge there (fall() notes kerb bevels in the game). Lifted along each step's normal, the drawn
+        -- rear hub jumped 6.4 cm along the ground and back on each one.
+        local bevel=math.rad(25)
+        local mode,kerb="top",false
+        local w=harness(function(from,to,count,i)
+            if count==2 and i==2 and kerb then
+                if mode=="edge" then return hit(from,to,from.y-R+.15,{0,math.cos(bevel),-math.sin(bevel)}) end
+                return hit(from,to,from.y-R+.15,{0,1,0})
+            end
+            return flat(from,to)
+        end)
+        w.prompt=true
+        local pose=wheelie(30,4)
+        check(in_manual(w,pose,12)==nil and w.controls.manual>.4,"a manual on the road")
+        kerb=true
+        local last,most=nil,0
+        for i,m in ipairs({"top","top","top","top","top","edge","top","edge","top","top","edge","edge","edge","top","top"}) do
+            mode=m
+            local out=w.step(pose)
+            check(not out.stop_requested,"riding the manual in the kerb: "..tostring(out.issue))
+            local rear,body=drawn_touch(w.samples[w.serial],out.presentation_pose,3)
+            local drawn=M.sub(rear,body)
+            -- Once its 14 cm have come up, three steps at LIFT_RATE, the tyre stays up on the kerb. Measured on the
+            -- edge, the ray's depth is the kerb's top along that normal, a centimetre more.
+            if i>3 then
+                check(drawn[2]>.13 and drawn[2]<.16,"the rear tyre is drawn on the kerb top: "..drawn[2])
+                local along=M.sub(drawn,last)
+                most=math.max(most,math.sqrt(along[1]*along[1]+along[3]*along[3]))
+            end
+            last=drawn
+        end
+        check(most<.01,string.format("and moves %.4f a step at most along the ground as its ray finds the edge and the top",most))
+    end)
+    case(function() -- A steady manual's rear carries the whole weight and sinks past the drawn slack: nothing is drawn, so the rider is mapped.
+        local w=harness(flat)
+        w.prompt=true
+        local pose=wheelie(30,4)
+        -- The kernel's 100000 N/m spring holds 106 kg on one wheel 10.4 mm into the road.
+        pose.position[2]-=.0104
+        local api={skater={pose=function(_,weight)
+            if weight==MP.PROBE_WEIGHT then error("place has a position, a rotation or both",0) end
+            return true
+        end}}
+        local poser=MP.new(api)
+        check(poser:mount(0).ok,"the poser mounts on a constructed skater.pose")
+        check(in_manual(w,pose,10)==nil,"the manual is ridden")
+        local drawn,shift=0,nil
+        for i=1,90 do
+            local out=w.step(pose)
+            check(not out.stop_requested,"a steady manual rides on: "..tostring(out.issue))
+            local a=out.presentation_pose
+            if a.movement_bike_pitch~=0 or a.movement_bike_lift~=nil or a.movement_bike_shift~=nil then drawn+=1 end
+            -- As Core poses the rider (bike_runtime_core pose_step).
+            local articulation={steer=a.steer,crank_phase=a.crank_phase,barspin=a.barspin,tailwhip=a.tailwhip,
+                movement_bike_pitch=a.movement_bike_pitch,movement_bike_roll=a.movement_bike_roll,
+                movement_bike_lift=a.movement_bike_lift,movement_bike_shift=a.movement_bike_shift}
+            local input={bike={center_of_mass=pose.position,rotation=pose.rotation},articulation=articulation,
+                rider=a.rider_shift~=nil and MP.manual_rider(a.rider_shift,a.rider_standing) or nil}
+            local r=poser:tick(i/60,input)
+            check(r.ok and r.sent,"the manual's rider is posed: "..tostring(r.reason))
+            shift=a.rider_shift
+        end
+        check(shift~=nil,"the kernel holds the manual, and the rider stands in it")
+        check(drawn==0,"a rear 10.4 mm into the road draws nothing: "..drawn.." of 90 steps drawn")
+        local hits,misses=poser.memo_hits or 0,poser.memo_misses or 0
+        check(hits+misses==90 and hits>=81,"the manual's rider is mapped from its memo on 90% of its ticks: "..hits.." hits, "..misses.." misses")
+    end)
+    case(function() -- A manual begun and let go on a bike drawn pitched on a kerb stands the rider up and sits it down over ticks.
+        -- A level body, its front tyre on a kerb's top and its rear .15 into the kerb's face: the bike is drawn
+        -- pitched 8.6 degrees nose down about the front. A standing rider goes with all of that drawn turn, a seated
+        -- one only with its seat, so a rider stood up or sat down in one tick turned 7.6 to 8.3 degrees in it.
+        local w=harness(function(from,to,count,i)
+            if count~=2 then return flat(from,to) end
+            if i==1 then return hit(from,to,from.y-R,{0,1,0}) end
+            return hit(from,to,from.y-R+.15,{0,1,0})
+        end)
+        w.prompt=true
+        local pose=level();pose.velocity={0,0,4}
+        steps(w,pose,3)
+        w.set_pad(-.53)
+        local function angle(a,b) return math.deg(2*math.acos(math.min(1,math.abs(a[1]*b[1]+a[2]*b[2]+a[3]*b[3]+a[4]*b[4])))) end
+        local last,standing,most,pitched,stood,sat=nil,0,0,0,false,false
+        local function step(i)
+            local out=w.step(pose)
+            check(not out.stop_requested,"riding the manual on the kerb: "..tostring(out.issue))
+            local a=out.presentation_pose
+            if math.abs(a.movement_bike_pitch)>math.rad(8) then pitched+=1 end
+            check((a.rider_shift==nil)==(a.rider_standing==nil),"the standing goes with the shift: "..tostring(a.rider_standing))
+            local now=a.rider_standing or 0
+            check(math.abs(now-standing)<=h/.1+1e-9,string.format("step %d: the rider stands up or sits down over a tenth of a second, %.3f to %.3f",
+                i,standing,now))
+            standing=now
+            stood=stood or now==1
+            sat=stood and a.rider_shift==nil
+            -- As Core poses the rider (bike_runtime_core pose_step).
+            local c=MP.compose({bike={center_of_mass=pose.position,rotation=pose.rotation},articulation={steer=a.steer,
+                crank_phase=a.crank_phase,movement_bike_pitch=a.movement_bike_pitch,movement_bike_lift=a.movement_bike_lift,
+                movement_bike_shift=a.movement_bike_shift},rider=a.rider_shift~=nil and MP.manual_rider(a.rider_shift,a.rider_standing) or nil})
+            local hips=c.planned.hips.rotation
+            if last then
+                local turned=angle(hips,last)
+                most=math.max(most,turned)
+                check(turned<2.5,string.format("step %d: the rider's hips turn %.2f degrees in a tick",i,turned))
+            end
+            last=hips
+        end
+        for i=1,14 do step(i) end
+        check(stood,"the rider stands in the manual")
+        w.set_pad(0)
+        for i=15,54 do step(i) end
+        check(sat,"and sits once it is let go")
+        check(pitched==54,"the bike is drawn pitched on the kerb throughout: "..pitched)
     end)
     return {cases=cases,assertions=n,native_authority=false,constructed=true}
 end

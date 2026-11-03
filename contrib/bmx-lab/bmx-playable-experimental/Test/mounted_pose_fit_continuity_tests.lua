@@ -107,6 +107,100 @@ function Tests.run()
     end
     local hits,misses=poser.memo_hits or 0,poser.memo_misses or 0
     check(hits+misses==120 and hits>=108,"a steady manual is mapped from its memo on 90% of its ticks: "..hits.." hits, "..misses.." misses")
-    return {cases=2,assertions=assertions}
+
+    -- A manual's standing rider on a bike Ride draws up off a kerb: pitched about the steering pivot, lifted and
+    -- shifted. Standing, the rider is composed in the drawn bike's frame, hands on the grips and feet on the pedals.
+    local G=require("./bike_geometry")
+    local Q=MP.math
+    local C=MP.CONTACTS
+    local function add(a,b) return {a[1]+b[1],a[2]+b[2],a[3]+b[3]} end
+    local function sub(a,b) return {a[1]-b[1],a[2]-b[2],a[3]-b[3]} end
+    -- Where bike_visual draws the bike for an articulation: turned about the steering pivot, then lifted along its up
+    -- and shifted along its forward.
+    local function drawn_frame(b,a)
+        local whole=Q.axis_angle({1,0,0},a.movement_bike_pitch or 0)
+        local c=G.steering_pivot
+        local moved=add(sub(c,Q.turn(whole,c)),{0,a.movement_bike_lift or 0,a.movement_bike_shift or 0})
+        return {root=add(b.root,Q.turn(b.rotation,moved)),rotation=Q.multiply(b.rotation,whole)}
+    end
+    local function local_of(b,p) return Q.turn(Q.conjugate(b.rotation),sub(p,b.root)) end
+    local manual=pitched(30)
+    local pitch,lift,shift=G.pitch_lift(G,0,.14)
+    local kerbs={
+        {name="drawn nose down about the front wheel, the rear 14 cm up",movement_bike_pitch=pitch,movement_bike_lift=lift,movement_bike_shift=shift},
+        {name="lifted 14 cm off the ground at 30 degrees",movement_bike_lift=.14*math.cos(math.rad(30)),movement_bike_shift=.14*math.sin(math.rad(30))},
+        {name="lifted 23 cm off the ground at 36 degrees",movement_bike_lift=.23*math.cos(math.rad(36)),movement_bike_shift=.23*math.sin(math.rad(36))},
+    }
+    for _,kerb in ipairs(kerbs) do
+        local a={crank_phase=.4,steer=.05,movement_bike_pitch=kerb.movement_bike_pitch,movement_bike_lift=kerb.movement_bike_lift,
+            movement_bike_shift=kerb.movement_bike_shift}
+        local out,why=MP.compose({bike=manual,articulation=a,rider=MP.manual_rider(.2)})
+        check(out~=nil,kerb.name..": the manual's rider composes: "..tostring(why))
+        for i,name in ipairs({"left_arm","right_arm"}) do
+            local side=i==1 and 1 or -1
+            local planned=out.planned[name]
+            local palm=add(planned.tip,Q.turn(planned.tip_rotation,{C.palm_reach,0,side*(C.grip_radius+C.palm_gap)}))
+            local miss=distance(palm,out.targets.grips[i])
+            check(miss<.01,kerb.name..": the "..name.." hand holds its grip: "..miss)
+        end
+        for i,name in ipairs({"left_leg","right_leg"}) do
+            local miss=distance(out.planned[name].tip,out.targets.ankles[i])
+            check(miss<.01,kerb.name..": the "..name.." foot stands on its pedal: "..miss)
+        end
+        -- The same rider on the bike set where it is drawn, nothing drawn on it: the whole rider goes with the bike.
+        local frame=drawn_frame(manual,a)
+        local still=MP.compose({bike=frame,articulation={crank_phase=.4,steer=.05},rider=MP.manual_rider(.2)})
+        check(distance(out.targets.hips,still.targets.hips)<1e-6,kerb.name..": the hips go where the drawn bike carries them: "
+            ..distance(out.targets.hips,still.targets.hips))
+        local q,r=out.planned.hips.rotation,still.planned.hips.rotation
+        check(math.abs(math.abs(q[1]*r[1]+q[2]*r[2]+q[3]*r[3]+q[4]*r[4])-1)<1e-9,kerb.name..": and turn with it")
+        for _,name in ipairs({"left_arm","right_arm","left_leg","right_leg"}) do
+            check(distance(out.planned[name].middle,still.planned[name].middle)<1e-6,kerb.name..": the "..name.." bends as on the bike undrawn")
+        end
+        -- Riding seated, the pelvis still carries .75 of the grips' move and all of the shift, as before.
+        local seat=MP.compose({bike=manual,articulation=a})
+        local level=MP.compose({bike=manual,articulation={crank_phase=.4,steer=.05}})
+        local moved={0,0,0}
+        for i=1,2 do moved=add(moved,sub(local_of(manual,seat.targets.grips[i]),local_of(manual,level.targets.grips[i]))) end
+        local s=a.movement_bike_shift or 0
+        local want={.375*moved[1],MP.STANCE.hip_height+.375*moved[2],MP.STANCE.hip_z+.375*(moved[3]-2*s)+s}
+        check(distance(seat.diagnostics.hip_wanted,want)<1e-9,kerb.name..": a seated rider's hips are carried as they were")
+    end
+    -- Standing behind the saddle there is none under the hips: low, they are not pushed back up to its floor.
+    local crouched=MP.compose({bike=manual,articulation={crank_phase=.4,steer=.05},rider={standing=1,hip_offset={0,-.2,-.3}}})
+    check(crouched.diagnostics.seat_limited==false and crouched.diagnostics.hip_local[2]<crouched.diagnostics.seat_floor-.05,
+        "a standing rider's hips 30 cm behind the saddle are not held at its floor: "..crouched.diagnostics.hip_local[2])
+    local sitting=MP.compose({bike=manual,articulation={crank_phase=.4,steer=.05},rider={hip_offset={0,-.2,0}}})
+    check(sitting.diagnostics.seat_limited==true and sitting.diagnostics.hip_above_seat>=MP.STANCE.seat_clearance,
+        "over the saddle the floor still holds them")
+
+    -- A standing rider's hips moved back past the saddle's back edge a millimetre at a time, wanted from 15 cm under
+    -- its top to 12 cm over it: the floor behind the saddle is continuous, so the hips never jump. It dropped from
+    -- the saddle's top to nothing at the margin's distance behind it, 16 cm for 1 mm of travel. The knee floor has
+    -- its own slope, up to 6 mm for 1 mm with the hips that low, so it is held off here: no fit, and the least fold
+    -- the options take.
+    local saddle=MP.options().geometry.saddle
+    local margin=sitting.diagnostics.seat_floor-saddle.top
+    local steepest,nearest,raised=0,math.huge,0
+    for crank=0,6,.3 do
+        for _,wanted in ipairs({-.15,-.08,-.03,0,.03,.08,.12}) do
+            local last
+            for i=0,300 do
+                local z=saddle.rear+.01-i*.001
+                local out=MP.compose({bike=bike,articulation={crank_phase=crank,steer=0},
+                    rider={standing=1,hip_offset={0,saddle.top+wanted-MP.STANCE.hip_height,z-MP.STANCE.hip_z}}},{max_fit=0,min_knee=.35})
+                raised=math.max(raised,out.diagnostics.knee_raise)
+                local hip=out.diagnostics.hip_seat
+                if last then steepest=math.max(steepest,math.abs(hip[2]-last)) end
+                last=hip[2]
+                -- Behind the saddle the pelvis still clears its back edge by the margin.
+                if hip[3]<saddle.rear then nearest=math.min(nearest,math.sqrt((hip[2]-saddle.top)^2+(hip[3]-saddle.rear)^2)) end
+            end
+        end
+    end
+    check(raised==0,"the knee floor is held off: "..raised)
+    check(steepest<.0015,"a standing rider's hips behind the saddle move at most 1.5 mm up or down for 1 mm back: "..steepest)
+    check(nearest>=margin-1e-9,"and clear the saddle's back edge by the margin: "..nearest.." against "..margin)
+    return {cases=4,assertions=assertions}
 end
 return table.freeze(Tests)

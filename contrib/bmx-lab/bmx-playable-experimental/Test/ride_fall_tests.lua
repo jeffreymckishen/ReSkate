@@ -886,7 +886,7 @@ function T.run()
                 movement_bike_pitch=a.movement_bike_pitch,movement_bike_roll=a.movement_bike_roll,
                 movement_bike_lift=a.movement_bike_lift,movement_bike_shift=a.movement_bike_shift}
             local input={bike={center_of_mass=pose.position,rotation=pose.rotation},articulation=articulation,
-                rider=a.rider_shift~=nil and MP.manual_rider(a.rider_shift) or nil}
+                rider=a.rider_shift~=nil and MP.manual_rider(a.rider_shift,a.rider_standing) or nil}
             local r=poser:tick(i/60,input)
             check(r.ok and r.sent,"the manual's rider is posed: "..tostring(r.reason))
             shift=a.rider_shift
@@ -895,6 +895,52 @@ function T.run()
         check(drawn==0,"a rear 10.4 mm into the road draws nothing: "..drawn.." of 90 steps drawn")
         local hits,misses=poser.memo_hits or 0,poser.memo_misses or 0
         check(hits+misses==90 and hits>=81,"the manual's rider is mapped from its memo on 90% of its ticks: "..hits.." hits, "..misses.." misses")
+    end)
+    case(function() -- A manual begun and let go on a bike drawn pitched on a kerb stands the rider up and sits it down over ticks.
+        -- A level body, its front tyre on a kerb's top and its rear .15 into the kerb's face: the bike is drawn
+        -- pitched 8.6 degrees nose down about the front. A standing rider goes with all of that drawn turn, a seated
+        -- one only with its seat, so a rider stood up or sat down in one tick turned 7.6 to 8.3 degrees in it.
+        local w=harness(function(from,to,count,i)
+            if count~=2 then return flat(from,to) end
+            if i==1 then return hit(from,to,from.y-R,{0,1,0}) end
+            return hit(from,to,from.y-R+.15,{0,1,0})
+        end)
+        w.prompt=true
+        local pose=level();pose.velocity={0,0,4}
+        steps(w,pose,3)
+        w.set_pad(-.53)
+        local function angle(a,b) return math.deg(2*math.acos(math.min(1,math.abs(a[1]*b[1]+a[2]*b[2]+a[3]*b[3]+a[4]*b[4])))) end
+        local last,standing,most,pitched,stood,sat=nil,0,0,0,false,false
+        local function step(i)
+            local out=w.step(pose)
+            check(not out.stop_requested,"riding the manual on the kerb: "..tostring(out.issue))
+            local a=out.presentation_pose
+            if math.abs(a.movement_bike_pitch)>math.rad(8) then pitched+=1 end
+            check((a.rider_shift==nil)==(a.rider_standing==nil),"the standing goes with the shift: "..tostring(a.rider_standing))
+            local now=a.rider_standing or 0
+            check(math.abs(now-standing)<=h/.1+1e-9,string.format("step %d: the rider stands up or sits down over a tenth of a second, %.3f to %.3f",
+                i,standing,now))
+            standing=now
+            stood=stood or now==1
+            sat=stood and a.rider_shift==nil
+            -- As Core poses the rider (bike_runtime_core pose_step).
+            local c=MP.compose({bike={center_of_mass=pose.position,rotation=pose.rotation},articulation={steer=a.steer,
+                crank_phase=a.crank_phase,movement_bike_pitch=a.movement_bike_pitch,movement_bike_lift=a.movement_bike_lift,
+                movement_bike_shift=a.movement_bike_shift},rider=a.rider_shift~=nil and MP.manual_rider(a.rider_shift,a.rider_standing) or nil})
+            local hips=c.planned.hips.rotation
+            if last then
+                local turned=angle(hips,last)
+                most=math.max(most,turned)
+                check(turned<2.5,string.format("step %d: the rider's hips turn %.2f degrees in a tick",i,turned))
+            end
+            last=hips
+        end
+        for i=1,14 do step(i) end
+        check(stood,"the rider stands in the manual")
+        w.set_pad(0)
+        for i=15,54 do step(i) end
+        check(sat,"and sits once it is let go")
+        check(pitched==54,"the bike is drawn pitched on the kerb throughout: "..pitched)
     end)
     return {cases=cases,assertions=n,native_authority=false,constructed=true}
 end

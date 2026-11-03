@@ -265,16 +265,24 @@ local function presentation(previous,model,wheels,h,samples,geometry,orientation
     -- In a manual the rider's hips go where the physics holds the weight: the kernel's pitch couple over
     -- the weight, eased over RIDER_SHIFT_SECONDS so the pose does not jump on a step's change. Out of it
     -- the shift eases back and the field goes once it is under half a centimetre.
-    local shift=previous.rider_shift
+    -- The rider stands up on the pedals for a manual and sits back down after it: rider_standing goes from 0 to 1
+    -- and back at a steady rate, taking RIDER_SHIFT_SECONDS, and goes with the shift once it is back at 0. A standing
+    -- rider turns and lifts with all of a bike drawn on a kerb and a seated one with its seat, so on a bike drawn
+    -- pitched 8.6 degrees the rider stood up or sat down in one tick turned its hips 7.6 to 8.3 degrees in it.
+    local shift,standing=previous.rider_shift,previous.rider_standing or 0
+    local stand=h/RIDER_SHIFT_SECONDS
     if model.manual_active==true then
         if not M.finite(model.manual_shift) then return nil end
         local target=math.clamp(model.manual_shift,-RIDER_SHIFT_FORWARD,RIDER_SHIFT_BACK)
         shift=(shift or 0)+(target-(shift or 0))*math.min(1,h/RIDER_SHIFT_SECONDS)
+        standing=math.min(1,standing+stand)
     elseif shift~=nil then
         shift-=shift*math.min(1,h/RIDER_SHIFT_SECONDS)
-        if math.abs(shift)<.005 then shift=nil end
+        standing=math.max(0,standing-stand)
+        if math.abs(shift)<.005 and standing==0 then shift=nil end
     end
     pose.rider_shift=shift
+    pose.rider_standing=shift~=nil and standing or nil
     return pose
 end
 -- The measured tilt of the body's up axis from world up, in degrees, and its

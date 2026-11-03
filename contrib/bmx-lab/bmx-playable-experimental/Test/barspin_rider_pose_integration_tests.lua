@@ -288,6 +288,9 @@ function Tests.run()
     check(normal_input.rider==nil,"ordinary riding poses no rider shift")
     local manual=table.clone(neutral.presentation_pose);manual.rider_shift=.16
     check(same(capture(manual).rider,MP.manual_rider(.16)),"in a manual Core poses the rider where the physics shifts the weight")
+    local rising=table.clone(manual);rising.rider_standing=.5
+    local half=capture(rising).rider
+    check(half.standing==.5 and same(half,MP.manual_rider(.16,.5)),"and standing as far as Ride has it up on the pedals")
     -- The rider's body is one read behind the one the bike is drawn from. Steer and crank are not.
     c.body_x=1
     check(capture(neutral.presentation_pose).bike.center_of_mass.x==0,"the rider is posed from the body before this read")

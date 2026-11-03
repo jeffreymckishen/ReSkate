@@ -458,13 +458,16 @@ end
 -- The rider in a manual, from Ride's rider_shift: how far the physics moves the centre of mass, back
 -- positive, in metres (the pitch couple over the weight). Back, the hips go behind the saddle and
 -- down, arms straight and the chest up; forward, the hips come toward the bars and the chest down
--- over them. Standing, so the saddle does not hold the hips. The shift is taken to the centimetre,
--- so a steady manual composes once and is then mapped (compose_memo).
-function MP.manual_rider(shift)
+-- over them. Standing, so the saddle does not hold the hips: as far as standing says, 0 to 1, which
+-- Ride eases in and out with the manual (rider_standing), and all the way without one. The shift is
+-- taken to the centimetre, so a steady manual composes once and is then mapped (compose_memo).
+function MP.manual_rider(shift, standing)
     if not finite(shift) then return nil, "the rider's shift is not a finite distance" end
+    if standing == nil then standing = 1 end
+    if not finite(standing) or standing < 0 or standing > 1 then return nil, "the rider's standing is 0 to 1" end
     local s = math.floor(clamp(shift, -.3, .3) * 100 + .5) / 100
     local back, forward = math.max(s, 0), math.max(-s, 0)
-    return {hip_offset = {0, -.5 * back, -1.2 * s}, lean = MP.STANCE.lean - .6 * back + .8 * forward, standing = 1}
+    return {hip_offset = {0, -.5 * back, -1.2 * s}, lean = MP.STANCE.lean - .6 * back + .8 * forward, standing = standing}
 end
 
 local function bike_of(bike, g)

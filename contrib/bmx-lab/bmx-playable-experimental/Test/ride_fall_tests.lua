@@ -10,6 +10,7 @@ local Geometry=require("./bike_geometry")
 local Visual=require("./bike_visual")
 local Identity=require("./lease_identity")
 local M=require("./force_math")
+local MP=require("./mounted_pose")
 local T={}
 local h=Forces.native_seconds
 local R=Geometry.wheel_radius
@@ -860,6 +861,40 @@ function T.run()
             highest=math.max(highest,front)
         end
         check(highest<.006,"a front tyre 1.5 to 2.5 cm off the road is drawn within 5 mm of the body's: "..highest)
+    end)
+    case(function() -- A steady manual's rear carries the whole weight and sinks past the drawn slack: nothing is drawn, so the rider is mapped.
+        local w=harness(flat)
+        w.prompt=true
+        local pose=wheelie(30,4)
+        -- The kernel's 100000 N/m spring holds 106 kg on one wheel 10.4 mm into the road.
+        pose.position[2]-=.0104
+        local api={skater={pose=function(_,weight)
+            if weight==MP.PROBE_WEIGHT then error("place has a position, a rotation or both",0) end
+            return true
+        end}}
+        local poser=MP.new(api)
+        check(poser:mount(0).ok,"the poser mounts on a constructed skater.pose")
+        check(in_manual(w,pose,10)==nil,"the manual is ridden")
+        local drawn,shift=0,nil
+        for i=1,90 do
+            local out=w.step(pose)
+            check(not out.stop_requested,"a steady manual rides on: "..tostring(out.issue))
+            local a=out.presentation_pose
+            if a.movement_bike_pitch~=0 or a.movement_bike_lift~=nil or a.movement_bike_shift~=nil then drawn+=1 end
+            -- As Core poses the rider (bike_runtime_core pose_step).
+            local articulation={steer=a.steer,crank_phase=a.crank_phase,barspin=a.barspin,tailwhip=a.tailwhip,
+                movement_bike_pitch=a.movement_bike_pitch,movement_bike_roll=a.movement_bike_roll,
+                movement_bike_lift=a.movement_bike_lift,movement_bike_shift=a.movement_bike_shift}
+            local input={bike={center_of_mass=pose.position,rotation=pose.rotation},articulation=articulation,
+                rider=a.rider_shift~=nil and MP.manual_rider(a.rider_shift) or nil}
+            local r=poser:tick(i/60,input)
+            check(r.ok and r.sent,"the manual's rider is posed: "..tostring(r.reason))
+            shift=a.rider_shift
+        end
+        check(shift~=nil,"the kernel holds the manual, and the rider stands in it")
+        check(drawn==0,"a rear 10.4 mm into the road draws nothing: "..drawn.." of 90 steps drawn")
+        local hits,misses=poser.memo_hits or 0,poser.memo_misses or 0
+        check(hits+misses==90 and hits>=81,"the manual's rider is mapped from its memo on 90% of its ticks: "..hits.." hits, "..misses.." misses")
     end)
     return {cases=cases,assertions=n,native_authority=false,constructed=true}
 end

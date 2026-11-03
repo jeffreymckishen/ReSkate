@@ -40,9 +40,13 @@ local HELD_DEPTH, HELD_FLOOR, HELD_FLAT_FLOOR = .095, .19, .24
 -- body, its rays and every force stay where they are, and the rider's hands and feet go with the bars and pedals
 -- drawn. The first centimetre is left, as a rolling tyre is drawn about 5 mm into the road, so ordinary riding
 -- draws nothing. A drawn wheel moves at most this fast, in m/s, so a ray that drops out for a step does not flicker it.
+-- Nor is a rise under LIFT_LEAST drawn: the kernel's spring holds a wheel no deeper than its 15 mm maximum deflection
+-- (forces.lua landing), and in a manual the rear alone carries the weight and sinks 10.4 mm, just past the slack.
+-- Drawn, that published a sub-millimetre lift every step, and the rider was composed afresh every tick, never mapped
+-- from its memo (mounted_pose.lua compose_memo): 380 to 480 us a tick against 40 to 85.
 -- The drawn bike is lifted along the ground's normal, which in a manual stands 20 to 36 degrees from the bike's own
 -- up; LIFT_TILT bounds that direction, past any manual.
-local LIFT_SLACK, LIFT_RATE, LIFT_TILT = .01, 3, math.rad(45)
+local LIFT_SLACK, LIFT_RATE, LIFT_LEAST, LIFT_TILT = .01, 3, .005, math.rad(45)
 -- A tyre that strikes a kerb loses speed to it, where the held row alone lifted the wheel and let it roll on as if
 -- the kerb were not there. A wheel whose gap closes by CURB_STEP or more onto a flat top (normal up at least
 -- CURB_FLAT), rolled or hopped into it, has struck a step that high: the least of how far its gap closed, how far
@@ -163,12 +167,13 @@ local TRICK_RELEASES = table.freeze({"barspin_release","release_left_hand","rele
 -- sphere's, and a leaning tyre is a disc whose rim stands clear of that
 -- sphere, so lifting it the depth itself never draws it into the ground nor
 -- further off it than it rolls. A clear wheel, or one off the ground, is
--- drawn where the body has it.
+-- drawn where the body has it, and so is one under LIFT_LEAST into it.
 local function ground_rise(row)
     if type(row)~="table" or type(row.contact)~="table" or row.contact.status~="hit" then return 0 end
     local depth=row.ray_separation or row.separation
     if not M.finite(depth) then return 0 end
-    return math.clamp(-depth-LIFT_SLACK,0,HELD_FLAT_FLOOR-LIFT_SLACK)
+    local rise=math.min(-depth-LIFT_SLACK,HELD_FLAT_FLOOR-LIFT_SLACK)
+    return rise>=LIFT_LEAST and rise or 0
 end
 -- How far a row's tyre stands off the ground its ray found, or math.huge for a ray that found none. A wheel no more
 -- than ON_GROUND off it is on the ground, as fall() and ahead() count one.

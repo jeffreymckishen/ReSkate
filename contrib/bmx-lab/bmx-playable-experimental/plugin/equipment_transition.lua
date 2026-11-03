@@ -5,7 +5,7 @@ local Transition, Policy = {}, {}
 Policy.__index = Policy
 -- update(frame) accepts integer now_ms, gesture_down/loaded/allowed, a caller
 -- context token, slot0..3 and an observation of focus/menu/gameplay/local-player,
--- teleport/ground/ragdoll/fall/state facts. Replies carry attempt and handle;
+-- teleport/ground/ragdoll/fall/state facts, and optionally pad_rest. Replies carry attempt and handle;
 -- receipt_result also carries the read_id, and store/ack results the exact
 -- decimal sequence. A store result attests the caller saved the full snapshot;
 -- the model cannot establish storage durability. No reskate globals are used.
@@ -136,6 +136,11 @@ local function standing(f,state)
     local o=f.observation
     return common(f) and o.grounded and o.ragdoll_known and not o.ragdoll and not o.fallen and o.state==state
 end
+-- The SDK revokes or expires a Y pulse whose controller is held in warmup, so the baseline's dwell before the
+-- request also needs the pad at rest. A caller that reports no pad (pad_rest nil) leaves this to standing alone.
+local function quiet(f,state)
+    return standing(f,state) and f.observation.pad_rest~=false
+end
 -- First failed standing predicate on the most recent valid settling observation.
 -- This single witness is not a history, timestamp or native-consumption claim.
 local function standing_failure(f,state)
@@ -232,7 +237,9 @@ function Policy:_begin(f)
     self._attempt+=1;self._phase,self._outcome="baseline","pending"
     self._context,self._slot,self._start=f.context,f.slot,f.now_ms
     self._initial,self._expected=f.observation.state,f.observation.state==100 and 504 or 100
-    self._quiet_first,self._quiet_last=f.now_ms,f.now_ms
+    -- The gesture's own sample starts the dwell only with the pad at rest.
+    local first=f.observation.pad_rest~=false and f.now_ms or nil
+    self._quiet_first,self._quiet_last=first,first
     self._awaiting,self._unknown,self._unsafe,self._handle,self._receipt,self._terminal=false,false,false,nil,nil,nil
     self._boundary,self._acked,self._ack_failed=nil,false,false
     self._read_id,self._read_pending,self._read_at=0,nil,nil
@@ -262,7 +269,7 @@ function Policy:update(f)
         if f.observation.fallen or f.observation.ragdoll_known and f.observation.ragdoll then self:_fault("fall_observed") end
         if self._phase=="baseline" then
             if f.observation.state~=self._initial then self:_fault("baseline_changed") end
-            if not standing(f,self._initial) then self._quiet_first,self._quiet_last=nil,nil end
+            if not quiet(f,self._initial) then self._quiet_first,self._quiet_last=nil,nil end
         elseif self._phase=="settling" and not standing(f,self._expected) then
             self._suffix.first_ms,self._suffix.last_ms,self._suffix.qualified_samples,self._suffix.seconds=nil,nil,0,0
             self._suffix.last_failure=standing_failure(f,self._expected)
@@ -278,7 +285,7 @@ function Policy:update(f)
             if self._phase=="baseline" then
                 if self._boundary then self:_done("failed",self._boundary)
                 elseif f.observation.state~=self._initial then self:_done("failed","baseline_changed")
-                elseif not standing(f,self._initial) then self._quiet_first,self._quiet_last=nil,nil
+                elseif not quiet(f,self._initial) then self._quiet_first,self._quiet_last=nil,nil
                 else
                     if not self._quiet_last or f.now_ms-self._quiet_last>limits.maximum_gap_ms then self._quiet_first=f.now_ms end
                     self._quiet_last=f.now_ms

@@ -150,6 +150,52 @@ function tests.run()
             "a later positive frame cannot revive an already failed common gate")
         cases+=1
     end
+    do
+        -- The SDK revokes or expires a Y pulse whose controller is held in warmup, which ended both failed Returns
+        -- in the user's log of 2026-11-02. The baseline's 600 ms now need the pad at rest as well as standing.
+        local function at(t,rest,changes)
+            local f=frame(t,changes);f.observation.state=504;f.observation.pad_rest=rest;return f
+        end
+        local p=Transition.new()
+        p:update(at(0,true))
+        local o=p:update(at(1,false,{gesture_down=true}))
+        check(o.phase=="baseline" and not o.intents.request,"a held pad still lets the switch begin its baseline")
+        for t=101,1501,100 do
+            o=p:update(at(t,false))
+            check(o.phase=="baseline" and not o.intents.request,"no Y is asked for while the pad is held")
+        end
+        for t=1601,2101,100 do
+            o=p:update(at(t,true))
+            check(not o.intents.request,"the 600 ms begin when the pad is let go")
+        end
+        o=p:update(at(2101,false))
+        check(o.phase=="baseline" and not o.intents.request,"a held sample, even at a repeated time, asks for nothing")
+        for t=2201,2701,100 do
+            o=p:update(at(t,true))
+            check(not o.intents.request,"and the 600 ms begin again, as after any sample that is not quiet")
+        end
+        o=p:update(at(2801,true))
+        check(o.intents.request and o.intents.request.button=="y" and o.expected_state==100,"600 ms at rest asks for the Y")
+        -- The gesture's own held sample starts no dwell either.
+        p=Transition.new();p:update(at(0,true));p:update(at(1,false,{gesture_down=true}))
+        for t=101,601,100 do
+            o=p:update(at(t,true))
+            check(not o.intents.request,"the dwell starts at the first sample at rest, not at a held gesture")
+        end
+        o=p:update(at(701,true))
+        check(o.intents.request,"600 ms after that first sample at rest")
+        -- At rest throughout, a switch asks at 600 ms as before, the step-off from the board a mount starts with too.
+        p=Transition.new()
+        p:update(frame(0,{observation={pad_rest=true}}))
+        p:update(frame(1,{gesture_down=true,observation={pad_rest=true}}))
+        for t=101,501,100 do
+            o=p:update(frame(t,{observation={pad_rest=true}}))
+            check(not o.intents.request,"not before 600 ms")
+        end
+        o=p:update(frame(601,{observation={pad_rest=true}}))
+        check(o.intents.request and o.expected_state==504,"a pad at rest takes nothing longer")
+        cases+=1
+    end
     return {cases=cases,assertions=assertions,native_actions=0}
 end
 return tests

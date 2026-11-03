@@ -105,6 +105,26 @@ function T.run()
         w.tick(math.ceil(30000/16));w.on_tick=nil;w.ragdoll=false;w.pulse_mode="neutral"
         check(player_remounts(w),"a fall during the pulse ends that pulse, not the session")
     end)
+    case(function() -- The controls let go for a moment as the Return arms its switch, then held again.
+        -- The user's log of 2026-11-02: the Return saw the controller at rest once and armed the switch, the
+        -- controller was held again before the Y went out, and the SDK let that press expire unpressed.
+        local w=start();w.tilt_stop(59.7)
+        local arms,was,held,released={},false
+        w.on_tick=function()
+            local armed=w.T and w.T.gear_requested==true
+            if armed and not was then arms[#arms+1]=w.now end;was=armed
+            if not held and armed and w.entry:status().phase=="returning" then held=w.now;w.pad.buttons.rb=true
+            elseif held and not released and w.now-held>=2000 then released=w.now;w.pad.buttons.rb=false end
+        end
+        -- As in the SDK, a press asked for while the controller is held is never published.
+        w.on_pulse=function(p) if w.pad.buttons.rb then p.mode="held" end end
+        for _=1,3000 do w.tick();if riding(w,1) then break end end
+        local first,second=w.pulses[1],w.pulses[2]
+        check(held and released and first and first.at>=released+600 and first.mode=="neutral",
+            "the switch asks for no Y while the control is held, and asks 600 ms after it is let go")
+        check(w.pulse_n==2 and riding(w,1),"that one press reaches the board, and the ride goes on")
+        check(second and #arms==2 and second.at-arms[2]<=650,"the step-off's switch, the pad at rest, still goes 600 ms after it is armed")
+    end)
     case(function() -- The SDK's Try-lock refuses the Follow ACK once.
         local w=Chain.new()
         local real=w.R.world.physics.acknowledge_follow;local refused=false

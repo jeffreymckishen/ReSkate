@@ -672,7 +672,12 @@ function Tests.run()
         f.focused=true;f.game_menu=true
         for _=1,60 do f.now+=984;f.tick() end
         check(f.entry:status().phase=="returning" and f.toggles==0,"nor does a minute in the pause menu")
-        f.game_menu=false;f.tick()
+        -- The Insert overlay, focused and with the pause menu closed, at a pace the 250 ms gap cap leaves whole:
+        -- 48 s that would all count if the overlay were not a time out of the game.
+        f.game_menu=false;f.overlay=true
+        for _=1,240 do f.now+=184;f.tick() end
+        check(f.entry:status().phase=="returning" and f.toggles==0,"nor do 48 s with the Insert overlay open")
+        f.overlay=false;f.tick()
         check(f.toggles==1,"back in the game the switch is armed")
         f.latest=cleaned();f.stock=100;f.tick()
         check(f.entry:status().phase=="skateboard","and the Return reaches the skateboard")

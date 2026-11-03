@@ -23,7 +23,8 @@ controls while the bike gets ready. The BMX page in the Insert menu says the sam
   front comes down.
 - A manual lifts from a little faster than a walk, so with A and the stick held from a stop the bike pedals up to
   that first. A manual coasts: the rider stops pedalling while the front is up, even with A held, and puts the
-  front down once the bike slows to a walk.
+  front down once the bike slows to a walk. A manual that ends because the bike slowed to a walk does not start
+  again until the stick is let go, so with A held the rider pedals on instead of lifting the front again.
 - Steer a manual with the left stick. The bike carves on its back wheel, more gently than on two.
 - Hold B in a manual and the front comes down: in under a second from a low manual, in about two from the highest.
   It stays down while B is held. Tap B to save a manual going over backwards.

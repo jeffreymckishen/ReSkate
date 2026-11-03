@@ -629,6 +629,55 @@ function T.run()
             check(down_speed and down_speed<=t.manual_min_speed+.05,what..": the manual coasts down to a walk: "..tostring(down_speed))
         end
     end)
+    case(function() -- Up a street grade with A and the stick held from a stop: one lift, then the rider pedals on up.
+        -- Trial mn5, up a 10 degree grade: pedalled to the start speed, the front lifted, the bike fell below a walk
+        -- in .4 s, the front came down and the rider pedalled again, every 1.6 s. Here, before the manual waited for
+        -- the stick to be let go, it lifted seven times in 10 s up 8% and 10% and five up 17.6%, and the cranks
+        -- started and stopped 10 to 14 times.
+        for _,grade in ipairs({.08,.1,.176}) do
+            local lifts,up,switches,last=0,false,0,nil
+            local ride=run({steps=600,ground=Ground.plane(0,grade),controls=function() return {pedal=1,manual=.5} end,
+                each=function(step,body,out,wheels,samples)
+                    local front=gap(samples[1])
+                    if front>.05 and not up then up=true;lifts+=1 elseif front<=.005 and up then up=false end
+                    if last~=nil and last~=out.pedaling then switches+=1 end
+                    last=out.pedaling
+                end})
+            local what=string.format("up %.1f%%",grade*100)
+            check(ride.refused==0 and lifts==1,what..": the front lifts once in 10 s: "..lifts)
+            check(switches<=3,what..": the cranks stop and start "..switches.." times")
+            check(last==true,what..": and the rider is pedalling up the hill at the end")
+        end
+    end)
+    case(function() -- A manual that slowed to a walk starts again once the stick has been let go; one B put down, once B is.
+        local t=Forces.tuning()
+        -- On the flat from a stop with A held: up at the start speed, coasting down to a walk, pedalled on with the
+        -- stick still held and no second lift at the start speed. Let go for half a second and pulled again, it lifts.
+        local lifts,up,down_speed,pedalled={},false,nil,false
+        local ride=run({steps=720,controls=function(step)
+            return {pedal=1,manual=(step<=480 or step>510) and .5 or 0}
+        end,each=function(step,body,out,wheels,samples)
+            local front=gap(samples[1])
+            if front>.05 and not up then up=true;lifts[#lifts+1]=step
+            elseif front<=.005 and up then up=false;down_speed=down_speed or M.length(body.linear_velocity) end
+            if step>420 and step<=480 and out.pedaling then pedalled=true end
+        end})
+        check(ride.refused==0 and lifts[1] and lifts[1]*h<1,"the front lifts from a stop: "..tostring(lifts[1]))
+        check(down_speed and down_speed<=t.manual_min_speed+.05,"and comes down at a walk: "..tostring(down_speed))
+        check(pedalled and not (lifts[2] and lifts[2]<=510),"the rider pedals on with the stick held, and it does not lift: "..tostring(lifts[2]))
+        check(#lifts==2 and lifts[2]>510 and (lifts[2]-510)*h<=.3,"let go and pulled again, it lifts: "..tostring(lifts[2]))
+        -- B puts a manual down and stops the bike, the stick held: let go of B, A pedals it to the start speed and the
+        -- front lifts, as it did before the manual waited for the stick.
+        local braked,relift=false,nil
+        run({steps=420,speed=4,controls=function(step)
+            if step<=15 then return {} end
+            return {manual=.5,brake=step>105 and step<=225 and 1 or 0,pedal=step>225 and 1 or 0}
+        end,each=function(step,body,out,wheels,samples)
+            if step>105 and step<=225 and gap(samples[1])<=.005 then braked=true end
+            if step>225 and not relift and gap(samples[1])>.05 then relift=step end
+        end})
+        check(braked and relift and (relift-225)*h<1.5,"after B the held stick lifts the front again: "..tostring(relift))
+    end)
     case(function() -- A hop from any manual pops level: the rider pushes the bars forward on either side of the balance.
         -- With the law past the balance the pop was a 156 N*m nudge: m=.85 landed at 9 degrees and m=.9 at 33, on the
         -- back wheel, near where it goes over.

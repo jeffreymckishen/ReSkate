@@ -185,8 +185,9 @@ end
 -- refused step keep it: it holds no derivative, and outside the band this
 -- step's speed decides it alone. Whether the bike is in a manual is kept the
 -- same way, so a hitch does not drop the front of a held manual, and so is
--- how long the rider's throw has been in use.
-function Controller:reset() self.last_hop_event=0 self.normals={{},{}} self.landing_impact={false,false} self.travel_direction=0 self.air={} self.steering={} self.pump=Pump.new() self.pump:reset() self.pedal_latch=F.pedal_state() self.brake_share=0 self.brake_squeeze=0 self.manual_engaged=false self.manual_throw_seconds=0 end
+-- how long the rider's throw has been in use and whether a manual slowed to
+-- a walk with the stick still held.
+function Controller:reset() self.last_hop_event=0 self.normals={{},{}} self.landing_impact={false,false} self.travel_direction=0 self.air={} self.steering={} self.pump=Pump.new() self.pump:reset() self.pedal_latch=F.pedal_state() self.brake_share=0 self.brake_squeeze=0 self.manual_engaged=false self.manual_throw_seconds=0 self.manual_slowed=false end
 function Controller:invalidate_continuity()
     -- A missed command breaks one-step derivative and state-machine history.
     -- Accepted hop consumption and authored tuning remain authoritative. The
@@ -213,6 +214,7 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     local prior_brake_share,prior_squeeze=self.brake_share,self.brake_squeeze
     local prior_manual=self.manual_engaged==true
     local prior_throw=M.finite(self.manual_throw_seconds) and math.max(0,self.manual_throw_seconds) or 0
+    local prior_slowed=self.manual_slowed==true
     self.normals={{},{}} self.landing_impact={false,false} self.travel_direction=0 self.air={} self.steering={} self.pump:reset()
     if not M.finite(h) or math.abs(h-F.native_seconds)>1e-8 then out.issue="unsupported_step" return out end
     if not tuning_valid(t) or not M.valid_body(measured) or not M.vec(measured.linear_velocity,50) or not M.vec(measured.angular_velocity,40) or
@@ -401,15 +403,22 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     local brake_wanted=c.enabled and math.clamp(c.brake,0,1) or 0
     local manual_speed=forward and M.dot(M.sub(measured.linear_velocity,surface),forward) or speed
     local rear_support,front_support=bit32.band(support_mask,2)~=0,bit32.band(support_mask,1)~=0
+    -- A manual that slowed to a walk with the stick still in its band does not start again until the stick is let
+    -- go. Up a 10 degree street grade with A held, the bike pedalled to manual_start_speed, lifted, fell below
+    -- manual_min_speed in .4 s, put the front down and pedalled again: four lifts in 6 s, the cranks starting and
+    -- stopping each time. A manual ended by B is not one: let go of B with the stick held, it lifts again.
+    local slowed=prior_slowed and manual_amount>0
     local manual_engaged=false
     if rear_support and c.enabled and contacts[2].status=="hit" then
         if front_support then
-            manual_engaged=manual_amount>0 and brake_wanted<=0 and manual_speed>=(prior_manual and t.manual_min_speed or t.manual_start_speed)
+            manual_engaged=manual_amount>0 and brake_wanted<=0 and
+                (prior_manual and manual_speed>=t.manual_min_speed or not slowed and manual_speed>=t.manual_start_speed)
         else
-            manual_engaged=prior_manual or manual_amount>0 and manual_speed>=t.manual_min_speed
+            manual_engaged=prior_manual or not slowed and manual_amount>0 and manual_speed>=t.manual_min_speed
         end
     end
     local manual_wanted=manual_engaged and manual_amount>0 and manual_speed>=t.manual_min_speed
+    slowed=slowed or prior_manual and manual_amount>0 and brake_wanted<=0 and manual_speed<t.manual_min_speed
     local carving=manual_engaged and not front_support
     -- The rear tyre pushes along the surface's normal, so the balance is the centre of mass over the contact along
     -- that normal. Measured level instead, a bike rolling down a 15% ramp looped out and one going up 8% chattered
@@ -636,7 +645,7 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     if loaded and not out.hop_applied then reservation(air,c.recovery_step_verified,c.enabled,true,intent,launch) end
     self.air=air out.air_rotation_reserved=air.reserved==true if c.enabled then self.steering={valid=true,angle=out.front_steer_angle} end
     self.brake_share=brake_share self.brake_squeeze=brake
-    out.manual_active=manual_engaged out.manual_offset=manual_d self.manual_engaged=manual_engaged
+    out.manual_active=manual_engaged out.manual_offset=manual_d self.manual_engaged=manual_engaged self.manual_slowed=slowed
     self.manual_throw_seconds=manual_engaged and not front_support and manual_d>t.manual_hold_back and prior_throw+h or 0
     self.pump=pump self.pedal_latch=next_latch out.valid=true out.issue="none" return out
 end
@@ -672,7 +681,7 @@ function Controller:_adopt(other)
     self.last_hop_event=other.last_hop_event self.normals=other.normals self.landing_impact=other.landing_impact self.travel_direction=other.travel_direction
     self.air=other.air self.steering=other.steering self.pump=other.pump self.pedal_latch=other.pedal_latch
     self.brake_share=other.brake_share self.brake_squeeze=other.brake_squeeze self.manual_engaged=other.manual_engaged
-    self.manual_throw_seconds=other.manual_throw_seconds
+    self.manual_throw_seconds=other.manual_throw_seconds self.manual_slowed=other.manual_slowed
 end
 function Controller:step(h,body,wheels,samples,controls,speculative)
     local c=F.controls(controls) local baseline_controller=self:clone()

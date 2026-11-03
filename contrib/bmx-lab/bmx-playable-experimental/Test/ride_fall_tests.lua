@@ -547,6 +547,41 @@ function T.run()
             check(lost>.85*owed and lost<=owed,"and the speed it owes: "..lost.." of "..owed)
         end
     end)
+    -- Held over the road, then coming down at 3 m/s, 5 cm a step: the tyres are over a kerb's top by over on step at-1,
+    -- 5 cm lower on step at, and on whatever is under them from the step after.
+    local function fall(over,at)
+        return function(i)
+            if i<=12 or i>at then return 0,0 end
+            local left=math.min(at-1-i,2)
+            return .15+over+.05*left,left<2 and -3 or 0
+        end
+    end
+    -- Where a kerb's edge lies phase of the way along the front hub's travel on step at, for that lift.
+    local function edge_at(lift,at,phase)
+        local speeds=roll_over(kerb(math.huge,0),7.4,STEPS,lift)
+        local reach=AXLES
+        for i=1,at-1 do reach+=speeds[i]*h end
+        return reach+phase*speeds[at]*h
+    end
+    case(function() -- A hop coming down onto a kerb's top pays for what the tyre did not clear at the edge, not for landing.
+        -- The front hub passes the edge as the tyres come down: a tenth to three tenths of the way through the step.
+        for _,phase in ipairs({.1,.2,.3}) do
+            -- 2 cm over the top a step before, 0.5 to 1.5 cm over it at the edge, then 3 cm into the top as it lands.
+            local lift=fall(.02,19)
+            local _,struck=roll_over(kerb(edge_at(lift,19,phase),.15),7.4,STEPS,lift)
+            check(#struck[1]==0,"a front tyre over the top at the edge strikes nothing: "..#struck[1]
+                ..(struck[1][1] and " struck "..struck[1][1][2] or "").." at "..phase)
+            check(#struck[2]==1 and math.abs(struck[2][1][2]-.15)<.005,"and the rear, rolled into it after, strikes it all: "
+                ..#struck[2]..(struck[2][1] and " struck "..struck[2][1][2] or "").." at "..phase)
+            -- 4.5 cm short a step before and 5 to 6 cm short at the edge: it strikes, for no more than it was short there.
+            lift=fall(-.045,19)
+            _,struck=roll_over(kerb(edge_at(lift,19,phase),.15),7.4,STEPS,lift)
+            local short=.045+.05*phase
+            local front=struck[1][1] and struck[1][1][2]
+            check(#struck[1]==1 and front>.04 and front<=short+.001,"a front tyre short at the edge strikes no more than that: "
+                ..#struck[1].." struck "..tostring(front).." of "..short.." at "..phase)
+        end
+    end)
     case(function() -- A kerb struck while braking for a car: its push adds to the stop's rather than taking its place.
         local car=face(3+R+.55)
         local _,struck,both=roll_over(kerb(3,.15),7.4,24,nil,car)

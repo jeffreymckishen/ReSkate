@@ -33,8 +33,15 @@ local defaults={gravity={0,-9.8,0},wheelbase=1.203956057050485*scale,steer_limit
     balance_stiffness=1600,balance_damping=360,balance_torque_limit=1200,lean_limit=.52,manual_pitch=.4,
     air_yaw_torque=200,air_pitch_torque=160,neutral_air_damping_rate=2.75,hop_delta_speed=4.5,
     contact_gap=.02,maximum_penetration=.10,recovery_fraction=.15,recovery_speed_limit=.4,
-    force_limit=40000,torque_limit=4000,wheel_speed_limit=500,contact_iterations=12,pedal_fade_start=6,pedal_cutoff=8,
+    force_limit=40000,torque_limit=4000,wheel_speed_limit=500,contact_iterations=12,pedal_fade_start=7,pedal_cutoff=8,
     pedal_top_speed=7.7,pedal_resume_speed=7.2,
+    -- A rider, not a motor: the pedal starts with its full torque, but never puts more than this many watts into
+    -- the rear wheel, so a steep climb slows the bike the way it slows a rider. The constant torque alone held
+    -- 6.4 m/s up a 20% grade, about 1450 W. 1200 W is an elite rider's sprint (about 1100 W in the lab at 100 rpm,
+    -- 1540 W at the peak in the field), held for as long as A is, with no fatigue: a feel choice, not a
+    -- measurement. It takes over from the torque at about 4.2 m/s. The fade starts at 7 m/s because with the old
+    -- fade from 6 as well, a bike on the flat only reached 7.64 m/s and never coasted.
+    rider_power=1200,
     curvature_rate_limit=6,curvature_step_limit=.2,curvature_min_speed=.5,brake_iterations=96,
     -- Estimates, not measurements: a street tyre's rolling coefficient, and drag in N per (m/s)^2 for a
     -- rider sitting up on a BMX (air density 1.2, CdA .5).
@@ -77,7 +84,7 @@ local function tuning_valid(t)
     end
     for _,name in {"pedal_torque","front_brake_torque","rear_brake_torque","balance_stiffness","balance_damping","balance_torque_limit",
         "lean_limit","manual_pitch","air_yaw_torque","air_pitch_torque","hop_delta_speed","contact_gap","maximum_penetration",
-        "recovery_fraction","recovery_speed_limit","pedal_fade_start","pedal_cutoff","pedal_top_speed","pedal_resume_speed",
+        "recovery_fraction","recovery_speed_limit","pedal_fade_start","pedal_cutoff","pedal_top_speed","pedal_resume_speed","rider_power",
         "curvature_rate_limit","curvature_step_limit","curvature_min_speed","neutral_air_damping_rate",
         "rolling_resistance","air_drag","tyre_section_radius","brake_lateral_cut","rear_brake_load_share"} do if not M.finite(t[name]) or t[name]<0 or t[name]>1e6 then return false end end
     if type(t.friction)~="table" then return false end
@@ -413,6 +420,8 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
         top_speed=t.pedal_top_speed,resume_speed=t.pedal_resume_speed})
     if not cadence.valid then return out end out.pedaling=cadence.pedaling
     local pedal_scale=math.clamp((t.pedal_cutoff-motor_speed)/(t.pedal_cutoff-t.pedal_fade_start),0,1)
+    -- Torque times wheel speed is the rider's power; past rider_power the push falls as the bike goes faster.
+    pedal_scale*=math.min(1,t.rider_power*wheels[2].radius/(t.pedal_torque*math.max(motor_speed,.01)))
     local pedal=cadence.pedaling and math.clamp(c.pedal,0,1)*pedal_scale or 0
     local pitch=c.enabled and math.clamp(c.nose_manual,0,1)-math.clamp(c.manual,0,1) or 0
     local assist={0,0,0} local world_up=M.unit(M.mul(t.gravity,-1)) if not world_up then return out end

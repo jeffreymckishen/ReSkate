@@ -279,6 +279,39 @@ function T.run()
         local away=run({steps=60,ground=Ground.plane(0,.08),controls=function(step) return {pedal=step>30 and 1 or 0} end})
         check(M.length(away.body.linear_velocity)>.7,"the pedal lets go of the hold at once")
     end)
+    case(function() -- Pedalling is a rider's power: a steep climb slows to what the rider can push, the flat rides as before.
+        local t=Forces.tuning()
+        local rider=1200 -- forces.lua rider_power, in watts
+        local weight=Forces.proposed_body().mass*M.length(t.gravity)
+        local last=math.huge
+        for _,grade in ipairs({.17,.2,.24}) do
+            local sum,count=0,0
+            run({steps=600,speed=6,ground=Ground.plane(0,grade),controls=function() return {pedal=1} end,each=function(step,body)
+                if step>540 then sum+=M.length(body.linear_velocity);count+=1 end
+            end})
+            local speed=sum/count
+            local sine,cosine=grade/math.sqrt(1+grade*grade),1/math.sqrt(1+grade*grade)
+            local watts=speed*(weight*(sine+t.rolling_resistance*cosine)+t.air_drag*speed*speed)
+            -- A constant torque held 6.6, 6.4 and 6.1 m/s here, 1300 to 1620 W.
+            check(watts<=rider*1.02 and watts>=rider*.97,string.format("up %d%% the rider holds %.0f W at %.2f m/s",grade*100,watts,speed))
+            check(speed<last-.5,"each steeper grade is clearly slower")
+            last=speed
+        end
+        local street
+        run({steps=600,speed=6,ground=Ground.plane(0,.13),controls=function() return {pedal=1} end,each=function(step,body)
+            if step==600 then street=M.length(body.linear_velocity) end
+        end})
+        check(street>6.8,"the city's 13% hills still climb near full speed: "..street)
+        local marks,reached={5,7.4,7.69},{}
+        run({steps=420,controls=function() return {pedal=1} end,each=function(step,body)
+            local speed=M.length(body.linear_velocity)
+            for _,mark in ipairs(marks) do if not reached[mark] and speed>=mark then reached[mark]=step*h end end
+        end})
+        -- With the fade still from 6 m/s the power limit left the bike at 7.64 m/s, pedalling forever under the band.
+        check(reached[5] and reached[5]<2.2,"from rest to 5 m/s as briskly as before: "..tostring(reached[5]))
+        check(reached[7.4] and reached[7.4]<4,"and to 7.4 m/s inside 4 s: "..tostring(reached[7.4]))
+        check(reached[7.69]~=nil,"the flat still reaches the top of the band, where the rider coasts")
+    end)
     return {cases=cases,assertions=n,native_authority=false,constructed=true}
 end
 return T

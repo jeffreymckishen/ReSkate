@@ -42,6 +42,8 @@ offline the game does not keep it, so set it again each launch.
   the menu is closed and the controls are released.
 - Top speed is about 7.7 m/s on the flat. The rider stops pedalling there and coasts down to about 7.2 m/s before
   pedalling again. A hill can take the bike much faster than that, and a coast slows by itself.
+- Pedalling has a rider's power, not a motor's. Up a ramp steeper than about 15% the bike slows with A held, the
+  steeper the slower, while the city's hills still climb at close to full speed.
 - A stopped bike holds on a street grade, so hold A for a moment to start down a gentle hill. Ramps steeper than about 15% roll back.
 - A crash (the bike going over, a hit at speed, or the rider being knocked off) gets back on the bike after a few
   seconds, which spends a mount. On the last mount of a launch it goes back to the skateboard instead. Banks and

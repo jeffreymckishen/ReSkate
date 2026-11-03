@@ -74,6 +74,9 @@ local AHEAD_BEHIND, AHEAD_MIN, AHEAD_MAX = .13, 1, 6
 -- see the same curve further up, not a wall.
 local AHEAD_FACE_UP, AHEAD_FACING = .5, .25
 local AHEAD_LOW = {0,.15,.73}
+-- In a manual the lanes lie on the ground under the rear wheel. A new ground this close to the last one taken (the
+-- cosine of the kernel's curvature_step_limit, .2 rad in a step) is the same surface curving, as up a quarter pipe.
+local AHEAD_GROUND_TURN = math.cos(.2)
 -- The stop is the landing law turned sideways, on the forecast this step's command acts on: closing speed is let
 -- through down to what this deceleration can still take out before the face, on at most this force. At a face it
 -- bounces back this share of the speed, so the bike can steer away, and pedalling stops within the pedal gap.
@@ -1303,10 +1306,20 @@ local function ahead(s,frame,body,options,contact)
     -- from 30 degrees a car's vertical face is too steep to its up to count as one, so a car was ridden into. The
     -- lanes are laid as on the bike set down level about its rear hub, on the ground under the rear wheel; the
     -- front then reads about .12 m ahead of the lifted tyre at 30 degrees, so a car is stopped at slightly early.
+    -- The ground is the rear ray's normal only while it is near level, or near the last ground taken: a kerb's lip
+    -- or bevel under the rear wheel ({0,.35,-.94}) laid the lanes about 70 degrees over for the step, and the car
+    -- stop saw nothing. Otherwise the last ground stands in, and with none the lanes stay on the bike.
     local rear=contact.samples[2]
-    if s.manual_active and rear and rear.contact.status=="hit" and rear.separation<=.02 then
-        local ground=M.unit(rear.contact.normal)
-        local level=ground and M.unit(M.sub(forward,M.mul(ground,M.dot(forward,ground))))
+    local ground=rear and rear.contact.status=="hit" and rear.separation<=.02 and M.unit(rear.contact.normal) or nil
+    if ground then
+        local world=M.unit(M.mul(s.force.tuning.gravity,-1))
+        local last=s.ahead_ground
+        if world and M.dot(ground,world)>=CURB_FLAT or last and M.dot(ground,last)>=AHEAD_GROUND_TURN then
+            s.ahead_ground=ground
+        else ground=last end
+    end
+    if s.manual_active and ground then
+        local level=M.unit(M.sub(forward,M.mul(ground,M.dot(forward,ground))))
         if level then
             local g=s.geometry
             local hub=M.add(body.center_of_mass,M.turn(q,M.sub(g.rear_axle,g.com)))

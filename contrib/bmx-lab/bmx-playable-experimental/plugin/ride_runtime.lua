@@ -232,12 +232,16 @@ local function presentation(previous,model,wheels,h,samples,geometry,orientation
     -- of it, and the shift keeps the wheel it turns about where the body has it
     -- across the ground. Nothing in Ride or the kernel reads the pitch, lift or shift back.
     -- Only a wheel on the ground holds the drawn bike. One off it, the front in a manual, has nothing under it to
-    -- keep it down: it takes the other's rise, so the whole bike is lifted by the rear's rise with no drawn pitch, and
-    -- the bike turns about the wheel on the ground. Drawn as if the front still stood on the road, a manual climbing
-    -- a kerb nodded 7 degrees nose down about its airborne front wheel for a third of a second, the body at 30 up.
+    -- keep it down: it takes the other's rise, so the whole bike is lifted by the rear's rise with no drawn pitch.
+    -- Drawn as if the front still stood on the road, a manual climbing a kerb nodded 7 degrees nose down about its
+    -- airborne front wheel for a third of a second, the body at 30 up.
     -- It takes no more of that rise than it stands clear of the ground beyond ON_GROUND, so one just off it still
     -- holds the bike nearly as one on it does: a tyre an instant off a kerb's top is not drawn floating over it,
     -- and one hovering about the 2 cm line does not flick 5 cm up and down a step.
+    -- Whatever holds it, the bike turns about the lower hub (Geometry.pitch_lift). With equal rises it does not turn,
+    -- and with the cap binding the lower hub is the one turned about with both wheels on the ground, so nothing
+    -- moves at the 2 cm line. Turned about the wheel on the ground instead, a level bike with its rear in a kerb was
+    -- drawn 1.1 cm along itself back and forth every step its front hovered about that line.
     local front_down,back_down=on_ground(samples[1]),on_ground(samples[2])
     local want_front,want_back=ground_rise(samples[1]),ground_rise(samples[2])
     if front_down and not back_down then want_back=math.min(want_front,clearance(samples[2])-ON_GROUND)
@@ -255,8 +259,7 @@ local function presentation(previous,model,wheels,h,samples,geometry,orientation
     front+=math.clamp(want_front-front,-most,most)
     back+=math.clamp(want_back-back,-most,most)
     if front~=0 or back~=0 then
-        local held=front_down~=back_down and (front_down and "front" or "rear") or nil
-        local pitch,lift,shift=Geometry.pitch_lift(geometry,front,back,tilt,held)
+        local pitch,lift,shift=Geometry.pitch_lift(geometry,front,back,tilt)
         -- On one wheel the bike is lifted whole, its shift the rise times the tilt's sine, 16 cm at most. Only
         -- hubs drawn far apart at a steep tilt pass what bike_visual draws (its SHIFT_LIMIT), and a bike with
         -- both wheels on the ground stands near square to it; the clamp keeps any pose one the visual takes.

@@ -70,16 +70,16 @@ end
 -- road included. The shift takes that back off the lower hub, so the bike is drawn turned about the wheel on the
 -- ground, which stays where the physics has it. The raised hub then comes in toward it by what the climb shortens
 -- the wheelbase seen from above, 1 cm at 14 cm and 3 cm at the most Ride draws, as a real wheel climbing a kerb does.
--- Given a tilt the rises are along it, as hub_rise takes them, and held ("front" or "rear") names the hub kept where
--- the body has it across that direction, in place of the lower one. Equal rises lift the whole bike along the tilt
--- with no pitch. So a bike on its rear wheel in a manual is lifted by the rear's rise straight off the ground that
--- wheel is on: lifted along its own up, 30 degrees off it, the rear tyre was drawn 2 to 3 cm into a kerb and 4 to
--- 7 cm behind where it touches it. The lift and shift come back along the bike's own up and forward, as bike_visual
--- applies them; without a tilt they are the numbers this gave before.
-function G.pitch_lift(geometry,front,rear,tilt,held)
+-- Given a tilt the rises are along it, as hub_rise takes them, and the lower hub is kept where the body has it across
+-- that direction. Equal rises lift the whole bike along the tilt with no pitch, so which hub is kept does not matter
+-- there, and the choice changes only where the rises cross, unpitched. So a bike on its rear wheel in a manual is
+-- lifted by the rear's rise straight off the ground that wheel is on: lifted along its own up, 30 degrees off it,
+-- the rear tyre was drawn 2 to 3 cm into a kerb and 4 to 7 cm behind where it touches it. The lift and shift come
+-- back along the bike's own up and forward, as bike_visual applies them; without a tilt they are the numbers this
+-- gave before.
+function G.pitch_lift(geometry,front,rear,tilt)
     tilt=tilt or 0
-    if not G.hub_rise(geometry,0,0) or not finite(front) or not finite(rear) or not finite(tilt)
-        or held~=nil and held~="front" and held~="rear" then return nil end
+    if not G.hub_rise(geometry,0,0) or not finite(front) or not finite(rear) or not finite(tilt) then return nil end
     local up,along=math.cos(tilt),math.sin(tilt)
     -- A point of the bike in the frame turned by the tilt: how high it is along the tilt, then how far across it.
     local function turned(p) return p[2]*up+p[3]*along,p[3]*up-p[2]*along end
@@ -95,8 +95,7 @@ function G.pitch_lift(geometry,front,rear,tilt,held)
     local pitch=front==rear and 0 or math.acos(k)-math.atan2(a,b)
     local co,si=math.cos(pitch),math.sin(pitch)
     local v2,v3=f2-c2,f3-c3
-    if held==nil then held=front<rear and "front" or "rear" end
-    local w2,w3=(held=="front" and f2 or r2)-c2,(held=="front" and f3 or r3)-c3
+    local w2,w3=(front<rear and f2 or r2)-c2,(front<rear and f3 or r3)-c3
     local lift,shift=front-(v2*co-v3*si-v2),-(w2*si+w3*co-w3)
     return pitch,lift*up-shift*along,shift*up+lift*along
 end

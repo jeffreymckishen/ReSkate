@@ -854,13 +854,31 @@ function T.run()
         end)
         level_kerb.prompt=true
         local highest=0
+        -- Where each hub is drawn, the whole of it: the pitch's swing and the shift move a hub along the bike too.
+        local function hubs(sample,shown)
+            local m=Visual.from_sample(sample,shown)
+            return {m[4][13],m[4][14],m[4][15]},{m[3][13],m[3][14],m[3][15]}
+        end
+        local last_front,last_rear
+        local moved_front,moved_rear=0,0
         for i=1,12 do
             gap=i%2==0 and .015 or .025
             local shown=level_kerb.step(level()).presentation_pose
             local front=shown.movement_bike_lift and Geometry.hub_rise(Geometry,shown.movement_bike_pitch,shown.movement_bike_lift) or 0
             highest=math.max(highest,front)
+            local front_hub,rear_hub=hubs(level_kerb.samples[level_kerb.serial],shown)
+            -- Once the rear's rise has come up (three steps at LIFT_RATE), the drawn bike holds still but for the cap.
+            if i>4 then
+                moved_front=math.max(moved_front,M.length(M.sub(front_hub,last_front)))
+                moved_rear=math.max(moved_rear,M.length(M.sub(rear_hub,last_rear)))
+            end
+            last_front,last_rear=front_hub,rear_hub
         end
         check(highest<.006,"a front tyre 1.5 to 2.5 cm off the road is drawn within 5 mm of the body's: "..highest)
+        -- Held about the rear while the front was past 2 cm and about the front within it, the pitched bike was drawn
+        -- 1.1 cm along itself back and forth every step for as long as the front hovered.
+        check(moved_front<.006 and moved_rear<.002,string.format(
+            "and the drawn bike does not buzz along itself: the front hub moves %.4f a step, the rear %.4f",moved_front,moved_rear))
     end)
     case(function() -- A steady manual's rear carries the whole weight and sinks past the drawn slack: nothing is drawn, so the rider is mapped.
         local w=harness(flat)

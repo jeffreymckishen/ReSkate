@@ -64,7 +64,8 @@ function Entry.new(R,Runtime,Survey,options)
     local used,mount_issued,return_pending,stock_attempted=false,false,false,false
     local attempts_used=0
     local STOCK_RETRIES,STOCK_RETRY_MS,NOTICE_MS,RETURN_LIMIT_MS=4,500,4000,45000
-    local return_since
+    -- Time a Return has spent where the game could take the switch, and the previous tick's clock and answer.
+    local return_used,return_seen,return_open=0,nil,false
     local notice,notice_until,last_clock=nil,0,nil
     local mount_charged,last_stop,logged_phase,logged_line=false,nil,nil,nil
     local function trace(line) call(R.log,"[BMX] "..line) end
@@ -175,6 +176,14 @@ function Entry.new(R,Runtime,Survey,options)
         end
         return p.left_x^2+p.left_y^2<=(7849/32767)^2 and p.right_x^2+p.right_y^2<=(8689/32767)^2
             and p.left_trigger<=30/255 and p.right_trigger<=30/255
+    end
+    -- Whether the game could take the stock switch: focused, in play, no menu open. No Y may be sent otherwise.
+    -- An unreadable answer says yes, so a Return's time limit still runs when this cannot be told.
+    local function switch_possible()
+        local f=call(R.input and R.input.focus)
+        local m=call(R.menu and R.menu.game)
+        if not f[1] or f.n~=2 or not plain(f[2]) or not m[1] or m.n~=2 or not plain(m[2]) then return true end
+        return not (f[2].focused==false or f[2].gameplay==false or f[2].interface_open==true or m[2].open==true)
     end
     local function state()
         local out=call(R.skater and R.skater.telemetry)
@@ -358,6 +367,13 @@ function Entry.new(R,Runtime,Survey,options)
         if not return_plan then return true end
         local function live() return generation==version and not cancelled and not unloaded and return_pending end
         local now=clock();if not live() then return false,"cancelled" end
+        -- Reserve the existing native5s queue lifetime plus100ms observed
+        -- convergence INSIDE the original stop+20s window, never after it.
+        -- A switch whose Y waited for a held controller, or for the game to be in front, can match its target with
+        -- less than that left. Nothing has been placed, so the caller goes on without the placement ("unplaced").
+        if not return_position.attempted and (not now or now<return_plan.stop_ms or now+5100>=return_plan.expires_ms) then
+            return false,"unplaced"
+        end
         if not now or now<return_plan.stop_ms or now>=return_plan.expires_ms then return false,"Return position deadline expired; final Return blocked" end
         if not environment(false) or not live() then return false,"Return position context lost" end
         if return_position.last_poll and now-return_position.last_poll<50 then return false,"pending" end
@@ -368,9 +384,6 @@ function Entry.new(R,Runtime,Survey,options)
             or not plain(level[2]) or level[2].name~=return_plan.level then return false,"Return permission or level changed" end
 
         if not return_position.attempted then
-            -- Reserve the existing native5s queue lifetime plus100ms observed
-            -- convergence INSIDE the original stop+20s window, never after it.
-            if now+5100>=return_plan.expires_ms then return false,"Too little original cleanup time for one queued Return" end
             local p=return_plan.ground
             -- This location came from the live epoch-bound qualified batch,
             -- not a post-park or unclassified ray and not a static-world pin.
@@ -380,7 +393,8 @@ function Entry.new(R,Runtime,Survey,options)
                 or not plain(w.watch) or w.watch.valid~=true or w.watch.state~=100 or w.watch.ragdoll_known~=true
                 or w.watch.ragdoll~=false or w.watch.wipeouts~=return_plan.wipeouts then return false,"Fresh grounded-stock Return context unavailable" end
             now=clock();if not live() then return false,"cancelled" end
-            if not now or now+5100>=return_plan.expires_ms then return false,"Return queue no longer fits original deadline" end
+            -- The reads above take time too; a window that closed during them is the same as one closed before.
+            if not now or now+5100>=return_plan.expires_ms then return false,"unplaced" end
             return_position.attempted=true;return_position.unknown=true -- burn before callback; never retry
             return_position.target=table.freeze({p[1],p[2]+return_plan.actor_floor_clearance_m,p[3]})
             return_position.sent_ms=now
@@ -464,12 +478,31 @@ function Entry.new(R,Runtime,Survey,options)
     local function return_step()
         local version=generation
         local started=clock()
-        return_since=return_since or started
-        if started and return_since and started-return_since>=RETURN_LIMIT_MS then
-            return_since=nil
+        local open=switch_possible()
+        if generation~=version or cancelled or unloaded then return end
+        -- Only a tick that the game could take the switch at both ends counts toward the limit. Time in another
+        -- window or a menu, when no Y may be sent, does not run out a Return that is waiting to send one. A gap
+        -- between ticks, as when the game stops ticking out of focus, counts as no more than 250 ms.
+        if started and return_seen and started>return_seen and open and return_open then
+            return_used+=math.min(started-return_seen,250)
+        end
+        return_seen,return_open=started,open
+        if return_used>=RETURN_LIMIT_MS then
+            return_used,return_seen,return_open=0,nil,false
             fail("Return did not finish: "..text(known and latest.detail,"lifecycle unknown"));return
         end
         if not known or not clean(latest) then detail="Returning: waiting for confirmed cleanup; no stock input sent.";return end
+        if return_plan and stock_attempted and not return_position.attempted then
+            -- The stock press can end with no Y in the game: the SDK revokes or expires it in warmup while the
+            -- controller is held. That transaction let go of everything and matched no target, and nothing has
+            -- been placed, so this Return goes on without its placement, the same as one that measured no
+            -- position. The ordinary path below finds the rider still on foot and re-arms the switch.
+            local e=latest.equipment
+            if plain(e) and (e.phase=="done" or e.phase=="idle") and e.retained==false and e.unloaded==false
+                and e.storage_fault==false and e.outcome~="target_observed" and e.outcome~="unresolved" then
+                return_plan,return_position=nil,nil
+            end
+        end
         if return_plan and stock_attempted then
                 -- Stock's physical transition can replace its root. Place only
                 -- AFTER that exact transaction has observed100 and cleared ACK.
@@ -484,7 +517,13 @@ function Entry.new(R,Runtime,Survey,options)
                 end
                 local ready,why=handback_step(version)
                 if generation~=version or cancelled or unloaded then return end
-                if not ready then
+                if not ready and why=="unplaced" then
+                    -- The switch matched its target, so the rider is on the board, but too late to place them. The
+                    -- Return goes on as one that measured no position: the rider stays where the switch left them and
+                    -- the ordinary path below finishes on the skateboard.
+                    trace("Return placement skipped: the stock switch finished too late in its 20 s window.")
+                    return_plan,return_position=nil,nil
+                elseif not ready then
                     if why~="pending" then
                         return_position.phase="blocked";return_position.reason=why
                         return_position.unknown=return_position.unknown or return_position.queued and not return_position.observed
@@ -735,7 +774,7 @@ function Entry.new(R,Runtime,Survey,options)
         if unloaded or ticking or cancelled or not mount_issued or return_pending or stock_attempted then
             return false,"Return is unavailable; Cancel may stop an unfinished preparation."
         end
-        return_pending=true;return_plan=nil;return_position=nil;stock_retries=0;stock_retry_at=nil;return_since=nil;generation+=1;phase,detail="returning","Stopping the bike before returning to the skateboard."
+        return_pending=true;return_plan=nil;return_position=nil;stock_retries=0;stock_retry_at=nil;return_used,return_seen,return_open=0,nil,false;generation+=1;phase,detail="returning","Stopping the bike before returning to the skateboard."
         if type(owner.request_return)=="function" then
             stopped=true -- one capture/stop callback, even if it refuses or raises
             local version=generation

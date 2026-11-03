@@ -38,11 +38,29 @@ local function ready(o,menu)
     return common(o,menu) and o.grounded==true and o.ragdoll_known==true and o.ragdoll==false
         and o.fallen==false and (o.state==100 or o.state==504)
 end
+local function finite(v) return type(v)=="number" and v==v and math.abs(v)<math.huge end
+-- Every button up and both sticks and triggers at rest, with the radii the entry's pad_released uses. The SDK
+-- revokes or expires a Y pulse whose controller is held in warmup, so the baseline waits for this. An unreadable
+-- pad counts as rest, so it delays nothing.
+local function pad_rest(read)
+    local r=table.pack(call(read))
+    local p=r[2]
+    if not r[1] or r.n~=2 or type(p)~="table" or getmetatable(p)~=nil
+        or type(p.buttons)~="table" or getmetatable(p.buttons)~=nil then return true end
+    for _,name in {"up","down","left","right","start","back","left_stick","right_stick","lb","rb","a","b","x","y"} do
+        if p.buttons[name]==true then return false end
+    end
+    for _,name in {"left_x","left_y","right_x","right_y","left_trigger","right_trigger"} do
+        if not finite(p[name]) then return true end
+    end
+    return p.left_x^2+p.left_y^2<=(7849/32767)^2 and p.right_x^2+p.right_y^2<=(8689/32767)^2
+        and p.left_trigger<=30/255 and p.right_trigger<=30/255
+end
 
 function Runtime.new(services)
     local s=services or reskate
     return setmetatable({_model=Transition.new(),_generation=1,_context="equipment-local-1",_api={
-        now=api(s,"time","now"),focus=api(s,"input","focus"),get=api(s,"skater","get"),
+        now=api(s,"time","now"),focus=api(s,"input","focus"),gamepad=api(s,"input","gamepad"),get=api(s,"skater","get"),
         telemetry=api(s,"skater","telemetry"),level=api(s,"level","current"),
         pulse=api(s,"input","pulse"),read=api(s,"input","pulse_state"),cancel=api(s,"input","pulse_cancel"),
         ack=api(s,"input","pulse_acknowledge"),encode=api(s,"json","encode"),store=api(s,"storage","set")},
@@ -91,7 +109,7 @@ function Adapter:_facts()
     if f and type(f.interface_open)=="boolean" then menu_closed=not f.interface_open end
     local o={focused=f and boolean(f.focused),menu_closed=menu_closed,
         gameplay=f and boolean(f.gameplay),local_player=present,teleport_pending=w and boolean(w.teleport_pending),
-        grounded=grounded,ragdoll_known=ragdoll_known,ragdoll=ragdoll,state=state,fallen=fallen}
+        grounded=grounded,ragdoll_known=ragdoll_known,ragdoll=ragdoll,state=state,fallen=fallen,pad_rest=pad_rest(a.gamepad)}
     local facts={now_ms=t,context=self._context,observation=o,level=level,
         wipeouts=watch and integer(watch.wipeouts,maximum_integer) and watch.wipeouts or nil}
     self._facts_now=facts

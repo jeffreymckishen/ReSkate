@@ -17,6 +17,10 @@ controls while the bike gets ready. The BMX page in the Insert menu says the sam
 - A pedals, B brakes, the left stick steers.
 - Click the right stick to hop. For a smaller hop, pull the right stick back and flick it forward: the longer it was
   held back, the higher the hop.
+- In the air, hold a button and push the right stick all the way over for a trick: LB or RB and down for a barspin
+  left or right, LB or RB and left or right for a one hander, LT and RT together and left or right for a tailwhip,
+  LT or RT and left or right for a one footer. Let the stick come back to the middle before the next one, and finish
+  it before landing.
 - F8, or hold LB + RB and click R3, goes back to the skateboard.
 - From the skateboard, hold LB, then press A to ride again. Stand still and let go while the rider steps off.
 

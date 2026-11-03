@@ -160,7 +160,7 @@ function World.controls(settings, actions, raw, hop, grounded, rotation_reserved
     local manual, nose = a.manual, a.nose_manual
     if not grounded then manual, nose = 0, 0 end
     return { enabled = true, pedal = a.pedal, brake = a.brake, steer = a.steer,
-        manual = manual, nose_manual = nose, air_yaw = a.steer, ground_pump = a.front_weight,
+        manual = manual, nose_manual = nose, manual_held = a.manual_held == true, air_yaw = a.steer, ground_pump = a.front_weight,
         pump_operator_available = true,
         pump_inhibited = hop ~= nil or a.hop_pressed or raw.quick_hop or a.preload > 0,
         rotation_reserved = raw_rotation or rotation_reserved == true,

@@ -219,6 +219,16 @@ function Tests.run()
         local lost,found=held(false),held(true)
         check(lost==0 and math.abs(found-band)<.001,"with no fresh frame too: "..lost.." "..found)
     end
+    do -- Through a step's lost support the stick still holds the manual, for the kernel's walk latch; let go, it holds none.
+        local d=driver()
+        for _=1,20 do d.step({right_y=-.53}) end
+        local air=d.step({right_y=-.53},false)
+        check(air.manual==0 and air.manual_held==true,"no manual in the air, but the stick still holds one: "..tostring(air.manual_held))
+        check(d.step({right_y=-.53},true).manual_held==true,"and on the ground again")
+        local free=d.step({},true)
+        check(free.manual==0 and free.manual_held==false,"let go, it holds none: "..tostring(free.manual_held))
+        check(d.step({},false).manual_held==false,"nor in the air after")
+    end
     do -- R3 from a manual pops at once with no manual; landing with the stick still held goes back into it.
         local d=driver()
         for _=1,20 do d.step({right_y=-.53}) end
@@ -324,7 +334,7 @@ function Tests.run()
             for _=1,20 do c,actions=d.step({right_y=-.53,left_y=-.8},grounded) end
             local raw=Input.raw({available=true,left_y=-.8,right_y=-.53})
             local copy=World.controls(d.mapping._settings,actions,raw,nil,grounded,false)
-            check(copy.manual==c.manual and copy.nose_manual==c.nose_manual,
+            check(copy.manual==c.manual and copy.nose_manual==c.nose_manual and copy.manual_held==c.manual_held,
                 "World.controls matches Mapping "..(grounded and "on the ground" or "in the air")..": "..copy.manual.." "..c.manual)
         end
     end

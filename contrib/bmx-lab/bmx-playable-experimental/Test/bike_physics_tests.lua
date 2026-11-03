@@ -130,10 +130,11 @@ local function run(ride)
         local input={pedal=want.pedal or 0,steer=want.steer or 0,brake=want.brake or 0}
         if want.hop then hop_id+=1;input.hop_event_id=hop_id;input.hop_strength=1 end
         if want.manual then
-            -- As Mapping sends it: only while a wheel is on the ground.
+            -- As Mapping sends it: only while a wheel is on the ground, and whether the stick holds one either way.
             local grounded=false
             for i=1,2 do grounded=grounded or samples[i].contact.status=="hit" and Forces.eligible_support(body,samples[i],.005,.10) end
             input.manual=grounded and want.manual or 0
+            input.manual_held=want.manual>0
         end
         if ride.hitch and ride.hitch(step) then stage:invalidate_continuity() end
         local out,candidate=stage:preview(h,folded,wheels,forecast,input)
@@ -425,6 +426,10 @@ function T.run()
             local refused=Stage.new():preview(h,body,wheels,samples,{manual=bad})
             check(not refused.valid and refused.issue=="invalid_manual","the stage refuses a manual of "..tostring(bad))
         end
+        check(same(Stage.new():preview(h,body,wheels,samples,{manual_held=true}),Stage.new():preview(h,body,wheels,samples,{})),
+            "a stick that holds a manual sends none by itself")
+        local refused=Stage.new():preview(h,body,wheels,samples,{manual=.5,manual_held=1})
+        check(not refused.valid and refused.issue=="invalid_manual","the stage refuses a manual_held that is not true or false")
     end)
     case(function() -- A held manual: the front lifts at once, holds where the stick puts it on the rear wheel alone, coasts, and touches down again.
         -- The low end of the band, the middle and the top: 20 degrees, 28.2, and 36.4 just past the balance at 33.1.
@@ -527,6 +532,49 @@ function T.run()
             check(ride.refused==0 and most<45,string.format("%s at m=%.2f: no fall, at most %.1f degrees",row.what,row.m,most))
             check(last.active==true and math.abs(last.pitch-row.pitch)<=1.5,
                 string.format("%s: the manual is still held after it at %.1f degrees",row.what,last.pitch))
+        end
+    end)
+    case(function() -- A bump or a kicker met in the last half second of the lift does not throw the bike over.
+        -- Until the front first came up to the stick's offset, the wide throw was judged along the surface under the
+        -- rear wheel, and the front reads as up only within a centimetre or two of that offset. A face met while the
+        -- law crept up the last degree read a bike at 33 degrees to the road as about 17 to the face, kept the throw
+        -- on at up to 800 N*m, and the bike went over backwards at the crest (88 to 90 degrees). Each row puts the
+        -- bump where the rear hub is `after` seconds after the stick on a flat ride.
+        local t=Forces.tuning()
+        local stick=16
+        local function rear_z(body)
+            return M.add(body.center_of_mass,M.turn(M.normalized(body.orientation),M.sub(G.rear_axle,G.com)))[3]
+        end
+        local function controls(m) return function(step) return {manual=step>=stick and m or 0} end end
+        for _,row in ipairs({
+            {what="an 8 cm bump .8 m long at 2 m/s",ground=function(at) return Ground.bump(at,.08,.8) end,speed=2,m=1,after={.45,.52,.58}},
+            {what="an 8 cm bump .8 m long at 2.5 m/s",ground=function(at) return Ground.bump(at,.08,.8) end,speed=2.5,m=1,after={.45}},
+            {what="a 12 cm bump 1.2 m long at 3 m/s",ground=function(at) return Ground.bump(at,.12,1.2) end,speed=3,m=.75,after={.5}},
+            {what="a 16 degree kicker onto a 20 cm deck at 4 m/s",ground=function(at) return Ground.kicker(at,math.rad(16),.3,.2) end,
+                speed=4,m=.88,after={.5}},
+            {what="a 16 degree kicker onto a 20 cm deck at 4 m/s",ground=function(at) return Ground.kicker(at,math.rad(16),.3,.2) end,
+                speed=4,m=1,after={.55}},
+            {what="a 16 degree kicker onto a 20 cm deck at 5 m/s",ground=function(at) return Ground.kicker(at,math.rad(16),.3,.2) end,
+                speed=5,m=1,after={.5}},
+        }) do
+            local target=t.manual_low+(t.manual_high-t.manual_low)*row.m
+            local hold=math.deg(math.acos(target/math.sqrt(.4158^2+.637^2))-math.atan2(.637,.4158))
+            for _,after in ipairs(row.after) do
+                local meet=stick+math.floor(after/h+.5)
+                local at
+                run({steps=meet,speed=row.speed,controls=controls(row.m),each=function(step,body) if step==meet-1 then at=rear_z(body) end end})
+                local steps=meet+math.floor(2.4/h)
+                local most,last=-math.huge,nil
+                local ride=run({steps=steps,speed=row.speed,ground=row.ground(at),controls=controls(row.m),each=function(step,body,out)
+                    local p=pitch_of(body)
+                    most=math.max(most,p)
+                    if step==steps then last={pitch=p,active=out.manual_active} end
+                end})
+                local what=string.format("%s at m=%.2f, met %.2f s after the stick",row.what,row.m,after)
+                check(ride.refused==0 and most<45,string.format("%s: no fall, at most %.1f degrees",what,most))
+                check(last.active==true and math.abs(last.pitch-hold)<=1.5,
+                    string.format("%s: the manual is still held after it at %.1f degrees against %.1f",what,last.pitch,hold))
+            end
         end
     end)
     case(function() -- Too far back: past where the rider can hold it the bike goes over, B saves it, and inside the window it comes back.
@@ -692,6 +740,29 @@ function T.run()
             check(last==true,what..": and the rider is pedalling up the hill at the end")
         end
     end)
+    case(function() -- Up a bumpy street grade with A and the stick held from a stop: still one manual.
+        -- Mapping sends no manual on a step with neither wheel on the ground, and the manual that slowed to a walk took
+        -- that zero for the stick let go: over a 2 to 5 cm bump every 3 m the bike went into 8 or 9 manuals in 20 s.
+        local function bumpy(grade,height)
+            local function s(z) return z<2 and -1 or ((z-2)%3)/.5 end
+            return {height=function(x,z) local u=s(z) return z*grade+((u>=0 and u<1) and height*.5*(1-math.cos(2*math.pi*u)) or 0) end,
+                grad=function(x,z) local u=s(z) return 0,grade+((u>=0 and u<1) and height*math.pi*math.sin(2*math.pi*u)/.5 or 0) end}
+        end
+        for _,row in ipairs({{grade=.08,height=.02},{grade=.1,height=.035},{grade=.176,height=.05}}) do
+            local starts,manual,air=0,false,0
+            local ride=run({steps=1200,ground=bumpy(row.grade,row.height),controls=function() return {pedal=1,manual=.5} end,
+                each=function(step,body,out,wheels,samples)
+                    if out.manual_active and not manual then starts+=1 end
+                    manual=out.manual_active
+                    local grounded=false
+                    for i=1,2 do grounded=grounded or samples[i].contact.status=="hit" and Forces.eligible_support(body,samples[i],.005,.10) end
+                    if not grounded then air+=1 end
+                end})
+            local what=string.format("up %.1f%% over %.1f cm bumps",row.grade*100,row.height*100)
+            check(ride.refused==0 and air>0,what..": the bumps take both wheels off the ground on "..air.." steps")
+            check(starts==1,what..": one manual in 20 s with the stick held: "..starts)
+        end
+    end)
     case(function() -- A manual that slowed to a walk starts again once the stick has been let go; one B put down, once B is.
         local t=Forces.tuning()
         -- On the flat from a stop with A held: up at the start speed, coasting down to a walk, pedalled on with the
@@ -752,6 +823,43 @@ function T.run()
         check(reached and flat_reached and reached-flat_reached<=.25,
             string.format("over the kerb the manual reaches 30 degrees within .25 s of the flat road: %s against %s",
                 tostring(reached),tostring(flat_reached)))
+    end)
+    case(function() -- Up a street grade, a lip met while the front comes up does not stall the lift.
+        -- Judged against level, a lift up a grade read as up to the stick's angle 7 to 10 degrees short of it, and
+        -- the wide throw ended there. A 5 cm lip over .55 m then knocked the bike back to 16 or 17 degrees, where the
+        -- weight shift alone barely holds it, and it crawled for a second or more, as mn4 did over its kerb ramp.
+        local t=Forces.tuning()
+        local stick=36
+        local function rear_z(body)
+            return M.add(body.center_of_mass,M.turn(M.normalized(body.orientation),M.sub(G.rear_axle,G.com)))[3]
+        end
+        local function lipped(grade,at)
+            local function rise(z) return at and math.clamp((z-at)/.55,0,1)*.05 or 0 end
+            return {height=function(x,z) return z*grade+rise(z) end,
+                grad=function(x,z) return 0,grade+((at and z>at and z<at+.55) and .05/.55 or 0) end}
+        end
+        local function ride(row,at,each)
+            return run({steps=stick+120,speed=row.speed,ground=lipped(row.grade,at),controls=function(step)
+                return {pedal=step<stick and 1 or 0,manual=step>=stick and row.m or nil}
+            end,each=each})
+        end
+        for _,row in ipairs({{grade=.08,speed=5,m=.5,after=.5},{grade=.1,speed=5,m=.5,after=.6},{grade=.12,speed=6,m=.5,after=.5}}) do
+            -- The lip starts where the rear hub is `after` seconds after the stick on the plain grade.
+            local at
+            ride(row,nil,function(step,body) if step==stick+math.floor(row.after/h+.5) then at=rear_z(body) end end)
+            local grade=math.deg(math.atan(row.grade))
+            local reach=t.manual_low+(t.manual_high-t.manual_low)*row.m
+            local want=math.deg(math.acos(reach/math.sqrt(.4158^2+.637^2))-math.atan2(.637,.4158))
+            local reached,low=nil,math.huge
+            local over=ride(row,at,function(step,body)
+                local p=pitch_of(body)-grade
+                if step>=stick and not reached and p>=want-2.5 then reached=(step-stick)*h end
+                if (step-stick)*h>row.after and not reached then low=math.min(low,p) end
+            end)
+            local what=string.format("up %d%% at %d m/s, m=%.1f, the lip met %.1f s into the lift",row.grade*100,row.speed,row.m,row.after)
+            check(over.refused==0 and reached and reached<=1,string.format("%s: within 2.5 degrees of %.1f in %s s",what,want,tostring(reached)))
+            check(low>=21,string.format("%s: knocked back no lower than %.1f degrees",what,low))
+        end
     end)
     case(function() -- A hop from any manual pops level: the rider pushes the bars forward on either side of the balance.
         -- With the law past the balance the pop was a 156 N*m nudge: m=.85 landed at 9 degrees and m=.9 at 33, on the

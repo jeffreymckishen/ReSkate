@@ -141,13 +141,15 @@ function Controller:preview(h,body,wheels,samples,controls)
         -- while a wheel is on the ground; the kernel engages it only on the
         -- rear wheel.
         local steer,brake,manual=controls and controls.steer,controls and controls.brake,controls and controls.manual
+        local held=controls and controls.manual_held
         if steer==nil then steer=0 end
         if brake==nil then brake=0 end
         if manual==nil then manual=0 end
+        if held==nil then held=false end
         if not M.finite(steer) or steer<-1 or steer>1 then return invalid("invalid_steer") end
         if not M.finite(brake) or brake<0 or brake>1 then return invalid("invalid_brake") end
-        if not M.finite(manual) or manual<0 or manual>1 then return invalid("invalid_manual") end
-        selected.steer,selected.brake,selected.manual=steer,brake,manual
+        if not M.finite(manual) or manual<0 or manual>1 or type(held)~="boolean" then return invalid("invalid_manual") end
+        selected.steer,selected.brake,selected.manual,selected.manual_held=steer,brake,manual,held
         -- Far past riding speed, use the existing bounded brake law before
         -- the hard measured-speed stop.
         local tuning=state.kernel.tuning

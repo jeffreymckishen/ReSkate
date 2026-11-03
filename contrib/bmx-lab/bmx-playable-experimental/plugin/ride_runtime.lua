@@ -83,7 +83,9 @@ local AHEAD_FACE_UP, AHEAD_FACING = .5, .25
 local AHEAD_LOW = {0,.15,.73}
 -- In a manual the lanes lie on the ground under the rear wheel. A new ground this close to the last one taken (the
 -- cosine of the kernel's curvature_step_limit, .2 rad in a step) is the same surface curving, as up a quarter pipe.
+-- One the rear has stood on for AHEAD_GROUND_ROWS rows in a row, each this close to the one before, is ground too.
 local AHEAD_GROUND_TURN = math.cos(.2)
+local AHEAD_GROUND_ROWS = 3
 -- The stop is the landing law turned sideways, on the forecast this step's command acts on: closing speed is let
 -- through down to what this deceleration can still take out before the face, on at most this force. At a face it
 -- bounces back this share of the speed, so the bike can steer away, and pedalling stops within the pedal gap.
@@ -228,7 +230,9 @@ end
 -- cadence: the bars and cranks hold. One new table a step, which status
 -- shares; nil for a model that reports either malformed. orientation is the
 -- measured body's and up is world up, for the direction a wheel is drawn up.
-local function presentation(previous,model,wheels,h,samples,geometry,orientation,up)
+-- ground is the direction the ground was followed to last step, nil at first;
+-- the second result is this step's, for the next.
+local function presentation(previous,model,wheels,h,samples,geometry,orientation,up,ground)
     local steer,pedaling=model.front_steer_angle,model.pedaling
     if steer==nil then steer=previous.steer
     elseif not M.finite(steer) or math.abs(steer)>1 then return nil end
@@ -262,17 +266,19 @@ local function presentation(previous,model,wheels,h,samples,geometry,orientation
     if front_down and not back_down then want_back=math.min(want_front,clearance(samples[2])-ON_GROUND)
     elseif back_down and not front_down then want_front=math.min(want_back,clearance(samples[1])-ON_GROUND) end
     local was=previous.movement_bike_pitch~=0 or previous.movement_bike_lift~=nil
-    -- Ordinary riding, with nothing drawn and nothing to draw, skips the tilt.
-    -- A drawn bike's direction turns from the last step's no faster than LIFT_TURN. It is kept in the world, so the
-    -- body turning under it does not hold it back. Lifted along each step's normal as measured, a ray that found a
-    -- kerb's 25 degree bevel for one step under a rear tyre drawn 14 cm up threw the drawn bike 6.4 cm along the
-    -- ground and back: LIFT_RATE bounds only the rise along the new direction, and the lower hub is kept where the
-    -- body has it across that direction, so the whole lift turned with it.
+    -- The direction a drawn bike is lifted along turns from the last step's no faster than LIFT_TURN, and is followed
+    -- every step, drawn or not, from world up at the start. It is kept in the world, so the body turning under it does
+    -- not hold it back. Lifted along each step's normal as measured, a ray that found a kerb's 25 degree bevel for one
+    -- step under a rear tyre drawn 14 cm up threw the drawn bike 6.4 cm along the ground and back: LIFT_RATE bounds
+    -- only the rise along the new direction, and the lower hub is kept where the body has it across that direction,
+    -- so the whole lift turned with it. Taken as measured on the first step drawn, a manual's rear whose first row in
+    -- a kerb was its 45 degree bevel drew the bike lifted along that for 18 steps, the rear hub 9 cm behind the body's
+    -- and the tyre 4 cm into the kerb. Ordinary riding, with nothing drawn and nothing to draw, skips the tilt.
+    local measured,from=ground_normal(samples,up),ground or up
+    local followed=measured and from and turned_toward(from,measured,LIFT_TURN*h) or measured
     local normal,tilt=nil,0
     if was or want_front~=0 or want_back~=0 then
-        normal=ground_normal(samples,up)
-        local last=previous.movement_bike_normal
-        if was and normal and type(last)=="table" then normal=turned_toward(last,normal,LIFT_TURN*h) end
+        normal=followed
         tilt=rise_tilt(normal,orientation)
     end
     local front,back=0,0
@@ -315,7 +321,7 @@ local function presentation(previous,model,wheels,h,samples,geometry,orientation
     end
     pose.rider_shift=shift
     pose.rider_standing=shift~=nil and standing or nil
-    return pose
+    return pose,followed
 end
 -- The measured tilt of the body's up axis from world up, in degrees, and its
 -- roll rate about its own forward axis, in rad/s; nil when either is unknown.
@@ -1399,18 +1405,23 @@ local function ahead(s,frame,body,options,contact)
     -- from 30 degrees a car's vertical face is too steep to its up to count as one, so a car was ridden into. The
     -- lanes are laid as on the bike set down level about its rear hub, on the ground under the rear wheel; the
     -- front then reads about .12 m ahead of the lifted tyre at 30 degrees, so a car is stopped at slightly early.
-    -- The ground is the rear ray's normal only while it is near level, or near the last ground taken: a kerb's lip
-    -- or bevel under the rear wheel ({0,.35,-.94}) laid the lanes about 70 degrees over for the step, and the car
-    -- stop saw nothing. Otherwise the last ground stands in, and with none the lanes stay on the bike.
+    -- The ground is the rear ray's normal only while it is near level, near the last ground taken, or held for
+    -- AHEAD_GROUND_ROWS rows: a kerb's lip or bevel under the rear wheel ({0,.35,-.94}) laid the lanes about 70
+    -- degrees over for the step, and the car stop saw nothing. Otherwise the last ground stands in, and with none the
+    -- lanes stay on the bike. Taken only near level or near the last, a ramp met at a kink steeper than 18 degrees
+    -- was never taken: the lanes stayed on the road behind, ran into the ramp ahead, and a car 3 m up a 20 degree
+    -- ramp was first seen 13 cm off at 7 m/s, one up 25 degrees not before it was reached.
     local rear=contact.samples[2]
     local ground=rear and rear.contact.status=="hit" and rear.separation<=.02 and M.unit(rear.contact.normal) or nil
     if ground then
         local world=M.unit(M.mul(s.force.tuning.gravity,-1))
-        local last=s.ahead_ground
-        if world and M.dot(ground,world)>=CURB_FLAT or last and M.dot(ground,last)>=AHEAD_GROUND_TURN then
+        local last,seen=s.ahead_ground,s.ahead_rear
+        local held=seen and M.dot(ground,seen)>=AHEAD_GROUND_TURN and (s.ahead_held or 1)+1 or 1
+        s.ahead_rear,s.ahead_held=ground,held
+        if world and M.dot(ground,world)>=CURB_FLAT or last and M.dot(ground,last)>=AHEAD_GROUND_TURN or held>=AHEAD_GROUND_ROWS then
             s.ahead_ground=ground
         else ground=last end
-    end
+    else s.ahead_rear,s.ahead_held=nil,nil end
     if s.manual_active and ground then
         local level=M.unit(M.sub(forward,M.mul(ground,M.dot(forward,ground))))
         if level then
@@ -1823,8 +1834,8 @@ local function observe(s,source_frame,raw,context)
     s.refused_steps=0
     local wheels=wheel_copy(model.wheels,s.wheels)
     if not wheels then stop(s,"bounded wheel model unavailable");return end
-    local pose=presentation(s.pose,model,wheels,sample.seconds,contact.samples,s.geometry,body.orientation,
-        M.unit(M.mul(s.force.tuning.gravity,-1)))
+    local pose,ground=presentation(s.pose,model,wheels,sample.seconds,contact.samples,s.geometry,body.orientation,
+        M.unit(M.mul(s.force.tuning.gravity,-1)),s.drawn_ground)
     if not pose then stop(s,"bounded presentation model unavailable");return end
     local p={serial=sample.serial,time=sample.time,seconds=sample.seconds,submitted_at=s.now,
         hop_id=model.hop_applied and model.hop_event_id or nil,wheels=wheels,
@@ -1891,7 +1902,7 @@ local function observe(s,source_frame,raw,context)
         s.manual_active=model.manual_active==true
         -- The pose follows the accepted prediction, with the wheels it adopts;
         -- model_history names that step.
-        s.pose=freeze(pose)
+        s.pose=freeze(pose);s.drawn_ground=ground
         s.model_history=freeze({kind="predictive_accepted",serial=p.serial,sequence=sequence,
             reason="exact_force_admission",native_wheel_state_known=false})
         if s.hop_policy=="grounded_once" then

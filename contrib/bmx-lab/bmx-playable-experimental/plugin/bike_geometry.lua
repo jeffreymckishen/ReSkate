@@ -44,14 +44,20 @@ end
 -- frame, or nil for a geometry without its hubs and pivot; the shift moves neither up. The neutral front hub stands
 -- for a steered one: steering moves it at most 1.8 cm along the bike, at full lock, which changes its rise by under
 -- 5 mm at the steepest pitch Ride draws.
-function G.hub_rise(geometry,pitch,lift)
+-- Given a tilt, in radians from the bike's up toward its forward, the rise is measured along that direction instead,
+-- and the shift moves the hubs along it too: the ground's normal under a bike on its rear wheel in a manual stands
+-- 20 to 36 degrees from the bike's up. Without one the rise is the bike's-up rise, exactly as before.
+function G.hub_rise(geometry,pitch,lift,shift,tilt)
+    shift,tilt=shift or 0,tilt or 0
     if type(geometry)~="table" or not point(geometry.front_axle) or not point(geometry.rear_axle)
-        or not point(geometry.steering_pivot) or not finite(pitch) or not finite(lift) then return nil end
+        or not point(geometry.steering_pivot) or not finite(pitch) or not finite(lift)
+        or not finite(shift) or not finite(tilt) then return nil end
     local c=geometry.steering_pivot
     local co,si=math.cos(pitch),math.sin(pitch)
+    local up,along=math.cos(tilt),math.sin(tilt)
     local function rise(p)
         local v2,v3=p[2]-c[2],p[3]-c[3]
-        return v2*co-v3*si-v2+lift
+        return (v2*co-v3*si-v2+lift)*up+(v2*si+v3*co-v3+shift)*along
     end
     return rise(geometry.front_axle),rise(geometry.rear_axle)
 end
@@ -64,20 +70,35 @@ end
 -- road included. The shift takes that back off the lower hub, so the bike is drawn turned about the wheel on the
 -- ground, which stays where the physics has it. The raised hub then comes in toward it by what the climb shortens
 -- the wheelbase seen from above, 1 cm at 14 cm and 3 cm at the most Ride draws, as a real wheel climbing a kerb does.
-function G.pitch_lift(geometry,front,rear)
-    if not G.hub_rise(geometry,0,0) or not finite(front) or not finite(rear) then return nil end
-    local c,f,r=geometry.steering_pivot,geometry.front_axle,geometry.rear_axle
+-- Given a tilt the rises are along it, as hub_rise takes them, and held ("front" or "rear") names the hub kept where
+-- the body has it across that direction, in place of the lower one. Equal rises lift the whole bike along the tilt
+-- with no pitch. So a bike on its rear wheel in a manual is lifted by the rear's rise straight off the ground that
+-- wheel is on: lifted along its own up, 30 degrees off it, the rear tyre was drawn 2 to 3 cm into a kerb and 4 to
+-- 7 cm behind where it touches it. The lift and shift come back along the bike's own up and forward, as bike_visual
+-- applies them; without a tilt they are the numbers this gave before.
+function G.pitch_lift(geometry,front,rear,tilt,held)
+    tilt=tilt or 0
+    if not G.hub_rise(geometry,0,0) or not finite(front) or not finite(rear) or not finite(tilt)
+        or held~=nil and held~="front" and held~="rear" then return nil end
+    local up,along=math.cos(tilt),math.sin(tilt)
+    -- A point of the bike in the frame turned by the tilt: how high it is along the tilt, then how far across it.
+    local function turned(p) return p[2]*up+p[3]*along,p[3]*up-p[2]*along end
+    local c2,c3=turned(geometry.steering_pivot)
+    local f2,f3=turned(geometry.front_axle)
+    local r2,r3=turned(geometry.rear_axle)
     -- Raising the front by front and the rear by rear, the difference solves b*cos(pitch)-a*sin(pitch)=front-rear+b.
-    local a,b=f[3]-r[3],f[2]-r[2]
+    local a,b=f3-r3,f2-r2
     local span=math.sqrt(a*a+b*b)
     local k=(front-rear+b)/span
     if span<1e-6 or math.abs(k)>=1 then return nil end
-    local pitch=math.acos(k)-math.atan2(a,b)
+    -- A turn about the bike's left is the same turn in either frame.
+    local pitch=front==rear and 0 or math.acos(k)-math.atan2(a,b)
     local co,si=math.cos(pitch),math.sin(pitch)
-    local v2,v3=f[2]-c[2],f[3]-c[3]
-    local grounded=front<rear and f or r
-    local w2,w3=grounded[2]-c[2],grounded[3]-c[3]
-    return pitch,front-(v2*co-v3*si-v2),-(w2*si+w3*co-w3)
+    local v2,v3=f2-c2,f3-c3
+    if held==nil then held=front<rear and "front" or "rear" end
+    local w2,w3=(held=="front" and f2 or r2)-c2,(held=="front" and f3 or r3)-c3
+    local lift,shift=front-(v2*co-v3*si-v2),-(w2*si+w3*co-w3)
+    return pitch,lift*up-shift*along,shift*up+lift*along
 end
 G.left_grip = scaled(.33457504536745686,1.2319480593290573,.3406239453545827)
 G.right_grip = scaled(-.33457504173973396,1.2319480453628473,.34062398104089797)

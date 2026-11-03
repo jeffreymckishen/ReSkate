@@ -801,6 +801,66 @@ function T.run()
         local at=in_manual(over,wheelie(70,4),40)
         check(at==18-3,"70 degrees from the surface ends after its .3 s: "..tostring(at))
     end)
+    -- Where a drawn wheel's tyre touches down, the lowest point of its disc, against where the body's does.
+    local function touch(m)
+        local axle=M.unit({m[1],m[2],m[3]})
+        local toward=M.unit(M.sub({0,-1,0},M.mul(axle,-axle[2])))
+        return M.add({m[13],m[14],m[15]},M.mul(toward,R))
+    end
+    local function drawn_touch(sample,pose,part)
+        local body,drawn=Visual.from_sample(sample),Visual.from_sample(sample,pose)
+        return touch(drawn[part]),touch(body[part])
+    end
+    case(function() -- A manual rolled onto a kerb is drawn lifted onto it on its rear wheel, not nodded about the front in the air.
+        local kerb=false
+        local w=harness(function(from,to,count,i)
+            if count==2 and i==2 and kerb then return hit(from,to,from.y-R+.15,{0,1,0}) end
+            return flat(from,to)
+        end)
+        w.prompt=true
+        local pose=wheelie(30,4)
+        check(in_manual(w,pose,12)==nil and w.controls.manual>.4,"a manual on the road")
+        check(w.step(pose).presentation_pose.movement_bike_lift==nil,"on the road the manual draws the bike on its body")
+        kerb=true
+        local lifts={}
+        for i=1,6 do
+            local out=w.step(pose)
+            check(not out.stop_requested,"riding the manual onto the kerb: "..tostring(out.issue))
+            local shown=out.presentation_pose
+            check(math.abs(shown.movement_bike_pitch)<1e-6,
+                "the drawn bike is not pitched about its front wheel in the air: "..shown.movement_bike_pitch)
+            local rear,body=drawn_touch(w.samples[w.serial],shown,3)
+            local front,front_body=drawn_touch(w.samples[w.serial],shown,4)
+            local up=rear[2]-body[2]
+            lifts[i]=string.format("%.3f",up)
+            check(math.abs(rear[1]-body[1])<.002 and math.abs(rear[3]-body[3])<.002,string.format(
+                "the rear tyre is drawn straight up off where the body's touches, not behind it: %.4f %.4f",rear[1]-body[1],rear[3]-body[3]))
+            check(M.length(M.sub(M.sub(front,front_body),M.sub(rear,body)))<.002,"and the front goes up with it: the whole bike is lifted")
+            if i>=3 then
+                -- The ray found the kerb top under the body's rear hub, .15 above where its tyre touches the road.
+                check(math.abs(rear[2]-(.15-.01))<.002,"the rear tyre is drawn on the kerb top, its bottom at "..rear[2].." against .15")
+            end
+        end
+        check(lifts[1]=="0.050" and lifts[2]=="0.100" and lifts[3]=="0.140","it comes up 5 cm a step: "..table.concat(lifts," "))
+        -- A level bike with its rear in the kerb and the front tyre a moment off the road beyond: a wheel just off the
+        -- ground still holds the drawn bike, so the front is drawn where the body has it, give or take what it clears
+        -- past 2 cm, and hovering across that line it does not flick up and down.
+        local gap=.015
+        local level_kerb=harness(function(from,to,count,i)
+            if count~=2 then return flat(from,to) end
+            if i==2 then return hit(from,to,from.y-R+.15,{0,1,0}) end
+            return hit(from,to,from.y-R-gap,{0,1,0})
+        end)
+        level_kerb.prompt=true
+        local highest=0
+        for i=1,12 do
+            gap=i%2==0 and .015 or .025
+            local shown=level_kerb.step(level()).presentation_pose
+            local front=shown.movement_bike_lift and Geometry.hub_rise(Geometry,shown.movement_bike_pitch,shown.movement_bike_lift) or 0
+            highest=math.max(highest,front)
+        end
+        check(highest<.006,"a front tyre 1.5 to 2.5 cm off the road is drawn within 5 mm of the body's: "..highest)
+    end)
     return {cases=cases,assertions=n,native_authority=false,constructed=true}
 end
 return T

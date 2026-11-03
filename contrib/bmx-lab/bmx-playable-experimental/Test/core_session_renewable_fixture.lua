@@ -959,6 +959,10 @@ local function pose_step(sample,pose,now)
     articulation.release_left_hand=a.release_left_hand or 0;articulation.release_right_hand=a.release_right_hand or 0
     articulation.tailwhip=a.tailwhip or 0;articulation.tailwhip_release=a.tailwhip_release or 0
     articulation.release_left_foot=a.release_left_foot or 0;articulation.release_right_foot=a.release_right_foot or 0
+    -- The bike drawn pitched, lifted and shifted onto the ground under a wheel: the hands and feet go with the bars
+    -- and pedals drawn now, as they do with the steer. Ordinary riding has none of them.
+    articulation.movement_bike_pitch=a.movement_bike_pitch or 0;articulation.movement_bike_lift=a.movement_bike_lift
+    articulation.movement_bike_shift=a.movement_bike_shift
     local body=pose_body(sample)
     local r=poser:tick(now/1000,{bike={center_of_mass=body.position,rotation=body.rotation},articulation=articulation})
     if r.sent==true then T.pose_sent_ticks=(T.pose_sent_ticks or 0)+1 end
@@ -1152,7 +1156,8 @@ for _,method in ipairs({"bounds","set","status","remove"}) do
 end
 
 
-local gear_api={time=R.time,input={focus=R.input and R.input.focus},
+-- The pad read lets the stock switch wait for the controller at rest before it asks for its Y.
+local gear_api={time=R.time,input={focus=R.input and R.input.focus,gamepad=R.input and R.input.gamepad},
     skater={get=R.skater and R.skater.get},level=R.level,json=R.json,storage=R.storage}
 gear_api.skater.telemetry=function(...)
     local r=call("equipment.skater.telemetry",lookup("skater.telemetry"),...)

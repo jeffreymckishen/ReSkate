@@ -19,7 +19,8 @@ controls while the bike gets ready. The BMX page in the Insert menu says the sam
   longer it was held back, the higher the hop.
 - Pull the right stick part of the way back for a manual: the front wheel comes up and the bike rolls on its back
   wheel. A little back holds it low, about 20 degrees, further back holds it higher, up to about 36, just past where
-  the rider balances. Let the stick go and the front comes down.
+  the rider balances. A little past the end of that, the manual stays at its highest. Let the stick go and the
+  front comes down.
 - A manual lifts from a little faster than a walk, so with A and the stick held from a stop the bike pedals up to
   that first. A manual coasts: the rider stops pedalling while the front is up, even with A held, and puts the
   front down once the bike slows to a walk.

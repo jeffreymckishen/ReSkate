@@ -261,6 +261,62 @@ function Tests.run()
         local model=Stage.new():preview(h,level,Forces.proposed_wheels(),samples,c)
         check(model.valid and model.manual_active==false,"and it lifts nothing")
     end
+    -- The manual a raw right_y holds, after the .12 dead zone, over the band from .22 to .72.
+    local function level(y) return math.min(1,((math.abs(y)-.12)/.88-.22)/.5) end
+    do -- Held at the top of the band, an overshoot is not a hop's charge: from a manual the stick goes on to .85 first.
+        -- The band ended on the hop's threshold, so three frames at -.80, early in a manual held at -.70, charged a
+        -- hop and dropped the front, and with no flick the band gave nothing until the stick was back in the middle.
+        local d=driver()
+        for _=1,12 do d.step({right_y=-.70}) end
+        local over,after=0,0
+        for _=1,3 do if d.step({right_y=-.80}).manual==1 then over+=1 end end
+        for _=1,40 do if math.abs(d.step({right_y=-.70}).manual-level(-.70))<.001 then after+=1 end end
+        check(over==3 and after==40 and d.hops()==0,"the overshoot holds the top manual and the manual goes on: "..over.." "..after)
+        for _=1,6 do d.step({right_y=-.95}) end
+        local _,_,hopped=d.step({right_y=.8})
+        check(hopped and d.hops()==1,"all the way back from a manual still charges a hop")
+    end
+    do -- Pulled straight to the stop and eased back with no flick, the hop lapses and the stick holds a manual.
+        local d=driver()
+        for _=1,4 do d.step({right_y=-1}) end
+        local first
+        for i=1,40 do local c=d.step({right_y=-.70});if not first and c.manual>0 then first=i end end
+        check(first and first<=25 and d.hops()==0,"a manual follows the lapsed hop: "..tostring(first))
+    end
+    do -- The top of the band is the manual's off the ground too: a step's lost support, or a landing, keeps it.
+        -- Off the ground any stick at .70 or more was taken for a trick and let the manual go, from raw -.736 up.
+        for _,y in ipairs({-.70,-.745}) do
+            local d=driver()
+            for _=1,20 do d.step({right_y=y}) end
+            local air=d.step({right_y=y},false)
+            local back=d.step({right_y=y},true)
+            check(air.manual==0 and math.abs(back.manual-level(y))<.001,"at "..y.." none in the air, back at once: "..back.manual)
+        end
+        local d=driver()
+        for _=1,20 do d.step({right_y=-.745}) end
+        for _=1,30 do d.step({right_y=-.745},false) end
+        check(math.abs(d.step({right_y=-.745},true).manual-level(-.745))<.001,"held through a flight it lands back in at once")
+    end
+    do -- A charge from a manual keeps the front up across a step's lost support, and the flick still hops.
+        local d=driver()
+        for _=1,30 do d.step({right_y=-.53}) end
+        for _=1,5 do d.step({right_y=-1}) end
+        check(d.step({right_y=-1},false).manual==0,"no manual in the air")
+        local kept=0
+        for _=1,5 do if math.abs(d.step({right_y=-1}).manual-.6)<1e-9 then kept+=1 end end
+        local c,_,hopped=d.step({right_y=.8})
+        check(kept==5 and hopped and c.manual==0,"the charge goes on at .6 and the flick hops: "..kept)
+    end
+    do -- After the middle, the stick pushed over for a trick still takes the landing's manual away.
+        local d=driver()
+        for _,y in ipairs({-1,-1,-1,.8}) do d.step({right_y=y}) end
+        for _=1,5 do d.step({},false) end
+        for _=1,3 do d.step({right_y=-.80},false) end
+        local any=false
+        for _=1,10 do d.step({right_y=-.53},false) end
+        for _=1,12 do if d.step({right_y=-.53},true).manual~=0 then any=true end end
+        check(not any,"a trick's push lets the landing manual go until the stick has been in the middle")
+    end
     do -- sim_world's copy of the mapping sends the same manual, on the ground and in the air.
         for _,grounded in ipairs({true,false}) do
             local d=driver()

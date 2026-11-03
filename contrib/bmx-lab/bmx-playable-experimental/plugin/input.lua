@@ -16,6 +16,10 @@ local defaults = {
     -- A manual output this long before the stick goes on to full back is kept up while the hop charges, at
     -- manual_preload (about 30 degrees), so a hop from a manual leaves from the back wheel.
     manual_carry_seconds = 0.25, manual_preload = 0.6,
+    -- From a manual the stick goes this far back before a hop charges, and the manual stays at the top of its
+    -- band on the way. The band ended at hop_back_threshold, so the highest manual sat on the hop's threshold:
+    -- raw -.80 for three frames, early in a manual held at -.70, charged a hop and dropped the front.
+    manual_hop_back_threshold = 0.85,
 }
 
 local function finite(value)
@@ -54,6 +58,7 @@ local function sanitize(source)
     result.manual_entry_seconds = bounded("manual_entry_seconds", 0, 0.3)
     result.manual_carry_seconds = bounded("manual_carry_seconds", 0, 1)
     result.manual_preload = bounded("manual_preload", 0, 1)
+    result.manual_hop_back_threshold = bounded("manual_hop_back_threshold", result.hop_back_threshold, 0.95)
     return result
 end
 
@@ -91,8 +96,9 @@ local function normalize(settings, x, y)
 end
 
 -- A manual being entered, or carried through a hop's charge, starts over on a
--- change of ground. Whether the stick still holds one (_manual_held), and
--- whether a landing may go into one (_land_armed), carry across it.
+-- change of ground. Whether the stick still holds one (_manual_held), whether
+-- that one was established enough to carry into a charge (_manual_established),
+-- and whether a landing may go into one (_land_armed), carry across it.
 function Mapper:_clear_gestures()
     self._rear_armed, self._air_pitch_armed, self._trick_armed = false, false, false
     self._hop_pending, self._charge_seconds, self._release_seconds = false, 0, 0
@@ -102,7 +108,7 @@ end
 function Mapper:reset()
     self._gated, self._device_known, self._context_known = true, false, false
     self._quick_hop_held = false
-    self._manual_held, self._land_armed = false, false
+    self._manual_held, self._manual_established, self._land_armed = false, false, false
     self:_clear_gestures()
 end
 
@@ -128,23 +134,26 @@ end
 -- was established when the stick went on to full back is held at
 -- manual_preload while the hop charges, and eased back into the band it goes
 -- on as a manual; the step the hop pops sends none, the rider pushing the bars
--- forward to pop.
+-- forward to pop. From a live manual the band's top manual reaches on to
+-- manual_hop_back_threshold, so a hop charges only past that.
 function Mapper:_ground(rear, seconds, out)
     local settings = self._settings
     if rear.magnitude <= settings.neutral_threshold and not self._hop_pending then self._rear_armed = true end
-    local aligned = math.abs(rear.x) <= settings.hop_lateral_limit
-    local back = aligned and rear.y <= -settings.hop_back_threshold
-    local amount = math.abs(rear.y)
-    local band = aligned and amount >= settings.manual_threshold and amount < settings.hop_back_threshold
-    local balance = band and (amount - settings.manual_threshold) / (settings.hop_back_threshold - settings.manual_threshold) or 0
-    -- Out of the back band toward the middle or forward, a held manual is let go.
-    if rear.y > -settings.manual_threshold then self._manual_held = false end
     local live = self._manual_live
     self._manual_live = false
+    local top = live and rear.y < 0 and settings.manual_hop_back_threshold or settings.hop_back_threshold
+    local aligned = math.abs(rear.x) <= settings.hop_lateral_limit
+    local back = aligned and rear.y <= -top
+    local amount = math.abs(rear.y)
+    local band = aligned and amount >= settings.manual_threshold and amount < top
+    local balance = band and math.min(1, (amount - settings.manual_threshold) / (settings.hop_back_threshold - settings.manual_threshold)) or 0
+    -- Out of the back band toward the middle or forward, a held manual is let go.
+    if rear.y > -settings.manual_threshold then self._manual_held, self._manual_established = false, false end
     if not self._hop_pending and self._rear_armed and back then
         self._hop_pending, self._rear_armed = true, false
         self._charge_seconds, self._release_seconds = 0, 0
-        self._manual_carry = live and self._manual_seconds >= settings.manual_carry_seconds - 1e-9
+        self._manual_carry = live and (self._manual_established or self._manual_seconds >= settings.manual_carry_seconds - 1e-9)
+        self._manual_established = self._manual_carry
     end
     if self._hop_pending then
         local carry = self._manual_carry
@@ -161,10 +170,10 @@ function Mapper:_ground(rear, seconds, out)
             self._release_seconds = self._release_seconds + seconds
         end
         if self._release_seconds > settings.hop_flick_seconds then
-            self._hop_pending = false
-            if not carry then return end
-            -- Eased back with no flick: the hop lapses and the manual goes on.
-            self._rear_armed, self._manual_carry = true, false
+            -- Eased back with no flick: the hop lapses and the stick is the manual's again, a carried manual going
+            -- straight on. Left unarmed after a charge that carried none, the band gave nothing until the stick
+            -- had been back in the middle.
+            self._hop_pending, self._rear_armed, self._manual_carry = false, true, false
         else
             out.preload = self._charge_seconds / settings.hop_charge_seconds
             if rear.y >= settings.hop_forward_threshold then
@@ -185,7 +194,12 @@ function Mapper:_ground(rear, seconds, out)
         self._manual_side = side
         self._manual_seconds = self._manual_seconds + seconds
         if live or self._manual_seconds >= settings.manual_entry_seconds - 1e-9 then
-            if side < 0 then out.manual, self._manual_held = balance, true else out.nose_manual = balance end
+            if side < 0 then
+                out.manual, self._manual_held = balance, true
+                if self._manual_seconds >= settings.manual_carry_seconds - 1e-9 then self._manual_established = true end
+            else
+                out.nose_manual = balance
+            end
             self._manual_live = true
         end
     else
@@ -196,12 +210,16 @@ end
 -- In the air nothing is held up, but a landing can go into a manual: one the
 -- stick still holds from take-off, or, once the stick has been back in the
 -- middle, one it is pulled into before landing. A trick modifier, or the
--- stick far enough over for a trick, takes that away until the middle again.
+-- stick pushed over for a trick, takes that away until the middle again. Only
+-- a stick that has been back in the middle in this flight selects a trick
+-- (_air_trick), so one held at the top of the band since take-off, or full
+-- back charging a hop, is still the manual. Taken for a trick, both were lost
+-- on a single step's lost support.
 function Mapper:_air_manual(rear, raw)
     local settings = self._settings
-    if rear.y > -settings.manual_threshold then self._manual_held = false end
-    if not self:_modifiers_neutral(raw) or rear.magnitude >= settings.trick_threshold then
-        self._land_armed, self._manual_held = false, false
+    if rear.y > -settings.manual_threshold then self._manual_held, self._manual_established = false, false end
+    if not self:_modifiers_neutral(raw) or self._trick_armed and rear.magnitude >= settings.trick_threshold then
+        self._land_armed, self._manual_held, self._manual_established = false, false, false
     elseif rear.magnitude <= settings.neutral_threshold then
         self._land_armed = true
     end

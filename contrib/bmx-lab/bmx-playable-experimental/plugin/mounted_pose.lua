@@ -703,11 +703,12 @@ function MP.compose(input, options)
     -- The pelvis: over the saddle's midline, the authored standing height less the crouch, then the
     -- rider's offset. Hands kept on the bars through a whole-bike pitch, roll or lift carry the
     -- pelvis 0.75 of the grips' displacement instead of stretching the arms, all of it with both feet
-    -- off (bmx_rider_pose.h). The shift is not a move the rider takes up: it only puts the pitched
-    -- bike back so the wheel on the road stays where the physics has it, so the pelvis goes all of it
-    -- with the bars and the saddle. Carrying only .75 of it left the hips 3 cm behind a bike drawn
-    -- 12 cm forward, and with the bars at the kernel's full steer, the arm whose grip they carry
-    -- forward 1.5 cm short of it.
+    -- off (bmx_rider_pose.h). The shift is not a move the rider takes up: it puts the pitched bike
+    -- back so its lower wheel stays where the physics has it, and carries the forward part of a lift
+    -- along a ground's normal that is tilted from the bike's up, as a manual's is. So the pelvis goes
+    -- all of it with the bars and the saddle. Carrying only .75 of it left the hips 3 cm behind a
+    -- bike drawn 12 cm forward, and with the bars at the kernel's full steer, the arm whose grip they
+    -- carry forward 1.5 cm short of it.
     -- Letting go of the bars, the pelvis stops following them.
     -- Standing, the pelvis goes where the seat frame carries it, all of the drawn turn, lift and
     -- shift: a manual's straight arms cannot take up the quarter the seated rider leaves, and with

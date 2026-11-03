@@ -78,6 +78,9 @@ local ROLL_STOP_RATE = 14
 -- the presentation pose reads it.
 local CRANK_RATIO = 25 / 9
 local TAU = 2 * math.pi
+-- The most the rider shifts the weight in a manual, forward and back (forces.lua manual_hold_forward and
+-- manual_hold_back), and how long the drawn shift takes to follow the physics'.
+local RIDER_SHIFT_FORWARD, RIDER_SHIFT_BACK, RIDER_SHIFT_SECONDS = .15, .20, .1
 
 local function copy(value)
     if type(value) ~= "table" then return value end
@@ -161,6 +164,19 @@ local function presentation(previous,model,wheels,h)
     -- A refused candidate holds the same accepted hand releases as its angle.
     -- Omitted zero releases keep ordinary riding's eight-field pose unchanged.
     for _,name in ipairs(TRICK_RELEASES) do pose[name]=previous[name] end
+    -- In a manual the rider's hips go where the physics holds the weight: the kernel's pitch couple over
+    -- the weight, eased over RIDER_SHIFT_SECONDS so the pose does not jump on a step's change. Out of it
+    -- the shift eases back and the field goes once it is under half a centimetre.
+    local shift=previous.rider_shift
+    if model.manual_active==true then
+        if not M.finite(model.manual_shift) then return nil end
+        local target=math.clamp(model.manual_shift,-RIDER_SHIFT_FORWARD,RIDER_SHIFT_BACK)
+        shift=(shift or 0)+(target-(shift or 0))*math.min(1,h/RIDER_SHIFT_SECONDS)
+    elseif shift~=nil then
+        shift-=shift*math.min(1,h/RIDER_SHIFT_SECONDS)
+        if math.abs(shift)<.005 then shift=nil end
+    end
+    pose.rider_shift=shift
     return pose
 end
 -- The measured tilt of the body's up axis from world up, in degrees, and its

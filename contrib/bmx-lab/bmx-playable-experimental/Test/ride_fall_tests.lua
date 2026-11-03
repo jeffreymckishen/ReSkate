@@ -466,6 +466,16 @@ function T.run()
         check(in_manual(w,pose,12)==nil,"a manual is ridden")
         check(w.controls.manual>.4,"the manual reaches the stage: "..tostring(w.controls.manual))
         check(w.submits[#w.submits].torque.x< -150,"and the packet lifts the nose: "..w.submits[#w.submits].torque.x)
+        local shown=w.step(pose).presentation_pose
+        check(shown.rider_shift~=nil and shown.rider_shift>.05 and shown.rider_shift<=.2,
+            "the rider is drawn shifted back by the weight the lift takes: "..tostring(shown.rider_shift))
+        local still=harness(flat)
+        local ridden=level();ridden.velocity={0,0,4}
+        local plain
+        for _=1,15 do plain=still.step(ridden).presentation_pose end
+        local fields=0
+        for _ in pairs(plain) do fields+=1 end
+        check(fields==8 and plain.rider_shift==nil,"a neutral pad keeps ordinary riding's eight-field pose: "..fields)
     end)
     case(function() -- Going over the bars the manual is let go: the stage gets none while the crash runs.
         local w=harness(flat)

@@ -36,11 +36,12 @@ local AIR_TILT_STOP_DEG, UNSUPPORTED_TILT_STEPS = 120, 90
 -- row keeps its true depth and pushes from a depth the kernel admits.
 local HELD_DEPTH, HELD_FLOOR, HELD_FLAT_FLOOR = .095, .19, .24
 -- A tyre that strikes a kerb loses speed to it, where the held row alone lifted the wheel and let it roll on as if
--- the kerb were not there. A wheel rolling last step, its true gap inside CURB_ROLLING, whose gap closes by
--- CURB_STEP or more onto a flat top (normal up at least CURB_FLAT) has struck a step that high. It costs this share
--- of the speed along the ground per wheel radius of step, up to the whole radius, paid against the travel at no
--- more than CURB_FORCE a step. The share is a feel value, not a measured one: 15 cm at 7.4 m/s costs 1 m/s a wheel.
-local CURB_ROLLING, CURB_STEP, CURB_FLAT, CURB_SHARE, CURB_FORCE = .02, .025, .95, .25, 5400
+-- the kerb were not there. A wheel whose gap closes by CURB_STEP or more onto a flat top (normal up at least
+-- CURB_FLAT), rolled or hopped into it, has struck a step that high: the least of how far its gap closed, how far
+-- the ground came up and how far the tyre went into it. It costs this share of the speed along the ground per wheel
+-- radius of step, up to the whole radius, paid against the travel at no more than CURB_FORCE a step. The share is a
+-- feel value, not a measured one: 15 cm at 7.4 m/s costs 1 m/s a wheel.
+local CURB_STEP, CURB_FLAT, CURB_SHARE, CURB_FORCE = .025, .95, .25, 5400
 -- Speed lost along the travel over this many steps. ForceStage's caps take at
 -- most 3.8 m/s over them, on a landing, so this much is the world stopping the
 -- body: a pillar took 7.5 m/s in two steps, and left the rider sitting on a
@@ -229,11 +230,14 @@ local function hit(s,body)
     return nil
 end
 -- Adds what a kerb struck this step costs to what is still to pay. Each wheel keeps its true gap from the last
--- step, not the held depth, and the point its ray found. A gap that closes is a kerb only when the ground came up
--- under the wheel by as much, along the new surface's normal: on a hill, or onto a ramp met from flat, the new
--- point lies on or under the plane the wheel was rolling on, and a landing closes its gap with the wheel coming
--- down onto ground that stayed where it was. A wheel still in the air over a kerb's edge, hopped up it, was not
--- rolling. The step's contact metrics name the height a wheel struck.
+-- step, not the held depth, and the point and normal its ray found. A gap that closes is a kerb only when the
+-- ground came up under the wheel by as much, along the new surface's normal and the old one's both, and only for
+-- as far as the tyre is now into the new surface. A landing closes its gap with the wheel coming down onto ground
+-- that stayed where it was. On a hill, or onto a ramp met from flat, the new point lies on or under the plane the
+-- wheel was on, and over a crest, a knuckle landed on among them, it lies under the plane of the old surface. A
+-- wheel hopped at a kerb pays for the part of it the tyre did not clear, so a hop that clears its top costs
+-- nothing and one a few centimetres off the road costs nearly the whole kerb. The step's contact metrics name the
+-- height a wheel struck.
 local function curb_strike(s,body,contact)
     local last,rows=s.curb_rows or {},{}
     local up=M.unit(M.mul(s.force.tuning.gravity,-1))
@@ -241,9 +245,10 @@ local function curb_strike(s,body,contact)
         if row.contact.status=="hit" then
             local gap,point,normal=row.ray_separation or row.separation,row.ray_point or row.contact.point,row.contact.normal
             local before=last[i]
-            rows[i]={gap=gap,point=point}
-            if before and up and math.abs(before.gap)<CURB_ROLLING and M.dot(normal,up)>=CURB_FLAT then
-                local step=math.min(before.gap-gap,M.dot(M.sub(point,before.point),normal))
+            rows[i]={gap=gap,point=point,normal=normal}
+            if before and up and M.dot(normal,up)>=CURB_FLAT then
+                local d=M.sub(point,before.point)
+                local step=math.min(before.gap-gap,M.dot(d,normal),M.dot(d,before.normal),-gap)
                 if step>=CURB_STEP then
                     local v=body.linear_velocity
                     local speed=M.length(M.sub(v,M.mul(up,M.dot(v,up))))

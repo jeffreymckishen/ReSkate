@@ -502,17 +502,50 @@ function T.run()
             end
         end
     end)
+    -- Comes down at 3 m/s from 26.5 cm, through the ground it left on step 27, onto what is under it on step 28.
+    local function drop(i)
+        if i<=20 or i>27 then return 0,0 end
+        return .265-(i-21)*.05,-3
+    end
     case(function() -- A landing closes its gaps as fast as a kerb, onto ground that stays where it was.
-        local function drop(i)
-            if i<=20 or i>27 then return 0,0 end
-            return .265-(i-21)*.05,-3
-        end
         local speeds,struck=roll_over(kerb(math.huge,0),7.4,STEPS,drop)
         check(none(struck) and math.abs(road[STEPS]-speeds[STEPS])<.05,"a landing is no kerb: "..#struck[1].." "..#struck[2])
     end)
+    case(function() -- A landing on a knuckle, a flat deck turning down a slope, is no kerb either.
+        -- The front hub is over the deck's edge as it lands, at each point of one step's travel. A ray that crosses the
+        -- edge then finds a point above the slope's plane carried back, as a kerb's top is, but under the deck's.
+        local reach=AXLES
+        for i=1,27 do reach+=road[i]*h end
+        for _,degrees in ipairs({15,16,17}) do
+            for phase=0,10 do
+                local _,struck=roll_over(ramp(reach-phase*.0125,-math.tan(math.rad(degrees))),7.4,STEPS,drop)
+                check(none(struck),"a knuckle at "..degrees.." degrees is no kerb: "..#struck[1].." "..#struck[2].." at "..phase
+                    ..(struck[1][1] and " struck "..struck[1][1][2] or ""))
+            end
+        end
+    end)
+    local function hop(lift) return function(i) return i>12 and i<=32 and lift or 0,0 end end
     case(function() -- Hopped up a kerb, the wheels pass its edge in the air and strike nothing.
-        local _,struck=roll_over(kerb(3,.15),7.4,STEPS,function(i) return i>12 and i<=32 and .25 or 0,0 end)
+        local _,struck=roll_over(kerb(3,.15),7.4,STEPS,hop(.25))
         check(none(struck),"a hop up a kerb costs nothing: "..#struck[1].." "..#struck[2])
+        -- Nor when the tyres clear its top by only 2 cm.
+        _,struck=roll_over(kerb(3,.15),7.4,STEPS,hop(.17))
+        check(none(struck),"a hop that just clears a kerb costs nothing: "..#struck[1].." "..#struck[2])
+    end)
+    case(function() -- A hop that falls short of a kerb strikes it, with the part of it the tyres did not clear.
+        for _,lift in ipairs({.04,.10}) do
+            local speeds,struck=roll_over(kerb(3,.15),7.4,STEPS,hop(lift))
+            local base=roll_over(kerb(math.huge,0),7.4,STEPS,hop(lift))
+            check(#struck[1]==1 and #struck[2]==1,"each wheel hopped "..lift.." m strikes a .15 m kerb once: "..#struck[1].." "..#struck[2])
+            local front,rear=struck[1][1],struck[2][1]
+            local short=.15-lift
+            check(front and rear and math.abs(front[2]-short)<.005 and math.abs(rear[2]-short)<.005,
+                "as much as it fell short: "..tostring(front and front[2]).." "..tostring(rear and rear[2]).." of "..short)
+            -- A quarter of the speed per wheel radius of that, a wheel, against the same hop over the bare road.
+            local owed=.25*speeds[front[1]]*short/R+.25*speeds[rear[1]]*short/R
+            local lost=base[STEPS]-speeds[STEPS]
+            check(lost>.85*owed and lost<=owed,"and the speed it owes: "..lost.." of "..owed)
+        end
     end)
     case(function() -- A kerb struck while braking for a car: its push adds to the stop's rather than taking its place.
         local car=face(3+R+.55)

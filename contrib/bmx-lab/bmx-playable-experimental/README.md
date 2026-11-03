@@ -42,7 +42,8 @@ offline the game does not keep it, so set it again each launch.
   the menu is closed and the controls are released.
 - Top speed is about 7.7 m/s on the flat. The rider stops pedalling there and coasts down to about 7.2 m/s before
   pedalling again. A hill can take the bike much faster than that, and a coast slows by itself.
-- Riding into a kerb costs some speed as each tyre strikes it, more for a taller one. Hop it to keep your speed.
+- Riding into a kerb costs some speed as each tyre strikes it, more for a taller one. Hop clear of its top to keep
+  your speed: a hop that falls short still strikes it.
 - A stopped bike holds on a street grade, so hold A for a moment to start down a gentle hill. Ramps steeper than about 15% roll back.
 - A crash (the bike going over, a hit at speed, or the rider being knocked off) gets back on the bike after a few
   seconds, which spends a mount. On the last mount of a launch it goes back to the skateboard instead. Banks and

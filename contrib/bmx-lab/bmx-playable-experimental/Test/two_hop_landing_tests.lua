@@ -210,6 +210,14 @@ function Tests.run()
         local air=d.step({right_y=-.53},false)
         local back=d.step({right_y=-.53},true)
         check(air.manual==0 and math.abs(back.manual-band)<.001,"none in the air, back at once: "..air.manual.." "..back.manual)
+        -- The same between two pad frames: Ride's body steps re-project the held pad on the new ground.
+        local function held(grounded)
+            local c=d.mapping:controls({physics_epoch=newproxy(),h=h,grounded=grounded,rotation_reserved=false})
+            check(c.valid,"the held pad is re-projected: "..tostring(c.issue))
+            return c.force_controls.manual
+        end
+        local lost,found=held(false),held(true)
+        check(lost==0 and math.abs(found-band)<.001,"with no fresh frame too: "..lost.." "..found)
     end
     do -- R3 from a manual pops at once with no manual; landing with the stick still held goes back into it.
         local d=driver()

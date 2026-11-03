@@ -143,7 +143,7 @@ local function core_fixture(session,options)
         assert(body==f.body)
         f.body_reads+=1;f.epoch=newproxy()
         return {serial=tostring(f.body_reads+1),epoch=not f.omit_epoch and f.epoch or nil,
-            time=f.now/1000,seconds=.2,position=vector.create(0,1,0),rotation={0,0,0,1},
+            time=f.now/1000,seconds=.2,position=vector.create(f.body_x or 0,1,0),rotation={0,0,0,1},
             velocity=vector.create(0,0,0),angular_velocity=vector.create(0,0,0),mass=106,inertia=vector.create(26,32,10)}
     end
     function P.probe_batch(body,epoch)
@@ -285,6 +285,17 @@ function Tests.run()
     check(not neutral.stop_requested and fields(neutral.presentation_pose)==8,
         "ordinary riding retains its exact eight pose fields")
     local normal_input=capture(neutral.presentation_pose)
+    -- The rider's body is one read behind the one the bike is drawn from. Steer and crank are not.
+    c.body_x=1
+    check(capture(neutral.presentation_pose).bike.center_of_mass.x==0,"the rider is posed from the body before this read")
+    c.body_x=2
+    local cranked=table.clone(neutral.presentation_pose);cranked.crank_phase=1.5;cranked.steer=.2
+    local late=capture(cranked)
+    check(late.bike.center_of_mass.x==1,"and stays one read behind as the body moves")
+    check(late.articulation.crank_phase==1.5 and late.articulation.steer==.2,"steer and crank stay on the current step")
+    check(capture(cranked).bike.center_of_mass.x==2,"a body that stops moving is caught up with")
+    c.body_x=nil
+    capture(neutral.presentation_pose);capture(neutral.presentation_pose)
     local old=normal_articulation(neutral.presentation_pose)
     check(same(old,normal_input.articulation),"Core's normal riding articulation equals the previous hard-zero projection")
     check(same(plan({bike=normal_input.bike,articulation=old}).targets,plan(normal_input).targets),

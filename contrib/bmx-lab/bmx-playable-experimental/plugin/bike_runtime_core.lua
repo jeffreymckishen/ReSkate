@@ -844,8 +844,8 @@ end
 -- Its one SDK function, skater.pose, goes through call(), so the call ledger and the per-call
 -- timing see it; a raise is raised again with its own value, which MP.classify_probe reads.
 -- prepare_backend makes the Poser (it calls nothing). pose_tick runs once a following tick, after
--- the follow visual drew the bike on the same body read: mount once, then one tick a tick, with
--- Ride's presentation steer and crank phase. A refusal is kept in T.pose_issue and never stops
+-- the follow visual drew the bike: mount once, then one tick a tick, on the body pose_body gives,
+-- with Ride's presentation steer and crank phase. A refusal is kept in T.pose_issue and never stops
 -- the ride; the Poser then sends nothing more (Poser:tick on a refused state). pose_stop ends the
 -- pose once (skater.pose(nil) when one is held), from stop_all and from unload.
 local MP,poser
@@ -933,6 +933,15 @@ local function pose_status(plan)
 end
 local POSE_RELEASED={barspin=0,tailwhip=0,movement_bike_pitch=0,movement_bike_roll=0,barspin_release=0,
     tailwhip_release=0,release_left_hand=0,release_right_hand=0,release_left_foot=0,release_right_foot=0}
+-- The rider is posed from the body one step before the one the bike is drawn from. Frames from beside the bike at
+-- top speed, moving one against the other a step at a time: on the same step the hands sit ahead of the grips, one
+-- step late they close on them, and two steps late they fall behind. Only the body is late. Steer and crank stay
+-- current, because the hands and feet are solved against the bars and pedals being drawn now.
+local function pose_body(sample)
+    if T.pose_body and T.pose_body.serial~=sample.serial then T.pose_body_before=T.pose_body end
+    T.pose_body=sample
+    return T.pose_body_before or sample
+end
 local function pose_step(sample,pose,now)
     T.pose_ticks=(T.pose_ticks or 0)+1
     if not T.pose_mount_ms then
@@ -949,7 +958,8 @@ local function pose_step(sample,pose,now)
     articulation.release_left_hand=a.release_left_hand or 0;articulation.release_right_hand=a.release_right_hand or 0
     articulation.tailwhip=a.tailwhip or 0;articulation.tailwhip_release=a.tailwhip_release or 0
     articulation.release_left_foot=a.release_left_foot or 0;articulation.release_right_foot=a.release_right_foot or 0
-    local r=poser:tick(now/1000,{bike={center_of_mass=sample.position,rotation=sample.rotation},articulation=articulation})
+    local body=pose_body(sample)
+    local r=poser:tick(now/1000,{bike={center_of_mass=body.position,rotation=body.rotation},articulation=articulation})
     if r.sent==true then T.pose_sent_ticks=(T.pose_sent_ticks or 0)+1 end
     if r.ok~=true and r.reason~=nil then T.pose_issue=T.pose_issue or short(r.reason) end
     if not T.pose_mounted_ms and r.state=="mounted" then T.pose_mounted_ms=now end
@@ -2090,7 +2100,7 @@ local function tick(dt)
                         if not yes(v) or not now or not current(generation) then
                             stop_all(BikeRuntime.follow_visual_stop("follow visual",v))
                         elseif not lease_live(now) then stop_all("ride window or Follow lease ended during visual update")
-                        -- S2 declared change: the rider posed on the bike just drawn, from the same read and pose.
+                        -- S2 declared change: the rider posed on the bike just drawn, in the same pose.
                         elseif poser then pose_tick(r[2],pose,now) end
                         -- The rider's own collision can catch on what the bike rolls through, a parked car say.
                         -- A rider left behind has come off: the same stop as a fall, so the ride recovers.

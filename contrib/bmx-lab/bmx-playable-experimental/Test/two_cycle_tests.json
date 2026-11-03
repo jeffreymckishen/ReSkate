@@ -5,7 +5,7 @@
   "quota_file_count": 90,
   "expected_processes": 47,
   "expected_cases": 309,
-  "expected_assertions": 14988,
+  "expected_assertions": 14997,
   "source_admission": "UNCHANGED_FALSE",
   "files": [
     {
@@ -179,8 +179,8 @@
     {
       "source": "plugin/bike_runtime_core.lua",
       "destination": "bike_runtime_core.lua",
-      "bytes": 140768,
-      "sha256": "1EAFAB02FA0DAE239D450D8584ACB1ED48D3D2A0CBF4FCDAC9C98BDD2E774503"
+      "bytes": 141430,
+      "sha256": "7CE6251D6898FFE549F76D2C897D416ECF4FB41F31FC8B9EA4DEDE003F24A9AB"
     },
     {
       "source": "plugin/force_math.lua",
@@ -221,8 +221,8 @@
     {
       "source": "plugin/bike_spawn.lua",
       "destination": "bike_spawn.lua",
-      "bytes": 31362,
-      "sha256": "F776CC9BA878CEDAC04CD7CF8754FCE0B96DF1ED53CB55E9D869606BDA403008"
+      "bytes": 30803,
+      "sha256": "C9AFD96F4A031E84CB8A6E71FEBB56964173A9FDE5DE6190425EF584DDFAC067"
     },
     {
       "source": "plugin/ride_runtime.lua",
@@ -366,8 +366,8 @@
     {
       "source": "Test/session_spawn_travel_tests.lua",
       "destination": "session_spawn_travel_tests.lua",
-      "bytes": 6639,
-      "sha256": "63A440C87BCC5CB1E15196E35AB9E7E7FA1BCAAEF64566794E47685383A8F36B"
+      "bytes": 6596,
+      "sha256": "EF081EAA3BF41943EF94F593FA723B72C17F260F5B7FC745C8C465B186E0B773"
     },
     {
       "source": "plugin/trick_adapter.lua",
@@ -396,14 +396,14 @@
     {
       "source": "Test/barspin_rider_pose_integration_tests.lua",
       "destination": "barspin_rider_pose_integration_tests.lua",
-      "bytes": 19192,
-      "sha256": "0E63029D6BA37FCA591E1FA35AC347A4794A64B65170357A82404DB98B860C4A"
+      "bytes": 19984,
+      "sha256": "FB82644605C3CA0FEBAD59E18A194D2C99DB4F2588239FBB5AA95E7D7479D5AD"
     },
     {
       "source": "Test/core_session_renewable_fixture.lua",
       "destination": "core_session_renewable_fixture.lua",
-      "bytes": 140798,
-      "sha256": "4FF30F0DF10EB60A993A6FD3DFAFEB7AD1788B07830C730EDF96759C202CF007"
+      "bytes": 141460,
+      "sha256": "E368CE9F8E4522CAD46293F5FD35BBBA1078188386B91F237E3AA6D983D2D742"
     },
     {
       "source": "Test/tailwhip_integration_tests.lua",
@@ -563,8 +563,8 @@
     },
     {
       "source": "plugin/bike_runtime_core.lua",
-      "bytes": 140768,
-      "sha256": "1EAFAB02FA0DAE239D450D8584ACB1ED48D3D2A0CBF4FCDAC9C98BDD2E774503"
+      "bytes": 141430,
+      "sha256": "7CE6251D6898FFE549F76D2C897D416ECF4FB41F31FC8B9EA4DEDE003F24A9AB"
     },
     {
       "source": "plugin/bike_runtime.lua",
@@ -573,8 +573,8 @@
     },
     {
       "source": "plugin/bike_spawn.lua",
-      "bytes": 31362,
-      "sha256": "F776CC9BA878CEDAC04CD7CF8754FCE0B96DF1ED53CB55E9D869606BDA403008"
+      "bytes": 30803,
+      "sha256": "C9AFD96F4A031E84CB8A6E71FEBB56964173A9FDE5DE6190425EF584DDFAC067"
     },
     {
       "source": "plugin/bike_visual.lua",
@@ -752,8 +752,8 @@
     {
       "source": "plugin/bike_runtime_core.lua",
       "fixture": "Test/core_session_renewable_fixture.lua",
-      "source_sha256": "1EAFAB02FA0DAE239D450D8584ACB1ED48D3D2A0CBF4FCDAC9C98BDD2E774503",
-      "fixture_sha256": "4FF30F0DF10EB60A993A6FD3DFAFEB7AD1788B07830C730EDF96759C202CF007",
+      "source_sha256": "7CE6251D6898FFE549F76D2C897D416ECF4FB41F31FC8B9EA4DEDE003F24A9AB",
+      "fixture_sha256": "E368CE9F8E4522CAD46293F5FD35BBBA1078188386B91F237E3AA6D983D2D742",
       "prefix": "return function(require)\n",
       "suffix": "\nend\n"
     }
@@ -951,7 +951,7 @@
       "invoked": "barspin_rider_pose_integration_tests",
       "context": "flat",
       "expected_cases": 1,
-      "expected_assertions": 55
+      "expected_assertions": 64
     },
     {
       "suite": "tailwhip_integration_tests",

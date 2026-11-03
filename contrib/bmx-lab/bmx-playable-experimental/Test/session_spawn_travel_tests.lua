@@ -92,12 +92,12 @@ function Tests.run()
     check(not owner:follow_visual(accepted,181),"unchanged native sample still expires after100 ms")
     check(owner.sample==accepted and owner.follow_observed_at==observed and owner.root==root,
         "all rejected paths retain the accepted sample, freshness and original root")
-    -- The rider's actor is drawn two physics steps behind the body, so the bike draws the body from two steps ago.
-    local trailing,tr=fixture({session_renewable=true})
-    for i=1,5 do check(trailing:follow_visual(tr.sample(i+1,i),i*16),"each measured step is accepted") end
-    local expected=assert(Visual.from_sample(tr.sample(99,3)))[1]
-    check(math.abs(tr.placed[13]-expected[13])<1e-5,"step five draws the body of step three")
-    check(trailing.sample.position.x==5,"the measured body stays current; only the drawing trails it")
+    -- The bike is drawn from the newest body: the rider is the one posed a step late (Core's pose_body).
+    local newest,tr=fixture({session_renewable=true})
+    for i=1,5 do check(newest:follow_visual(tr.sample(i+1,i),i*16),"each measured step is accepted") end
+    local expected=assert(Visual.from_sample(tr.sample(99,5)))[1]
+    check(math.abs(tr.placed[13]-expected[13])<1e-5,"step five draws the body of step five")
+    check(newest.sample.position.x==5,"and that body is the measured one")
 
     return {cases=1,assertions=assertions,constructed=true,native_qualified=false}
 end

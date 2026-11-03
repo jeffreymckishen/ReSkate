@@ -228,7 +228,9 @@ end
 -- cadence: the bars and cranks hold. One new table a step, which status
 -- shares; nil for a model that reports either malformed. orientation is the
 -- measured body's and up is world up, for the direction a wheel is drawn up.
-local function presentation(previous,model,wheels,h,samples,geometry,orientation,up)
+-- ground is the direction the ground was followed to last step, nil at first;
+-- the second result is this step's, for the next.
+local function presentation(previous,model,wheels,h,samples,geometry,orientation,up,ground)
     local steer,pedaling=model.front_steer_angle,model.pedaling
     if steer==nil then steer=previous.steer
     elseif not M.finite(steer) or math.abs(steer)>1 then return nil end
@@ -262,17 +264,19 @@ local function presentation(previous,model,wheels,h,samples,geometry,orientation
     if front_down and not back_down then want_back=math.min(want_front,clearance(samples[2])-ON_GROUND)
     elseif back_down and not front_down then want_front=math.min(want_back,clearance(samples[1])-ON_GROUND) end
     local was=previous.movement_bike_pitch~=0 or previous.movement_bike_lift~=nil
-    -- Ordinary riding, with nothing drawn and nothing to draw, skips the tilt.
-    -- A drawn bike's direction turns from the last step's no faster than LIFT_TURN. It is kept in the world, so the
-    -- body turning under it does not hold it back. Lifted along each step's normal as measured, a ray that found a
-    -- kerb's 25 degree bevel for one step under a rear tyre drawn 14 cm up threw the drawn bike 6.4 cm along the
-    -- ground and back: LIFT_RATE bounds only the rise along the new direction, and the lower hub is kept where the
-    -- body has it across that direction, so the whole lift turned with it.
+    -- The direction a drawn bike is lifted along turns from the last step's no faster than LIFT_TURN, and is followed
+    -- every step, drawn or not, from world up at the start. It is kept in the world, so the body turning under it does
+    -- not hold it back. Lifted along each step's normal as measured, a ray that found a kerb's 25 degree bevel for one
+    -- step under a rear tyre drawn 14 cm up threw the drawn bike 6.4 cm along the ground and back: LIFT_RATE bounds
+    -- only the rise along the new direction, and the lower hub is kept where the body has it across that direction,
+    -- so the whole lift turned with it. Taken as measured on the first step drawn, a manual's rear whose first row in
+    -- a kerb was its 45 degree bevel drew the bike lifted along that for 18 steps, the rear hub 9 cm behind the body's
+    -- and the tyre 4 cm into the kerb. Ordinary riding, with nothing drawn and nothing to draw, skips the tilt.
+    local measured,from=ground_normal(samples,up),ground or up
+    local followed=measured and from and turned_toward(from,measured,LIFT_TURN*h) or measured
     local normal,tilt=nil,0
     if was or want_front~=0 or want_back~=0 then
-        normal=ground_normal(samples,up)
-        local last=previous.movement_bike_normal
-        if was and normal and type(last)=="table" then normal=turned_toward(last,normal,LIFT_TURN*h) end
+        normal=followed
         tilt=rise_tilt(normal,orientation)
     end
     local front,back=0,0
@@ -315,7 +319,7 @@ local function presentation(previous,model,wheels,h,samples,geometry,orientation
     end
     pose.rider_shift=shift
     pose.rider_standing=shift~=nil and standing or nil
-    return pose
+    return pose,followed
 end
 -- The measured tilt of the body's up axis from world up, in degrees, and its
 -- roll rate about its own forward axis, in rad/s; nil when either is unknown.
@@ -1823,8 +1827,8 @@ local function observe(s,source_frame,raw,context)
     s.refused_steps=0
     local wheels=wheel_copy(model.wheels,s.wheels)
     if not wheels then stop(s,"bounded wheel model unavailable");return end
-    local pose=presentation(s.pose,model,wheels,sample.seconds,contact.samples,s.geometry,body.orientation,
-        M.unit(M.mul(s.force.tuning.gravity,-1)))
+    local pose,ground=presentation(s.pose,model,wheels,sample.seconds,contact.samples,s.geometry,body.orientation,
+        M.unit(M.mul(s.force.tuning.gravity,-1)),s.drawn_ground)
     if not pose then stop(s,"bounded presentation model unavailable");return end
     local p={serial=sample.serial,time=sample.time,seconds=sample.seconds,submitted_at=s.now,
         hop_id=model.hop_applied and model.hop_event_id or nil,wheels=wheels,
@@ -1891,7 +1895,7 @@ local function observe(s,source_frame,raw,context)
         s.manual_active=model.manual_active==true
         -- The pose follows the accepted prediction, with the wheels it adopts;
         -- model_history names that step.
-        s.pose=freeze(pose)
+        s.pose=freeze(pose);s.drawn_ground=ground
         s.model_history=freeze({kind="predictive_accepted",serial=p.serial,sequence=sequence,
             reason="exact_force_admission",native_wheel_state_known=false})
         if s.hop_policy=="grounded_once" then

@@ -1001,6 +1001,38 @@ function T.run()
         end
         check(most<.01,string.format("and moves %.4f a step at most along the ground as its ray finds the edge and the top",most))
     end)
+    case(function() -- A manual whose rear ray first finds a kerb on its 45 degree bevel is drawn up onto the top, not along the bevel.
+        -- The first drawn step's direction was the bevel's normal as measured, and it took 18 steps at LIFT_TURN to come
+        -- back to the top's: the drawn rear hub was 9 cm behind the body's and the tyre 4 cm into the kerb.
+        local bevel=math.rad(45)
+        local rows=0
+        local w=harness(function(from,to,count,i)
+            if count==2 and i==2 and rows>0 then
+                if rows==1 then return hit(from,to,from.y-R+.15,{0,math.cos(bevel),-math.sin(bevel)}) end
+                return hit(from,to,from.y-R+.15,{0,1,0})
+            end
+            return flat(from,to)
+        end)
+        w.prompt=true
+        local pose=wheelie(30,4)
+        check(in_manual(w,pose,12)==nil and w.controls.manual>.4,"a manual on the road")
+        local into,behind=0,0
+        for i=1,20 do
+            rows=i
+            local out=w.step(pose)
+            check(not out.stop_requested,"riding the manual onto the kerb: "..tostring(out.issue))
+            local shown=out.presentation_pose
+            local sample=w.samples[w.serial]
+            local rear=drawn_touch(sample,shown,3)
+            local drawn,body=Visual.from_sample(sample,shown)[3],Visual.from_sample(sample)[3]
+            if i>=3 then
+                into=math.max(into,math.abs(rear[2]-.15))
+                behind=math.max(behind,math.sqrt((drawn[13]-body[13])^2+(drawn[15]-body[15])^2))
+            end
+        end
+        check(into<.015,string.format("from the third drawn step the rear tyre is drawn on the kerb top, %.4f off it at most",into))
+        check(behind<.02,string.format("and the drawn rear hub is %.4f at most from the body's along the ground",behind))
+    end)
     case(function() -- A steady manual's rear carries the whole weight and sinks past the drawn slack: nothing is drawn, so the rider is mapped.
         local w=harness(flat)
         w.prompt=true

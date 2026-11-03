@@ -65,18 +65,22 @@ local defaults={gravity={0,-9.8,0},wheelbase=1.203956057050485*scale,steer_limit
     -- out by 17.9 instead, the shift had almost nothing left to lift with just above it (208 N*m against gravity's
     -- 189 at 19.3 degrees), so a manual whose rise a kerb ramp's knocks took away there (trial mn4) crawled at 19 to
     -- 21 degrees for 1.4 s rather than going on to 35. Once the front has come up to the stick's offset, within
-    -- manual_risen_slack of it along the surface or against level, the throw fades out by 17.9 instead, until the
-    -- front is down again. The offset is measured along the surface under the rear wheel, so the rising face of a
-    -- bump or a kicker reads a held manual at 34 degrees to level as about 17 to its ground; with the wider throw
-    -- there too, it threw the bike up the face at 450 to 630 N*m and over backwards at the crest (an 8 cm bump at
-    -- 2.5 m/s, a 16 degree kicker at 4). Ended once the bike first passed 24 degrees instead, the lift lost it just
-    -- before mn4's knocks; judged along the surface alone, a bump met while the law crept up the last degree still
-    -- threw the bike over. The law settles about 5 mm short of its target. A throw is one movement, not a hold: the
-    -- rider has it for at most manual_pull_seconds at a time below 17.9 degrees, has it again once back above that
-    -- or with the front down, and has none while braking. Allowed whenever the bike was below 17.9, it held a braked
-    -- manual at 12 to 15 degrees on 430 to 800 N*m for over a second, two to four times what the drawn rider can
-    -- shift. Spent until the front was down again, a 5 cm bump put the front of a 32 degree manual on the ground,
-    -- where a rider pulls it back up.
+    -- manual_risen_slack of it along the surface or against the ground the lift started from, the throw fades out
+    -- by 17.9 instead, until the front is down again. That ground is the surface under the rear wheel when the front
+    -- last stood on the road, so up a hill it is the hill. Judged against level, up a 10% grade a lift read 8 to 9
+    -- degrees short of its angle, and a 5 cm lip met then stalled the bike at 17 to 20 degrees for a second, as
+    -- mn4's ramp did. The offset is measured along the surface under the rear wheel, so the rising face of a bump
+    -- or a kicker reads a held manual at 34 degrees to level as about 17 to its ground; with the wider throw there
+    -- too, it threw the bike up the face at 450 to 630 N*m and over backwards at the crest (an 8 cm bump at 2.5 m/s,
+    -- a 16 degree kicker at 4). Ended once the bike first passed 24 degrees instead, the lift lost it just before
+    -- mn4's knocks; judged along the surface alone, a bump met while the law crept up the last degree still threw
+    -- the bike over. The law settles about 5 mm short of its target. A throw is one movement, not a hold: the rider
+    -- has it for at most manual_pull_seconds at a time below 17.9 degrees, has it again once back above that or with
+    -- the front down, and has none while braking. Allowed whenever the bike was below 17.9, it held a braked manual
+    -- at 12 to 15 degrees on 430 to 800 N*m for over a second, two to four times what the drawn rider can shift.
+    -- Spent until the front was down again, a 5 cm bump put the front of a 32 degree manual on the ground, where a
+    -- rider pulls it back up. Followed over .3 s instead of held from the lift's start, that ground took on a kicker
+    -- met during the lift, so the front never read as up and the throw carried the bike up the face and over.
     manual_pull=800,manual_pull_ramp=.08,manual_pull_seconds=1,manual_risen_slack=.02,
     -- The front moves at most this fast (rad/s), toward the target at this gain (1/s), on this damping (N*m*s).
     -- A plain spring overshot past the loop-out on high targets: 156 N*m forward cannot stop a fast lift.
@@ -196,9 +200,9 @@ end
 -- step's speed decides it alone. Whether the bike is in a manual is kept the
 -- same way, so a hitch does not drop the front of a held manual, and so is
 -- how long the rider's throw has been in use, whether the front has come up
--- since it left the ground, and whether a manual slowed to a walk with the
--- stick still held.
-function Controller:reset() self.last_hop_event=0 self.normals={{},{}} self.landing_impact={false,false} self.travel_direction=0 self.air={} self.steering={} self.pump=Pump.new() self.pump:reset() self.pedal_latch=F.pedal_state() self.brake_share=0 self.brake_squeeze=0 self.manual_engaged=false self.manual_throw_seconds=0 self.manual_risen=false self.manual_slowed=false end
+-- since it left the ground, the ground the lift started from, and whether a
+-- manual slowed to a walk with the stick still held.
+function Controller:reset() self.last_hop_event=0 self.normals={{},{}} self.landing_impact={false,false} self.travel_direction=0 self.air={} self.steering={} self.pump=Pump.new() self.pump:reset() self.pedal_latch=F.pedal_state() self.brake_share=0 self.brake_squeeze=0 self.manual_engaged=false self.manual_throw_seconds=0 self.manual_risen=false self.manual_slowed=false self.manual_ground=nil end
 function Controller:invalidate_continuity()
     -- A missed command breaks one-step derivative and state-machine history.
     -- Accepted hop consumption and authored tuning remain authoritative. The
@@ -227,6 +231,7 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     local prior_throw=M.finite(self.manual_throw_seconds) and math.max(0,self.manual_throw_seconds) or 0
     local prior_risen=self.manual_risen==true
     local prior_slowed=self.manual_slowed==true
+    local prior_ground=M.unit(self.manual_ground)
     self.normals={{},{}} self.landing_impact={false,false} self.travel_direction=0 self.air={} self.steering={} self.pump:reset()
     if not M.finite(h) or math.abs(h-F.native_seconds)>1e-8 then out.issue="unsupported_step" return out end
     if not tuning_valid(t) or not M.valid_body(measured) or not M.vec(measured.linear_velocity,50) or not M.vec(measured.angular_velocity,40) or
@@ -439,13 +444,16 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     -- The rear tyre pushes along the surface's normal, so the balance is the centre of mass over the contact along
     -- that normal. Measured level instead, a bike rolling down a 15% ramp looped out and one going up 8% chattered
     -- at the bottom of the window; along the normal all of them hold the same manual against the surface.
-    -- How far ahead it sits against level as well, which a bump's face under the rear wheel does not tilt.
-    local manual_d,manual_v,manual_level=0,0,0
+    -- How far ahead it sits against the ground the lift started from as well: the surface under the rear wheel
+    -- when the front last had support, held while the front is up. A bump's or a kicker's face met during the lift
+    -- does not tilt it, and on a uniform grade it is the grade, so there the two offsets are the same.
+    local manual_d,manual_v,manual_level,manual_ground=0,0,0,nil
     if manual_engaged then
         if not balance_frame then return out end
         local rel=M.sub(measured.center_of_mass,contacts[2].point)
         manual_d,manual_v=M.dot(rel,forward),M.dot(rel,up)
-        local level=M.unit(M.sub(body_forward,M.mul(gravity_up,M.dot(body_forward,gravity_up))))
+        manual_ground=not front_support and prior_ground or up
+        local level=M.unit(M.sub(body_forward,M.mul(manual_ground,M.dot(body_forward,manual_ground))))
         manual_level=level and M.dot(rel,level) or manual_d
     end
     -- Whether the front has come up to the stick's offset since it left the ground: the throw above 17.9 degrees
@@ -672,7 +680,7 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     self.brake_share=brake_share self.brake_squeeze=brake
     out.manual_active=manual_engaged out.manual_offset=manual_d self.manual_engaged=manual_engaged self.manual_slowed=slowed
     self.manual_throw_seconds=manual_engaged and not front_support and manual_d>t.manual_hold_back and prior_throw+h or 0
-    self.manual_risen=risen
+    self.manual_risen=risen self.manual_ground=manual_ground
     self.pump=pump self.pedal_latch=next_latch out.valid=true out.issue="none" return out
 end
 function Controller:_recovery_mask(h,body,samples,c,baseline)
@@ -708,6 +716,7 @@ function Controller:_adopt(other)
     self.air=other.air self.steering=other.steering self.pump=other.pump self.pedal_latch=other.pedal_latch
     self.brake_share=other.brake_share self.brake_squeeze=other.brake_squeeze self.manual_engaged=other.manual_engaged
     self.manual_throw_seconds=other.manual_throw_seconds self.manual_risen=other.manual_risen self.manual_slowed=other.manual_slowed
+    self.manual_ground=other.manual_ground
 end
 function Controller:step(h,body,wheels,samples,controls,speculative)
     local c=F.controls(controls) local baseline_controller=self:clone()

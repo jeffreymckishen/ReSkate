@@ -753,6 +753,43 @@ function T.run()
             string.format("over the kerb the manual reaches 30 degrees within .25 s of the flat road: %s against %s",
                 tostring(reached),tostring(flat_reached)))
     end)
+    case(function() -- Up a street grade, a lip met while the front comes up does not stall the lift.
+        -- Judged against level, a lift up a grade read as up to the stick's angle 7 to 10 degrees short of it, and
+        -- the wide throw ended there. A 5 cm lip over .55 m then knocked the bike back to 16 or 17 degrees, where the
+        -- weight shift alone barely holds it, and it crawled for a second or more, as mn4 did over its kerb ramp.
+        local t=Forces.tuning()
+        local stick=36
+        local function rear_z(body)
+            return M.add(body.center_of_mass,M.turn(M.normalized(body.orientation),M.sub(G.rear_axle,G.com)))[3]
+        end
+        local function lipped(grade,at)
+            local function rise(z) return at and math.clamp((z-at)/.55,0,1)*.05 or 0 end
+            return {height=function(x,z) return z*grade+rise(z) end,
+                grad=function(x,z) return 0,grade+((at and z>at and z<at+.55) and .05/.55 or 0) end}
+        end
+        local function ride(row,at,each)
+            return run({steps=stick+120,speed=row.speed,ground=lipped(row.grade,at),controls=function(step)
+                return {pedal=step<stick and 1 or 0,manual=step>=stick and row.m or nil}
+            end,each=each})
+        end
+        for _,row in ipairs({{grade=.08,speed=5,m=.5,after=.5},{grade=.1,speed=5,m=.5,after=.6},{grade=.12,speed=6,m=.5,after=.5}}) do
+            -- The lip starts where the rear hub is `after` seconds after the stick on the plain grade.
+            local at
+            ride(row,nil,function(step,body) if step==stick+math.floor(row.after/h+.5) then at=rear_z(body) end end)
+            local grade=math.deg(math.atan(row.grade))
+            local reach=t.manual_low+(t.manual_high-t.manual_low)*row.m
+            local want=math.deg(math.acos(reach/math.sqrt(.4158^2+.637^2))-math.atan2(.637,.4158))
+            local reached,low=nil,math.huge
+            local over=ride(row,at,function(step,body)
+                local p=pitch_of(body)-grade
+                if step>=stick and not reached and p>=want-2.5 then reached=(step-stick)*h end
+                if (step-stick)*h>row.after and not reached then low=math.min(low,p) end
+            end)
+            local what=string.format("up %d%% at %d m/s, m=%.1f, the lip met %.1f s into the lift",row.grade*100,row.speed,row.m,row.after)
+            check(over.refused==0 and reached and reached<=1,string.format("%s: within 2.5 degrees of %.1f in %s s",what,want,tostring(reached)))
+            check(low>=21,string.format("%s: knocked back no lower than %.1f degrees",what,low))
+        end
+    end)
     case(function() -- A hop from any manual pops level: the rider pushes the bars forward on either side of the balance.
         -- With the law past the balance the pop was a 156 N*m nudge: m=.85 landed at 9 degrees and m=.9 at 33, on the
         -- back wheel, near where it goes over.

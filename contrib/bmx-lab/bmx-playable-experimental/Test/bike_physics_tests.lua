@@ -32,6 +32,26 @@ function Ground.bump(at,height,length)
     return {height=function(x,z) local s=u(z);if s<=0 or s>=1 then return 0 end;return height*.5*(1-math.cos(2*math.pi*s)) end,
         grad=function(x,z) local s=u(z);if s<=0 or s>=1 then return 0,0 end;return 0,height*math.pi*math.sin(2*math.pi*s)/length end}
 end
+-- A kicker across the road from z=at: a face this steep up to a deck this high, curved into at its foot and over at
+-- its lip along blend metres.
+function Ground.kicker(at,angle,blend,top)
+    local k=math.tan(angle)
+    local lip=at+top/k
+    local function height(z)
+        if z<=at then return 0 end
+        if z<=at+blend then return k*(z-at)^2/(2*blend) end
+        if z<=lip then return k*(z-at-blend/2) end
+        if z<=lip+blend then local d=z-lip;return k*(lip-at-blend/2)+k*d-k*d*d/(2*blend) end
+        return k*(lip-at-blend/2)+k*blend/2
+    end
+    local function slope(z)
+        if z<=at or z>=lip+blend then return 0 end
+        if z<=at+blend then return k*(z-at)/blend end
+        if z<=lip then return k end
+        return k*(1-(z-lip)/blend)
+    end
+    return {height=function(x,z) return height(z) end,grad=function(x,z) return 0,slope(z) end}
+end
 local function turned(yaw) return {0,math.sin(yaw/2),0,math.cos(yaw/2)} end
 local function place(ground,speed,yaw)
     local body,wheels=Forces.proposed_body(),Forces.proposed_wheels()
@@ -484,6 +504,29 @@ function T.run()
                 check(last.active==true and math.abs(last.pitch-row.pitch)<=1.5,
                     string.format("and the manual is still held a second after it: %.1f degrees",last.pitch))
             end
+        end
+    end)
+    case(function() -- A held manual rides over a bump or a kicker at a jog: the throw above 17.9 degrees is the lift's alone.
+        -- The offset is measured along the surface under the rear wheel, so a rising face reads a bike at 34 degrees
+        -- to level as about 17 to its ground. With the throw allowed there in a held manual, it threw the bike up
+        -- the face at 450 to 630 N*m, and over the crest the bike went past its balance and over backwards (89 to
+        -- 90 degrees). With the throw ending at 17.9 it rode on at 34 to 38.
+        for _,row in ipairs({
+            {what="an 8 cm bump .6 m long at 2 m/s",ground=Ground.bump(4.5,.08,.6),speed=2,m=1,pitch=36.4},
+            {what="an 8 cm bump .8 m long at 2.5 m/s",ground=Ground.bump(4.5,.08,.8),speed=2.5,m=.88,pitch=34.4},
+            {what="an 8 cm bump .8 m long at 3 m/s",ground=Ground.bump(4.5,.08,.8),speed=3,m=1,pitch=36.4},
+            {what="a 16 degree kicker onto a 20 cm deck at 4 m/s",ground=Ground.kicker(6,math.rad(16),.3,.2),speed=4,m=.88,pitch=34.4},
+        }) do
+            local most,last=-math.huge,nil
+            local ride=run({steps=215,speed=row.speed,ground=row.ground,controls=function(step) return {manual=step>15 and row.m or 0} end,
+                each=function(step,body,out)
+                    local p=pitch_of(body)
+                    most=math.max(most,p)
+                    if step==215 then last={pitch=p,active=out.manual_active} end
+                end})
+            check(ride.refused==0 and most<45,string.format("%s at m=%.2f: no fall, at most %.1f degrees",row.what,row.m,most))
+            check(last.active==true and math.abs(last.pitch-row.pitch)<=1.5,
+                string.format("%s: the manual is still held after it at %.1f degrees",row.what,last.pitch))
         end
     end)
     case(function() -- Too far back: past where the rider can hold it the bike goes over, B saves it, and inside the window it comes back.

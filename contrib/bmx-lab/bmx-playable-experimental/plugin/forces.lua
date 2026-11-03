@@ -60,17 +60,24 @@ local defaults={gravity={0,-9.8,0},wheelbase=1.203956057050485*scale,steer_limit
     -- the balance (36.4), where the rider leans toward the bars to hold it.
     manual_hold_back=.20,manual_hold_forward=.15,manual_low=.17,manual_high=-.05,
     -- Lifting the front from level needs 432 N*m, more than any weight shift gives (208 at manual_hold_back). A
-    -- rider throws the bike up: this much is allowed up to 17.9 degrees, where the weight shift alone just holds
-    -- the bike, fading out from there over manual_pull_ramp of offset, to none from 24.1 degrees. Faded out by 17.9
-    -- instead, the shift had almost nothing left to lift with just above it (208 N*m against gravity's 189 at 19.3
-    -- degrees), so a manual whose rise a kerb ramp's knocks took away there (trial mn4) crawled at 19 to 21 degrees
-    -- for 1.4 s rather than going on to 35. A throw is one movement, not a hold: the rider has it for at most
-    -- manual_pull_seconds at a time below 17.9 degrees, has it again once back above that or with the front down,
-    -- and has none while braking. Allowed whenever the bike was below 17.9, it held a braked manual at 12 to 15
-    -- degrees on 430 to 800 N*m for over a second, two to four times what the drawn rider can shift. Spent until the
-    -- front was down again, a 5 cm bump put the front of a 32 degree manual on the ground, where a rider pulls it
-    -- back up.
-    manual_pull=800,manual_pull_ramp=.08,manual_pull_seconds=1,
+    -- rider throws the bike up: on the way up this much is allowed up to 17.9 degrees, where the weight shift alone
+    -- just holds the bike, fading out from there over manual_pull_ramp of offset, to none from 24.1 degrees. Faded
+    -- out by 17.9 instead, the shift had almost nothing left to lift with just above it (208 N*m against gravity's
+    -- 189 at 19.3 degrees), so a manual whose rise a kerb ramp's knocks took away there (trial mn4) crawled at 19 to
+    -- 21 degrees for 1.4 s rather than going on to 35. Once the front has come up to the stick's offset, within
+    -- manual_risen_slack of it along the surface or against level, the throw fades out by 17.9 instead, until the
+    -- front is down again. The offset is measured along the surface under the rear wheel, so the rising face of a
+    -- bump or a kicker reads a held manual at 34 degrees to level as about 17 to its ground; with the wider throw
+    -- there too, it threw the bike up the face at 450 to 630 N*m and over backwards at the crest (an 8 cm bump at
+    -- 2.5 m/s, a 16 degree kicker at 4). Ended once the bike first passed 24 degrees instead, the lift lost it just
+    -- before mn4's knocks; judged along the surface alone, a bump met while the law crept up the last degree still
+    -- threw the bike over. The law settles about 5 mm short of its target. A throw is one movement, not a hold: the
+    -- rider has it for at most manual_pull_seconds at a time below 17.9 degrees, has it again once back above that
+    -- or with the front down, and has none while braking. Allowed whenever the bike was below 17.9, it held a braked
+    -- manual at 12 to 15 degrees on 430 to 800 N*m for over a second, two to four times what the drawn rider can
+    -- shift. Spent until the front was down again, a 5 cm bump put the front of a 32 degree manual on the ground,
+    -- where a rider pulls it back up.
+    manual_pull=800,manual_pull_ramp=.08,manual_pull_seconds=1,manual_risen_slack=.02,
     -- The front moves at most this fast (rad/s), toward the target at this gain (1/s), on this damping (N*m*s).
     -- A plain spring overshot past the loop-out on high targets: 156 N*m forward cannot stop a fast lift.
     manual_rate=1.5,manual_gain=4,manual_damping=560,
@@ -118,14 +125,14 @@ local function tuning_valid(t)
         "recovery_fraction","recovery_speed_limit","pedal_fade_start","pedal_cutoff","pedal_top_speed","pedal_resume_speed","rider_power",
         "curvature_rate_limit","curvature_step_limit","curvature_min_speed","neutral_air_damping_rate",
         "rolling_resistance","air_drag","tyre_section_radius","brake_lateral_cut","rear_brake_load_share",
-        "manual_hold_back","manual_hold_forward","manual_pull","manual_pull_ramp","manual_pull_seconds","manual_rate","manual_gain","manual_damping",
-        "manual_min_speed","manual_start_speed","manual_carve_rate","manual_carve_damping","manual_carve_torque"} do if not M.finite(t[name]) or t[name]<0 or t[name]>1e6 then return false end end
+        "manual_hold_back","manual_hold_forward","manual_pull","manual_pull_ramp","manual_pull_seconds","manual_risen_slack","manual_rate","manual_gain",
+        "manual_damping","manual_min_speed","manual_start_speed","manual_carve_rate","manual_carve_damping","manual_carve_torque"} do if not M.finite(t[name]) or t[name]<0 or t[name]>1e6 then return false end end
     if not M.finite(t.manual_low) or not M.finite(t.manual_high) then return false end
     if type(t.friction)~="table" then return false end
     for _,key in {"longitudinal_friction","lateral_friction"} do local x=t.friction[key] if not M.finite(x) or x<0 or x>10 then return false end end
     if t.manual_hold_back>.3 or t.manual_hold_forward>.3 or t.manual_high< -.3 or t.manual_high>=t.manual_low or t.manual_low>.3 or
         t.manual_pull>t.balance_torque_limit or t.manual_pull_ramp<=0 or t.manual_rate>4 or t.manual_gain>10 or
-        t.manual_start_speed<t.manual_min_speed or t.manual_start_speed>5 or t.manual_pull_seconds>5 then return false end
+        t.manual_start_speed<t.manual_min_speed or t.manual_start_speed>5 or t.manual_pull_seconds>5 or t.manual_risen_slack>.1 then return false end
     return t.brake_lateral_cut<=1 and t.rear_brake_load_share<=1 and t.steer_limit<=1 and t.lean_limit<=.8 and t.hop_delta_speed<=4.5 and t.contact_gap<=.05 and
         t.maximum_penetration<=.15 and t.recovery_fraction<=1 and t.recovery_speed_limit<=1 and t.pedal_fade_start<t.pedal_cutoff and
         t.pedal_cutoff<=50 and t.pedal_resume_speed<t.pedal_top_speed and t.pedal_top_speed<=t.pedal_cutoff and t.curvature_rate_limit<=10 and t.curvature_step_limit<=.35 and t.curvature_min_speed<=5 and t.neutral_air_damping_rate<=10
@@ -188,9 +195,10 @@ end
 -- refused step keep it: it holds no derivative, and outside the band this
 -- step's speed decides it alone. Whether the bike is in a manual is kept the
 -- same way, so a hitch does not drop the front of a held manual, and so is
--- how long the rider's throw has been in use and whether a manual slowed to
--- a walk with the stick still held.
-function Controller:reset() self.last_hop_event=0 self.normals={{},{}} self.landing_impact={false,false} self.travel_direction=0 self.air={} self.steering={} self.pump=Pump.new() self.pump:reset() self.pedal_latch=F.pedal_state() self.brake_share=0 self.brake_squeeze=0 self.manual_engaged=false self.manual_throw_seconds=0 self.manual_slowed=false end
+-- how long the rider's throw has been in use, whether the front has come up
+-- since it left the ground, and whether a manual slowed to a walk with the
+-- stick still held.
+function Controller:reset() self.last_hop_event=0 self.normals={{},{}} self.landing_impact={false,false} self.travel_direction=0 self.air={} self.steering={} self.pump=Pump.new() self.pump:reset() self.pedal_latch=F.pedal_state() self.brake_share=0 self.brake_squeeze=0 self.manual_engaged=false self.manual_throw_seconds=0 self.manual_risen=false self.manual_slowed=false end
 function Controller:invalidate_continuity()
     -- A missed command breaks one-step derivative and state-machine history.
     -- Accepted hop consumption and authored tuning remain authoritative. The
@@ -217,6 +225,7 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     local prior_brake_share,prior_squeeze=self.brake_share,self.brake_squeeze
     local prior_manual=self.manual_engaged==true
     local prior_throw=M.finite(self.manual_throw_seconds) and math.max(0,self.manual_throw_seconds) or 0
+    local prior_risen=self.manual_risen==true
     local prior_slowed=self.manual_slowed==true
     self.normals={{},{}} self.landing_impact={false,false} self.travel_direction=0 self.air={} self.steering={} self.pump:reset()
     if not M.finite(h) or math.abs(h-F.native_seconds)>1e-8 then out.issue="unsupported_step" return out end
@@ -426,12 +435,18 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     -- The rear tyre pushes along the surface's normal, so the balance is the centre of mass over the contact along
     -- that normal. Measured level instead, a bike rolling down a 15% ramp looped out and one going up 8% chattered
     -- at the bottom of the window; along the normal all of them hold the same manual against the surface.
-    local manual_d,manual_v=0,0
+    -- How far ahead it sits against level as well, which a bump's face under the rear wheel does not tilt.
+    local manual_d,manual_v,manual_level=0,0,0
     if manual_engaged then
         if not balance_frame then return out end
         local rel=M.sub(measured.center_of_mass,contacts[2].point)
         manual_d,manual_v=M.dot(rel,forward),M.dot(rel,up)
+        local level=M.unit(M.sub(body_forward,M.mul(gravity_up,M.dot(body_forward,gravity_up))))
+        manual_level=level and M.dot(rel,level) or manual_d
     end
+    -- Whether the front has come up to the stick's offset since it left the ground: the throw above 17.9 degrees
+    -- is the lift's only (see manual_pull).
+    local risen=prior_risen and manual_engaged and not front_support
     -- Let go below the balance point, the ordinary spring sets the front down. Past it, the law brings the bike
     -- back toward the low target, under the same limits, so letting go is no save beyond what the rider can do.
     -- The step a hop pops, the rider pushes the bars forward as they spring, on either side of the balance, so the
@@ -556,11 +571,14 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
                 local rate=-M.dot(measured.angular_velocity,lateral)
                 local want=math.clamp(t.manual_gain*delta,-t.manual_rate,t.manual_rate)
                 local couple=weight*manual_d+t.manual_damping*(want-rate)
-                local ramp=throw and math.clamp((manual_d-t.manual_hold_back+t.manual_pull_ramp)/t.manual_pull_ramp,0,1) or 0
+                -- On the way up the throw fades out above manual_hold_back, once the front is up below it.
+                local fade=risen and t.manual_hold_back or t.manual_hold_back-t.manual_pull_ramp
+                local ramp=throw and math.clamp((manual_d-fade)/t.manual_pull_ramp,0,1) or 0
                 local up_cap=weight*t.manual_hold_back+ramp*math.max(0,t.manual_pull-weight*t.manual_hold_back)
                 couple=math.clamp(couple,-weight*t.manual_hold_forward,up_cap)
                 assist=M.add(assist,M.mul(lateral,-couple))
                 out.manual_target_offset=target
+                if not front_support and math.min(manual_d,manual_level)<=target+t.manual_risen_slack then risen=true end
             end
             if carving then
                 local yaw_rate=M.dot(measured.angular_velocity,up)
@@ -650,6 +668,7 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     self.brake_share=brake_share self.brake_squeeze=brake
     out.manual_active=manual_engaged out.manual_offset=manual_d self.manual_engaged=manual_engaged self.manual_slowed=slowed
     self.manual_throw_seconds=manual_engaged and not front_support and manual_d>t.manual_hold_back and prior_throw+h or 0
+    self.manual_risen=risen
     self.pump=pump self.pedal_latch=next_latch out.valid=true out.issue="none" return out
 end
 function Controller:_recovery_mask(h,body,samples,c,baseline)
@@ -684,7 +703,7 @@ function Controller:_adopt(other)
     self.last_hop_event=other.last_hop_event self.normals=other.normals self.landing_impact=other.landing_impact self.travel_direction=other.travel_direction
     self.air=other.air self.steering=other.steering self.pump=other.pump self.pedal_latch=other.pedal_latch
     self.brake_share=other.brake_share self.brake_squeeze=other.brake_squeeze self.manual_engaged=other.manual_engaged
-    self.manual_throw_seconds=other.manual_throw_seconds self.manual_slowed=other.manual_slowed
+    self.manual_throw_seconds=other.manual_throw_seconds self.manual_risen=other.manual_risen self.manual_slowed=other.manual_slowed
 end
 function Controller:step(h,body,wheels,samples,controls,speculative)
     local c=F.controls(controls) local baseline_controller=self:clone()

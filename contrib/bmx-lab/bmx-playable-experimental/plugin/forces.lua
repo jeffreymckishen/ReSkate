@@ -430,7 +430,11 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
         end
     end
     local manual_wanted=manual_engaged and manual_amount>0 and manual_speed>=t.manual_min_speed
-    slowed=slowed or prior_manual and manual_amount>0 and brake_wanted<=0 and manual_speed<t.manual_min_speed
+    -- It is set on the step such a manual ends on both wheels: up a grade or on the flat the front comes down under
+    -- a walk, so that is where it ends. Set on the rear wheel alone as well, one kerb bevel row under it ({0,.35,
+    -- -.94}) tilted the balance frame's forward nearly upright for its step, read 1.6 to 2.5 m/s as .53 to .84, and
+    -- the manual it then dropped for that step never came back with the stick held.
+    slowed=slowed or prior_manual and front_support and manual_amount>0 and brake_wanted<=0 and manual_speed<t.manual_min_speed
     local carving=manual_engaged and not front_support
     -- The rear tyre pushes along the surface's normal, so the balance is the centre of mass over the contact along
     -- that normal. Measured level instead, a bike rolling down a 15% ramp looped out and one going up 8% chattered

@@ -821,6 +821,31 @@ function T.run()
         check(car[13].manual and held>=14,"the manual is held over the bevel and through most of the crossing: "..held)
         check(car[13].push-road[13].push< -5000,"and the stop pushes on the bevel's step: "..car[13].push.." against "..road[13].push)
     end)
+    case(function() -- A slow manual over a kerb's bevel comes back after the bevel's step, as a faster one does.
+        -- The manual's speed is taken along the ground under the wheels, which the bevel's row tilts nearly upright
+        -- for its step: 1.6 to 2.5 m/s read .53 to .84. Read as a manual that had slowed to a walk, it kept the manual
+        -- from starting again until the stick was let go, and the front came down onto the sidewalk.
+        local bevel=M.unit({0,.35,-.94})
+        for _,speed in ipairs({1.6,2,2.5,4}) do
+            local over=false
+            local w=harness(function(from,to,count,i)
+                if over and count==2 and i==2 then return hit(from,to,0,bevel) end
+                return flat(from,to)
+            end)
+            w.prompt=true
+            local pose=wheelie(32,speed)
+            check(steps(w,pose,3)==nil,"riding at the kerb at "..speed.." m/s")
+            w.set_pad(-.53)
+            local line=""
+            for k=1,40 do
+                over=k==13
+                check(not w.step(pose).stop_requested,"step "..k.." over the kerb at "..speed.." m/s")
+                line..=w.model.manual_active and "M" or "."
+            end
+            check(string.match(line,"^%.*M+%.?M+$")~=nil and #string.match(line,"M+$")>=20,
+                "at "..speed.." m/s the manual is back a step after the bevel and held to the end: "..line)
+        end
+    end)
     case(function() -- Going over the bars at a car from a manual, the manual is let go from the crash's first step.
         -- The pitched bike's own lanes do not count a car's face as one; the manual's level lanes find it already close.
         local w=harness(face(NOSE+.3))

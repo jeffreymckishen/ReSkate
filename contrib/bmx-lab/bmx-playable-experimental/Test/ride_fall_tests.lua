@@ -275,6 +275,16 @@ function T.run()
         -- Bodies and rays come as native single-precision vectors.
         local function near(a,b) return math.abs(a-b)<1e-5 end
         local function fields(pose) local count=0 for _ in pairs(pose) do count+=1 end return count end
+        -- How far a wheel's tyre is drawn from where it touches the road drawn on the body: the lowest point of its
+        -- disc, the body being level.
+        local function touch(m)
+            local axle=M.unit({m[1],m[2],m[3]})
+            local toward=M.unit(M.sub({0,-1,0},M.mul(axle,-axle[2])))
+            return M.add({m[13],m[14],m[15]},M.mul(toward,R))
+        end
+        local function moved(sample,pose,part)
+            return M.sub(touch(Visual.from_sample(sample,pose)[part]),touch(Visual.from_sample(sample)[part]))
+        end
         local kerb={[1]=.15}
         local w=kerbed(kerb)
         local deep={[1]=.20}
@@ -295,6 +305,14 @@ function T.run()
         check(matrices~=nil,"the visual draws the lifted pose")
         local bottom=matrices[4][14]-R
         check(near(bottom,.15-.01),"the drawn tyre sits on the kerb, its bottom at "..bottom.." against a top at .15")
+        -- The bike is drawn turned about the rear wheel, which is still on the road where the physics has it. The front
+        -- comes in by what the climb shortens the wheelbase seen from above, a centimetre, on the kerb's flat top.
+        local rear_touch=moved(w.samples[w.serial],pose,3)
+        check(M.length(rear_touch)<.01,
+            string.format("the rear tyre touches the road within 1 cm of the body's: %.4f %.4f %.4f",rear_touch[1],rear_touch[2],rear_touch[3]))
+        local front_touch=moved(w.samples[w.serial],pose,4)
+        check(near(front_touch[2],.14) and front_touch[3]<0 and front_touch[3]>-.011 and math.abs(front_touch[1])<1e-5,
+            string.format("and the front tyre is drawn on the kerb top, %.4f back of the body's",-front_touch[3]))
         check(near(select(1,drawn(twin.step(level()))),.19),"a deeper kerb is drawn higher")
         check(#w.submits==5 and #twin.submits==5,"every step was pushed")
         for i=1,5 do
@@ -319,9 +337,12 @@ function T.run()
         local front,rear,lifted
         for _=1,3 do front,rear,lifted=drawn(rear_kerb.step(level())) end
         check(near(front,0) and near(rear,.14) and lifted.movement_bike_pitch>0,"a rear wheel on the kerb draws the nose down")
+        local front_touch=moved(rear_kerb.samples[rear_kerb.serial],lifted,4)
+        check(M.length(front_touch)<.01,string.format("about the front wheel, which touches the road within 1 cm of the body's: %.4f %.4f %.4f",
+            front_touch[1],front_touch[2],front_touch[3]))
         local stopped=rear_kerb.ride:stop("constructed stop")
-        check(stopped.presentation_pose.movement_bike_pitch==0 and stopped.presentation_pose.movement_bike_lift==nil,
-            "a stopped ride draws the bike on its body again")
+        check(stopped.presentation_pose.movement_bike_pitch==0 and stopped.presentation_pose.movement_bike_lift==nil
+            and stopped.presentation_pose.movement_bike_shift==nil,"a stopped ride draws the bike on its body again")
         local rolling=harness(flat)
         rolling.prompt=true
         local sunk=level();sunk.position[2]-=.005

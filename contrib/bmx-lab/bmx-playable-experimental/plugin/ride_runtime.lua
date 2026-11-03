@@ -182,7 +182,8 @@ local function presentation(previous,model,wheels,h,samples,geometry)
     -- Each drawn wheel moves from where the last pose drew it toward what this
     -- step's rays measured under the body being drawn, no faster than
     -- LIFT_RATE. A rigid bike lifts a wheel by pitching and lifting the whole
-    -- of it. Nothing in Ride or the kernel reads the pitch or lift back.
+    -- of it, and the shift keeps the lower wheel where the body has it along
+    -- the bike. Nothing in Ride or the kernel reads the pitch, lift or shift back.
     local front,back=0,0
     if previous.movement_bike_pitch~=0 or previous.movement_bike_lift then
         front,back=Geometry.hub_rise(geometry,previous.movement_bike_pitch,previous.movement_bike_lift or 0)
@@ -192,8 +193,8 @@ local function presentation(previous,model,wheels,h,samples,geometry)
     front+=math.clamp(ground_rise(samples[1])-front,-most,most)
     back+=math.clamp(ground_rise(samples[2])-back,-most,most)
     if front~=0 or back~=0 then
-        local pitch,lift=Geometry.pitch_lift(geometry,front,back)
-        if pitch then pose.movement_bike_pitch,pose.movement_bike_lift=pitch,lift end
+        local pitch,lift,shift=Geometry.pitch_lift(geometry,front,back)
+        if pitch then pose.movement_bike_pitch,pose.movement_bike_lift,pose.movement_bike_shift=pitch,lift,shift end
     end
     return pose
 end
@@ -776,7 +777,8 @@ local function stop(s, reason)
         -- A drawn lift is what the last step's rays measured. Nothing measures the wheels once Ride has
         -- stopped, so the bike is drawn on its body again rather than held up off a body that may be falling.
         if s.pose and (s.pose.movement_bike_pitch~=0 or s.pose.movement_bike_lift) then
-            local pose=table.clone(s.pose);pose.movement_bike_pitch=0;pose.movement_bike_lift=nil
+            local pose=table.clone(s.pose)
+            pose.movement_bike_pitch=0;pose.movement_bike_lift=nil;pose.movement_bike_shift=nil
             s.pose=freeze(pose)
         end
     end

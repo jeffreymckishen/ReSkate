@@ -300,6 +300,14 @@ function Tests.run()
     check(same(old,normal_input.articulation),"Core's normal riding articulation equals the previous hard-zero projection")
     check(same(plan({bike=normal_input.bike,articulation=old}).targets,plan(normal_input).targets),
         "normal riding keeps exactly the same authored limb targets")
+    -- A wheel drawn up onto a kerb pitches and lifts the drawn bike. The hands and feet go with it, as with the steer.
+    local kerbed=table.clone(neutral.presentation_pose);kerbed.movement_bike_pitch=-.15;kerbed.movement_bike_lift=.1
+    local lifted=capture(kerbed)
+    check(lifted.articulation.movement_bike_pitch==-.15 and lifted.articulation.movement_bike_lift==.1,
+        "actual Core pose_step passes the drawn pitch and lift to the rider")
+    local level=plan({bike=lifted.bike,articulation=normal_articulation(kerbed)})
+    check(plan(lifted).targets.grips[1][2]>level.targets.grips[1][2]+.09,"so the hands rise with the drawn bars")
+    check(same(capture(neutral.presentation_pose).articulation,old),"and ordinary riding sends neither")
     f.tick(false)
     local start=f.tick(false,true)
     check(not start.stop_requested and start.presentation_pose.barspin==0 and fields(start.presentation_pose)==8,

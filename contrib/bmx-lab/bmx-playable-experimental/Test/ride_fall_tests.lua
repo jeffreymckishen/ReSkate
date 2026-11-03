@@ -7,6 +7,7 @@ local Contact=require("./contact_runtime")
 local Stage=require("./force_stage")
 local Forces=require("./forces")
 local Geometry=require("./bike_geometry")
+local Visual=require("./bike_visual")
 local Identity=require("./lease_identity")
 local M=require("./force_math")
 local T={}
@@ -54,6 +55,7 @@ local function harness(ground)
     local source={input_ok=true,phase="capturing",generation=1,lease_handle=lease,
         sample={user=0,sequence="77",source_epoch="78",context_generation="79",observation_serial="80",observed_ms="1000",packet=9,pad=pad}}
     local ride=Ride.new(api,{mapping=Mapping.new(),force=Stage.new(),contact=Contact},{body_handle=body,incarnation=incarnation})
+    w.ride=ride
     function w.press_a()
         local pressed=table.clone(pad)
         pressed.buttons=table.clone(pad.buttons);pressed.buttons.a=true
@@ -248,6 +250,86 @@ function T.run()
         end)
         check(not w.step(level()).stop_requested,"past the floor it reads clear, as a wall does")
         check(w.submits[1].torque.x>0,"so only the rear wheel is under it")
+    end)
+    case(function() -- A kerb is drawn on its top, not through it. The drawn bike follows the rays; the body, its rays and its pushes do not.
+        local function kerbed(kerb)
+            local w
+            w=harness(function(from,to,count,i)
+                if count~=2 then return flat(from,to) end
+                if i==1 then w.front_from[#w.front_from+1]=from end
+                local depth=kerb[i]
+                if depth==false then return clear() end
+                return hit(from,to,from.y-R+(depth or 0),{0,1,0})
+            end)
+            -- Every push is taken on the next step, so every step draws a new pose.
+            w.front_from,w.prompt={},true
+            return w
+        end
+        -- How far each hub is drawn up off the body, and the pose that draws it.
+        local function drawn(out)
+            local pose=out.presentation_pose
+            if pose.movement_bike_lift==nil then return 0,0,pose end
+            local front,rear=Geometry.hub_rise(Geometry,pose.movement_bike_pitch,pose.movement_bike_lift)
+            return front,rear,pose
+        end
+        -- Bodies and rays come as native single-precision vectors.
+        local function near(a,b) return math.abs(a-b)<1e-5 end
+        local function fields(pose) local count=0 for _ in pairs(pose) do count+=1 end return count end
+        local kerb={[1]=.15}
+        local w=kerbed(kerb)
+        local deep={[1]=.20}
+        local twin=kerbed(deep)
+        local rises={}
+        for i=1,4 do
+            local out=w.step(level())
+            check(not out.stop_requested,"riding onto the kerb: "..tostring(out.issue))
+            local front,rear,pose=drawn(out)
+            rises[i]=front
+            check(near(rear,0) and pose.movement_bike_pitch<0,"only the front is lifted, nose up")
+            twin.step(level())
+        end
+        check(near(rises[1],.05) and near(rises[2],.10) and near(rises[3],.14) and near(rises[4],.14),
+            "the front comes up 5 cm a step to a centimetre under the kerb top: "..table.concat(rises," "))
+        local pose=select(3,drawn(w.step(level())))
+        local matrices=Visual.from_sample(w.samples[w.serial],pose)
+        check(matrices~=nil,"the visual draws the lifted pose")
+        local bottom=matrices[4][14]-R
+        check(near(bottom,.15-.01),"the drawn tyre sits on the kerb, its bottom at "..bottom.." against a top at .15")
+        check(near(select(1,drawn(twin.step(level()))),.19),"a deeper kerb is drawn higher")
+        check(#w.submits==5 and #twin.submits==5,"every step was pushed")
+        for i=1,5 do
+            check(w.submits[i].force==twin.submits[i].force and w.submits[i].torque==twin.submits[i].torque,
+                "but pushed the same, as the kernel holds both wheels at the same depth: the drawn lift is not physics")
+        end
+        for i=2,#w.front_from do
+            check(w.front_from[i]==w.front_from[1],"the rays start from the body's own hub, wherever the wheel is drawn")
+        end
+        kerb[1]=false
+        check(near(select(1,drawn(w.step(level()))),.09),"a ray that drops out for a step lowers the wheel 5 cm, not all the way")
+        kerb[1]=.15
+        check(near(select(1,drawn(w.step(level()))),.14),"and it comes back up")
+        kerb[1]=nil
+        local down={}
+        for i=1,3 do down[i]=select(1,drawn(w.step(level()))) end
+        check(near(down[1],.09) and near(down[2],.04) and down[3]==0,"off the kerb it comes down the same way: "..table.concat(down," "))
+        local settled=w.step(level()).presentation_pose
+        check(settled.movement_bike_pitch==0 and settled.movement_bike_lift==nil and fields(settled)==8,
+            "and the pose is ordinary riding's eight fields again")
+        local rear_kerb=kerbed({[2]=.15})
+        local front,rear,lifted
+        for _=1,3 do front,rear,lifted=drawn(rear_kerb.step(level())) end
+        check(near(front,0) and near(rear,.14) and lifted.movement_bike_pitch>0,"a rear wheel on the kerb draws the nose down")
+        local stopped=rear_kerb.ride:stop("constructed stop")
+        check(stopped.presentation_pose.movement_bike_pitch==0 and stopped.presentation_pose.movement_bike_lift==nil,
+            "a stopped ride draws the bike on its body again")
+        local rolling=harness(flat)
+        rolling.prompt=true
+        local sunk=level();sunk.position[2]-=.005
+        for _=1,20 do
+            local out=rolling.step(sunk)
+            check(out.presentation_pose.movement_bike_pitch==0 and fields(out.presentation_pose)==8,
+                "a tyre 5 mm into the road, as rolling sinks it, draws nothing")
+        end
     end)
     case(function() -- The forecast can carry a wheel past the depth the kernel admits, in a step its ray did not.
         local w=harness(flat)

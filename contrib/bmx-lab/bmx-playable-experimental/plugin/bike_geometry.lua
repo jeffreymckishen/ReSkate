@@ -39,6 +39,36 @@ function G.front_axle_at(geometry,steer)
         v2*co+(k3*v1-k1*v3)*si+k2*e+c[2],
         v3*co+(k1*v2-k2*v1)*si+k3*e+c[3]}
 end
+-- bike_visual draws the whole bike pitched about the steering pivot, positive nose down, and then lifted along
+-- its own up. How far that raises the front hub and the rear one, in the bike's frame, or nil for a geometry
+-- without its hubs and pivot. The neutral front hub stands for a steered one: steering moves it at most 1.8 cm
+-- along the bike, at full lock, which changes its rise by under 5 mm at the steepest pitch Ride draws.
+function G.hub_rise(geometry,pitch,lift)
+    if type(geometry)~="table" or not point(geometry.front_axle) or not point(geometry.rear_axle)
+        or not point(geometry.steering_pivot) or not finite(pitch) or not finite(lift) then return nil end
+    local c=geometry.steering_pivot
+    local co,si=math.cos(pitch),math.sin(pitch)
+    local function rise(p)
+        local v2,v3=p[2]-c[2],p[3]-c[3]
+        return v2*co-v3*si-v2+lift
+    end
+    return rise(geometry.front_axle),rise(geometry.rear_axle)
+end
+-- The pitch and lift that raise the front hub by front and the rear one by rear: hub_rise turned round. The
+-- pitch is very nearly the angle whose sine is the difference over the wheelbase; it is solved exactly, as the
+-- fitted hubs are not quite level. nil for a geometry hub_rise refuses or a difference the wheelbase cannot span.
+function G.pitch_lift(geometry,front,rear)
+    if not G.hub_rise(geometry,0,0) or not finite(front) or not finite(rear) then return nil end
+    local c,f,r=geometry.steering_pivot,geometry.front_axle,geometry.rear_axle
+    -- Raising the front by front and the rear by rear, the difference solves b*cos(pitch)-a*sin(pitch)=front-rear+b.
+    local a,b=f[3]-r[3],f[2]-r[2]
+    local span=math.sqrt(a*a+b*b)
+    local k=(front-rear+b)/span
+    if span<1e-6 or math.abs(k)>=1 then return nil end
+    local pitch=math.acos(k)-math.atan2(a,b)
+    local v2,v3=f[2]-c[2],f[3]-c[3]
+    return pitch,front-(v2*math.cos(pitch)-v3*math.sin(pitch)-v2)
+end
 G.left_grip = scaled(.33457504536745686,1.2319480593290573,.3406239453545827)
 G.right_grip = scaled(-.33457504173973396,1.2319480453628473,.34062398104089797)
 G.pedals = {scaled(.084980725506,.211285091841,.011246842761),

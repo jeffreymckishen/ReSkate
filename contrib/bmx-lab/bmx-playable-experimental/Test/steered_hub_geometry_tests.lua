@@ -5,6 +5,7 @@ local M=require("./force_math")
 local Forces=require("./forces")
 local Stage=require("./force_stage")
 local Visual=require("./bike_visual")
+local MP=require("./mounted_pose")
 local Fixtures=require("./ride_runtime_tests")
 local Tests={}
 local function apply(m,p)
@@ -228,6 +229,64 @@ function Tests.run()
             "query and drawn front hub agree after the same body/source transform")
     end)
     case(function() floor_geometry_case(check) end)
+    case(function() -- A wheel lifted onto a kerb is drawn by pitching and lifting the whole bike, and the rider goes with it.
+        check(select("#",G.hub_rise(G,0,0))==2 and G.hub_rise(G,0,0)==0 and select(2,G.hub_rise(G,0,0))==0,
+            "no pitch and no lift raise neither hub")
+        local root,q={14,3,-21},{0,.6,0,.8}
+        local function local_point(p) return M.turn({-q[1],-q[2],-q[3],q[4]},M.sub(p,root)) end
+        for _,want in ipairs({{.14,0},{0,.14},{.05,.05},{.23,0},{.1,.03}}) do
+            local pitch,lift=G.pitch_lift(G,want[1],want[2])
+            local front,rear=G.hub_rise(G,pitch,lift)
+            check(math.abs(front-want[1])<1e-12 and math.abs(rear-want[2])<1e-12,"pitch_lift is hub_rise turned round")
+            check(want[1]>want[2] and pitch<0 or want[1]<want[2] and pitch>0 or math.abs(pitch)<1e-12,
+                "a front wheel lifted higher draws the nose up, which bike_visual turns as a negative pitch")
+            local pose=Visual.neutral();pose.steer=.1;pose.crank_phase=.4
+            pose.movement_bike_pitch,pose.movement_bike_lift=pitch,lift
+            check(Visual.valid_pose(pose),"a lifted pose is one the visual draws")
+            local m=Visual.matrices(root,q,pose)
+            local drawn_front,drawn_rear=local_point(apply(m[4],{0,0,0})),local_point(apply(m[3],{0,0,0}))
+            check(math.abs(drawn_front[2]-G.front_axle_at(G,.1)[2]-want[1])<.0005
+                and math.abs(drawn_rear[2]-G.rear_axle[2]-want[2])<1e-9,
+                "bike_visual draws each hub that far up along the bike's own up")
+            -- The rider's hands and feet are solved on the bars and pedals as they are drawn.
+            local plan,why=MP.compose({bike={root=root,rotation=q},
+                articulation={steer=.1,crank_phase=.4,movement_bike_pitch=pitch,movement_bike_lift=lift}})
+            check(plan~=nil,"a lifted bike composes a mounted pose: "..tostring(why))
+            for i,grip in ipairs({G.left_grip,G.right_grip}) do
+                check(near(plan.targets.grips[i],apply(m[6],grip),1e-12),"each hand holds its grip where the bars are drawn")
+                check(near(plan.targets.spindles[i],apply(m[6+i],G.pedals[i]),1e-12),"each foot stands where its pedal is drawn")
+            end
+        end
+        -- Lifted straight up, the pelvis follows .75 of the bars and the saddle all of it: the legs take the rest.
+        local rest=MP.compose({bike={root=root,rotation=q},articulation={crank_phase=.4}})
+        local up=MP.compose({bike={root=root,rotation=q},articulation={crank_phase=.4,movement_bike_lift=.1}})
+        check(math.abs(local_point(up.targets.hips)[2]-local_point(rest.targets.hips)[2]-.075)<1e-9,
+            "the hips rise .75 of a lift")
+        check(math.abs(up.diagnostics.hip_above_seat-rest.diagnostics.hip_above_seat+.025)<1e-9,
+            "and sit the other quarter lower on a saddle drawn lifted with the bike")
+        -- The Poser's memo keys only the steer and the cranks, so a lifted bike is composed in full each tick.
+        local poser=MP.new({skater={pose=function(_,weight)
+            if weight==MP.PROBE_WEIGHT then error("place has a position, a rotation or both",0) end
+            return true
+        end}})
+        check(poser:mount(0).ok==true,"a constructed skater.pose mounts")
+        local function ticked(now,lift)
+            local r=poser:tick(now,{bike={root=root,rotation=q},articulation={crank_phase=.4,movement_bike_lift=lift}})
+            check(r.sent==true,"the poser sends: "..tostring(r.reason))
+            return r.plan
+        end
+        check(ticked(.1,nil).memoized==true,"ordinary riding is memoized")
+        for i,lift in ipairs({.1,.15}) do
+            local sent=ticked(.1+i*.1,lift)
+            local full=MP.compose({bike={root=root,rotation=q},articulation={crank_phase=.4,movement_bike_lift=lift}})
+            check(sent.memoized~=true and near(sent.targets.grips[1],full.targets.grips[1],1e-12)
+                and near(sent.targets.ankles[2],full.targets.ankles[2],1e-12),"a lifted bike is composed in full, at its own lift")
+        end
+        check(Visual.valid_pose(Visual.neutral()) and Visual.neutral().movement_bike_lift==0,"the neutral pose has no lift")
+        local wild=Visual.neutral();wild.movement_bike_lift=.6
+        check(not Visual.valid_pose(wild) and MP.compose({bike={root=root,rotation=q},
+            articulation={crank_phase=0,movement_bike_lift=.6}})==nil,"neither draws a lift of more than half a metre")
+    end)
     return {cases=cases,assertions=assertions}
 end
 return Tests

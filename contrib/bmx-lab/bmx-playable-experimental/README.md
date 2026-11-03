@@ -20,12 +20,15 @@ controls while the bike gets ready. The BMX page in the Insert menu says the sam
 - Pull the right stick part of the way back for a manual: the front wheel comes up and the bike rolls on its back
   wheel. A little back holds it low, about 20 degrees, further back holds it higher, up to about 36, just past where
   the rider balances. Let the stick go and the front comes down.
-- A manual coasts: the rider stops pedalling while the front is up, even with A held, and puts the front down once
-  the bike slows to a walk.
+- A manual lifts from a little faster than a walk, so with A and the stick held from a stop the bike pedals up to
+  that first. A manual coasts: the rider stops pedalling while the front is up, even with A held, and puts the
+  front down once the bike slows to a walk.
 - Steer a manual with the left stick. The bike carves on its back wheel, more gently than on two.
-- B in a manual brings the front down hard. Tap it to save a manual going over backwards.
-- To hop out of a manual, pull the right stick the rest of the way back and flick it forward, as for any hop. The
-  front stays up while the stick is held back. Clicking the right stick hops at once.
+- Hold B in a manual and the front comes down: in under a second from a low manual, in about two from the highest.
+  It stays down while B is held. Tap B to save a manual going over backwards.
+- To hop out of a manual, pull the right stick all the way back and flick it forward, as for any hop. The front
+  stays up while the stick is held back. Clicking the right stick hops at once. Either way the rider pushes the
+  bars forward as the bike pops, and it lands near level.
 - Hold the stick part way back as the bike lands and it lands into a manual.
 - Thrown back past about 45 degrees, by a bump or a landing too steep, the bike goes over backwards and it is a
   crash. The stick alone never takes it that far.

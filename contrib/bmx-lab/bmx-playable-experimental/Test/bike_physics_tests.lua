@@ -406,7 +406,7 @@ function T.run()
             check(not refused.valid and refused.issue=="invalid_manual","the stage refuses a manual of "..tostring(bad))
         end
     end)
-    case(function() -- A held manual: the front lifts at once, holds where the stick puts it on the rear wheel alone, coasts, and comes down softly.
+    case(function() -- A held manual: the front lifts at once, holds where the stick puts it on the rear wheel alone, coasts, and touches down again.
         -- The low end of the band, the middle and the top: 20 degrees, 28.2, and 36.4 just past the balance at 33.1.
         for _,speed in ipairs({4,7}) do
             for _,row in ipairs({{m=.01,pitch=20.0},{m=.5,pitch=28.2},{m=1,pitch=36.4},{m=.5,pitch=28.2,pedal=true}}) do
@@ -414,7 +414,10 @@ function T.run()
                 local ride,rows=manual({m=row.m,speed=speed,pedal_before=row.pedal and 1 or nil,
                     during=row.pedal and function() return {pedal=1} end or nil})
                 local lifted,pedalled,held,low,high,bottom=nil,false,true,math.huge,-math.huge,math.huge
-                local down,closing,recovered
+                local down,closing,before,fastest,caught,rear_caught,bounced=nil,nil,nil,0,0,false,false
+                local function front_closing(r)
+                    return r.samples[1].contact.status=="hit" and -M.point_velocity(r.body,r.samples[1].contact.point)[2] or 0
+                end
                 for step,r in rows do
                     if r.hold then
                         if not lifted and r.front>.02 then lifted=r.t*h end
@@ -424,12 +427,16 @@ function T.run()
                             low,high,bottom=math.min(low,r.pitch),math.max(high,r.pitch),math.min(bottom,r.front)
                         end
                     elseif r.released then
+                        if not down then fastest=math.max(fastest,front_closing(r)) end
                         if not down and r.front<=.005 then
                             down=(r.t-120)*h
-                            closing=-M.point_velocity(r.body,r.samples[1].contact.point)[2]
-                            recovered=false
-                            for k=step,step+10 do if rows[k] and rows[k].out.landing_recovery_mask~=0 then recovered=true end end
+                            closing,before=front_closing(r),front_closing(rows[step-1])
                         end
+                        if down and r.front>.01 then bounced=true end
+                        -- Over the whole release: the kernel meets the front on the forecast sample, a step before the
+                        -- measured one shows it down.
+                        if bit32.band(r.out.landing_recovery_mask,1)~=0 then caught+=1 end
+                        if bit32.band(r.out.landing_recovery_mask,2)~=0 then rear_caught=true end
                     end
                 end
                 check(ride.refused==0 and ride.torque<2000,what..": every step sent under the caps: "..ride.refused.." "..ride.torque)
@@ -440,7 +447,14 @@ function T.run()
                     string.format("%s: holds %.1f to %.1f degrees",what,low,high))
                 check(not pedalled,what..": the rider coasts in a manual")
                 check(down and down<=.6,what..": let go, the front is down within .6 s: "..tostring(down))
-                check(closing<.5 and recovered==false,what..": softly, with no landing catch: "..tostring(closing))
+                -- Let go, the front falls about as fast as gravity alone drops it (1.6 m/s from 28 degrees), and the
+                -- landing approach slows it to half a metre a second. The kernel meets that as it meets any touchdown:
+                -- at m=.01 and m=1 its catch holds the front alone for one step. Looked for only from the measured
+                -- touchdown on, a step after that catch, the check read none.
+                check(fastest>1 and before<.6 and closing<.5,
+                    string.format("%s: slowed from %.2f m/s to %.2f, then %.2f on the ground",what,fastest,before,closing))
+                check(caught<=1 and not rear_caught and not bounced,
+                    what..": an ordinary touchdown, caught at most one step on the front, and no bounce: "..caught)
             end
         end
     end)
@@ -538,6 +552,108 @@ function T.run()
         check(air and air>=40,"a full hop: "..tostring(air).." steps in the air")
         check(landing and math.abs(landing)<15,"landing near level: "..tostring(landing))
         check(landed and landed<150 and lifted and lifted<=180,"and the manual lifts again after it: "..tostring(lifted))
+    end)
+    case(function() -- B in a manual brings the front down and keeps it down: the rider has no throw against the brake.
+        -- The throw lifts the bike from the front wheel to 17.9 degrees, where the weight shift holds it. Allowed again
+        -- whenever the bike was lower, it held a braked manual at 12 to 15 degrees on up to 800 N*m until the bike
+        -- slowed to a walk, about 2 s, with the drawn rider at the .20 m it can shift.
+        local limit=Forces.proposed_body().mass*9.8*Forces.tuning().manual_hold_back+1e-6
+        for _,row in ipairs({{m=.01,within=1},{m=.5,within=1},{m=1,within=2.5}}) do
+            -- B from 1.5 s into the manual, and B from .2 s, while the front is still going up; the stick held.
+            for _,from in ipairs({90,12}) do
+                local most,down,relift=-math.huge,nil,false
+                local ride=run({steps=15+from+240,speed=4,controls=function(step)
+                    return {manual=step>15 and row.m or 0,brake=step>15+from and 1 or 0}
+                end,each=function(step,body,out,wheels,samples)
+                    if step<=15+from then return end
+                    most=math.max(most,out.manual_couple)
+                    if not down and gap(samples[1])<=.005 then down=(step-15-from)*h end
+                    if down and gap(samples[1])>.03 then relift=true end
+                end})
+                local what=string.format("m=%.2f, B from %.2f s",row.m,from*h)
+                check(ride.refused==0 and most<=limit,string.format("%s: the rider lifts with no more than the shift, %.0f N*m",what,most))
+                check(down and down<=row.within,what..": the front comes down: "..tostring(down))
+                check(not relift,what..": and stays down while B is held")
+            end
+        end
+        local lifted=false
+        run({steps=120,speed=4,controls=function() return {manual=.5,brake=1} end,each=function(step,body,out,wheels,samples)
+            if out.manual_active or gap(samples[1])>.02 then lifted=true end
+        end})
+        check(not lifted,"with B held on both wheels the stick does not lift the front")
+    end)
+    case(function() -- A throw is one movement: held below 17.9 degrees for over a second, the rider has no more of it.
+        local t=Forces.tuning()
+        local limit=Forces.proposed_body().mass*9.8*t.manual_hold_back+1e-6
+        local flat=Ground.plane(0,0)
+        local body,wheels=place(flat,4)
+        local a=-math.rad(12)
+        body.orientation={math.sin(a/2),0,0,math.cos(a/2)}
+        body.center_of_mass={0,R-M.turn(body.orientation,M.sub(G.rear_axle,G.com))[2]-.005,0}
+        -- The same pitched body every step, so nothing but the rider's throw can lift it.
+        local stage,thrown,late=Stage.new(),0,0
+        for step=1,90 do
+            local out,candidate=stage:preview(h,body,wheels,contacts(flat,body,0),{manual=.01})
+            check(out.valid and out.manual_active,"the manual is on at step "..step..": "..tostring(out.issue))
+            stage:_adopt(candidate);wheels=out.wheels
+            if out.manual_couple>limit then thrown+=1;if step>62 then late+=1 end end
+        end
+        check(thrown>=55 and thrown<=61 and late==0,"a second of throw, then the weight shift alone: "..thrown.." "..late)
+        -- A rider pulls a low manual back up after a small bump without putting the front down.
+        for _,m in ipairs({.01,.5,.75}) do
+            local touched=false
+            local ride=run({steps=215,speed=4,ground=Ground.bump(4.5,.05,.6),controls=function(step) return {manual=step>15 and m or 0} end,
+                each=function(step,body,out,wheels,samples) if step>60 and gap(samples[1])<=.005 then touched=true end end})
+            check(ride.refused==0 and not touched,string.format("a 5 cm bump at m=%.2f is ridden with the front up",m))
+        end
+    end)
+    case(function() -- A and the stick held from a stop: the bike pedals up to the start speed, lifts once, and coasts down to a walk.
+        -- With one speed for starting and ending a manual, the bike never got past 1.05 m/s: the front lifted 14 to 16
+        -- times in 10 s and the pedal stopped and started 37 to 41 times.
+        local t=Forces.tuning()
+        for _,m in ipairs({.01,.5,1}) do
+            local lifts,up,switches,last,lift_speed,down_speed=0,false,0,nil,nil,nil
+            local ride=run({steps=600,controls=function() return {pedal=1,manual=m} end,each=function(step,body,out,wheels,samples)
+                local speed=math.sqrt(body.linear_velocity[1]^2+body.linear_velocity[3]^2)
+                local front=gap(samples[1])
+                if front>.05 and not up then up=true;lifts+=1;lift_speed=lift_speed or speed
+                elseif front<=.005 and up then up=false;down_speed=down_speed or speed end
+                if last~=nil and last~=out.pedaling then switches+=1 end
+                last=out.pedaling
+            end})
+            local what=string.format("m=%.2f",m)
+            check(ride.refused==0 and lifts>=1 and lifts<=2,what..": the front lifts once a cycle, not every quarter second: "..lifts)
+            check(lift_speed and lift_speed>=t.manual_start_speed-.1,what..": from the start speed: "..tostring(lift_speed))
+            check(switches<=4,what..": the cranks stop and start "..switches.." times in 10 s")
+            -- The speed along the surface, not along the pitched body: a 28 degree manual came down at 1.13 m/s.
+            check(down_speed and down_speed<=t.manual_min_speed+.05,what..": the manual coasts down to a walk: "..tostring(down_speed))
+        end
+    end)
+    case(function() -- A hop from any manual pops level: the rider pushes the bars forward on either side of the balance.
+        -- With the law past the balance the pop was a 156 N*m nudge: m=.85 landed at 9 degrees and m=.9 at 33, on the
+        -- back wheel, near where it goes over.
+        local previous
+        for _,m in ipairs({.3,.5,.75,.85,.9,1}) do
+            local couple,landing,air,landed=nil,nil,0,false
+            local ride=run({steps=240,speed=4,controls=function(step)
+                if step<=15 then return {} end
+                if step<76 then return {manual=m} end
+                if step==76 then return {manual=0,hop=true} end
+                return {manual=0}
+            end,each=function(step,body,out,wheels,samples)
+                if step==76 then couple=out.hop_applied and out.manual_couple end
+                local any=gap(samples[1])<=.005 or gap(samples[2])<=.005
+                if step>76 and not landed then
+                    if not any then air+=1 elseif air>0 then landed=true;landing=pitch_of(body) end
+                end
+            end})
+            local what=string.format("m=%.2f",m)
+            check(ride.refused==0 and air>=40 and landed,what..": a full hop from the manual: "..air)
+            check(couple and couple< -500,what..": the pop pushes the nose down: "..tostring(couple))
+            check(landing>=0 and landing<15,what..": lands near level: "..tostring(landing))
+            if previous then check(math.abs(landing-previous)<4,string.format("%s: a little higher lands a little higher, %.1f after %.1f",what,landing,previous)) end
+            previous=landing
+        end
     end)
     return {cases=cases,assertions=n,native_authority=false,constructed=true}
 end

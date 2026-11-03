@@ -678,6 +678,38 @@ function T.run()
         end})
         check(braked and relift and (relift-225)*h<1.5,"after B the held stick lifts the front again: "..tostring(relift))
     end)
+    case(function() -- Up a kerb ramp onto the sidewalk, a manual started on the ramp still reaches its angle.
+        -- Trial mn4: the stick held at .88 from 2.4 degrees up a kerb ramp. The rear wheel went light over the ramp's
+        -- crest, struck the 5 cm lip onto the sidewalk and landed from it, each a push up under the rear wheel that
+        -- took the front's rise at 20 to 25 degrees, and the bike crawled at 19 to 21 degrees for 1.4 s instead of
+        -- going on to 35. The throw ended at 17.9 degrees, where the weight shift alone only just holds the bike. The
+        -- ramp is mn4's, as its rear hub measured it, from the rear hub's start.
+        local points={{2.40,0},{2.55,.020},{3.40,.068},{4.80,.110},{5.93,.144},{6.55,.145},{7.10,.196}}
+        local back=G.rear_axle[3]-G.com[3]
+        local function piece(z)
+            z-=back
+            if z<=points[1][1] then return nil,points[1][2] end
+            if z>=points[#points][1] then return nil,points[#points][2] end
+            for i=1,#points-1 do
+                local a,b=points[i],points[i+1]
+                if z<b[1] then local k=(b[2]-a[2])/(b[1]-a[1]);return k,a[2]+k*(z-a[1]) end
+            end
+        end
+        local kerb={height=function(x,z) local _,y=piece(z);return y end,grad=function(x,z) return 0,piece(z) or 0 end}
+        local function reaches(ground)
+            local at
+            local ride=run({steps=170,speed=5.75,ground=ground,controls=function(step)
+                return {pedal=step<33 and 1 or 0,manual=step>=36 and .88 or nil}
+            end,each=function(step,body) if not at and pitch_of(body)>=30 then at=step*h end end})
+            return ride,at
+        end
+        local over,reached=reaches(kerb)
+        local flat,flat_reached=reaches(Ground.plane(0,0))
+        check(over.refused==0 and flat.refused==0,"every step of both rides is sent")
+        check(reached and flat_reached and reached-flat_reached<=.25,
+            string.format("over the kerb the manual reaches 30 degrees within .25 s of the flat road: %s against %s",
+                tostring(reached),tostring(flat_reached)))
+    end)
     case(function() -- A hop from any manual pops level: the rider pushes the bars forward on either side of the balance.
         -- With the law past the balance the pop was a 156 N*m nudge: m=.85 landed at 9 degrees and m=.9 at 33, on the
         -- back wheel, near where it goes over.

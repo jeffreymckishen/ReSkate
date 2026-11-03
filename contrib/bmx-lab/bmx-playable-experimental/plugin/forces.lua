@@ -60,13 +60,16 @@ local defaults={gravity={0,-9.8,0},wheelbase=1.203956057050485*scale,steer_limit
     -- the balance (36.4), where the rider leans toward the bars to hold it.
     manual_hold_back=.20,manual_hold_forward=.15,manual_low=.17,manual_high=-.05,
     -- Lifting the front from level needs 432 N*m, more than any weight shift gives (208 at manual_hold_back). A
-    -- rider throws the bike up: this much is allowed while the front is still below about 15 degrees, fading out
-    -- over manual_pull_ramp of offset. A throw is one movement, not a hold: the rider has it for at most
-    -- manual_pull_seconds at a time below 17.9 degrees, where the weight shift alone holds the bike, has it again
-    -- once back above that or with the front down, and has none while braking. Allowed whenever the bike was below
-    -- 17.9, it held a braked manual at 12 to 15 degrees on 430 to 800 N*m for over a second, two to four times what
-    -- the drawn rider can shift. Spent until the front was down again, a 5 cm bump put the front of a 32 degree
-    -- manual on the ground, where a rider pulls it back up.
+    -- rider throws the bike up: this much is allowed up to 17.9 degrees, where the weight shift alone just holds
+    -- the bike, fading out from there over manual_pull_ramp of offset, to none from 24.1 degrees. Faded out by 17.9
+    -- instead, the shift had almost nothing left to lift with just above it (208 N*m against gravity's 189 at 19.3
+    -- degrees), so a manual whose rise a kerb ramp's knocks took away there (trial mn4) crawled at 19 to 21 degrees
+    -- for 1.4 s rather than going on to 35. A throw is one movement, not a hold: the rider has it for at most
+    -- manual_pull_seconds at a time below 17.9 degrees, has it again once back above that or with the front down,
+    -- and has none while braking. Allowed whenever the bike was below 17.9, it held a braked manual at 12 to 15
+    -- degrees on 430 to 800 N*m for over a second, two to four times what the drawn rider can shift. Spent until the
+    -- front was down again, a 5 cm bump put the front of a 32 degree manual on the ground, where a rider pulls it
+    -- back up.
     manual_pull=800,manual_pull_ramp=.08,manual_pull_seconds=1,
     -- The front moves at most this fast (rad/s), toward the target at this gain (1/s), on this damping (N*m*s).
     -- A plain spring overshot past the loop-out on high targets: 156 N*m forward cannot stop a fast lift.
@@ -544,7 +547,7 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
             if manual_law then
                 -- The pitch couple is the rider's weight shift. It carries the weight at the offset the bike has
                 -- (N*d), and turns the bike toward the target at no more than manual_rate, damped; whatever it asks
-                -- is held to the shift a rider has, back and forward, with a throw allowed only near level.
+                -- is held to the shift a rider has, back and forward, with a throw allowed only low down.
                 assist=M.sub(assist,M.mul(lateral,M.dot(assist,lateral)))
                 local target=manual_wanted and t.manual_low+(t.manual_high-t.manual_low)*manual_amount or t.manual_low
                 local reach=math.sqrt(manual_d*manual_d+manual_v*manual_v)
@@ -553,7 +556,7 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
                 local rate=-M.dot(measured.angular_velocity,lateral)
                 local want=math.clamp(t.manual_gain*delta,-t.manual_rate,t.manual_rate)
                 local couple=weight*manual_d+t.manual_damping*(want-rate)
-                local ramp=throw and math.clamp((manual_d-t.manual_hold_back)/t.manual_pull_ramp,0,1) or 0
+                local ramp=throw and math.clamp((manual_d-t.manual_hold_back+t.manual_pull_ramp)/t.manual_pull_ramp,0,1) or 0
                 local up_cap=weight*t.manual_hold_back+ramp*math.max(0,t.manual_pull-weight*t.manual_hold_back)
                 couple=math.clamp(couple,-weight*t.manual_hold_forward,up_cap)
                 assist=M.add(assist,M.mul(lateral,-couple))

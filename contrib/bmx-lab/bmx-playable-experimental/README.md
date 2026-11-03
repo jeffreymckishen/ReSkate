@@ -15,8 +15,24 @@ Stand on foot on fairly level ground with a little room around you, hold LB, the
 controls while the bike gets ready. The BMX page in the Insert menu says the same and shows what the mod is doing.
 
 - A pedals, B brakes, the left stick steers.
-- Click the right stick to hop. For a smaller hop, pull the right stick back and flick it forward: the longer it was
-  held back, the higher the hop.
+- Click the right stick to hop. For a smaller hop, pull the right stick all the way back and flick it forward: the
+  longer it was held back, the higher the hop.
+- Pull the right stick part of the way back for a manual: the front wheel comes up and the bike rolls on its back
+  wheel. A little back holds it low, about 20 degrees, further back holds it higher, up to about 36, just past where
+  the rider balances. A little past the end of that, the manual stays at its highest. Let the stick go and the
+  front comes down.
+- A manual lifts from a little faster than a walk, so with A and the stick held from a stop the bike pedals up to
+  that first. A manual coasts: the rider stops pedalling while the front is up, even with A held, and puts the
+  front down once the bike slows to a walk.
+- Steer a manual with the left stick. The bike carves on its back wheel, more gently than on two.
+- Hold B in a manual and the front comes down: in under a second from a low manual, in about two from the highest.
+  It stays down while B is held. Tap B to save a manual going over backwards.
+- To hop out of a manual, pull the right stick all the way back and flick it forward, as for any hop. The front
+  stays up while the stick is held back. Clicking the right stick hops at once. Either way the rider pushes the
+  bars forward as the bike pops, and it lands near level.
+- Hold the stick part way back as the bike lands and it lands into a manual.
+- Thrown back past about 45 degrees, by a bump or a landing too steep, the bike goes over backwards and it is a
+  crash. The stick alone never takes it that far.
 - In the air, hold a button and push the right stick all the way over for a trick: LB or RB and down for a barspin
   left or right, LB or RB and left or right for a one hander, LT and RT together and left or right for a tailwhip,
   LT or RT and left or right for a one footer. Let the stick come back to the middle before the next one, and finish
@@ -24,7 +40,7 @@ controls while the bike gets ready. The BMX page in the Insert menu says the sam
 - F8, or hold LB + RB and click R3, goes back to the skateboard.
 - From the skateboard, hold LB, then press A to ride again. Stand still and let go while the rider steps off.
 
-Mounting and going back to the skateboard can be changed in Binds. Pedal, brake, steering and hop cannot.
+Mounting and going back to the skateboard can be changed in Binds. Pedal, brake, steering, hop and manual cannot.
 
 ## Smooth riding
 

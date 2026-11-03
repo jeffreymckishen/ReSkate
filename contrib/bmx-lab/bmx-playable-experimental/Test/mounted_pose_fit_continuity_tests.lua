@@ -54,6 +54,59 @@ function Tests.run()
     local released=plan(budget,{crank_phase=.6,barspin=.5,tailwhip=-.5,
         release_left_hand=1,release_right_hand=1,release_left_foot=1,release_right_foot=1})
     for i=1,4 do check(released.targets.releases[i]==1,"bar/tail/one-hand release semantics stay intact") end
-    return {cases=1,assertions=assertions}
+
+    -- The rider in a manual, on the default rig and bike: the hips back or forward by the physics' shift.
+    local function pitched(degrees)
+        local a=-math.rad(degrees)/2
+        return {root={0,.3,0},rotation={math.sin(a),0,0,math.cos(a)}}
+    end
+    for _,row in ipairs({{shift=.16,degrees=20},{shift=-.04,degrees=36}}) do
+        local rider=MP.manual_rider(row.shift)
+        local out,why=MP.compose({bike=pitched(row.degrees),articulation={crank_phase=.4,steer=.05},rider=rider})
+        check(out~=nil,"a manual's rider composes: "..tostring(why))
+        local what=string.format("shift %.2f at %d degrees",row.shift,row.degrees)
+        for i,name in ipairs({"left_arm","right_arm"}) do
+            local miss=distance(out.planned[name].tip,out.targets.wrists[i])
+            check(miss<.001,what..": the hand holds its grip: "..miss)
+        end
+        for i,name in ipairs({"left_leg","right_leg"}) do
+            local miss=distance(out.planned[name].tip,out.targets.ankles[i])
+            check(miss<1e-9,what..": the foot stays on its pedal: "..miss)
+        end
+        check(out.diagnostics.saddle_limited==false,what..": standing, the saddle does not hold the hips back")
+        check(MP.validate_pose(out.pose),what..": the pose keeps the joint contract")
+        local seat=MP.compose({bike=pitched(row.degrees),articulation={crank_phase=.4,steer=.05}})
+        local moved=out.diagnostics.hip_local[3]-seat.diagnostics.hip_local[3]
+        check(row.shift>0 and moved< -.1 or row.shift<0 and moved>.02,what..": the hips go the way the weight does: "..moved)
+    end
+    -- No shift is the ordinary rider, to the bit.
+    local function same(a,b)
+        if type(a)=="table" and type(b)=="table" then
+            for k,v in a do if not same(v,b[k]) then return false end end
+            for k in b do if a[k]==nil then return false end end
+            return true
+        end
+        if typeof(a)=="vector" and typeof(b)=="vector" then return a.x==b.x and a.y==b.y and a.z==b.z end
+        return a==b
+    end
+    local level={root={0,.3,0},rotation={0,0,0,1}}
+    local still=MP.compose({bike=level,articulation={crank_phase=.4,steer=.05},rider=MP.manual_rider(0)})
+    local ordinary=MP.compose({bike=level,articulation={crank_phase=.4,steer=.05}})
+    check(same(still.pose,ordinary.pose) and same(still.targets,ordinary.targets),"a shift of 0 poses the ordinary rider exactly")
+    -- A steady manual composes once and is mapped after, as ordinary riding is.
+    local api={skater={pose=function(pose,weight)
+        if weight==MP.PROBE_WEIGHT then error("place has a position, a rotation or both",0) end
+        return true
+    end}}
+    local poser=MP.new(api)
+    check(poser:mount(0).ok,"the poser mounts on a constructed skater.pose")
+    for tick=1,120 do
+        local shift=.16+.002*math.sin(tick/7)
+        local r=poser:tick(tick/60,{bike=pitched(20),articulation={crank_phase=.4,steer=0},rider=MP.manual_rider(shift)})
+        check(r.ok and r.sent,"a manual's pose is sent: "..tostring(r.reason))
+    end
+    local hits,misses=poser.memo_hits or 0,poser.memo_misses or 0
+    check(hits+misses==120 and hits>=108,"a steady manual is mapped from its memo on 90% of its ticks: "..hits.." hits, "..misses.." misses")
+    return {cases=2,assertions=assertions}
 end
 return table.freeze(Tests)

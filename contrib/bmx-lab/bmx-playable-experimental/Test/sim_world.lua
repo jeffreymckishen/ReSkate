@@ -156,8 +156,9 @@ function World.controls(settings, actions, raw, hop, grounded, rotation_reserved
         or rear_magnitude > neutral
         or raw.left_shoulder or raw.right_shoulder
         or raw.left_trigger > settings.trigger_neutral or raw.right_trigger > settings.trigger_neutral
+    -- As Mapper:controls: no manual off the ground, and no air pitch sent as one.
     local manual, nose = a.manual, a.nose_manual
-    if not grounded then manual, nose = math.max(0, -a.air_pitch), math.max(0, a.air_pitch) end
+    if not grounded then manual, nose = 0, 0 end
     return { enabled = true, pedal = a.pedal, brake = a.brake, steer = a.steer,
         manual = manual, nose_manual = nose, air_yaw = a.steer, ground_pump = a.front_weight,
         pump_operator_available = true,

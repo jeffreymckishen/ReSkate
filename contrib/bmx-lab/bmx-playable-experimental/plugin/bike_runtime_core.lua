@@ -963,7 +963,10 @@ local function pose_step(sample,pose,now)
     articulation.movement_bike_pitch=a.movement_bike_pitch or 0;articulation.movement_bike_lift=a.movement_bike_lift
     articulation.movement_bike_shift=a.movement_bike_shift
     local body=pose_body(sample)
-    local r=poser:tick(now/1000,{bike={center_of_mass=body.position,rotation=body.rotation},articulation=articulation})
+    local input={bike={center_of_mass=body.position,rotation=body.rotation},articulation=articulation}
+    -- In a manual Ride publishes how far the physics shifts the rider's weight; the rider is posed there.
+    if a.rider_shift~=nil then input.rider=MP.manual_rider(a.rider_shift) end
+    local r=poser:tick(now/1000,input)
     if r.sent==true then T.pose_sent_ticks=(T.pose_sent_ticks or 0)+1 end
     if r.ok~=true and r.reason~=nil then T.pose_issue=T.pose_issue or short(r.reason) end
     if not T.pose_mounted_ms and r.state=="mounted" then T.pose_mounted_ms=now end

@@ -198,7 +198,7 @@ local function core_fixture(session,options)
         function ride:drain() return self:status() end
         return ride
     end
-    local FakePose={}
+    local FakePose={manual_rider=MP.manual_rider}
     function FakePose.new(api)
         local poser={state="unmounted"}
         function poser:mount() self.state="mounted";return {ok=true} end
@@ -285,6 +285,9 @@ function Tests.run()
     check(not neutral.stop_requested and fields(neutral.presentation_pose)==8,
         "ordinary riding retains its exact eight pose fields")
     local normal_input=capture(neutral.presentation_pose)
+    check(normal_input.rider==nil,"ordinary riding poses no rider shift")
+    local manual=table.clone(neutral.presentation_pose);manual.rider_shift=.16
+    check(same(capture(manual).rider,MP.manual_rider(.16)),"in a manual Core poses the rider where the physics shifts the weight")
     -- The rider's body is one read behind the one the bike is drawn from. Steer and crank are not.
     c.body_x=1
     check(capture(neutral.presentation_pose).bike.center_of_mass.x==0,"the rider is posed from the body before this read")

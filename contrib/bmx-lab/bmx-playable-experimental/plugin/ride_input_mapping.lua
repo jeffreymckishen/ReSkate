@@ -265,8 +265,10 @@ function Mapper:controls(context)
         or rear_magnitude > neutral
         or raw.left_shoulder or raw.right_shoulder
         or raw.left_trigger > self._settings.trigger_neutral or raw.right_trigger > self._settings.trigger_neutral
+    -- A manual is the rider's weight on a wheel on the ground. Off the ground
+    -- there is none, and the left stick's air pitch is not sent as one.
     local manual, nose = a.manual, a.nose_manual
-    if not context.grounded then manual, nose = math.max(0, -a.air_pitch), math.max(0, a.air_pitch) end
+    if not context.grounded then manual, nose = 0, 0 end
     local hop = self._pending
     out.valid, out.issue, out.submission_allowed = true, "none", true
     out.physics_epoch, out.h, out.source, out.hop = context.physics_epoch, context.h, copy(self._source), copy(hop)

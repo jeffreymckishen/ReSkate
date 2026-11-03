@@ -434,11 +434,15 @@ local function articulation_of(a)
     return out
 end
 
+-- standing, 0 to 1, is how far the rider is up off the saddle: standing, the hips may go as far as
+-- STANDING_REACH behind its back edge, as a rider's do with arms straight in a manual.
+local STANDING_REACH = .40
+local RIDER_FIELDS = {crouch = true, lean = true, hip_offset = true, standing = true}
 local function rider_of(r, o)
     if r == nil then r = {} end
     if type(r) ~= "table" then return nil, "rider is not a table" end
     for k in r do
-        if k ~= "crouch" and k ~= "lean" and k ~= "hip_offset" then return nil, "unknown rider field " .. tostring(k) end
+        if not RIDER_FIELDS[k] then return nil, "unknown rider field " .. tostring(k) end
     end
     local crouch = r.crouch == nil and o.crouch or r.crouch
     if not finite(crouch) or crouch < 0 or crouch > .3 then return nil, "the rider's crouch is 0 to 0.3 m" end
@@ -446,7 +450,21 @@ local function rider_of(r, o)
     if not finite(lean) or lean < 0 or lean > 1.2 then return nil, "the rider's lean is 0 to 1.2 radians" end
     local hip = r.hip_offset == nil and {0, 0, 0} or vec3(r.hip_offset, .5)
     if not hip then return nil, "the rider's hip_offset is a finite offset within 0.5 m on each axis" end
-    return {crouch = crouch, lean = lean, hip_offset = hip}
+    local standing = r.standing == nil and 0 or r.standing
+    if not finite(standing) or standing < 0 or standing > 1 then return nil, "the rider's standing is 0 to 1" end
+    return {crouch = crouch, lean = lean, hip_offset = hip, standing = standing}
+end
+
+-- The rider in a manual, from Ride's rider_shift: how far the physics moves the centre of mass, back
+-- positive, in metres (the pitch couple over the weight). Back, the hips go behind the saddle and
+-- down, arms straight and the chest up; forward, the hips come toward the bars and the chest down
+-- over them. Standing, so the saddle does not hold the hips. The shift is taken to the centimetre,
+-- so a steady manual composes once and is then mapped (compose_memo).
+function MP.manual_rider(shift)
+    if not finite(shift) then return nil, "the rider's shift is not a finite distance" end
+    local s = math.floor(clamp(shift, -.3, .3) * 100 + .5) / 100
+    local back, forward = math.max(s, 0), math.max(-s, 0)
+    return {hip_offset = {0, -.5 * back, -1.2 * s}, lean = MP.STANCE.lean - .6 * back + .8 * forward, standing = 1}
 end
 
 local function bike_of(bike, g)
@@ -691,9 +709,10 @@ function MP.compose(input, options)
     local seat_up = turn(seat_q, {0, 1, 0})
     local half_pelvis = .5 * length(sub(rig.roots.left_up_leg, rig.roots.right_up_leg))
     local floor = saddle.top + half_pelvis + o.seat_clearance
+    local rear = saddle.rear - rider.standing * STANDING_REACH
     local function seated(p)
         local s = to_seat(p)
-        local out = {clamp(s[1], -saddle.half_width, saddle.half_width), math.max(s[2], floor), clamp(s[3], saddle.rear, saddle.front)}
+        local out = {clamp(s[1], -saddle.half_width, saddle.half_width), math.max(s[2], floor), clamp(s[3], rear, saddle.front)}
         return from_seat(out), out[2] ~= s[2], out[1] ~= s[1] or out[3] ~= s[3]
     end
     -- The knee floor (bmx_rider_pose.h proposed_hip_band): a held foot's knee folds no tighter than
@@ -908,8 +927,10 @@ end
 -- frame for every bike transform: compose works in that frame (contacts, poles, the saddle, the knee
 -- floor all turn with the bike), and of what it sends only the hips' world place and the world turns of
 -- the thighs, hands and feet depend on the transform. So a Poser composes once in the bike's own frame
--- for each (steer, crank phase), with every other articulation 0 and no rider or skater_root, and maps
--- that plan to the world each tick; any other input composes in full, as before. Ride's steer moves a
+-- for each (steer, crank phase), with every other articulation 0, no skater_root and no rider but a
+-- manual's (MP.manual_rider, whose fields join the key), and maps that plan to the world each tick;
+-- any other input composes in full, as before. A rider composed in full each tick took 211 us a tick
+-- against 30 mapped, in the runner; the shift's centimetre steps keep a steady manual mapped. Ride's steer moves a
 -- little every step with the speed, so the key is the steer to MEMO_STEER (1 mrad) and the crank phase
 -- to MEMO_CRANK (10 mrad), and the pose is composed at those values: a wrist then sits at most about
 -- 0.15 mm and an ankle 1 mm from where the exact angles put it (the trial's fixture: 0.12 and 0.93 mm).
@@ -941,9 +962,26 @@ local function memo_world(lp, root, q)
         targets = {hips = at(t.hips), wrists = {at(t.wrists[1]), at(t.wrists[2])}, ankles = {at(t.ankles[1]), at(t.ankles[2])},
             palms = {at(t.palms[1]), at(t.palms[2])}, grips = {at(t.grips[1]), at(t.grips[2])}, bike_root = root, bike_rotation = q}}
 end
+-- A rider of only these fields (MP.manual_rider's) is part of the memo's key, field for field: it is
+-- the same rigid map of the bike's frame, so a steady manual is composed once like ordinary riding.
+local MEMO_RIDER = {lean = true, hip_offset = true, standing = true}
+local function memo_rider(r)
+    if r == nil then return true end
+    if type(r) ~= "table" then return false end
+    for k in r do if not MEMO_RIDER[k] then return false end end
+    local hip = r.hip_offset
+    return hip == nil or type(hip) == "table" and #hip == 3
+end
+local function same_rider(a, b)
+    if a == nil or b == nil then return a == b end
+    if a.lean ~= b.lean or a.standing ~= b.standing or (a.hip_offset == nil) ~= (b.hip_offset == nil) then return false end
+    if a.hip_offset then for i = 1, 3 do if a.hip_offset[i] ~= b.hip_offset[i] then return false end end end
+    return true
+end
 local function compose_memo(poser, input, o)
     if type(input) ~= "table" then return MP.compose(input, o) end
-    for k in input do if k ~= "bike" and k ~= "articulation" then return MP.compose(input, o) end end
+    for k in input do if k ~= "bike" and k ~= "articulation" and k ~= "rider" then return MP.compose(input, o) end end
+    if not memo_rider(input.rider) then return MP.compose(input, o) end
     local a = input.articulation
     if type(a) ~= "table" then return MP.compose(input, o) end
     for _, k in MEMO_ZERO do if a[k] ~= nil and a[k] ~= 0 then return MP.compose(input, o) end end
@@ -954,14 +992,17 @@ local function compose_memo(poser, input, o)
     if not valid then return nil, why end
     local steer = math.floor(valid.steer / MEMO_STEER + .5) * MEMO_STEER
     local crank = math.floor(valid.crank_phase / MEMO_CRANK + .5) * MEMO_CRANK
+    local rider = input.rider
     local m = poser.memo
-    if m and m.options == o and m.steer == steer and m.crank == crank then
+    if m and m.options == o and m.steer == steer and m.crank == crank and same_rider(m.rider, rider) then
         poser.memo_hits = (poser.memo_hits or 0) + 1
     else
         valid.steer, valid.crank_phase = steer, crank
-        local lp, issue = MP.compose({bike = MEMO_ORIGIN, articulation = valid}, o)
+        local key = rider and {lean = rider.lean, standing = rider.standing,
+            hip_offset = rider.hip_offset and {rider.hip_offset[1], rider.hip_offset[2], rider.hip_offset[3]}} or nil
+        local lp, issue = MP.compose({bike = MEMO_ORIGIN, articulation = valid, rider = key}, o)
         if not lp then return nil, issue end
-        m = {options = o, steer = steer, crank = crank, plan = lp}
+        m = {options = o, steer = steer, crank = crank, rider = key, plan = lp}
         poser.memo = m
         poser.memo_misses = (poser.memo_misses or 0) + 1
     end

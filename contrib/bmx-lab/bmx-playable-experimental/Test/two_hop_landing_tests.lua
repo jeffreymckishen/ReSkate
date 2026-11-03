@@ -134,7 +134,201 @@ function Tests.run()
     local landed=raw:preview(h,land_snapshot.body,land_snapshot.wheels,land_snapshot.samples,{hop_event_id=9,hop_strength=1})
     check(landed.valid and landed.grounded and not landed.hop_applied and M.length(landed.hop_impulse)==0,
         "consumed airborne ID remains suppressed on actual model landing")
-    return {cases=2,assertions=n,steps=finished_step,hop_commands=commands,hop_applications=applications,
+
+    -- The manual on the right stick, through the actual Mapping: constructed pad frames a native step apart.
+    local Input=require("./input")
+    local function pad_frame(serial,pad)
+        local buttons={}
+        for _,key in ipairs({"up","down","left","right","start","back","left_stick","right_stick","lb","rb","a","b","x","y"})do buttons[key]=false end
+        buttons.right_stick=pad.r3==true;buttons.lb=pad.lb==true
+        return {input_ok=true,lease_handle=lease,generation=1,sample={user=0,sequence="1",source_epoch="2",context_generation="3",
+            observation_serial=tostring(serial),observed_ms=tostring(1000+math.floor((serial-1)*h*1000+.5)),packet=serial,
+            pad={left_x=0,left_y=pad.left_y or 0,right_x=0,right_y=pad.right_y or 0,left_trigger=0,right_trigger=0,
+                playstation=false,buttons=buttons}}}
+    end
+    -- A fresh Mapping primed on a neutral pad. step(pad, grounded) observes one frame and returns its force
+    -- controls and actions; a hop it mints is retired at once, as an accepted command would be.
+    local function driver()
+        local mapping,serial,hops=Mapping.new(),1,0
+        local primed=mapping:observe(pad_frame(serial,{}),{grounded=true,focused=true,menu_open=false,rotation_reserved=false})
+        check(primed.valid and primed.active,"a neutral pad primes the manual's Mapping")
+        local d={mapping=mapping}
+        function d.step(pad,grounded)
+            if grounded==nil then grounded=true end
+            serial+=1
+            local row=mapping:observe(pad_frame(serial,pad),{grounded=grounded,focused=true,menu_open=false,rotation_reserved=false})
+            check(row.valid,"the manual's pad frame is observed: "..tostring(row.issue))
+            local c=mapping:controls({physics_epoch=newproxy(),h=h,grounded=grounded,rotation_reserved=false})
+            check(c.valid and c.submission_allowed,"the manual's controls are sent: "..tostring(c.issue))
+            local hop=c.hop
+            if hop then hops+=1;check(mapping:retire_hop(hop.id,"accepted"),"the hop is retired") end
+            return c.force_controls,c.actions,hop~=nil
+        end
+        function d.hops() return hops end
+        return d
+    end
+    local band=.4918 -- right_y -.53 after the .12 dead zone: (.466-.22)/.50
+    do -- Part way back: nothing for the first .10 s, then the manual follows the stick.
+        local d=driver()
+        local zero,first=0,nil
+        for i=1,20 do
+            local c=d.step({right_y=-.53})
+            if c.manual==0 and not first then zero+=1 elseif not first then first=c.manual end
+            if first then check(math.abs(c.manual-band)<.001,"the manual holds at the stick's height: "..c.manual) end
+        end
+        check(zero==5 and first and math.abs(first-band)<.001,"five steps (under .10 s) of nothing, then the manual: "..zero.." "..tostring(first))
+    end
+    do -- A flick hop pulls through the band in three frames and sends no manual on the way.
+        local d=driver()
+        local any=0
+        for _,y in ipairs({-.33,-.67,-1,-1,-1,-1,.8,0,0}) do
+            local c=d.step({right_y=y})
+            if c.manual~=0 or c.nose_manual~=0 then any+=1 end
+        end
+        check(d.hops()==1 and any==0,"the flick hops and the front was never asked up: "..d.hops().." "..any)
+    end
+    do -- From an established manual the front stays up through the charge, and the flick sends none.
+        local d=driver()
+        for _=1,30 do d.step({right_y=-.53}) end
+        local held=0
+        for _=1,15 do local c=d.step({right_y=-1});if math.abs(c.manual-.6)<1e-9 then held+=1 end end
+        check(held==15,"full back from a manual holds the front at .6 while the hop charges: "..held)
+        local c,_,hopped=d.step({right_y=.8})
+        check(hopped and c.manual==0,"the flick pops it with no manual on that step")
+    end
+    do -- Eased back into the band without a flick, the manual goes on, through the end of the flick window and after.
+        local d=driver()
+        for _=1,30 do d.step({right_y=-.53}) end
+        for _=1,10 do d.step({right_y=-1}) end
+        local kept=0
+        for _=1,40 do local c=d.step({right_y=-.53});if math.abs(c.manual-band)<.001 then kept+=1 end end
+        check(kept==40 and d.hops()==0,"the manual continues: "..kept)
+    end
+    do -- A step's flicker of lost support drops the manual for that step only.
+        local d=driver()
+        for _=1,20 do d.step({right_y=-.53}) end
+        local air=d.step({right_y=-.53},false)
+        local back=d.step({right_y=-.53},true)
+        check(air.manual==0 and math.abs(back.manual-band)<.001,"none in the air, back at once: "..air.manual.." "..back.manual)
+        -- The same between two pad frames: Ride's body steps re-project the held pad on the new ground.
+        local function held(grounded)
+            local c=d.mapping:controls({physics_epoch=newproxy(),h=h,grounded=grounded,rotation_reserved=false})
+            check(c.valid,"the held pad is re-projected: "..tostring(c.issue))
+            return c.force_controls.manual
+        end
+        local lost,found=held(false),held(true)
+        check(lost==0 and math.abs(found-band)<.001,"with no fresh frame too: "..lost.." "..found)
+    end
+    do -- R3 from a manual pops at once with no manual; landing with the stick still held goes back into it.
+        local d=driver()
+        for _=1,20 do d.step({right_y=-.53}) end
+        local c,_,hopped=d.step({right_y=-.53,r3=true})
+        check(hopped and c.manual==0,"R3 hops with no manual on that step")
+        d.step({right_y=-.53})
+        for _=1,30 do check(d.step({right_y=-.53},false).manual==0,"no manual in the air") end
+        local landed=d.step({right_y=-.53},true)
+        check(math.abs(landed.manual-band)<.001,"landing with the stick held lands in the manual at once: "..landed.manual)
+    end
+    do -- The left stick's air pitch is not sent as a manual.
+        local d=driver()
+        d.step({},false)
+        local c=d.step({left_y=-.8},false)
+        check(c.manual==0 and c.nose_manual==0,"no manual from the left stick in the air: "..c.manual)
+    end
+    do -- After a flick hop the stick back in the middle in the air arms a landing; LB held in the air does not.
+        for _,lb in ipairs({false,true}) do
+            local d=driver()
+            for _,y in ipairs({-1,-1,-1,.8}) do d.step({right_y=y}) end
+            for _=1,10 do d.step({lb=lb},false) end
+            for _=1,10 do d.step({right_y=-.53,lb=lb},false) end
+            local zero,first=0,nil
+            for _=1,12 do
+                local c=d.step({right_y=-.53},true)
+                if c.manual==0 and not first then zero+=1 elseif not first then first=c.manual end
+            end
+            if lb then check(first==nil,"with LB held in the air, no manual until the stick has been in the middle")
+            else check(zero==5 and first and math.abs(first-band)<.001,"a manual .10 s after landing: "..zero.." "..tostring(first)) end
+        end
+    end
+    do -- The forward band writes the nose manual, which the stage does not pass yet.
+        local d=driver()
+        local c
+        for _=1,20 do c=d.step({right_y=.53}) end
+        check(c.nose_manual>.4 and c.manual==0,"the forward band is the nose manual: "..c.nose_manual)
+        local flat=World.terrain.flat()
+        local level=World.place(flat,{speed=4})
+        local samples=World.contacts(flat,level,tuning.gravity)
+        local model=Stage.new():preview(h,level,Forces.proposed_wheels(),samples,c)
+        check(model.valid and model.manual_active==false,"and it lifts nothing")
+    end
+    -- The manual a raw right_y holds, after the .12 dead zone, over the band from .22 to .72.
+    local function level(y) return math.min(1,((math.abs(y)-.12)/.88-.22)/.5) end
+    do -- Held at the top of the band, an overshoot is not a hop's charge: from a manual the stick goes on to .85 first.
+        -- The band ended on the hop's threshold, so three frames at -.80, early in a manual held at -.70, charged a
+        -- hop and dropped the front, and with no flick the band gave nothing until the stick was back in the middle.
+        local d=driver()
+        for _=1,12 do d.step({right_y=-.70}) end
+        local over,after=0,0
+        for _=1,3 do if d.step({right_y=-.80}).manual==1 then over+=1 end end
+        for _=1,40 do if math.abs(d.step({right_y=-.70}).manual-level(-.70))<.001 then after+=1 end end
+        check(over==3 and after==40 and d.hops()==0,"the overshoot holds the top manual and the manual goes on: "..over.." "..after)
+        for _=1,6 do d.step({right_y=-.95}) end
+        local _,_,hopped=d.step({right_y=.8})
+        check(hopped and d.hops()==1,"all the way back from a manual still charges a hop")
+    end
+    do -- Pulled straight to the stop and eased back with no flick, the hop lapses and the stick holds a manual.
+        local d=driver()
+        for _=1,4 do d.step({right_y=-1}) end
+        local first
+        for i=1,40 do local c=d.step({right_y=-.70});if not first and c.manual>0 then first=i end end
+        check(first and first<=25 and d.hops()==0,"a manual follows the lapsed hop: "..tostring(first))
+    end
+    do -- The top of the band is the manual's off the ground too: a step's lost support, or a landing, keeps it.
+        -- Off the ground any stick at .70 or more was taken for a trick and let the manual go, from raw -.736 up.
+        for _,y in ipairs({-.70,-.745}) do
+            local d=driver()
+            for _=1,20 do d.step({right_y=y}) end
+            local air=d.step({right_y=y},false)
+            local back=d.step({right_y=y},true)
+            check(air.manual==0 and math.abs(back.manual-level(y))<.001,"at "..y.." none in the air, back at once: "..back.manual)
+        end
+        local d=driver()
+        for _=1,20 do d.step({right_y=-.745}) end
+        for _=1,30 do d.step({right_y=-.745},false) end
+        check(math.abs(d.step({right_y=-.745},true).manual-level(-.745))<.001,"held through a flight it lands back in at once")
+    end
+    do -- A charge from a manual keeps the front up across a step's lost support, and the flick still hops.
+        local d=driver()
+        for _=1,30 do d.step({right_y=-.53}) end
+        for _=1,5 do d.step({right_y=-1}) end
+        check(d.step({right_y=-1},false).manual==0,"no manual in the air")
+        local kept=0
+        for _=1,5 do if math.abs(d.step({right_y=-1}).manual-.6)<1e-9 then kept+=1 end end
+        local c,_,hopped=d.step({right_y=.8})
+        check(kept==5 and hopped and c.manual==0,"the charge goes on at .6 and the flick hops: "..kept)
+    end
+    do -- After the middle, the stick pushed over for a trick still takes the landing's manual away.
+        local d=driver()
+        for _,y in ipairs({-1,-1,-1,.8}) do d.step({right_y=y}) end
+        for _=1,5 do d.step({},false) end
+        for _=1,3 do d.step({right_y=-.80},false) end
+        local any=false
+        for _=1,10 do d.step({right_y=-.53},false) end
+        for _=1,12 do if d.step({right_y=-.53},true).manual~=0 then any=true end end
+        check(not any,"a trick's push lets the landing manual go until the stick has been in the middle")
+    end
+    do -- sim_world's copy of the mapping sends the same manual, on the ground and in the air.
+        for _,grounded in ipairs({true,false}) do
+            local d=driver()
+            local c,actions
+            for _=1,20 do c,actions=d.step({right_y=-.53,left_y=-.8},grounded) end
+            local raw=Input.raw({available=true,left_y=-.8,right_y=-.53})
+            local copy=World.controls(d.mapping._settings,actions,raw,nil,grounded,false)
+            check(copy.manual==c.manual and copy.nose_manual==c.nose_manual,
+                "World.controls matches Mapping "..(grounded and "on the ground" or "in the air")..": "..copy.manual.." "..c.manual)
+        end
+    end
+    return {cases=3,assertions=n,steps=finished_step,hop_commands=commands,hop_applications=applications,
         first_landing_release_step=release_step,second_press_step=second_press_step,native_actions=0,game_evidence=false}
 end
 return table.freeze(Tests)

@@ -596,6 +596,101 @@ function Tests.run()
             check(f.mounts==1 and f.stepoffs==1 and not f.entry:mount(),"no allocation/Y or retry after cancellation")
         end
     end)
+    -- An explicit Return measures where to put the rider once the switch is done. In the user's log of 2026-11-02
+    -- the SDK revoked (19:31:56) or expired (19:33:11) that switch's Y in warmup while the controller was held, so
+    -- no Y reached the game, and the Return stopped at once where one without a placement would press again.
+    local function measured_return(f)
+        f.placements=0
+        function f.R.input.allowed() return true end
+        f.R.level={current=function() return {name="constructed"} end}
+        function f.R.skater.telemetry()
+            return {skater=true,airborne=false,teleport_pending=false,
+                watch={valid=true,state=f.stock,ragdoll_known=true,ragdoll=false,wipeouts=0}}
+        end
+        function f.R.skater.teleport() f.placements+=1;return true end
+        function f.owner:request_return()
+            self:request_stop("explicit return to skateboard")
+            return true,table.freeze({schema="measured_return_position_v1",ground=table.freeze({0,0,0}),
+                actor_floor_clearance_m=.5,heading=0,level="constructed",wipeouts=0,stop_ms=f.now,expires_ms=f.now+20000})
+        end
+        check(f.entry:return_to_skateboard() and f.entry:status().return_position~=nil,"an explicit Return carries its placement")
+        f.latest=cleaned();f.tick()
+        check(f.toggles==1 and f.entry:status().stock_attempted,"finished cleanup arms one stock switch")
+    end
+    -- The switch's transaction as the lifecycle reports it once it is over; by default one whose Y never published.
+    local function switch_ended(f,change)
+        f.latest=cleaned()
+        f.latest.equipment={phase="done",outcome="failed",reason="no_confirmed_report_pair",attempt=f.toggles,
+            initial_state=504,expected_state=100,retained=false,acknowledged=true,qualified_transition=false,
+            current_transition=false,unloaded=false,storage_fault=false,
+            terminal_receipt={terminal=true,claim_released=true,report_debt=false,quarantined=false}}
+        if change then change(f.latest.equipment) end
+        f.tick()
+    end
+    case("an explicit Return whose stock press sends no Y presses again and reaches the skateboard",function()
+        local f=fixture({two=true});f.riding();measured_return(f)
+        local held=true
+        f.on_pad=function(pad) pad.buttons.rb=held;return pad end
+        switch_ended(f)
+        local s=f.entry:status()
+        check(s.phase=="returning" and s.return_requested and not s.stock_attempted and s.return_position==nil,
+            "the Return goes on without its placement instead of stopping")
+        f.tick(20);check(f.toggles==1 and f.entry:status().phase=="returning","the next press waits for the controls to be let go")
+        held=false;f.tick();check(f.toggles==2,"let go, the switch is armed once more")
+        f.latest=cleaned();f.stock=100;f.tick()
+        check(f.entry:status().phase=="skateboard" and f.placements==0 and f.toggles==2,
+            "the second press reaches the skateboard where the rider stands, with nothing placed")
+        -- Pressing again keeps the bound every Return has: four more goes, then it stops.
+        local g=fixture({two=true});g.riding();measured_return(g)
+        for _=1,5 do switch_ended(g);g.tick() end
+        check(g.toggles==5 and g.entry:status().phase=="blocked"
+            and g.entry:status().detail:find("without an observed skateboard",1,true),"five presses that all fail end the Return")
+        -- A switch that still holds its claim, is unresolved, faulted storage, or matched its target without the
+        -- ACK keeps the existing refusal, and so does one after the rider has been placed.
+        for _,change in {function(e) e.retained=true end,function(e) e.outcome="unresolved" end,
+            function(e) e.storage_fault=true end,function(e) e.outcome="target_observed";e.acknowledged=false end} do
+            local h=fixture({two=true});h.riding();measured_return(h);switch_ended(h,change)
+            check(h.entry:status().phase=="blocked" and h.toggles==1 and h.placements==0,"the placement guard still refuses")
+        end
+        local p=fixture({two=true});p.riding();measured_return(p);p.stock=100
+        switch_ended(p,function(e)
+            e.outcome="target_observed";e.qualified_transition=true;e.current_transition=true
+        end)
+        check(p.placements==1 and p.entry:status().return_position.attempted,"a matched switch places the rider once")
+        switch_ended(p);check(p.entry:status().phase=="blocked" and p.placements==1 and p.toggles==1,
+            "once placed, a later failed report never drops the placement or presses again")
+    end)
+    case("time out of the game does not run out a Return waiting to press the switch",function()
+        -- The user's log of 2026-11-02: a ride ended by focus loss at 19:33:32 went back on its own, and that Return
+        -- gave up at 19:34:17, its 45 s spent in another window, a second before the game was in front again.
+        local f=fixture({two=true,auto_return=true});f.riding()
+        f.focused=false;fall(f,"fresh sampled upright/focus/context/fall readiness lost")
+        check(f.entry:status().return_requested and f.stops==1,"the stopped ride goes back to the board on its own")
+        f.latest=cleaned()
+        for _=1,60 do f.now+=984;f.tick() end
+        check(f.entry:status().phase=="returning" and f.toggles==0,"a minute in another window sends nothing and does not give up")
+        f.focused=true;f.game_menu=true
+        for _=1,60 do f.now+=984;f.tick() end
+        check(f.entry:status().phase=="returning" and f.toggles==0,"nor does a minute in the pause menu")
+        f.game_menu=false;f.tick()
+        check(f.toggles==1,"back in the game the switch is armed")
+        f.latest=cleaned();f.stock=100;f.tick()
+        check(f.entry:status().phase=="skateboard","and the Return reaches the skateboard")
+        -- Nor does a stretch with no ticks at all, as when the game stops ticking out of focus.
+        local h=fixture({two=true});h.riding();h.on_stock=function() return false,"constructed refusal" end
+        check(h.entry:return_to_skateboard(),"Return accepted")
+        h.latest=cleaned();h.tick();h.now+=60000;h.tick()
+        check(h.entry:status().phase=="returning","a minute between two ticks counts as one short tick")
+        -- Time in the game still counts: a switch refused every time stops after the same 45 s.
+        local g=fixture({two=true});g.riding();g.on_stock=function() return false,"constructed refusal" end
+        check(g.entry:return_to_skateboard(),"Return accepted")
+        g.latest=cleaned();g.tick()
+        for _=1,224 do g.now+=184;g.tick() end
+        check(g.entry:status().phase=="returning" and g.toggles>=40,"44.8 s in the game, asking all along, is inside the limit")
+        g.now+=184;g.tick()
+        check(g.entry:status().phase=="blocked" and g.entry:status().detail:find("Return did not finish",1,true),
+            "45 s in the game ends it")
+    end)
     return {cases=cases,assertions=assertions,constructed=true,native_authority=false,gameplay=false}
 end
 return Tests

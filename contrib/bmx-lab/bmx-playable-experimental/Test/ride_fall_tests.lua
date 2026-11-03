@@ -821,6 +821,25 @@ function T.run()
         check(car[13].manual and held>=14,"the manual is held over the bevel and through most of the crossing: "..held)
         check(car[13].push-road[13].push< -5000,"and the stop pushes on the bevel's step: "..car[13].push.." against "..road[13].push)
     end)
+    case(function() -- Going over the bars at a car from a manual, the manual is let go from the crash's first step.
+        -- The pitched bike's own lanes do not count a car's face as one; the manual's level lanes find it already close.
+        local w=harness(face(NOSE+.3))
+        w.prompt=true
+        local pose=wheelie(32,7)
+        check(steps(w,pose,3)==nil,"riding at the car")
+        w.set_pad(-.53)
+        local first,sent,before_crash=nil,nil,false
+        for k=1,20 do
+            local before=#w.submits
+            check(not w.step(pose).stop_requested and #w.submits>before,"step "..k.." is sent")
+            -- The crash's torque, nose down on top of the stage's, marks the step it starts.
+            if not first and w.submits[#w.submits].torque.x-w.model.torque[1]>1000 then first,sent=k,w.controls end
+            if not first then before_crash=before_crash or w.controls.manual>.4 end
+        end
+        check(before_crash and first,"the manual is up before the crash comes: "..tostring(first))
+        check(sent.manual==0 and sent.nose_manual==0 and sent.pedal==0,
+            "and the crash's first step sends no manual: "..sent.manual.." "..sent.nose_manual.." "..sent.pedal)
+    end)
     case(function() -- A quarter pipe ahead of a manual is still a ramp, not a wall.
         local function quarter(ahead_of)
             local w=harness(function(from,to,count,i)

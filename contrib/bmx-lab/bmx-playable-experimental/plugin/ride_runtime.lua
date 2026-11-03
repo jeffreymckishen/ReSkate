@@ -1684,6 +1684,9 @@ local function observe(s,source_frame,raw,context)
     if s.ahead_hit and not s.crash and closing_face and s.ahead.gap<AHEAD_PEDAL_GAP then
         local forward=M.turn(M.normalized(body.orientation),{0,0,1})
         s.crash={speed=s.ahead_hit,steps=0,way=M.dot(body.linear_velocity,forward)<0 and -1 or 1,face=s.ahead.face}
+        -- The rider lets go from this first step too, as for a crash already running. Set after that was done
+        -- above, the step still sent the manual that holds the front up.
+        force_controls.pedal,force_controls.manual,force_controls.nose_manual=0,0,0
     end
     -- Going over the bars tips the rays off the face. The tyre jammed at it stops the bike there: its travel
     -- along the ground is taken out while it is near the face, and only that, so it still falls.

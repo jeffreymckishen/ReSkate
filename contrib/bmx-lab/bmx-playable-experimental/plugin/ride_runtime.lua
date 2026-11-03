@@ -35,6 +35,12 @@ local AIR_TILT_STOP_DEG, UNSUPPORTED_TILT_STEPS = 120, 90
 -- riding onto, not a wall. Flat tops get more, because a kerb is flat. The
 -- row keeps its true depth and pushes from a depth the kernel admits.
 local HELD_DEPTH, HELD_FLOOR, HELD_FLAT_FLOOR = .095, .19, .24
+-- Such a wheel climbs out at the kernel's recovery rate, .25 to .6 s on a kerb, and a hard landing sinks one a few
+-- centimetres. The bike is drawn with each wheel lifted out of what its ray measured, presentation alone: the
+-- body, its rays and every force stay where they are, and the rider's hands and feet go with the bars and pedals
+-- drawn. The first centimetre is left, as a rolling tyre is drawn about 5 mm into the road, so ordinary riding
+-- draws nothing. A drawn wheel moves at most this fast, in m/s, so a ray that drops out for a step does not flicker it.
+local LIFT_SLACK, LIFT_RATE = .01, 3
 -- Speed lost along the travel over this many steps. ForceStage's caps take at
 -- most 3.8 m/s over them, on a landing, so this much is the world stopping the
 -- body: a pillar took 7.5 m/s in two steps, and left the rider sitting on a
@@ -139,6 +145,18 @@ end
 local NEUTRAL_POSE = table.freeze({steer=0,front_wheel_phase=0,rear_wheel_phase=0,crank_phase=0,
     barspin=0,tailwhip=0,movement_bike_pitch=0,movement_bike_roll=0})
 local TRICK_RELEASES = table.freeze({"barspin_release","release_left_hand","release_right_hand","tailwhip_release","release_left_foot","release_right_foot"})
+-- How far a wheel is drawn up out of the ground its row measured: its true
+-- depth (ray_separation on a held row) less LIFT_SLACK, along the bike's own
+-- up. A row's depth is a sphere's, and a leaning tyre is a disc whose rim
+-- stands clear of that sphere, so lifting it the depth itself never draws it
+-- into the ground nor further off it than it rolls. A clear wheel, or one off
+-- the ground, is drawn where the body has it.
+local function ground_rise(row)
+    if type(row)~="table" or type(row.contact)~="table" or row.contact.status~="hit" then return 0 end
+    local depth=row.ray_separation or row.separation
+    if not M.finite(depth) then return 0 end
+    return math.clamp(-depth-LIFT_SLACK,0,HELD_FLAT_FLOOR-LIFT_SLACK)
+end
 -- The presentation pose after an accepted step: the front steer angle the
 -- kernel commanded, each wheel turned by its accepted angular speed over the
 -- step, and the cranks turned by the rear wheel through CRANK_RATIO only while
@@ -148,7 +166,7 @@ local TRICK_RELEASES = table.freeze({"barspin_release","release_left_hand","rele
 -- state. ForceStage's zero stage commands nothing and reports no steer or
 -- cadence: the bars and cranks hold. One new table a step, which status
 -- shares; nil for a model that reports either malformed.
-local function presentation(previous,model,wheels,h)
+local function presentation(previous,model,wheels,h,samples,geometry)
     local steer,pedaling=model.front_steer_angle,model.pedaling
     if steer==nil then steer=previous.steer
     elseif not M.finite(steer) or math.abs(steer)>1 then return nil end
@@ -161,6 +179,23 @@ local function presentation(previous,model,wheels,h)
     -- A refused candidate holds the same accepted hand releases as its angle.
     -- Omitted zero releases keep ordinary riding's eight-field pose unchanged.
     for _,name in ipairs(TRICK_RELEASES) do pose[name]=previous[name] end
+    -- Each drawn wheel moves from where the last pose drew it toward what this
+    -- step's rays measured under the body being drawn, no faster than
+    -- LIFT_RATE. A rigid bike lifts a wheel by pitching and lifting the whole
+    -- of it, and the shift keeps the lower wheel where the body has it along
+    -- the bike. Nothing in Ride or the kernel reads the pitch, lift or shift back.
+    local front,back=0,0
+    if previous.movement_bike_pitch~=0 or previous.movement_bike_lift then
+        front,back=Geometry.hub_rise(geometry,previous.movement_bike_pitch,previous.movement_bike_lift or 0)
+        if not front then front,back=0,0 end
+    end
+    local most=LIFT_RATE*h
+    front+=math.clamp(ground_rise(samples[1])-front,-most,most)
+    back+=math.clamp(ground_rise(samples[2])-back,-most,most)
+    if front~=0 or back~=0 then
+        local pitch,lift,shift=Geometry.pitch_lift(geometry,front,back)
+        if pitch then pose.movement_bike_pitch,pose.movement_bike_lift,pose.movement_bike_shift=pitch,lift,shift end
+    end
     return pose
 end
 -- The measured tilt of the body's up axis from world up, in degrees, and its
@@ -738,6 +773,13 @@ local function stop(s, reason)
                     s.pose=freeze(pose)
                 end
             end
+        end
+        -- A drawn lift is what the last step's rays measured. Nothing measures the wheels once Ride has
+        -- stopped, so the bike is drawn on its body again rather than held up off a body that may be falling.
+        if s.pose and (s.pose.movement_bike_pitch~=0 or s.pose.movement_bike_lift) then
+            local pose=table.clone(s.pose)
+            pose.movement_bike_pitch=0;pose.movement_bike_lift=nil;pose.movement_bike_shift=nil
+            s.pose=freeze(pose)
         end
     end
     s.phase="stopped"
@@ -1574,7 +1616,7 @@ local function observe(s,source_frame,raw,context)
     s.refused_steps=0
     local wheels=wheel_copy(model.wheels,s.wheels)
     if not wheels then stop(s,"bounded wheel model unavailable");return end
-    local pose=presentation(s.pose,model,wheels,sample.seconds)
+    local pose=presentation(s.pose,model,wheels,sample.seconds,contact.samples,s.geometry)
     if not pose then stop(s,"bounded presentation model unavailable");return end
     local p={serial=sample.serial,time=sample.time,seconds=sample.seconds,submitted_at=s.now,
         hop_id=model.hop_applied and model.hop_event_id or nil,wheels=wheels,

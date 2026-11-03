@@ -44,11 +44,12 @@ local function steered(x,y,z,co,si)
     return v1*co+(k2*v3-k3*v2)*si+k1*e+c0[1],v2*co+(k3*v1-k1*v3)*si+k2*e+c0[2],
         v3*co+(k1*v2-k2*v1)*si+k3*e+c0[3]
 end
--- One pose's cosines and sines, and each pedal's offset as its spindle turns
--- with the cranks, set by set_pose before any point of that pose is posed.
-local rear_c,rear_s,front_c,front_s,crank_c,crank_s,bars_c,bars_s,whip_c,whip_s,pitch_c,pitch_s,roll_c,roll_s
+-- One pose's cosines and sines, its lift and shift, and each pedal's offset as its
+-- spindle turns with the cranks, set by set_pose before any point of that pose is posed.
+local rear_c,rear_s,front_c,front_s,crank_c,crank_s,bars_c,bars_s,whip_c,whip_s,pitch_c,pitch_s,roll_c,roll_s,lift,shift
 local pedal_offsets={{0,0,0},{0,0,0}}
 local function set_pose(pose)
+    lift,shift=pose.movement_bike_lift or 0,pose.movement_bike_shift or 0
     rear_c,rear_s=math.cos(pose.rear_wheel_phase),math.sin(pose.rear_wheel_phase)
     front_c,front_s=math.cos(pose.front_wheel_phase),math.sin(pose.front_wheel_phase)
     crank_c,crank_s=math.cos(pose.crank_phase),math.sin(pose.crank_phase)
@@ -77,19 +78,31 @@ local function posed_point(part,x,y,z)
     if part==2 or part==4 or part==6 then x,y,z=steered(x,y,z,bars_c,bars_s)
     else x,y,z=steered(x,y,z,whip_c,whip_s) end
     x,y,z=about_x(x,y,z,pitch_c,pitch_s,G.steering_pivot)
-    return about_z(x,y,z,roll_c,roll_s,G.steering_pivot)
+    x,y,z=about_z(x,y,z,roll_c,roll_s,G.steering_pivot)
+    -- The lift raises the whole bike along its own up and the shift moves it along its own forward, after the
+    -- pitch, so G.hub_rise says where each hub goes up and G.pitch_lift's shift keeps the grounded one in place.
+    return x,y+lift,z+shift
 end
 local POSE_KEYS={"steer","front_wheel_phase","rear_wheel_phase","crank_phase",
     "barspin","tailwhip","movement_bike_pitch","movement_bike_roll"}
+-- The lift and shift are in metres, and a pose may leave either out: Ride sends them only while it draws a wheel
+-- up out of the ground its ray measured. It lifts the bike at most 23 cm and shifts it at most 15, the shift only
+-- undoing what the pitch moved the wheel on the ground, so these bounds refuse anything else.
+local LIFT_LIMIT,SHIFT_LIMIT=.5,.25
 function V.neutral()
     return {steer=0,front_wheel_phase=0,rear_wheel_phase=0,crank_phase=0,
-        barspin=0,tailwhip=0,movement_bike_pitch=0,movement_bike_roll=0}
+        barspin=0,tailwhip=0,movement_bike_pitch=0,movement_bike_roll=0,movement_bike_lift=0,movement_bike_shift=0}
 end
 local NEUTRAL=table.freeze(V.neutral())
--- Whether pose is an articulation matrices accepts: a table with every field finite.
+-- Whether pose is an articulation matrices accepts: a table with every field finite, and a lift and a shift, if it
+-- has them, within LIFT_LIMIT and SHIFT_LIMIT.
 function V.valid_pose(pose)
     if type(pose)~="table" then return false end
     for _,key in POSE_KEYS do if not M.finite(pose[key]) then return false end end
+    local up=pose.movement_bike_lift
+    if up~=nil and (not M.finite(up) or math.abs(up)>LIFT_LIMIT) then return false end
+    local along=pose.movement_bike_shift
+    if along~=nil and (not M.finite(along) or math.abs(along)>SHIFT_LIMIT) then return false end
     return true
 end
 function V.matrices(root,orientation,pose)

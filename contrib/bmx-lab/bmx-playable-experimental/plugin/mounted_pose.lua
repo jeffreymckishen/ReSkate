@@ -392,13 +392,17 @@ end
 
 local ARTICULATION = {steer = .9, crank_phase = 1e6, barspin = 8 * PI, tailwhip = 8 * PI,
     movement_bike_pitch = 4 * PI, movement_bike_roll = 4 * PI}
+-- How far the whole bike is drawn lifted along its own up and shifted along its own forward, in
+-- metres, as bike_visual.lua's movement_bike_lift and movement_bike_shift: Ride lifts it while a
+-- wheel's ray reads it down in the ground, and shifts it so the other wheel stays where it is.
+local LIFT_LIMIT, SHIFT_LIMIT = .5, .25
 -- How far each hand or foot is let go, 0 to 1: trick_runtime.lua's visual_targets give the four
 -- per-limb releases, and bmx_rider_pose.h's frame adds one for each spin channel.
 local RELEASES = {"barspin_release", "tailwhip_release", "release_left_hand", "release_right_hand",
     "release_left_foot", "release_right_foot"}
 local function articulation_of(a)
     if type(a) ~= "table" then return nil, "no articulation: crank_phase is needed" end
-    local known = {}
+    local known = {movement_bike_lift = true, movement_bike_shift = true}
     for _, k in RELEASES do known[k] = true end
     for k in a do if ARTICULATION[k] == nil and not known[k] then return nil, "unknown articulation field " .. tostring(k) end end
     if a.crank_phase == nil then return nil, "the articulation has no crank_phase" end
@@ -409,6 +413,18 @@ local function articulation_of(a)
         if not finite(x) or math.abs(x) > cap then return nil, "articulation " .. k .. " is not a finite angle within " .. cap end
         out[k] = x
     end
+    local lift = a.movement_bike_lift
+    if lift == nil then lift = 0 end
+    if not finite(lift) or math.abs(lift) > LIFT_LIMIT then
+        return nil, "articulation movement_bike_lift is not a finite lift within " .. LIFT_LIMIT .. " m"
+    end
+    out.movement_bike_lift = lift
+    local shift = a.movement_bike_shift
+    if shift == nil then shift = 0 end
+    if not finite(shift) or math.abs(shift) > SHIFT_LIMIT then
+        return nil, "articulation movement_bike_shift is not a finite shift within " .. SHIFT_LIMIT .. " m"
+    end
+    out.movement_bike_shift = shift
     for _, k in RELEASES do
         local x = a[k]
         if x == nil then x = 0 end
@@ -464,9 +480,10 @@ MP.hold_release = hold_release
 
 -- As bike_visual.lua moves its parts: the bars turn about the steering axis by steer plus barspin,
 -- the cranks about +X through the bottom bracket, the pedals translate with their spindles and turn
--- only with a tailwhip, and then the whole bike pitches and rolls about the steering pivot. Each
--- hand and foot then goes `release` of the way from its part to where bmx_rider_pose.h puts a
--- released one (MP.CONTACTS hand_free and foot_free), in place and in turn.
+-- only with a tailwhip, and then the whole bike pitches and rolls about the steering pivot, lifts
+-- along its own up and shifts along its own forward. Each hand and foot then goes `release` of the
+-- way from its part to where bmx_rider_pose.h puts a released one (MP.CONTACTS hand_free and
+-- foot_free), in place and in turn.
 local function contacts(frame, a, g, o)
     local q, root = frame.rotation, frame.root
     local whole = multiply(axis_angle({0, 0, 1}, a.movement_bike_roll), axis_angle({1, 0, 0}, a.movement_bike_pitch))
@@ -474,7 +491,10 @@ local function contacts(frame, a, g, o)
     local bars = axis_angle(g.steering_axis, a.steer + a.barspin)
     local tail = axis_angle(g.steering_axis, a.tailwhip)
     local cranks = axis_angle({1, 0, 0}, a.crank_phase)
+    local carried = {0, a.movement_bike_lift, a.movement_bike_shift}
     local function about(r, p, pivot) return add(pivot, turn(r, sub(p, pivot))) end
+    -- A point of the bike where bike_visual draws it once the whole bike has moved.
+    local function moved(p) return add(about(whole, p, g.steering_pivot), carried) end
     local function world(p) return add(root, turn(q, p)) end
     local out = {grips = {}, palms = {}, hands = {}, wrists = {}, spindles = {}, ankles = {}, feet = {},
         platforms = {}, grips_neutral = {}, local_grips = {}, releases = {}, holds = {}, free_palms = {},
@@ -489,7 +509,7 @@ local function contacts(frame, a, g, o)
         local grip = side > 0 and g.left_grip or g.right_grip
         local turned = about(bars, grip, g.steering_pivot)
         out.grips_neutral[i] = turned
-        out.local_grips[i] = about(whole, turned, g.steering_pivot)
+        out.local_grips[i] = moved(turned)
         out.grips[i] = world(out.local_grips[i])
         local outward = g.grip_outward[i]
         local f = unit(sub({0, 0, 1}, mul(outward, dot(outward, {0, 0, 1}))))
@@ -499,8 +519,8 @@ local function contacts(frame, a, g, o)
         local hand_local = from_axes(distal, across, cross(distal, across))
         local held_hand = normalized(multiply(multiply(multiply(q, whole), bars), hand_local))
         -- Released (bmx_rider_pose.h palm_target, hand_rotation): beside the grip with the bars
-        -- unspun but the bike still pitched and rolled, turned with the steer alone.
-        local free_palm = add(world(about(whole, about(steered, grip, g.steering_pivot), g.steering_pivot)),
+        -- unspun but the bike still pitched, rolled, lifted and shifted, turned with the steer alone.
+        local free_palm = add(world(moved(about(steered, grip, g.steering_pivot))),
             turn(q, {side * C.hand_free[1], C.hand_free[2], C.hand_free[3]}))
         local free_hand = normalized(multiply(multiply(q, steered), hand_local))
         local given = math.max(a.barspin_release, side > 0 and a.release_left_hand or a.release_right_hand)
@@ -514,7 +534,7 @@ local function contacts(frame, a, g, o)
         -- Pedal and foot: the spindle turns with the cranks; the ankle stands ankle_from_sole above
         -- the level pedal face; the sole lies flat on it, the foot's +Z to the rider's left.
         local spindle = about(cranks, g.pedals[i], g.bottom_bracket)
-        spindle = about(whole, about(tail, spindle, g.steering_pivot), g.steering_pivot)
+        spindle = moved(about(tail, spindle, g.steering_pivot))
         out.spindles[i] = world(spindle)
         local platform = normalized(multiply(multiply(q, whole), tail))
         local offset = add(g.pedal_offset[i], {0, C.ankle_from_sole, o.foot_fore_aft})
@@ -598,9 +618,9 @@ local function place(pose, id, position, rotation, relative_to)
 end
 
 -- input = {bike = {root | center_of_mass, rotation}, articulation = {crank_phase, steer, barspin,
--- tailwhip, movement_bike_pitch, movement_bike_roll, and the releases}, rider = {crouch, lean,
--- hip_offset}, skater_root = point?}. Returns the plan {pose, count, planned, targets, diagnostics}
--- or nil and why. Pure.
+-- tailwhip, movement_bike_pitch, movement_bike_roll, movement_bike_lift, movement_bike_shift, and the
+-- releases}, rider = {crouch, lean, hip_offset}, skater_root = point?}. Returns the plan {pose,
+-- count, planned, targets, diagnostics} or nil and why. Pure.
 function MP.compose(input, options)
     if JOINT_ISSUE then return nil, JOINT_ISSUE end
     local o, why = MP.options(options)
@@ -638,26 +658,36 @@ function MP.compose(input, options)
     local hips_rotation = normalized(multiply(q, hips_local))
 
     -- The pelvis: over the saddle's midline, the authored standing height less the crouch, then the
-    -- rider's offset. Hands kept on the bars through a whole-bike pitch or roll carry the pelvis
-    -- 0.75 of the grips' displacement instead of stretching the arms, all of it with both feet off
-    -- (bmx_rider_pose.h). Letting go of the bars, the pelvis stops following them.
+    -- rider's offset. Hands kept on the bars through a whole-bike pitch, roll or lift carry the
+    -- pelvis 0.75 of the grips' displacement instead of stretching the arms, all of it with both feet
+    -- off (bmx_rider_pose.h). The shift is not a move the rider takes up: it only puts the pitched
+    -- bike back so the wheel on the road stays where the physics has it, so the pelvis goes all of it
+    -- with the bars and the saddle. Carrying only .75 of it left the hips 3 cm behind a bike drawn
+    -- 12 cm forward, and with the bars at the kernel's full steer, the arm whose grip they carry
+    -- forward 1.5 cm short of it.
+    -- Letting go of the bars, the pelvis stops following them.
     local hip = {rider.hip_offset[1], MP.STANCE.hip_height - rider.crouch + rider.hip_offset[2],
         MP.STANCE.hip_z + rider.hip_offset[3]}
-    if a.movement_bike_pitch ~= 0 or a.movement_bike_roll ~= 0 then
-        local moved = mul(add(sub(c.local_grips[1], c.grips_neutral[1]), sub(c.local_grips[2], c.grips_neutral[2])), .5)
+    if a.movement_bike_pitch ~= 0 or a.movement_bike_roll ~= 0 or a.movement_bike_lift ~= 0
+        or a.movement_bike_shift ~= 0 then
+        local shifted = {0, 0, a.movement_bike_shift}
+        local moved = sub(mul(add(sub(c.local_grips[1], c.grips_neutral[1]), sub(c.local_grips[2], c.grips_neutral[2])), .5),
+            shifted)
         local floating = .75 + .25 * math.min(releases[3], releases[4])
-        hip = add(hip, mul(moved, hands_held * floating))
+        hip = add(hip, mul(add(mul(moved, floating), shifted), hands_held))
     end
     -- The saddle, where bike_visual draws it: the frame pitches and rolls about the steering pivot
     -- with the rest of the bike, and the seat clamp works in that frame. Only a rider holding the
     -- bars rides the saddle round; letting go, the seat frame turns back to the bike's own and the
     -- bike turns under the rider (the hips are no longer carried either). A tailwhip swings the
-    -- saddle out from under the hips, so the clamp keeps the unwhipped saddle.
+    -- saddle out from under the hips, so the clamp keeps the unwhipped saddle. The lift and shift go
+    -- with the pitch: as far as the rider holds on.
     local saddle = g.saddle
     local pivot = g.steering_pivot
     local seat_q = slerp({0, 0, 0, 1}, c.whole, hands_held)
-    local function to_seat(p) return add(pivot, turn(conjugate(seat_q), sub(p, pivot))) end
-    local function from_seat(p) return add(pivot, turn(seat_q, sub(p, pivot))) end
+    local seat_lift = {0, a.movement_bike_lift * hands_held, a.movement_bike_shift * hands_held}
+    local function to_seat(p) return add(pivot, turn(conjugate(seat_q), sub(sub(p, seat_lift), pivot))) end
+    local function from_seat(p) return add(add(pivot, turn(seat_q, sub(p, pivot))), seat_lift) end
     local seat_up = turn(seat_q, {0, 1, 0})
     local half_pelvis = .5 * length(sub(rig.roots.left_up_leg, rig.roots.right_up_leg))
     local floor = saddle.top + half_pelvis + o.seat_clearance
@@ -886,8 +916,9 @@ end
 -- Otherwise the result is MP.compose's at those angles up to rounding (a quaternion may come out
 -- negated: the same turn).
 local MEMO_STEER, MEMO_CRANK = .001, .01
-local MEMO_ZERO = {"barspin", "tailwhip", "movement_bike_pitch", "movement_bike_roll", "barspin_release",
-    "tailwhip_release", "release_left_hand", "release_right_hand", "release_left_foot", "release_right_foot"}
+local MEMO_ZERO = {"barspin", "tailwhip", "movement_bike_pitch", "movement_bike_roll", "movement_bike_lift",
+    "movement_bike_shift", "barspin_release", "tailwhip_release", "release_left_hand", "release_right_hand",
+    "release_left_foot", "release_right_foot"}
 local MEMO_ORIGIN = table.freeze({root = table.freeze({0, 0, 0}), rotation = table.freeze({0, 0, 0, 1})})
 local function memo_world(lp, root, q)
     local function at(p) return add(root, turn(q, p)) end

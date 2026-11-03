@@ -880,6 +880,41 @@ function T.run()
         check(moved_front<.006 and moved_rear<.002,string.format(
             "and the drawn bike does not buzz along itself: the front hub moves %.4f a step, the rear %.4f",moved_front,moved_rear))
     end)
+    case(function() -- A manual in a kerb whose rear ray now and then finds the kerb's bevelled edge is not thrown along the ground.
+        -- The rear tyre .15 into a kerb, drawn up 14 cm along the ground's normal. On some steps the ray finds a
+        -- 25 degree edge there (fall() notes kerb bevels in the game). Lifted along each step's normal, the drawn
+        -- rear hub jumped 6.4 cm along the ground and back on each one.
+        local bevel=math.rad(25)
+        local mode,kerb="top",false
+        local w=harness(function(from,to,count,i)
+            if count==2 and i==2 and kerb then
+                if mode=="edge" then return hit(from,to,from.y-R+.15,{0,math.cos(bevel),-math.sin(bevel)}) end
+                return hit(from,to,from.y-R+.15,{0,1,0})
+            end
+            return flat(from,to)
+        end)
+        w.prompt=true
+        local pose=wheelie(30,4)
+        check(in_manual(w,pose,12)==nil and w.controls.manual>.4,"a manual on the road")
+        kerb=true
+        local last,most=nil,0
+        for i,m in ipairs({"top","top","top","top","top","edge","top","edge","top","top","edge","edge","edge","top","top"}) do
+            mode=m
+            local out=w.step(pose)
+            check(not out.stop_requested,"riding the manual in the kerb: "..tostring(out.issue))
+            local rear,body=drawn_touch(w.samples[w.serial],out.presentation_pose,3)
+            local drawn=M.sub(rear,body)
+            -- Once its 14 cm have come up, three steps at LIFT_RATE, the tyre stays up on the kerb. Measured on the
+            -- edge, the ray's depth is the kerb's top along that normal, a centimetre more.
+            if i>3 then
+                check(drawn[2]>.13 and drawn[2]<.16,"the rear tyre is drawn on the kerb top: "..drawn[2])
+                local along=M.sub(drawn,last)
+                most=math.max(most,math.sqrt(along[1]*along[1]+along[3]*along[3]))
+            end
+            last=drawn
+        end
+        check(most<.01,string.format("and moves %.4f a step at most along the ground as its ray finds the edge and the top",most))
+    end)
     case(function() -- A steady manual's rear carries the whole weight and sinks past the drawn slack: nothing is drawn, so the rider is mapped.
         local w=harness(flat)
         w.prompt=true

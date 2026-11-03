@@ -45,8 +45,9 @@ local HELD_DEPTH, HELD_FLOOR, HELD_FLAT_FLOOR = .095, .19, .24
 -- Drawn, that published a sub-millimetre lift every step, and the rider was composed afresh every tick, never mapped
 -- from its memo (mounted_pose.lua compose_memo): 380 to 480 us a tick against 40 to 85.
 -- The drawn bike is lifted along the ground's normal, which in a manual stands 20 to 36 degrees from the bike's own
--- up; LIFT_TILT bounds that direction, past any manual.
-local LIFT_SLACK, LIFT_RATE, LIFT_LEAST, LIFT_TILT = .01, 3, .005, math.rad(45)
+-- up; LIFT_TILT bounds that direction, past any manual. The direction turns no faster than LIFT_TURN, in rad/s:
+-- 2.5 degrees a step, which moves a hub drawn 23 cm up, the most Ride draws, under 1 cm along the ground.
+local LIFT_SLACK, LIFT_RATE, LIFT_LEAST, LIFT_TILT, LIFT_TURN = .01, 3, .005, math.rad(45), math.rad(150)
 -- A tyre that strikes a kerb loses speed to it, where the held row alone lifted the wheel and let it roll on as if
 -- the kerb were not there. A wheel whose gap closes by CURB_STEP or more onto a flat top (normal up at least
 -- CURB_FLAT), rolled or hopped into it, has struck a step that high: the least of how far its gap closed, how far
@@ -185,18 +186,29 @@ local function clearance(row)
     return math.huge
 end
 local function on_ground(row) return clearance(row)<=ON_GROUND end
--- The direction the drawn wheels rise along, as Geometry.hub_rise's tilt from the bike's up toward its forward:
--- the normal of the ground under the wheels on it, as fall() sums it, or world up with neither on it, so a wheel
--- drawn up off a kerb in a manual comes down the way it went up when the bike leaves it. Only its part in the
--- bike's own plane counts: a lean is still lifted along the bike's up, as ground_rise says. A bike square to the
--- ground under it has a tilt of 0 and is drawn as it was before.
-local function rise_tilt(samples,orientation,up)
+-- The direction the drawn wheels rise along, in the world: the normal of the ground under the wheels on it, as
+-- fall() sums it, or world up with neither on it, so a wheel drawn up off a kerb in a manual comes down the way it
+-- went up when the bike leaves it.
+local function ground_normal(samples,up)
     local sum,count={0,0,0},0
     for i=1,2 do
         local row=samples[i]
         if on_ground(row) and M.vec(row.contact.normal,2) then sum=M.add(sum,row.contact.normal);count+=1 end
     end
-    local n=count>0 and M.unit(sum) or up
+    return count>0 and M.unit(sum) or up
+end
+-- The unit direction from, turned toward the unit direction to by at most most radians. Both are near world up.
+local function turned_toward(from,to,most)
+    local c=math.clamp(M.dot(from,to),-1,1)
+    local angle=math.acos(c)
+    if angle<=most or angle>3 then return to end
+    local s=math.sin(angle)
+    return M.unit(M.add(M.mul(from,math.sin(angle-most)/s),M.mul(to,math.sin(most)/s)))
+end
+-- That direction as Geometry.hub_rise's tilt, from the bike's up toward its forward. Only its part in the bike's
+-- own plane counts: a lean is still lifted along the bike's up, as ground_rise says. A bike square to the ground
+-- under it has a tilt of 0 and is drawn as it was before.
+local function rise_tilt(n,orientation)
     if not n or type(orientation)~="table" then return 0 end
     local q=M.normalized(orientation)
     local seen=M.turn({-q[1],-q[2],-q[3],q[4]},n)
@@ -248,7 +260,18 @@ local function presentation(previous,model,wheels,h,samples,geometry,orientation
     elseif back_down and not front_down then want_front=math.min(want_back,clearance(samples[1])-ON_GROUND) end
     local was=previous.movement_bike_pitch~=0 or previous.movement_bike_lift~=nil
     -- Ordinary riding, with nothing drawn and nothing to draw, skips the tilt.
-    local tilt=(was or want_front~=0 or want_back~=0) and rise_tilt(samples,orientation,up) or 0
+    -- A drawn bike's direction turns from the last step's no faster than LIFT_TURN. It is kept in the world, so the
+    -- body turning under it does not hold it back. Lifted along each step's normal as measured, a ray that found a
+    -- kerb's 25 degree bevel for one step under a rear tyre drawn 14 cm up threw the drawn bike 6.4 cm along the
+    -- ground and back: LIFT_RATE bounds only the rise along the new direction, and the lower hub is kept where the
+    -- body has it across that direction, so the whole lift turned with it.
+    local normal,tilt=nil,0
+    if was or want_front~=0 or want_back~=0 then
+        normal=ground_normal(samples,up)
+        local last=previous.movement_bike_normal
+        if was and normal and type(last)=="table" then normal=turned_toward(last,normal,LIFT_TURN*h) end
+        tilt=rise_tilt(normal,orientation)
+    end
     local front,back=0,0
     if was then
         front,back=Geometry.hub_rise(geometry,previous.movement_bike_pitch,previous.movement_bike_lift or 0,
@@ -263,7 +286,10 @@ local function presentation(previous,model,wheels,h,samples,geometry,orientation
         -- On one wheel the bike is lifted whole, its shift the rise times the tilt's sine, 16 cm at most. Only
         -- hubs drawn far apart at a steep tilt pass what bike_visual draws (its SHIFT_LIMIT), and a bike with
         -- both wheels on the ground stands near square to it; the clamp keeps any pose one the visual takes.
-        if pitch then pose.movement_bike_pitch,pose.movement_bike_lift,pose.movement_bike_shift=pitch,lift,math.clamp(shift,-.25,.25) end
+        if pitch then
+            pose.movement_bike_pitch,pose.movement_bike_lift,pose.movement_bike_shift=pitch,lift,math.clamp(shift,-.25,.25)
+            pose.movement_bike_normal=normal
+        end
     end
     -- In a manual the rider's hips go where the physics holds the weight: the kernel's pitch couple over
     -- the weight, eased over RIDER_SHIFT_SECONDS so the pose does not jump on a step's change. Out of it
@@ -921,7 +947,7 @@ local function stop(s, reason)
         -- stopped, so the bike is drawn on its body again rather than held up off a body that may be falling.
         if s.pose and (s.pose.movement_bike_pitch~=0 or s.pose.movement_bike_lift) then
             local pose=table.clone(s.pose)
-            pose.movement_bike_pitch=0;pose.movement_bike_lift=nil;pose.movement_bike_shift=nil
+            pose.movement_bike_pitch=0;pose.movement_bike_lift=nil;pose.movement_bike_shift=nil;pose.movement_bike_normal=nil
             s.pose=freeze(pose)
         end
     end

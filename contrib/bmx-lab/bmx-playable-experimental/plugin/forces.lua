@@ -82,6 +82,14 @@ local defaults={gravity={0,-9.8,0},wheelbase=1.203956057050485*scale,steer_limit
     -- rider pulls it back up. Followed over .3 s instead of held from the lift's start, that ground took on a kicker
     -- met during the lift, so the front never read as up and the throw carried the bike up the face and over.
     manual_pull=800,manual_pull_ramp=.08,manual_pull_seconds=1,manual_risen_slack=.02,
+    -- Until then the throw is judged along the surface, but on an offset no further back than this past the one
+    -- against the ground the lift started from, so a face met during the lift cannot hold the throw on: against
+    -- that ground it fades from 24 degrees and is gone by 30. The front reads as up only within manual_risen_slack
+    -- of the stick's offset, which the law creeps up to over its last degree; an 8 cm bump or a 16 degree kicker met
+    -- in that last half second read the bike, 33 degrees to the road, as about 17 to the face, kept the throw on at
+    -- up to 800 N*m, and the bike went over backwards at the crest. A wider slack only moved the window. At .04 the
+    -- throw went too soon on mn4's kerb ramp, which then took 1.6 s to reach 30 degrees against 1.23.
+    manual_face_offset=.08,
     -- The front moves at most this fast (rad/s), toward the target at this gain (1/s), on this damping (N*m*s).
     -- A plain spring overshot past the loop-out on high targets: 156 N*m forward cannot stop a fast lift.
     manual_rate=1.5,manual_gain=4,manual_damping=560,
@@ -129,14 +137,14 @@ local function tuning_valid(t)
         "recovery_fraction","recovery_speed_limit","pedal_fade_start","pedal_cutoff","pedal_top_speed","pedal_resume_speed","rider_power",
         "curvature_rate_limit","curvature_step_limit","curvature_min_speed","neutral_air_damping_rate",
         "rolling_resistance","air_drag","tyre_section_radius","brake_lateral_cut","rear_brake_load_share",
-        "manual_hold_back","manual_hold_forward","manual_pull","manual_pull_ramp","manual_pull_seconds","manual_risen_slack","manual_rate","manual_gain",
+        "manual_hold_back","manual_hold_forward","manual_pull","manual_pull_ramp","manual_pull_seconds","manual_risen_slack","manual_face_offset","manual_rate","manual_gain",
         "manual_damping","manual_min_speed","manual_start_speed","manual_carve_rate","manual_carve_damping","manual_carve_torque"} do if not M.finite(t[name]) or t[name]<0 or t[name]>1e6 then return false end end
     if not M.finite(t.manual_low) or not M.finite(t.manual_high) then return false end
     if type(t.friction)~="table" then return false end
     for _,key in {"longitudinal_friction","lateral_friction"} do local x=t.friction[key] if not M.finite(x) or x<0 or x>10 then return false end end
     if t.manual_hold_back>.3 or t.manual_hold_forward>.3 or t.manual_high< -.3 or t.manual_high>=t.manual_low or t.manual_low>.3 or
         t.manual_pull>t.balance_torque_limit or t.manual_pull_ramp<=0 or t.manual_rate>4 or t.manual_gain>10 or
-        t.manual_start_speed<t.manual_min_speed or t.manual_start_speed>5 or t.manual_pull_seconds>5 or t.manual_risen_slack>.1 then return false end
+        t.manual_start_speed<t.manual_min_speed or t.manual_start_speed>5 or t.manual_pull_seconds>5 or t.manual_risen_slack>.1 or t.manual_face_offset>.3 then return false end
     return t.brake_lateral_cut<=1 and t.rear_brake_load_share<=1 and t.steer_limit<=1 and t.lean_limit<=.8 and t.hop_delta_speed<=4.5 and t.contact_gap<=.05 and
         t.maximum_penetration<=.15 and t.recovery_fraction<=1 and t.recovery_speed_limit<=1 and t.pedal_fade_start<t.pedal_cutoff and
         t.pedal_cutoff<=50 and t.pedal_resume_speed<t.pedal_top_speed and t.pedal_top_speed<=t.pedal_cutoff and t.curvature_rate_limit<=10 and t.curvature_step_limit<=.35 and t.curvature_min_speed<=5 and t.neutral_air_damping_rate<=10
@@ -583,9 +591,11 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
                 local rate=-M.dot(measured.angular_velocity,lateral)
                 local want=math.clamp(t.manual_gain*delta,-t.manual_rate,t.manual_rate)
                 local couple=weight*manual_d+t.manual_damping*(want-rate)
-                -- On the way up the throw fades out above manual_hold_back, once the front is up below it.
+                -- On the way up the throw fades out above manual_hold_back, once the front is up below it; until
+                -- then on no more than manual_face_offset past the offset against the ground the lift started from.
                 local fade=risen and t.manual_hold_back or t.manual_hold_back-t.manual_pull_ramp
-                local ramp=throw and math.clamp((manual_d-fade)/t.manual_pull_ramp,0,1) or 0
+                local judged=risen and manual_d or math.min(manual_d,manual_level+t.manual_face_offset)
+                local ramp=throw and math.clamp((judged-fade)/t.manual_pull_ramp,0,1) or 0
                 local up_cap=weight*t.manual_hold_back+ramp*math.max(0,t.manual_pull-weight*t.manual_hold_back)
                 couple=math.clamp(couple,-weight*t.manual_hold_forward,up_cap)
                 assist=M.add(assist,M.mul(lateral,-couple))

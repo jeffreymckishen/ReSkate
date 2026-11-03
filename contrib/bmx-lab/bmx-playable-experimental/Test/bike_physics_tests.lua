@@ -529,6 +529,49 @@ function T.run()
                 string.format("%s: the manual is still held after it at %.1f degrees",row.what,last.pitch))
         end
     end)
+    case(function() -- A bump or a kicker met in the last half second of the lift does not throw the bike over.
+        -- Until the front first came up to the stick's offset, the wide throw was judged along the surface under the
+        -- rear wheel, and the front reads as up only within a centimetre or two of that offset. A face met while the
+        -- law crept up the last degree read a bike at 33 degrees to the road as about 17 to the face, kept the throw
+        -- on at up to 800 N*m, and the bike went over backwards at the crest (88 to 90 degrees). Each row puts the
+        -- bump where the rear hub is `after` seconds after the stick on a flat ride.
+        local t=Forces.tuning()
+        local stick=16
+        local function rear_z(body)
+            return M.add(body.center_of_mass,M.turn(M.normalized(body.orientation),M.sub(G.rear_axle,G.com)))[3]
+        end
+        local function controls(m) return function(step) return {manual=step>=stick and m or 0} end end
+        for _,row in ipairs({
+            {what="an 8 cm bump .8 m long at 2 m/s",ground=function(at) return Ground.bump(at,.08,.8) end,speed=2,m=1,after={.45,.52,.58}},
+            {what="an 8 cm bump .8 m long at 2.5 m/s",ground=function(at) return Ground.bump(at,.08,.8) end,speed=2.5,m=1,after={.45}},
+            {what="a 12 cm bump 1.2 m long at 3 m/s",ground=function(at) return Ground.bump(at,.12,1.2) end,speed=3,m=.75,after={.5}},
+            {what="a 16 degree kicker onto a 20 cm deck at 4 m/s",ground=function(at) return Ground.kicker(at,math.rad(16),.3,.2) end,
+                speed=4,m=.88,after={.5}},
+            {what="a 16 degree kicker onto a 20 cm deck at 4 m/s",ground=function(at) return Ground.kicker(at,math.rad(16),.3,.2) end,
+                speed=4,m=1,after={.55}},
+            {what="a 16 degree kicker onto a 20 cm deck at 5 m/s",ground=function(at) return Ground.kicker(at,math.rad(16),.3,.2) end,
+                speed=5,m=1,after={.5}},
+        }) do
+            local target=t.manual_low+(t.manual_high-t.manual_low)*row.m
+            local hold=math.deg(math.acos(target/math.sqrt(.4158^2+.637^2))-math.atan2(.637,.4158))
+            for _,after in ipairs(row.after) do
+                local meet=stick+math.floor(after/h+.5)
+                local at
+                run({steps=meet,speed=row.speed,controls=controls(row.m),each=function(step,body) if step==meet-1 then at=rear_z(body) end end})
+                local steps=meet+math.floor(2.4/h)
+                local most,last=-math.huge,nil
+                local ride=run({steps=steps,speed=row.speed,ground=row.ground(at),controls=controls(row.m),each=function(step,body,out)
+                    local p=pitch_of(body)
+                    most=math.max(most,p)
+                    if step==steps then last={pitch=p,active=out.manual_active} end
+                end})
+                local what=string.format("%s at m=%.2f, met %.2f s after the stick",row.what,row.m,after)
+                check(ride.refused==0 and most<45,string.format("%s: no fall, at most %.1f degrees",what,most))
+                check(last.active==true and math.abs(last.pitch-hold)<=1.5,
+                    string.format("%s: the manual is still held after it at %.1f degrees against %.1f",what,last.pitch,hold))
+            end
+        end
+    end)
     case(function() -- Too far back: past where the rider can hold it the bike goes over, B saves it, and inside the window it comes back.
         local over
         run({steps=60,speed=4,pitch=46,controls=function() return {manual=1} end,each=function(step,body)

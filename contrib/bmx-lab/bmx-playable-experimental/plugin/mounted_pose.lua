@@ -658,16 +658,23 @@ function MP.compose(input, options)
     local hips_rotation = normalized(multiply(q, hips_local))
 
     -- The pelvis: over the saddle's midline, the authored standing height less the crouch, then the
-    -- rider's offset. Hands kept on the bars through a whole-bike pitch, roll, lift or shift carry the
+    -- rider's offset. Hands kept on the bars through a whole-bike pitch, roll or lift carry the
     -- pelvis 0.75 of the grips' displacement instead of stretching the arms, all of it with both feet
-    -- off (bmx_rider_pose.h). Letting go of the bars, the pelvis stops following them.
+    -- off (bmx_rider_pose.h). The shift is not a move the rider takes up: it only puts the pitched
+    -- bike back so the wheel on the road stays where the physics has it, so the pelvis goes all of it
+    -- with the bars and the saddle. Carrying only .75 of it left the hips 3 cm behind a bike drawn
+    -- 12 cm forward, and with the bars at the kernel's full steer, the arm whose grip they carry
+    -- forward 1.5 cm short of it.
+    -- Letting go of the bars, the pelvis stops following them.
     local hip = {rider.hip_offset[1], MP.STANCE.hip_height - rider.crouch + rider.hip_offset[2],
         MP.STANCE.hip_z + rider.hip_offset[3]}
     if a.movement_bike_pitch ~= 0 or a.movement_bike_roll ~= 0 or a.movement_bike_lift ~= 0
         or a.movement_bike_shift ~= 0 then
-        local moved = mul(add(sub(c.local_grips[1], c.grips_neutral[1]), sub(c.local_grips[2], c.grips_neutral[2])), .5)
+        local shifted = {0, 0, a.movement_bike_shift}
+        local moved = sub(mul(add(sub(c.local_grips[1], c.grips_neutral[1]), sub(c.local_grips[2], c.grips_neutral[2])), .5),
+            shifted)
         local floating = .75 + .25 * math.min(releases[3], releases[4])
-        hip = add(hip, mul(moved, hands_held * floating))
+        hip = add(hip, mul(add(mul(moved, floating), shifted), hands_held))
     end
     -- The saddle, where bike_visual draws it: the frame pitches and rolls about the steering pivot
     -- with the rest of the bike, and the seat clamp works in that frame. Only a rider holding the

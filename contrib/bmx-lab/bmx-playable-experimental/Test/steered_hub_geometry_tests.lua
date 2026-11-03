@@ -305,7 +305,9 @@ function Tests.run()
             return {d[1]*m[1]+d[2]*m[2]+d[3]*m[3],d[1]*m[5]+d[2]*m[6]+d[3]*m[7],d[1]*m[9]+d[2]*m[10]+d[3]*m[11]}
         end
         local reached=0
-        for _,steer in ipairs({0,.1,-.3}) do
+        -- The bars go up to .4 rad, the kernel's full steer at a standstill (forces steer_limit), as a rider rolling
+        -- slowly up to a kerb may turn them.
+        for _,steer in ipairs({0,.1,-.3,.3,.4,-.4}) do
             local rest=Visual.neutral();rest.steer=steer;rest.crank_phase=.4
             local on_body=Visual.matrices(root,q,rest)
             local rest_plan=MP.compose({bike={root=root,rotation=q},articulation={steer=steer,crank_phase=.4}})
@@ -324,23 +326,43 @@ function Tests.run()
                 local hub=M.sub(local_point(apply(m[low],{0,0,0})),local_point(apply(on_body[low],{0,0,0})))
                 check(near(hub,{0,low_rise,0},.001),
                     string.format("the hub on the road is drawn within 1 mm of the body's: %.4f %.4f %.4f",hub[1],hub[2]-low_rise,hub[3]))
-                -- Steered hard, the front tyre leans with the head tube, and pitching that leaning disc moves its
-                -- lowest point across: 2 cm at .3 rad and the most Ride draws, with the hub still in place.
-                local grounded=M.sub(contact(m[low]),contact(on_body[low]))
-                check(near(grounded,{0,low_rise,0},math.abs(steer)<=.1 and .01 or .02),
-                    string.format("and its tyre touches the road within 1 cm of where the body has it: %.4f %.4f %.4f",
-                        grounded[1],grounded[2]-low_rise,grounded[3]))
-                local raised=M.sub(contact(m[high]),contact(on_body[high]))
-                check(math.abs(raised[2]-high_rise)<.002,
+                -- The physics touches the road under the hub: wheel_plan casts the wheel's ray from the steered hub
+                -- along gravity, which here is the body's down, so it meets the road the wheel's radius less the rise
+                -- under the body's hub. The drawn tyre's lowest point stands at that height.
+                local ray=M.add(local_point(apply(on_body[low],{0,0,0})),{0,low_rise-R,0})
+                local grounded=contact(m[low])
+                check(math.abs(grounded[2]-ray[2])<.002,
+                    string.format("and its tyre touches the road at the height of the ray's contact, within 2 mm: %.4f",
+                        grounded[2]-ray[2]))
+                -- Steered, the front disc leans with the raked head tube, so its lowest point stands to the side of the
+                -- ray's: 7 mm at .1 rad and 2.7 cm at .4 drawn on the body. Pitching it nose-down about the front hub
+                -- stands the head tube up, which brings that point in: 3 mm at .4 rad with the rear 23 cm up, and 2 cm
+                -- with the rear 7 cm above the front, where the pitch is too small to stand the head tube up far.
+                local function across(p) return math.sqrt((p[1]-ray[1])^2+(p[3]-ray[3])^2) end
+                local lean=across(contact(on_body[low]))
+                check(across(grounded)<(math.abs(steer)<=.1 and .01 or lean+1e-9),
+                    string.format("and is within 1 cm across of the ray's contact, or turned further, no further than the disc leans on the body: %.4f of %.4f",
+                        across(grounded),lean))
+                -- The raised wheel's hub, the centre of the round wheel the physics has, stands the rise its ray
+                -- measured above the body's, within the 1 mm hub_rise leaves a front hub turned .4 rad.
+                local body_high=local_point(apply(on_body[high],{0,0,0}))
+                local raised=M.sub(local_point(apply(m[high],{0,0,0})),body_high)
+                check(math.abs(raised[2]-high_rise)<.001,
                     string.format("the raised wheel sits on the surface its ray measured: %.4f off",raised[2]-high_rise))
-                -- A rigid wheelbase seen from above is shorter by the climb, so the raised wheel comes in toward the
-                -- other one by that much: 3 cm at the most Ride draws.
+                -- A rigid wheelbase seen from above is shorter by the climb, so the raised hub comes in toward the
+                -- other one by that much, 3 cm at the most Ride draws, and not across.
                 local inward=(high==4 and -1 or 1)*raised[3]
                 local span=G.front_axle[3]-G.rear_axle[3]
                 local shorter=span-math.sqrt(span*span-(high_rise-low_rise)^2)
-                check(math.abs(inward-shorter)<(steer==0 and 1e-6 or .005) and math.abs(raised[1])<(steer==0 and 1e-9 or .02),
+                check(math.abs(inward-shorter)<(steer==0 and 1e-6 or .001) and math.abs(raised[1])<1e-9,
                     string.format("and comes in %.4f toward the other wheel, as a %.4f climb shortens the wheelbase, and %.4f across",
                         inward,shorter,raised[1]))
+                -- Its tyre is never drawn into the surface. Steered, the disc leans inside that round wheel, and pitched
+                -- nose-up it leans further back with the head tube, so its lowest point stands off the surface: 4.5 mm
+                -- at .4 rad with the front 23 cm up.
+                local off=contact(m[high])[2]-(body_high[2]+high_rise-R)
+                check(off>-.001 and off<(steer==0 and 1e-9 or .005),
+                    string.format("and its tyre stands on that surface, %.4f off it",off))
                 -- The rider's hands and feet stay on the bars and pedals as they are drawn, and reach them.
                 local plan,why=MP.compose({bike={root=root,rotation=q},
                     articulation={steer=steer,crank_phase=.4,movement_bike_pitch=pitch,movement_bike_lift=lift,movement_bike_shift=shift}})
@@ -353,18 +375,26 @@ function Tests.run()
                     check(near(in_part(m[6+i],plan.targets.ankles[i]),in_part(on_body[6+i],rest_plan.targets.ankles[i]),1e-9),
                         "each ankle sits on its drawn pedal as it does on the bike at rest")
                 end
-                -- Every limb reaches. The one exception is the rear wheel drawn 23 cm up with the bars turned .3 rad,
-                -- where the saddle holds the hips back and the leading arm ends within a centimetre of its grip.
+                -- The shift only puts the pitched bike back over the wheel on the road, so the rider goes all of it
+                -- with the bike: the pose on the bike is the one drawn unshifted, carried along.
+                local unshifted=MP.compose({bike={root=root,rotation=q},
+                    articulation={steer=steer,crank_phase=.4,movement_bike_pitch=pitch,movement_bike_lift=lift}})
+                check(near(M.sub(local_point(plan.targets.hips),local_point(unshifted.targets.hips)),{0,0,shift},1e-9),
+                    "the hips are carried the whole shift, as the bars and saddle are")
+                -- Every limb reaches but for the rear drawn 23 cm up with the bars turned .3 rad or more: the knee
+                -- floor lifts the hips and the saddle holds them back, so the arm whose grip the bars carry forward
+                -- ends short of it, 6 mm at the kernel's full steer, as it did before the shift. The hands stay within
+                -- a centimetre of their grips and the legs always reach.
                 for _,name in ipairs({"left_arm","right_arm","left_leg","right_leg"}) do
                     local limb=plan.diagnostics.limbs[name]
                     check(rest_plan.diagnostics.limbs[name].reaches,"the "..name.." reaches its part on the bike at rest")
-                    check(limb.reaches or math.abs(steer)>.1 and limb.requested-limb.limit<.01,
+                    check(limb.reaches or math.abs(steer)>.1 and name:find("_arm")~=nil and limb.requested-limb.limit<.01,
                         string.format("the %s reaches its drawn part: %.4f of %.4f",name,limb.requested,limb.limit))
                     if limb.reaches then reached+=1 end
                 end
             end
         end
-        check(reached>=83,"all but one limb in 84 reach: "..reached)
+        check(reached>=165,"all but three limbs in 168 reach: "..reached)
         -- The Poser composes a shifted bike in full: its memo is only for a bike drawn on its body.
         local poser=MP.new({skater={pose=function(_,weight)
             if weight==MP.PROBE_WEIGHT then error("place has a position, a rotation or both",0) end
@@ -381,10 +411,10 @@ function Tests.run()
         local still=MP.compose({bike={root=root,rotation=q},articulation={crank_phase=.4}})
         check(near(M.sub(local_point(full.targets.grips[1]),local_point(still.targets.grips[1])),{0,0,-.08},1e-12),
             "a shift moves the bars along the bike's forward")
-        -- As with a lift, the pelvis follows .75 of the bars and the saddle all of it.
-        check(math.abs(local_point(full.targets.hips)[3]-local_point(still.targets.hips)[3]+.06)<1e-9,"the hips go .75 of a shift")
-        check(math.abs(full.diagnostics.hip_seat[3]-still.diagnostics.hip_seat[3]-.02)<1e-9,
-            "and sit the other quarter forward on a saddle drawn shifted with the bike")
+        -- Unlike a pitch or a lift, the pelvis follows all of a shift, as the saddle does.
+        check(math.abs(local_point(full.targets.hips)[3]-local_point(still.targets.hips)[3]+.08)<1e-9,"the hips go all of a shift")
+        check(near(full.diagnostics.hip_seat,still.diagnostics.hip_seat,1e-9),
+            "and sit on a saddle drawn shifted with them where they sit on one that is not")
         check(Visual.neutral().movement_bike_shift==0,"the neutral pose has no shift")
         local wild=Visual.neutral();wild.movement_bike_shift=.3
         check(not Visual.valid_pose(wild) and MP.compose({bike={root=root,rotation=q},

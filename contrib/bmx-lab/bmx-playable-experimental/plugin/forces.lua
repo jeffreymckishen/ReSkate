@@ -106,7 +106,7 @@ end
 function F.proposed_body() return {mass=106,inertia_body={26,32,10},orientation={0,0,0,1},center_of_mass={0,0,0},linear_velocity={0,0,0},angular_velocity={0,0,0}} end
 function F.proposed_wheels() return {{radius=F.wheel_radius,inertia=.23,angular_speed=0},{radius=F.wheel_radius,inertia=.23,angular_speed=0}} end
 function F.controls(overrides)
-    local c={enabled=true,pedal=0,brake=0,steer=0,manual=0,nose_manual=0,air_yaw=0,hop_strength=0,hop_event_id=0,
+    local c={enabled=true,pedal=0,brake=0,steer=0,manual=0,nose_manual=0,manual_held=false,air_yaw=0,hop_strength=0,hop_event_id=0,
         recovery_step_verified=false,rotation_reserved=false,pump_operator_available=false,pump_inhibited=false,ground_pump=0,
         contact_compliance_available=false,landing_contact_compliance_selected=false}
     for key,value in overrides or {} do assert(c[key]~=nil,"unknown force control") c[key]=value end return c
@@ -246,7 +246,7 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
         not M.valid_wheel(wheels[1]) or not M.valid_wheel(wheels[2]) then return out end
     for _,name in {"pedal","brake","steer","manual","nose_manual","air_yaw","hop_strength","ground_pump"} do if not M.finite(c[name]) then return out end end
     for _,name in {"enabled","recovery_step_verified","rotation_reserved","pump_operator_available","pump_inhibited",
-        "contact_compliance_available","landing_contact_compliance_selected"} do if type(c[name])~="boolean" then return out end end
+        "contact_compliance_available","landing_contact_compliance_selected","manual_held"} do if type(c[name])~="boolean" then return out end end
     if not M.finite(c.hop_event_id) or c.hop_event_id<0 or c.hop_event_id%1~=0 or c.hop_event_id>9007199254740991 then return out end
     if c.contact_compliance_available~=c.landing_contact_compliance_selected then out.issue="unsupported_policy" return out end
     local landing_selected=c.contact_compliance_available and c.landing_contact_compliance_selected
@@ -431,8 +431,11 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     -- A manual that slowed to a walk with the stick still in its band does not start again until the stick is let
     -- go. Up a 10 degree street grade with A held, the bike pedalled to manual_start_speed, lifted, fell below
     -- manual_min_speed in .4 s, put the front down and pedalled again: four lifts in 6 s, the cranks starting and
-    -- stopping each time. A manual ended by B is not one: let go of B with the stick held, it lifts again.
-    local slowed=prior_slowed and manual_amount>0
+    -- stopping each time. A manual ended by B is not one: let go of B with the stick held, it lifts again. The
+    -- stick is let go when it no longer holds a manual (manual_held), not on a step the manual is zero because no
+    -- wheel was on the ground: up a grade with a 2 to 5 cm bump every 3 m, each such step let the bike lift
+    -- again, 8 or 9 manuals in 20 s.
+    local slowed=prior_slowed and (manual_amount>0 or c.enabled and c.manual_held)
     local manual_engaged=false
     if rear_support and c.enabled and contacts[2].status=="hit" then
         if front_support then

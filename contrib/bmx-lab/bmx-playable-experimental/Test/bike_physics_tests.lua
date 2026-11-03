@@ -130,10 +130,11 @@ local function run(ride)
         local input={pedal=want.pedal or 0,steer=want.steer or 0,brake=want.brake or 0}
         if want.hop then hop_id+=1;input.hop_event_id=hop_id;input.hop_strength=1 end
         if want.manual then
-            -- As Mapping sends it: only while a wheel is on the ground.
+            -- As Mapping sends it: only while a wheel is on the ground, and whether the stick holds one either way.
             local grounded=false
             for i=1,2 do grounded=grounded or samples[i].contact.status=="hit" and Forces.eligible_support(body,samples[i],.005,.10) end
             input.manual=grounded and want.manual or 0
+            input.manual_held=want.manual>0
         end
         if ride.hitch and ride.hitch(step) then stage:invalidate_continuity() end
         local out,candidate=stage:preview(h,folded,wheels,forecast,input)
@@ -425,6 +426,10 @@ function T.run()
             local refused=Stage.new():preview(h,body,wheels,samples,{manual=bad})
             check(not refused.valid and refused.issue=="invalid_manual","the stage refuses a manual of "..tostring(bad))
         end
+        check(same(Stage.new():preview(h,body,wheels,samples,{manual_held=true}),Stage.new():preview(h,body,wheels,samples,{})),
+            "a stick that holds a manual sends none by itself")
+        local refused=Stage.new():preview(h,body,wheels,samples,{manual=.5,manual_held=1})
+        check(not refused.valid and refused.issue=="invalid_manual","the stage refuses a manual_held that is not true or false")
     end)
     case(function() -- A held manual: the front lifts at once, holds where the stick puts it on the rear wheel alone, coasts, and touches down again.
         -- The low end of the band, the middle and the top: 20 degrees, 28.2, and 36.4 just past the balance at 33.1.
@@ -733,6 +738,29 @@ function T.run()
             check(ride.refused==0 and lifts==1,what..": the front lifts once in 10 s: "..lifts)
             check(switches<=3,what..": the cranks stop and start "..switches.." times")
             check(last==true,what..": and the rider is pedalling up the hill at the end")
+        end
+    end)
+    case(function() -- Up a bumpy street grade with A and the stick held from a stop: still one manual.
+        -- Mapping sends no manual on a step with neither wheel on the ground, and the manual that slowed to a walk took
+        -- that zero for the stick let go: over a 2 to 5 cm bump every 3 m the bike went into 8 or 9 manuals in 20 s.
+        local function bumpy(grade,height)
+            local function s(z) return z<2 and -1 or ((z-2)%3)/.5 end
+            return {height=function(x,z) local u=s(z) return z*grade+((u>=0 and u<1) and height*.5*(1-math.cos(2*math.pi*u)) or 0) end,
+                grad=function(x,z) local u=s(z) return 0,grade+((u>=0 and u<1) and height*math.pi*math.sin(2*math.pi*u)/.5 or 0) end}
+        end
+        for _,row in ipairs({{grade=.08,height=.02},{grade=.1,height=.035},{grade=.176,height=.05}}) do
+            local starts,manual,air=0,false,0
+            local ride=run({steps=1200,ground=bumpy(row.grade,row.height),controls=function() return {pedal=1,manual=.5} end,
+                each=function(step,body,out,wheels,samples)
+                    if out.manual_active and not manual then starts+=1 end
+                    manual=out.manual_active
+                    local grounded=false
+                    for i=1,2 do grounded=grounded or samples[i].contact.status=="hit" and Forces.eligible_support(body,samples[i],.005,.10) end
+                    if not grounded then air+=1 end
+                end})
+            local what=string.format("up %.1f%% over %.1f cm bumps",row.grade*100,row.height*100)
+            check(ride.refused==0 and air>0,what..": the bumps take both wheels off the ground on "..air.." steps")
+            check(starts==1,what..": one manual in 20 s with the stick held: "..starts)
         end
     end)
     case(function() -- A manual that slowed to a walk starts again once the stick has been let go; one B put down, once B is.

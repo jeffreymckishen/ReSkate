@@ -70,7 +70,7 @@ end
 function Input.actions()
     return {
         active = false, hop_pressed = false, steer = 0, front_weight = 0, rear_weight = 0,
-        pedal = 0, brake = 0, preload = 0, hop_strength = 0, manual = 0, nose_manual = 0,
+        pedal = 0, brake = 0, preload = 0, hop_strength = 0, manual = 0, nose_manual = 0, manual_held = false,
         handlebar = "none", tailwhip = "none", air_pitch = 0, movement = catalog.none,
     }
 end
@@ -344,6 +344,9 @@ local function update(self, source, context, seconds, allow_zero)
         self:_air_trick(rear, raw, out)
         self:_air_pitch(front, out)
     end
+    -- Whether the stick still holds a manual, on the ground or off it, for the kernel's walk latch: the manual itself
+    -- is zero on a step's lost support, and the stick has not been let go.
+    out.manual_held = self._manual_held
     return out
 end
 

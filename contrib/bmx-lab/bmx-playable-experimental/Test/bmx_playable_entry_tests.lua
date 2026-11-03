@@ -366,9 +366,11 @@ function Tests.run()
         local late=prepared();late.now+=14900;late.latest=cleaned();late.tick(3)
         check(late.placements==0 and late.toggles==1 and late.entry:status().phase=="returning",
             "a Return too late to place the rider goes back to the board where they stand")
+        -- Nothing was placed and the switch reached the board, so the Return finishes there rather than stopping.
         local slow=prepared();slow.latest=cleaned();slow.tick();slow.now+=14900;stock_done(slow);slow.tick()
-        check(slow.placements==0 and slow.toggles==1 and slow.entry:status().phase=="blocked",
-            "time spent obtaining stock ACK is charged to original20s; no late placement")
+        check(slow.placements==0 and slow.toggles==1 and slow.entry:status().phase=="skateboard"
+            and slow.entry:status().return_position==nil,
+            "time spent obtaining stock ACK is charged to original20s; no late placement, the rider stays on the board")
         local lost=after_stock();lost.now+=20001;lost.tick()
         check(lost.placements==1 and lost.toggles==1 and lost.entry:status().phase=="blocked",
             "missing poststock convergence by original deadline stays failed")

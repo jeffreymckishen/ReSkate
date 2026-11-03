@@ -38,6 +38,45 @@ end
 local function until_refused(w)
     for _=1,1500 do w.tick();local p=w.entry:status().phase;if p=="blocked" or p=="preflight_refused" then break end end
 end
+-- Flat still ground under the bike for an explicit Return to measure, and a rider that goes where it is placed.
+local function measured(w)
+    local P=w.R.world.physics
+    local base=P.probe_batch
+    P.probe_batch=function(body,epoch,rays,settings)
+        if #rays~=4 then return base(body,epoch,rays,settings) end
+        local from=rays[1].from
+        local batch={status="available",epoch=epoch,native_casts=4,budget_exhausted=false,local_actor_excluded=false,
+            owned_bodies_excluded=true,requested_query_preset="camera",named_actor_categories_absent=true,rays={}}
+        batch.rays[1]={status="hit",fraction=.5/3.5,position=vector.create(from.x,from.y-.5,from.z),normal_available=true,
+            normal=vector.create(0,1,0),motion="measured",surface_velocity_available=true,surface_velocity=vector.create(0,0,0)}
+        for i=2,4 do batch.rays[i]={status="clear"} end
+        return batch
+    end
+    local position,heading=vector.create(0,.5,0),0
+    w.placed=0
+    w.R.skater.teleport=function(p,h) position,heading=p,h;w.placed+=1;return true end
+    w.R.skater.get=function() return {airborne=w.airborne,position=position,heading=heading} end
+end
+-- An explicit Return with a control held: from the Return until `before` ms later, and again from when its switch
+-- arms until `after` ms later. As in the SDK, a press asked for while the controller is held is never published.
+local function held_return(before,after)
+    local w=start({real_ride=true});measured(w)
+    local accepted=w.entry:return_to_skateboard()
+    w.plan=accepted and w.entry:status().return_position~=nil
+    local from=w.now
+    w.pad.buttons.rb=before>0
+    w.on_tick=function()
+        local armed=w.T and w.T.gear_requested==true
+        if armed and not w.armed_at then w.armed_at=w.now end
+        if not w.armed_at and w.now-from>=before then w.pad.buttons.rb=false end
+        if not w.held_at and armed and w.entry:status().phase=="returning" then w.held_at=w.now;w.pad.buttons.rb=after>0
+        elseif w.held_at and not w.let_go_at and w.now-w.held_at>=after then w.let_go_at=w.now;w.pad.buttons.rb=false end
+    end
+    w.on_pulse=function(p) if w.pad.buttons.rb then p.mode="held" end end
+    for _=1,4000 do w.tick();local p=w.entry:status().phase;if p=="skateboard" or p=="blocked" then break end end
+    w.on_tick=nil;w.on_pulse=nil
+    return w
+end
 function T.run()
     local n,cases=0,0
     local function check(v,why) n+=1;assert(v,why) end
@@ -124,6 +163,42 @@ function T.run()
             "the switch asks for no Y while the control is held, and asks 600 ms after it is let go")
         check(w.pulse_n==2 and riding(w,1),"that one press reaches the board, and the ride goes on")
         check(second and #arms==2 and second.at-arms[2]<=650,"the step-off's switch, the pad at rest, still goes 600 ms after it is armed")
+    end)
+    case(function() -- An explicit Return: let go as it arms its switch about 3 s after the stop, then held 10 s more.
+        -- The Y waits for the controller at rest, so the switch matched its target with less of the measured placement's
+        -- 20 s left than one queued placement needs, the rider already on the board.
+        local w=held_return(3000,10000)
+        local stop,s=w.stop_seen_at,w.entry:status()
+        check(w.plan and math.abs(w.armed_at-stop-3000)<=250,"the Return measured a placement and armed about 3 s after the stop")
+        check(w.pulse_n==1 and w.pulses[1].at>=w.let_go_at+600 and w.now-stop>=20000-5100,
+            "one Y, once the control was let go, finishing with too little of the window left to place the rider")
+        check(s.phase=="skateboard" and w.stock==100 and w.placed==0 and s.return_position==nil,
+            "the Return ends on the board where the rider stands: "..tostring(s.detail))
+        check(player_remounts(w),"and the next Mount rides")
+    end)
+    case(function() -- The same Return let go after 6 s: its placement still fits the window and still runs.
+        local w=held_return(3000,6000)
+        local s=w.entry:status()
+        check(w.plan and w.pulse_n==1 and w.pulses[1].at>=w.let_go_at+600,"one Y, once the control was let go")
+        check(s.phase=="skateboard" and w.placed==1 and s.return_position and s.return_position.observed==true,
+            "the rider is placed once and seen there: "..tostring(s.detail))
+        check(player_remounts(w),"and the next Mount rides")
+    end)
+    case(function() -- A control held from an explicit Return until 12 s later, so its switch arms late and the Y with it.
+        local w=held_return(12000,0)
+        local s=w.entry:status()
+        check(w.plan and w.armed_at-w.stop_seen_at>=11900 and w.pulse_n==1,"the switch arms once the control is let go")
+        check(s.phase=="skateboard" and w.stock==100 and w.placed==0,"the Return ends on the board: "..tostring(s.detail))
+    end)
+    case(function() -- 12 s in the pause menu right after an explicit Return, when no Y may be sent.
+        local w=start({real_ride=true});measured(w)
+        check(w.entry:return_to_skateboard() and w.entry:status().return_position~=nil,"the Return measured a placement")
+        local from=w.now;w.game_menu=true
+        w.on_tick=function() if w.now-from>=12000 then w.game_menu=false end end
+        for _=1,4000 do w.tick();local p=w.entry:status().phase;if p=="skateboard" or p=="blocked" then break end end
+        w.on_tick=nil
+        local s=w.entry:status()
+        check(s.phase=="skateboard" and w.stock==100 and w.placed==0,"the Return ends on the board: "..tostring(s.detail))
     end)
     case(function() -- The SDK's Try-lock refuses the Follow ACK once.
         local w=Chain.new()

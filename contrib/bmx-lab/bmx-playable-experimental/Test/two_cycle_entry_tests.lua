@@ -660,6 +660,39 @@ function Tests.run()
         switch_ended(p);check(p.entry:status().phase=="blocked" and p.placements==1 and p.toggles==1,
             "once placed, a later failed report never drops the placement or presses again")
     end)
+    case("a switch that matches its target too late to place the rider still reaches the skateboard",function()
+        -- One queued placement needs 5.1 s of the 20 s after the stop. A Y that waited for a held controller, or for
+        -- the game to be in front, can match its target with less left. Nothing has been placed then, and the rider
+        -- is on the board, so the Return finishes there instead of stopping.
+        local function matched(e) e.outcome="target_observed";e.qualified_transition=true;e.current_transition=true end
+        for _,left in {5100,2000,0,-3000} do
+            local f=fixture({two=true});f.riding();local stop=f.now;measured_return(f);f.stock=100
+            f.now=stop+20000-left-16;switch_ended(f,matched)
+            local s=f.entry:status()
+            check(s.phase=="skateboard" and f.placements==0 and f.toggles==1 and s.return_position==nil,
+                left.." ms of the window left ends on the board with nothing placed: "..tostring(s.detail))
+        end
+        -- 16 ms more than one placement needs still places the rider, as before.
+        local g=fixture({two=true});g.riding();local stop=g.now;measured_return(g);g.stock=100
+        g.now=stop+20000-5116-16;switch_ended(g,matched)
+        check(g.placements==1 and g.entry:status().return_position.attempted,"a placement that fits is still made")
+        g.tick(30);check(g.entry:status().phase=="skateboard" and g.entry:status().return_position.observed,"and seen there")
+        -- The window can also close during the reads before the placement, after its first clock read passed.
+        local r=fixture({two=true});r.riding();stop=r.now;measured_return(r);r.stock=100
+        local read,lag=r.R.skater.telemetry,nil
+        function r.R.skater.telemetry() if lag then r.now+=lag;lag=nil end;return read() end
+        r.now=stop+20000-5300-16;lag=300;switch_ended(r,matched)
+        check(r.entry:status().phase=="skateboard" and r.placements==0 and r.now==stop+20000-5000,
+            "a window that closes during the reads places nothing and ends on the board")
+        -- Once the rider has been placed the window still holds: a placement not seen in time stops the Return.
+        local h=fixture({two=true});h.riding();stop=h.now;measured_return(h);h.stock=100
+        h.position=vector.create(3,.5,0)
+        h.now=stop+20000-6000-16;switch_ended(h,matched)
+        check(h.placements==1 and h.entry:status().phase=="returning","placed with time to spare, not yet seen there")
+        h.now=stop+20000-16;h.tick()
+        check(h.entry:status().phase=="blocked" and h.placements==1 and h.toggles==1,
+            "a placement the window ran out on still stops the Return")
+    end)
     case("time out of the game does not run out a Return waiting to press the switch",function()
         -- The user's log of 2026-11-02: a ride ended by focus loss at 19:33:32 went back on its own, and that Return
         -- gave up at 19:34:17, its 45 s spent in another window, a second before the game was in front again.

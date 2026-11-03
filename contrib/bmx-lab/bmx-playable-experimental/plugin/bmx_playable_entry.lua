@@ -367,6 +367,13 @@ function Entry.new(R,Runtime,Survey,options)
         if not return_plan then return true end
         local function live() return generation==version and not cancelled and not unloaded and return_pending end
         local now=clock();if not live() then return false,"cancelled" end
+        -- Reserve the existing native5s queue lifetime plus100ms observed
+        -- convergence INSIDE the original stop+20s window, never after it.
+        -- A switch whose Y waited for a held controller, or for the game to be in front, can match its target with
+        -- less than that left. Nothing has been placed, so the caller goes on without the placement ("unplaced").
+        if not return_position.attempted and (not now or now<return_plan.stop_ms or now+5100>=return_plan.expires_ms) then
+            return false,"unplaced"
+        end
         if not now or now<return_plan.stop_ms or now>=return_plan.expires_ms then return false,"Return position deadline expired; final Return blocked" end
         if not environment(false) or not live() then return false,"Return position context lost" end
         if return_position.last_poll and now-return_position.last_poll<50 then return false,"pending" end
@@ -377,9 +384,6 @@ function Entry.new(R,Runtime,Survey,options)
             or not plain(level[2]) or level[2].name~=return_plan.level then return false,"Return permission or level changed" end
 
         if not return_position.attempted then
-            -- Reserve the existing native5s queue lifetime plus100ms observed
-            -- convergence INSIDE the original stop+20s window, never after it.
-            if now+5100>=return_plan.expires_ms then return false,"Too little original cleanup time for one queued Return" end
             local p=return_plan.ground
             -- This location came from the live epoch-bound qualified batch,
             -- not a post-park or unclassified ray and not a static-world pin.
@@ -389,7 +393,8 @@ function Entry.new(R,Runtime,Survey,options)
                 or not plain(w.watch) or w.watch.valid~=true or w.watch.state~=100 or w.watch.ragdoll_known~=true
                 or w.watch.ragdoll~=false or w.watch.wipeouts~=return_plan.wipeouts then return false,"Fresh grounded-stock Return context unavailable" end
             now=clock();if not live() then return false,"cancelled" end
-            if not now or now+5100>=return_plan.expires_ms then return false,"Return queue no longer fits original deadline" end
+            -- The reads above take time too; a window that closed during them is the same as one closed before.
+            if not now or now+5100>=return_plan.expires_ms then return false,"unplaced" end
             return_position.attempted=true;return_position.unknown=true -- burn before callback; never retry
             return_position.target=table.freeze({p[1],p[2]+return_plan.actor_floor_clearance_m,p[3]})
             return_position.sent_ms=now
@@ -512,7 +517,13 @@ function Entry.new(R,Runtime,Survey,options)
                 end
                 local ready,why=handback_step(version)
                 if generation~=version or cancelled or unloaded then return end
-                if not ready then
+                if not ready and why=="unplaced" then
+                    -- The switch matched its target, so the rider is on the board, but too late to place them. The
+                    -- Return goes on as one that measured no position: the rider stays where the switch left them and
+                    -- the ordinary path below finishes on the skateboard.
+                    trace("Return placement skipped: the stock switch finished too late in its 20 s window.")
+                    return_plan,return_position=nil,nil
+                elseif not ready then
                     if why~="pending" then
                         return_position.phase="blocked";return_position.reason=why
                         return_position.unknown=return_position.unknown or return_position.queued and not return_position.observed

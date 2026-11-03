@@ -20,6 +20,10 @@ local function harness(ground)
     local w={serial=1000,time=1,submits={},requested={},samples={},ground=ground}
     local api={}
     function api.probe_batch(got,plan)
+        if w.unreadable and #plan==4 then
+            return {status="unavailable",reason="contact_measurement_unavailable",epoch=got,native_casts=#plan,budget_exhausted=false,
+                local_actor_excluded=false,owned_bodies_excluded=true,requested_query_preset="camera",named_actor_categories_absent=false}
+        end
         local rays={}
         for i,ray in ipairs(plan) do rays[i]=w.ground(ray.from,ray.to,#plan,i) end
         return {status="available",epoch=got,native_casts=#plan,budget_exhausted=false,local_actor_excluded=false,
@@ -33,10 +37,11 @@ local function harness(ground)
         return true,nil,tostring(sequence)
     end
     -- Queued until its serial has passed, then applied with the sample two steps on, as the SDK reports it.
+    -- w.prompt answers on the next serial instead, as the game did in every ride step measured.
     function api.receipt(got)
         local requested=w.requested[got]
         local at=tonumber(requested)
-        if w.serial<=at+1 then
+        if w.serial<=at+(w.prompt and 0 or 1) then
             return {sequence=got,requested_serial=requested,produced_serial="0",outcome="queued",force_attempted=false,
                 torque_attempted=false,retained=false,quarantined=false,cleanup_disposition="none"}
         end
@@ -76,6 +81,23 @@ end
 local function flat(from,to) return hit(from,to,0,{0,1,0}) end
 local function clear() return {status="clear"} end
 local function level() return {position={0,R+Geometry.com[2]-Geometry.rear_axle[2],0},rotation={0,0,0,1}} end
+-- A face across the road at z, facing back along -z unless told otherwise, met only by rays running along z: the rays
+-- ahead of the bike. Everything else lands on flat ground.
+local function face(z,normal,min_x)
+    normal=normal or {0,0,-1}
+    return function(from,to)
+        if math.abs(to.z-from.z)>math.abs(to.x-from.x) and math.abs(to.z-from.z)>4*math.abs(to.y-from.y) then
+            local f=(z-from.z)/(to.z-from.z)
+            if f<0 or f>1 or min_x and from.x+(to.x-from.x)*f<min_x then return clear() end
+            return {status="hit",position=vector.create(from.x+(to.x-from.x)*f,from.y,z),fraction=f,
+                normal=vector.create(normal[1],normal[2],normal[3]),surface_velocity=vector.create(0,0,0),
+                normal_available=true,surface_velocity_available=true,motion="measured"}
+        end
+        return flat(from,to)
+    end
+end
+-- The front of the front tyre of a level bike whose centre of mass is at z = 0.
+local NOSE=Geometry.front_axle[3]+R-Geometry.com[3]
 function T.run()
     local n,cases=0,0
     local function check(ok,why) n+=1;assert(ok,why) end
@@ -233,6 +255,175 @@ function T.run()
         pose.position={0,pose.position[2]-.09,0}
         pose.velocity={0,-5,0}
         check(not w.step(pose).stop_requested and #w.submits==1,"a hard landing is held, not refused")
+    end)
+    local function pushed(w) return w.submits[#w.submits].force.z end
+    -- Rides a level bike at a face, its pushes moving it: a command acts on the sample two steps after the one it
+    -- was sent on, as the transport reports it. Returns the harness, the stop if any, how far the tyre got past the
+    -- face at most, and the speed it ends on.
+    local function ride_in(speed,gap,count,pedal)
+        local w=harness(face(NOSE+gap),pedal)
+        w.prompt=true
+        local pose=level();pose.velocity={0,0,speed}
+        local sent,deepest,track={},-gap,{}
+        for i=1,count do
+            if sent[i-2] then pose.velocity[3]+=sent[i-2]*h/Geometry.mass end
+            pose.position[3]+=pose.velocity[3]*h
+            deepest=math.max(deepest,pose.position[3]-gap)
+            track[i]={pose.position[3]-gap,pose.velocity[3]}
+            local before=#w.submits
+            local at,out=steps(w,pose,1)
+            if at then return w,out,deepest,pose.velocity[3],track end
+            sent[i]=#w.submits>before and w.submits[#w.submits].force.z or 0
+        end
+        return w,nil,deepest,pose.velocity[3],track
+    end
+    for _,speed in ipairs({.6,1,3}) do
+        case(function() -- Nosed in below a hit: stopped at the face, a small bounce back, and the ride goes on.
+            local _,stopped,deepest,ends=ride_in(speed,.5,240)
+            check(stopped==nil,"a bump at "..speed.." m/s is not a crash: "..tostring(stopped and stopped.issue))
+            check(deepest<=.03,"the tyre stops at the face at "..speed.." m/s: "..deepest)
+            check(ends>-.35*speed,"and does not bounce off harder than it came in: "..ends)
+        end)
+    end
+    case(function() -- Braked no earlier than the stop needs: half a metre out, a bike at 7.6 m/s still has most of its speed.
+        local _,_,_,_,track=ride_in(7.6,3,200)
+        local at
+        for _,row in ipairs(track) do if row[1]>=-.5 then at=row[2] break end end
+        check(at and at>6,"half a metre from the car it is still going: "..tostring(at))
+    end)
+    case(function() -- A look the lane could not read loses nothing: the crash already coming still comes.
+        local w=harness(face(NOSE+.6))
+        w.prompt=true
+        local pose=level();pose.velocity={0,0,7.4}
+        check(steps(w,pose,3)==nil,"braking for the car")
+        -- Braked below a hit's speed while the looks go unread, no faster than a hit takes it off (HIT_DROP).
+        w.unreadable=true
+        pose.velocity={0,0,5.5}
+        check(steps(w,pose,1)==nil,"one look unread")
+        pose.velocity={0,0,3.7}
+        check(steps(w,pose,1)==nil,"and another")
+        w.unreadable=false
+        local near=level();near.position[3]=.5;near.velocity={0,0,3.7}
+        local at,out=steps(w,near,80)
+        check(at and out.issue=="hit something at 7.4 m/s","the crash comes at the bumper: "..tostring(out and out.issue))
+    end)
+    case(function() -- Going over the bars, the bike is stopped where it is at the car, not slid along its face, and only near it.
+        local w=harness(face(NOSE+.1,M.unit({-.7,0,-.7})))
+        w.prompt=true
+        local pose=level();pose.velocity={0,0,7.4}
+        check(steps(w,pose,1)==nil,"the crash begins at the corner")
+        pose.rotation=pitch_of(-math.rad(40));pose.velocity={0,0,2}
+        check(steps(w,pose,1)==nil,"going over")
+        local f=w.submits[#w.submits].force
+        check(f.z<-4000 and f.x>-1500,"held where it is, not pushed along the corner: "..f.x.." "..f.z)
+        local away=level();away.position[3]=-5;away.velocity={0,0,2}
+        away.rotation=pitch_of(-math.rad(40))
+        check(steps(w,away,1)==nil and w.submits[#w.submits].force.z>-2500,"five metres off, the car holds nothing: "..w.submits[#w.submits].force.z)
+    end)
+    case(function() -- A tight quarter pipe met from flat: the low ray finds the ramp first, so the steep face above is the same curve.
+        local function quarter(ahead_of)
+            local w=harness(function(from,to,count,i)
+                if math.abs(to.z-from.z)>4*math.abs(to.y-from.y) and math.abs(to.z-from.z)>math.abs(to.x-from.x) then
+                    if from.y<.3 then return face(NOSE+.2,M.unit({0,.7,-.71}))(from,to) end
+                    return ahead_of(from,to)
+                end
+                return flat(from,to)
+            end)
+            local pose=level();pose.velocity={0,0,7}
+            check(steps(w,pose,20)==nil,"the bike rides at it")
+            return pushed(w)
+        end
+        local walled,open=quarter(face(NOSE+.6,M.unit({0,.17,-.98}))),quarter(flat)
+        check(math.abs(walled-open)<500,"a quarter pipe ahead of the tyre is not a wall: "..walled.." against "..open)
+    end)
+    case(function() -- A car met at an angle: the gap is from the tyre, square to the car, not from where the travel points.
+        local function angled(ground)
+            local w=harness(ground)
+            local pose=level();pose.velocity={4,0,7}
+            check(steps(w,pose,20)==nil,"the bike rides at it")
+            return pushed(w)
+        end
+        local walled,open=angled(face(NOSE+.6)),angled(flat)
+        check(walled-open<-4500,"braked for the car the tyre is about to reach: "..walled.." against "..open)
+    end)
+    case(function() -- A corner only a bar end will meet is still met.
+        local w=harness(face(.36-Geometry.com[3]+.1,nil,.2))
+        local pose=level();pose.velocity={0,0,3}
+        check(steps(w,pose,1)==nil and pushed(w)<-1000,"the bar end's lane stops the bike: "..pushed(w))
+    end)
+    case(function() -- A parked car at 7.4 m/s: braked hard, over the bars at the bumper, and held there.
+        local _,stopped,deepest=ride_in(7.4,3,200)
+        check(stopped and stopped.issue:match("^hit something at [67]%.%d m/s$"),"it is a crash: "..tostring(stopped and stopped.issue))
+        check(deepest<=.1,"and the bike does not go on into the car: "..deepest)
+    end)
+    case(function() -- A car at 7.4 m/s within sight but not yet needing a stop asks nothing.
+        local w=harness(face(NOSE+1.2))
+        local pose=level();pose.velocity={0,0,7.4}
+        check(steps(w,pose,20)==nil and math.abs(pushed(w))<500,"nothing before it is needed: "..pushed(w))
+    end)
+    case(function() -- Braking for a car and then hopping or steering off it before the bumper is no crash.
+        local w=harness(face(NOSE+.6))
+        local pose=level();pose.velocity={0,0,7.4}
+        check(steps(w,pose,3)==nil and pushed(w)<-3000,"the bike brakes for the car")
+        w.ground=flat
+        check(steps(w,pose,90)==nil,"and once the car is no longer ahead the ride goes on")
+    end)
+    case(function() -- Going over the bars tips the rays off the car: the face it hit still holds the bike.
+        local w=harness(face(NOSE+.1))
+        local pose=level();pose.velocity={0,0,7.4}
+        check(steps(w,pose,1)==nil,"the crash begins at the bumper")
+        pose.rotation=pitch_of(-math.rad(40))
+        check(steps(w,pose,3)==nil and pushed(w)<-3000,"pitched over, it is still held off the car: "..pushed(w))
+    end)
+    case(function() -- A car met at an angle is pushed off along its own face.
+        local w=harness(face(NOSE+.2,M.unit({-.5,0,-.87})))
+        local pose=level();pose.velocity={0,0,5}
+        check(steps(w,pose,1)==nil and w.submits[#w.submits].force.x<-1000,"the push follows the face")
+    end)
+    case(function() -- Pedalling into a car it is against does not drive it on.
+        local w=harness(face(NOSE+.02))
+        local pose=level();pose.velocity={0,0,.1}
+        check(steps(w,pose,3)==nil,"a bike against a car is ridden")
+        w.press_a()
+        check(steps(w,pose,6)==nil and pushed(w)<50,"pedalling stops at the bumper: "..pushed(w))
+        local free=harness(flat)
+        check(steps(free,pose,3)==nil,"the same bike on open ground")
+        free.press_a()
+        check(steps(free,pose,6)==nil and pushed(free)>100,"is driven by A: "..pushed(free))
+    end)
+    case(function() -- A ramp or a bank across the way is ridden up, not stopped at, even met fast and close.
+        local w=harness(face(NOSE+.02,M.unit({0,.8,-.6})))
+        local pose=level();pose.velocity={0,0,7}
+        check(steps(w,pose,20)==nil and math.abs(pushed(w))<500,"a face this far from steep is a ramp: "..pushed(w))
+    end)
+    case(function() -- Up a tight quarter pipe the front wheel is already on: what is ahead is the same curve, steep only to the bike.
+        local under=M.unit({0,.64,-.77})
+        local function climbing(ahead)
+            local w=harness(function(from,to,count,i)
+                if count==2 and i==1 then return hit(from,to,0,under) end
+                return ahead(from,to)
+            end)
+            local pose=level();pose.velocity={0,0,5}
+            check(steps(w,pose,20)==nil,"the bike rides up it")
+            return pushed(w)
+        end
+        local walled,open=climbing(face(NOSE+.1,M.unit({0,.34,-.94}))),climbing(flat)
+        check(math.abs(walled-open)<500,"a face the front wheel is climbing is not a wall: "..walled.." against "..open)
+    end)
+    case(function() -- Already a little into a face at walking pace: pushed back out, by about a quarter of the way it came in.
+        local w=harness(face(NOSE-.02))
+        local pose=level();pose.velocity={0,0,.5}
+        check(steps(w,pose,6)==nil and pushed(w)<-3000 and pushed(w)>-4800,"a soft bounce: "..pushed(w))
+    end)
+    case(function() -- A wall met at a glance is ridden along.
+        local w=harness(face(NOSE+.05,M.unit({.97,0,-.24})))
+        local pose=level();pose.velocity={0,0,7}
+        check(steps(w,pose,20)==nil and math.abs(pushed(w))<500,"a glancing wall is not stopped at: "..pushed(w))
+    end)
+    case(function() -- Riding away from the car it just stopped at: nothing holds the bike back.
+        local w=harness(face(NOSE+.05))
+        local pose=level();pose.velocity={0,0,-1}
+        check(steps(w,pose,20)==nil and math.abs(pushed(w))<500,"rolling back from a face is let go: "..pushed(w))
     end)
     return {cases=cases,assertions=n,native_authority=false,constructed=true}
 end

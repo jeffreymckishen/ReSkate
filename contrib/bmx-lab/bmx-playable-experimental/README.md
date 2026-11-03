@@ -43,7 +43,7 @@ offline the game does not keep it, so set it again each launch.
   seconds, which spends a mount. On the last mount of a launch it goes back to the skateboard instead. Banks and
   quarter pipes do not count as going over. If there is no room to get back on, move and mount again.
 - A slower bump into something just stops the bike, and it has no reverse. If it is stuck, go back to the skateboard.
-- The bike rolls through parked cars. The rider does not, which counts as a crash.
+- Riding into a parked car stops the bike at the bumper. Faster than about 4 m/s it is a crash, over the bars.
 - Mounting refuses ground steeper than 12 degrees and anywhere without room for the bike.
 - The score panel is the mod's own, and its numbers are not yet tuned against the game's scoring.
 

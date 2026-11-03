@@ -48,6 +48,27 @@ local HIT_DROP, HIT_STEPS = 4, 2
 -- stood up beside the pillar.
 local CRASH_RATE, CRASH_RATE_LIMIT, CRASH_TORQUE = .5, 4, 1900
 local CRASH_TILT_DEG, CRASH_STEPS = 75, 60
+-- What the bike's own body rolls through and the rider does not: a parked car. Ridden into one at 7.6 m/s, the
+-- rider stopped dead at the bumper and the bike went on 3.9 m through it. Rays ahead along the travel, at the
+-- rider's knees and either side of them, on the wheels' own lane, saw the car's front from 6 m out. Each lane is
+-- across, height, and how far the bike reaches in it from its origin: the front tyre in the middle, the bar ends
+-- either side. A ray starts this far behind that, so a face pressed against the bike is still seen.
+local AHEAD_RAYS = {{0,.5,.73},{-.28,.5,.36},{.28,.5,.36}}
+local AHEAD_BEHIND, AHEAD_MIN, AHEAD_MAX = .13, 1, 6
+-- A face is steep against the bike's own up and against the ground under the front wheel, and it faces the bike
+-- more than this: a wall met at a glance is ridden along. A ray low along the road in front of the tyre finds a
+-- ramp or a tight quarter pipe the bike will roll onto before it reaches what the high rays see, and then they
+-- see the same curve further up, not a wall.
+local AHEAD_FACE_UP, AHEAD_FACING = .5, .25
+local AHEAD_LOW = {0,.15,.73}
+-- The stop is the landing law turned sideways, on the forecast this step's command acts on: closing speed is let
+-- through down to what this deceleration can still take out before the face, on at most this force. At a face it
+-- bounces back this share of the speed, so the bike can steer away, and pedalling stops within the pedal gap.
+-- Closing as fast as a hit (HIT_DROP) when the braking starts is a crash once the front reaches the face, as a
+-- wall would make it; a hop or a turn that takes the rays off the face first lets the ride go on.
+local AHEAD_DECEL, AHEAD_FORCE, AHEAD_REBOUND, AHEAD_PEDAL_GAP = 45, 5400, .25, .25
+-- Going over the bars, the tyre jammed at the face stops the bike there while it is this near the face.
+local AHEAD_HOLD_REACH = 2.5
 -- Steps in a row the force model may refuse before Ride stops: a second and a half.
 local MAX_REFUSED_STEPS = 90
 local ROLL_STOP_RATE = 14
@@ -1152,7 +1173,76 @@ local function rider_tripwire(s,frame,options)
     end
     return true
 end
-local function packet(model,companions,h,crash)
+-- The nearest face ahead of a body and what it asks of it, {gap, closing, face, force}, or nil when the rays
+-- found none. Ride passes the forecast this step's command acts on, so last step's push is already in its speed.
+-- A batch the lane cannot read stops nothing, and says so: nil, "unread".
+local function ahead(s,frame,body,options,contact)
+    local q=M.normalized(body.orientation)
+    local up=M.turn(q,{0,1,0})
+    local v=body.linear_velocity
+    local along=M.sub(v,M.mul(up,M.dot(v,up)))
+    local speed=M.length(along)
+    local forward=M.turn(q,{0,0,1})
+    local heading=M.unit(M.sub(forward,M.mul(up,M.dot(forward,up))))
+    if not heading then return nil,"unread" end
+    -- Slower than this the travel is no direction: look along the bike, so a bike nosed in is still watched.
+    local travel=speed>=.3 and M.mul(along,1/speed) or heading
+    -- The lanes sit on the bike as it points, the end that leads leading, and their rays run along the travel.
+    if M.dot(heading,travel)<0 then heading=M.mul(heading,-1) end
+    local side=M.unit(M.cross(up,heading))
+    if not side then return nil,"unread" end
+    local origin=M.sub(body.center_of_mass,M.turn(q,s.geometry.com))
+    local front=contact.samples[1]
+    local under=front and front.contact.status=="hit" and M.unit(front.contact.normal) or nil
+    local h=frame.seconds
+    local reach=math.clamp(speed*(2*h+.02)+speed*speed/(2*AHEAD_DECEL)+.4,AHEAD_MIN,AHEAD_MAX)
+    local plan,parts={},{}
+    for i,ray in ipairs({AHEAD_RAYS[1],AHEAD_RAYS[2],AHEAD_RAYS[3],AHEAD_LOW}) do
+        local part=M.add(M.add(origin,M.mul(side,ray[1])),M.add(M.mul(up,ray[2]),M.mul(heading,ray[3])))
+        local from=M.sub(part,M.mul(travel,AHEAD_BEHIND))
+        local to=M.add(from,M.mul(travel,reach+AHEAD_BEHIND))
+        if not M.vec(from,100000) or not M.vec(to,100000) then return nil,"unread" end
+        parts[i],plan[i]=part,{from=native(from),to=native(to)}
+    end
+    plan=freeze(plan)
+    local probed=invoke(s,s.api.probe_batch,frame.physics_epoch,plan,options)
+    if not probed[1] or probed.n~=2 or not probed.current or s.stopped then return nil,"unread" end
+    local contacted=invoke(s,s.contact.decode,frame,plan,probed[2])
+    if not contacted[1] or contacted.n~=2 or not contacted.current or s.stopped then return nil,"unread" end
+    local decoded=contacted[2]
+    if not contact_binding(s,frame,decoded,#plan) or decoded.status~="available" then return nil,"unread" end
+    local function usable(row)
+        return row.status=="hit" and row.normal_available==true and M.vec(row.position,100000) and M.vec(row.normal,1)
+            and M.length(row.normal)>.5
+    end
+    local low,ramp=decoded.rays[4],nil
+    if usable(low) and math.abs(M.dot(M.unit(low.normal),up))>=AHEAD_FACE_UP then
+        ramp=M.dot(M.sub(low.position,parts[4]),travel)
+    end
+    local face
+    for i=1,#AHEAD_RAYS do
+        local row=decoded.rays[i]
+        if usable(row) then
+            local n=M.unit(row.normal)
+            local facing=-M.dot(n,travel)
+            -- From the part of the bike in that lane to the face, along the travel and then square to the face.
+            local reached=M.dot(M.sub(row.position,parts[i]),travel)
+            if math.abs(M.dot(n,up))<AHEAD_FACE_UP and (not under or math.abs(M.dot(n,under))<AHEAD_FACE_UP)
+                and facing>AHEAD_FACING and not (ramp and ramp<reached) then
+                local gap=reached*facing
+                if not face or gap<face.gap then face={gap=gap,normal=n,point=copy(row.position)} end
+            end
+        end
+    end
+    if not face then return nil end
+    local closing=-M.dot(v,face.normal)
+    local out={gap=face.gap,closing=closing,face=face}
+    if closing<=0 then return out end
+    local allowed=face.gap>0 and math.sqrt((AHEAD_DECEL*h)^2+2*AHEAD_DECEL*face.gap)-AHEAD_DECEL*h or -AHEAD_REBOUND*closing
+    if closing>allowed then out.force=M.mul(face.normal,math.min(body.mass*(closing-allowed)/h,AHEAD_FORCE)) end
+    return out
+end
+local function packet(model,companions,h,crash,push)
     if type(model) ~= "table" or model.valid ~= true or not M.vec(model.force) or not M.vec(model.torque)
         or not M.vec(model.hop_impulse) then return nil end
     local torque = crash and M.add(model.torque,crash) or copy(model.torque)
@@ -1166,7 +1256,7 @@ local function packet(model,companions,h,crash)
         if type(request) ~= "table" or request.kind ~= "torque" or not M.vec(request.torque,4000) then return nil end
         torque = M.add(torque,request.torque)
     end
-    local force,impulse = model.force,model.hop_impulse
+    local force,impulse = push and M.add(model.force,push) or model.force,model.hop_impulse
     if M.length(force)>40000 or M.length(torque)>4000 or M.length(impulse)>600
         or M.length(M.add(force,M.mul(impulse,1/h)))>40000 then return nil end
     local command = {force=native(force),torque=native(torque)}
@@ -1275,6 +1365,7 @@ local function observe(s,source_frame,raw,context)
     local query_options=category_lane
         and {require_contact=true,query_preset="camera",require_named_actor_categories_absent=true}
         or {require_contact=true,exclude_local_actor=true}
+    local rereads=s.wheel_rereads
     local probed=wheel_batch(s,sample.epoch,plan,query_options)
     if not probed[1] or probed.n~=2 or not probed.current or s.stopped then stop(s,"native contact batch unavailable");return end
     local contacted=invoke(s,s.contact.decode,frame,plan,probed[2])
@@ -1301,6 +1392,7 @@ local function observe(s,source_frame,raw,context)
             contact.support.actor_tripwire="authored_rider_crossings_clear_v1"
         end
     end
+    s.ahead=nil
     -- Contact diagnostics exist only after the complete wheel binding and,
     -- where required, the independent rider tripwire have passed.
     s.metrics_step.contact={serial=sample.serial,body_height=body.center_of_mass[2],
@@ -1431,12 +1523,41 @@ local function observe(s,source_frame,raw,context)
             row.contact.point=M.add(row.wheel_center,M.mul(down,(row.wheel_radius-HELD_DEPTH)/-M.dot(down,row.contact.normal)))
         end
     end
+    -- Faces ahead of the forecast. One batch more, but not on a step whose wheels already took the slow path:
+    -- a serial allows four.
+    local looked=s.wheel_rereads==rereads
+    local unread
+    if looked then s.ahead,unread=ahead(s,frame,folded[2],query_options,contact) end
+    if s.stopped then return end
+    local closing_face=s.ahead~=nil and s.ahead.closing>0
+    if s.ahead and s.ahead.force and s.ahead.closing>=HIT_DROP then s.ahead_hit=math.max(s.ahead_hit or 0,s.ahead.closing)
+    elseif looked and not unread and not closing_face then s.ahead_hit=nil end
+    if s.ahead_hit and not s.crash and closing_face and s.ahead.gap<AHEAD_PEDAL_GAP then
+        local forward=M.turn(M.normalized(body.orientation),{0,0,1})
+        s.crash={speed=s.ahead_hit,steps=0,way=M.dot(body.linear_velocity,forward)<0 and -1 or 1,face=s.ahead.face}
+    end
+    -- Going over the bars tips the rays off the face. The tyre jammed at it stops the bike there: its travel
+    -- along the ground is taken out while it is near the face, and only that, so it still falls.
+    if s.crash and s.crash.face and not (s.ahead and s.ahead.force) then
+        local b,face=folded[2],s.crash.face
+        local down=M.unit(s.force.tuning.gravity)
+        local travel=M.sub(b.linear_velocity,M.mul(down,M.dot(b.linear_velocity,down)))
+        local moving=M.length(travel)
+        if moving>.05 and math.abs(M.dot(M.sub(b.center_of_mass,face.point),face.normal))<AHEAD_HOLD_REACH then
+            s.ahead={gap=0,closing=-M.dot(b.linear_velocity,face.normal),face=face,
+                force=M.mul(travel,-math.min(b.mass/sample.seconds,AHEAD_FORCE/moving))}
+        end
+    end
+    if s.crash or closing_face and s.ahead.gap<AHEAD_PEDAL_GAP then force_controls.pedal=0 end
+    if s.metrics_step.contact and s.ahead then
+        s.metrics_step.contact.ahead_gap,s.metrics_step.contact.ahead_closing=s.ahead.gap,s.ahead.closing
+    end
     local preview=invoke(s,s.force.preview,s.force,sample.seconds,folded[2],s.wheels,folded[3],force_controls)
     local model,candidate=preview[2],preview[3]
     if not preview[1] or preview.n~=3 or not preview.current or s.stopped or type(candidate)~="table" then
         stop(s,"force preview unavailable");return
     end
-    local command=packet(model,companions,sample.seconds,s.crash and crash_torque(s,body) or nil)
+    local command=packet(model,companions,sample.seconds,s.crash and crash_torque(s,body) or nil,s.ahead and s.ahead.force)
     if not command then -- Name the ForceStage refusal and the unsent magnitudes.
         local d=type(model)=="table" and (type(model.diagnostic)=="table" and model.diagnostic or model) or {}
         local b=folded[2]

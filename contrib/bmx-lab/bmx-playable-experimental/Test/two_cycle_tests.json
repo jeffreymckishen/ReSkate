@@ -4,8 +4,8 @@
   "flat_file_count": 89,
   "quota_file_count": 90,
   "expected_processes": 47,
-  "expected_cases": 309,
-  "expected_assertions": 14997,
+  "expected_cases": 329,
+  "expected_assertions": 15041,
   "source_admission": "UNCHANGED_FALSE",
   "files": [
     {
@@ -227,14 +227,14 @@
     {
       "source": "plugin/ride_runtime.lua",
       "destination": "ride_runtime.lua",
-      "bytes": 97367,
-      "sha256": "ED06021C7E53F5BE75E935E0B34E6B5F3F1E8A18BA9BA0E975D1E51351A8F1A6",
+      "bytes": 105294,
+      "sha256": "0617E6DB10E42CB129C19E078C2D99944A83D1AF4605B9F24171ED3283F7FF12",
       "test_transform": {
         "kind": "inert_raw_ride_fixture",
         "before": "local ACTIVATION_QUALIFIED = true",
         "after": "local ACTIVATION_QUALIFIED = false",
-        "bytes": 97368,
-        "sha256": "5177CD5F7505707D42B55D48AB2AEF978F3952A434968AA29C7F7FB95275CB75"
+        "bytes": 105295,
+        "sha256": "6F7F086C859D1AE25A08193C161AAE7F33FC41B062EC8120193A1DEFC058FF23"
       }
     },
     {
@@ -390,8 +390,8 @@
     {
       "source": "plugin/ride_runtime.lua",
       "destination": "ride_runtime_qualified_fixture.lua",
-      "bytes": 97367,
-      "sha256": "ED06021C7E53F5BE75E935E0B34E6B5F3F1E8A18BA9BA0E975D1E51351A8F1A6"
+      "bytes": 105294,
+      "sha256": "0617E6DB10E42CB129C19E078C2D99944A83D1AF4605B9F24171ED3283F7FF12"
     },
     {
       "source": "Test/barspin_rider_pose_integration_tests.lua",
@@ -546,8 +546,8 @@
     {
       "source": "Test/ride_fall_tests.lua",
       "destination": "ride_fall_tests.lua",
-      "bytes": 12974,
-      "sha256": "65A4CB0C67E016149564141FC7913809AFD6770F4686C1DCFF1C2816D6FBB13B"
+      "bytes": 24413,
+      "sha256": "26466427EEC810E75451A01AB30B50C950C15124709DA83A52676CC56E6AD0D2"
     }
   ],
   "runtime_files": [
@@ -693,8 +693,8 @@
     },
     {
       "source": "plugin/ride_runtime.lua",
-      "bytes": 97367,
-      "sha256": "ED06021C7E53F5BE75E935E0B34E6B5F3F1E8A18BA9BA0E975D1E51351A8F1A6"
+      "bytes": 105294,
+      "sha256": "0617E6DB10E42CB129C19E078C2D99944A83D1AF4605B9F24171ED3283F7FF12"
     },
     {
       "source": "plugin/tire.lua",
@@ -703,8 +703,8 @@
     },
     {
       "source": "README.md",
-      "bytes": 3286,
-      "sha256": "E2A017D0F56406934ADF7E948EDC1E659F39ABC505F9C909683EA23042E1E0C8"
+      "bytes": 3314,
+      "sha256": "51AA6250E2B702A038351BD7452ACF3F1B8C11D6F9ADC98DD942BC1322C267E5"
     },
     {
       "source": "reskate-plugin.json",
@@ -1090,8 +1090,8 @@
       "suite": "ride_fall_tests",
       "invoked": "ride_fall_tests",
       "context": "flat",
-      "expected_cases": 11,
-      "expected_assertions": 81
+      "expected_cases": 31,
+      "expected_assertions": 125
     }
   ]
 }

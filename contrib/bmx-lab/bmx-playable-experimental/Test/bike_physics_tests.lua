@@ -26,6 +26,12 @@ function Ground.twist(angle,from,length)
     end
     return {height=function(x,z) return x*bank(z) end,grad=function(x,z) return bank(z),x*slope(z) end}
 end
+-- A smooth bump across the road, this high, from z=at for length metres.
+function Ground.bump(at,height,length)
+    local function u(z) return (z-at)/length end
+    return {height=function(x,z) local s=u(z);if s<=0 or s>=1 then return 0 end;return height*.5*(1-math.cos(2*math.pi*s)) end,
+        grad=function(x,z) local s=u(z);if s<=0 or s>=1 then return 0,0 end;return 0,height*math.pi*math.sin(2*math.pi*s)/length end}
+end
 local function turned(yaw) return {0,math.sin(yaw/2),0,math.cos(yaw/2)} end
 local function place(ground,speed,yaw)
     local body,wheels=Forces.proposed_body(),Forces.proposed_wheels()
@@ -74,13 +80,21 @@ end
 local function tilt_of(body)
     return math.deg(math.acos(math.clamp(M.turn(M.normalized(body.orientation),{0,1,0})[2],-1,1)))
 end
--- ride.steps, and ride.controls(step,body) -> {pedal,steer,brake,hop}. Returns the peaks, and calls ride.each(step,body,out).
+-- ride.steps, and ride.controls(step,body) -> {pedal,steer,brake,hop,manual}. ride.pitch starts the bike that many
+-- degrees nose up on its rear wheel. Returns the peaks, and calls ride.each(step,body,out,wheels,samples) with the
+-- wheel rays this step's command was made from.
 local function run(ride)
     local stage=Stage.new()
     local body,wheels=place(ride.ground or Ground.plane(0,0),ride.speed or 0,ride.yaw)
+    if ride.pitch then
+        local a=-math.rad(ride.pitch)
+        body.orientation={math.sin(a/2),0,0,math.cos(a/2)}
+        local rear=M.turn(body.orientation,M.sub(G.rear_axle,G.com))
+        body.center_of_mass={0,R-rear[2]-.005,0}
+    end
     local previous
     local angle,hop_id=0,0
-    local peak={tilt=0,speed=0,refused=0,slip=0,height=0}
+    local peak={tilt=0,speed=0,refused=0,slip=0,height=0,torque=0}
     local start=body.center_of_mass[2]
     for step=1,ride.steps do
         local samples=contacts(ride.ground or Ground.plane(0,0),body,angle)
@@ -95,6 +109,12 @@ local function run(ride)
         local want=ride.controls and ride.controls(step,body) or {}
         local input={pedal=want.pedal or 0,steer=want.steer or 0,brake=want.brake or 0}
         if want.hop then hop_id+=1;input.hop_event_id=hop_id;input.hop_strength=1 end
+        if want.manual then
+            -- As Mapping sends it: only while a wheel is on the ground.
+            local grounded=false
+            for i=1,2 do grounded=grounded or samples[i].contact.status=="hit" and Forces.eligible_support(body,samples[i],.005,.10) end
+            input.manual=grounded and want.manual or 0
+        end
         if ride.hitch and ride.hitch(step) then stage:invalidate_continuity() end
         local out,candidate=stage:preview(h,folded,wheels,forecast,input)
         local command
@@ -111,6 +131,7 @@ local function run(ride)
             body.center_of_mass=M.add(body.center_of_mass,M.mul(body.linear_velocity,h))
         end
         previous=command
+        if command then peak.torque=math.max(peak.torque,M.length(command.torque)) end
         local flat=math.sqrt(body.linear_velocity[1]^2+body.linear_velocity[3]^2)
         local forward=M.turn(M.normalized(body.orientation),{0,0,1})
         if flat>1 then
@@ -119,7 +140,7 @@ local function run(ride)
         end
         peak.tilt=math.max(peak.tilt,tilt_of(body));peak.speed=math.max(peak.speed,flat)
         peak.height=math.max(peak.height,body.center_of_mass[2]-start)
-        if ride.each then ride.each(step,body,out,wheels) end
+        if ride.each then ride.each(step,body,out,wheels,samples) end
     end
     peak.body,peak.wheels=body,wheels
     return peak
@@ -311,6 +332,212 @@ function T.run()
         check(reached[5] and reached[5]<2.2,"from rest to 5 m/s as briskly as before: "..tostring(reached[5]))
         check(reached[7.4] and reached[7.4]<4,"and to 7.4 m/s inside 4 s: "..tostring(reached[7.4]))
         check(reached[7.69]~=nil,"the flat still reaches the top of the band, where the rider coasts")
+    end)
+    case(function() -- Ordinary riding with no manual sends exactly what it did before the manual was added.
+        -- The digest was taken on the kernel before the manual law went in: every force and torque of a 900 step ride
+        -- with pedal, steering, brake and two hops, and where the bike ends.
+        local hash=2166136261
+        local function mix(x)
+            local text=string.format("%.17g",x)
+            for i=1,#text do
+                hash=bit32.bxor(hash,string.byte(text,i))
+                hash=(bit32.lshift(hash,24)+hash*403)%4294967296
+            end
+        end
+        local sent=0
+        local ride=run({steps=900,speed=2,controls=function(step)
+            return {pedal=step%300<200 and 1 or 0,steer=math.sin(step/40)*.6,brake=step%300>260 and 1 or 0,hop=step==400 or step==700}
+        end,each=function(step,body,out)
+            if out.valid then sent+=1;for i=1,3 do mix(out.force[i]);mix(out.torque[i]) end end
+        end})
+        for i=1,3 do mix(ride.body.center_of_mass[i]) end
+        check(sent==900 and ride.refused==0,"every step of the ordinary ride is sent: "..sent)
+        check(hash==0x24483bca,string.format("ordinary riding is unchanged: digest %08x",hash))
+    end)
+    -- Manuals. The pitch is the body's own, nose up positive, from the surface under the bike when one is given.
+    local function pitch_of(body,ground)
+        local f=M.turn(M.normalized(body.orientation),{0,0,1})
+        local n={0,1,0}
+        if ground then local dx,dz=ground.grad(body.center_of_mass[1],body.center_of_mass[3]);n=M.unit({-dx,1,-dz}) end
+        return math.deg(math.asin(math.clamp(M.dot(f,n),-1,1)))
+    end
+    local function gap(sample) return sample.contact.status=="hit" and sample.separation or math.huge end
+    -- o.m held from step o.before+1 for o.hold steps, then let go for o.after steps. o.during(t) and o.release(t) add
+    -- controls, t counting steps from the start of the hold or of the release. Returns the ride and a row a step.
+    local function manual(o)
+        local before,hold=o.before or 15,o.hold or 120
+        local rows={}
+        local ride=run({steps=before+hold+(o.after or 60),speed=o.speed or 4,ground=o.ground,pitch=o.pitch,controls=function(step)
+            if step<=before then return {pedal=o.pedal_before} end
+            if step<=before+hold then
+                local c=o.during and o.during(step-before) or {}
+                if c.manual==nil then c.manual=o.m end
+                return c
+            end
+            local c=o.release and o.release(step-before-hold) or {}
+            if c.manual==nil then c.manual=0 end
+            return c
+        end,each=function(step,body,out,wheels,samples)
+            rows[step]={hold=step>before and step<=before+hold,released=step>before+hold,t=step-before,
+                pitch=pitch_of(body,o.ground),front=gap(samples[1]),rear=gap(samples[2]),out=out,body=body,samples=samples}
+        end})
+        return ride,rows
+    end
+    case(function() -- The stage passes the manual and refuses a malformed one; a manual coasts.
+        local flat=Ground.plane(0,0)
+        local body,wheels=place(flat,4)
+        local samples=contacts(flat,body,0)
+        local out=Stage.new():preview(h,body,wheels,samples,{manual=.5})
+        check(out.valid and out.manual_active==true and out.manual_couple>0 and out.balance_torque[1]<0,
+            "a manual on a level bike lifts the nose: "..tostring(out.manual_couple).." "..tostring(out.balance_torque[1]))
+        check(Stage.new():preview(h,body,wheels,samples,{pedal=1}).pedaling==true,"A pedals the same bike on two wheels")
+        local pedalled=Stage.new():preview(h,body,wheels,samples,{pedal=1,manual=.5})
+        check(pedalled.valid and pedalled.pedaling==false,"and not in a manual")
+        local function same(a,b)
+            if type(a)~="table" or type(b)~="table" then return a==b end
+            for k,v in a do if not same(v,b[k]) then return false end end
+            for k in b do if a[k]==nil then return false end end
+            return true
+        end
+        check(same(Stage.new():preview(h,body,wheels,samples,{manual=0}),Stage.new():preview(h,body,wheels,samples,{})),
+            "a manual of 0 is no manual")
+        for _,bad in ipairs({-.1,1.2,0/0,"half"}) do
+            local refused=Stage.new():preview(h,body,wheels,samples,{manual=bad})
+            check(not refused.valid and refused.issue=="invalid_manual","the stage refuses a manual of "..tostring(bad))
+        end
+    end)
+    case(function() -- A held manual: the front lifts at once, holds where the stick puts it on the rear wheel alone, coasts, and comes down softly.
+        -- The low end of the band, the middle and the top: 20 degrees, 28.2, and 36.4 just past the balance at 33.1.
+        for _,speed in ipairs({4,7}) do
+            for _,row in ipairs({{m=.01,pitch=20.0},{m=.5,pitch=28.2},{m=1,pitch=36.4},{m=.5,pitch=28.2,pedal=true}}) do
+                local what=string.format("m=%.2f at %d m/s%s",row.m,speed,row.pedal and " with A held" or "")
+                local ride,rows=manual({m=row.m,speed=speed,pedal_before=row.pedal and 1 or nil,
+                    during=row.pedal and function() return {pedal=1} end or nil})
+                local lifted,pedalled,held,low,high,bottom=nil,false,true,math.huge,-math.huge,math.huge
+                local down,closing,recovered
+                for step,r in rows do
+                    if r.hold then
+                        if not lifted and r.front>.02 then lifted=r.t*h end
+                        if r.out.pedaling then pedalled=true end
+                        if r.t*h>=1 and r.t*h<=2 then
+                            if r.rear>.005 then held=false end
+                            low,high,bottom=math.min(low,r.pitch),math.max(high,r.pitch),math.min(bottom,r.front)
+                        end
+                    elseif r.released then
+                        if not down and r.front<=.005 then
+                            down=(r.t-120)*h
+                            closing=-M.point_velocity(r.body,r.samples[1].contact.point)[2]
+                            recovered=false
+                            for k=step,step+10 do if rows[k] and rows[k].out.landing_recovery_mask~=0 then recovered=true end end
+                        end
+                    end
+                end
+                check(ride.refused==0 and ride.torque<2000,what..": every step sent under the caps: "..ride.refused.." "..ride.torque)
+                check(lifted and lifted<=.2,what..": the front is up within .2 s: "..tostring(lifted))
+                check(held,what..": on the rear wheel alone from 1 s to 2 s")
+                check(bottom>=.2,what..": the front tyre at least .2 m up: "..bottom)
+                check(math.abs(low-row.pitch)<=1.5 and math.abs(high-row.pitch)<=1.5,
+                    string.format("%s: holds %.1f to %.1f degrees",what,low,high))
+                check(not pedalled,what..": the rider coasts in a manual")
+                check(down and down<=.6,what..": let go, the front is down within .6 s: "..tostring(down))
+                check(closing<.5 and recovered==false,what..": softly, with no landing catch: "..tostring(closing))
+            end
+        end
+    end)
+    case(function() -- On a slope the manual holds the same angle to the surface, uphill and down.
+        for _,row in ipairs({{grade=.08,m=.5,pitch=28.2},{grade=.08,m=1,pitch=36.4},{grade=-.15,m=.5,pitch=28.2},{grade=-.15,m=1,pitch=36.4}}) do
+            local ground=Ground.plane(0,row.grade)
+            local ride,rows=manual({m=row.m,ground=ground,hold=150})
+            local low,high=math.huge,-math.huge
+            for _,r in rows do if r.hold and r.t*h>=1.5 and r.t*h<=2.5 then low,high=math.min(low,r.pitch),math.max(high,r.pitch) end end
+            check(ride.refused==0 and math.abs(low-row.pitch)<=1.5 and math.abs(high-row.pitch)<=1.5,
+                string.format("a grade of %.2f at m=%.1f holds %.1f to %.1f degrees to the surface",row.grade,row.m,low,high))
+        end
+    end)
+    case(function() -- Bumps under the rear wheel: the manual rides over them and is still held a second later.
+        for _,bump in ipairs({.05,.08,.12}) do
+            for _,row in ipairs({{m=.75,pitch=32.3},{m=1,pitch=36.4}}) do
+                -- The rear wheel reaches it about 1.2 s into the manual, and leaves it 1.3 s before the end.
+                local ground=Ground.bump(4.5,bump,.6)
+                local most,last=-math.huge,nil
+                local over=run({steps=215,speed=4,ground=ground,controls=function(step) return {manual=step>15 and row.m or 0} end,
+                    each=function(step,body,out)
+                        local p=pitch_of(body)
+                        most=math.max(most,p)
+                        if step==215 then last={pitch=p,active=out.manual_active} end
+                    end})
+                check(over.refused==0 and most<65,string.format("a %d cm bump at m=%.2f: no fall, at most %.1f degrees",bump*100,row.m,most))
+                check(last.active==true and math.abs(last.pitch-row.pitch)<=1.5,
+                    string.format("and the manual is still held a second after it: %.1f degrees",last.pitch))
+            end
+        end
+    end)
+    case(function() -- Too far back: past where the rider can hold it the bike goes over, B saves it, and inside the window it comes back.
+        local over
+        run({steps=60,speed=4,pitch=46,controls=function() return {manual=1} end,each=function(step,body)
+            if not over and pitch_of(body)>65 then over=step*h end
+        end})
+        check(over and over<=.75,"at 46 degrees on full stick the bike goes over: "..tostring(over))
+        local most,last=-math.huge,0
+        run({steps=120,speed=4,pitch=46,controls=function(step) return {manual=1,brake=step>12 and step<=27 and 1 or 0} end,
+            each=function(step,body) most=math.max(most,pitch_of(body));last=pitch_of(body) end})
+        check(most<50 and math.abs(last-36.4)<=1.5,string.format("a quarter second of B from .2 s saves it: at most %.1f, back to %.1f",most,last))
+        most,last=-math.huge,0
+        run({steps=120,speed=4,pitch=44,controls=function() return {manual=1} end,
+            each=function(step,body) most=math.max(most,pitch_of(body));last=pitch_of(body) end})
+        check(most<46 and math.abs(last-36.4)<=1.5,string.format("at 44 degrees it comes back by itself: at most %.1f, back to %.1f",most,last))
+    end)
+    case(function() -- A manual slowing to a walk: the rider puts the front down.
+        local slow,front=nil,nil
+        local ride=run({steps=420,speed=1.6,controls=function(step) return {manual=step>15 and .5 or 0} end,each=function(step,body,out,wheels,samples)
+            local speed=M.length(body.linear_velocity)
+            if not slow and step>15 and speed<1 then slow=step end
+            if slow and step>=slow+36 then
+                check(gap(samples[1])<=.005 and out.manual_active==false,"under 1 m/s the front is down: "..step.." "..gap(samples[1]))
+            end
+            front=front or gap(samples[1])>.1 and step
+        end})
+        check(ride.refused==0 and front and slow,"the manual lifts at 1.6 m/s and slows below 1 m/s: "..tostring(front).." "..tostring(slow))
+    end)
+    case(function() -- Steering a manual carves the bike round on its back wheel, the way the bars turn it on two, more gently.
+        local function yawed(m)
+            local first,last,lean,count
+            lean,count=0,0
+            run({steps=165,speed=4,controls=function(step) return {manual=m and step>15 and m or nil,steer=step>60 and 1 or 0} end,
+                each=function(step,body,out)
+                    local yaw,_,leaned=World.attitude(body)
+                    if step==105 then first=yaw end
+                    if step==165 then last=yaw end
+                    if step>105 then lean+=leaned;count+=1 end
+                    if m and step>=60 then check(out.manual_active==true,"still in the manual while it carves") end
+                end})
+            return (last-first)/(60*h),lean/count
+        end
+        local rate,lean=yawed(.5)
+        local two,two_lean=yawed(nil)
+        check(rate*two>0 and math.abs(rate)>=.3 and math.abs(rate)<=.6,string.format("it carves at %.2f rad/s, the way steering turns at %.2f",rate,two))
+        check(lean*two_lean>0,string.format("leaning into the carve as into a turn: %.3f and %.3f",lean,two_lean))
+    end)
+    case(function() -- A hop from a manual pops off the back wheel and lands near level; holding the manual after landing lifts it again.
+        local hop_step,air,landed,landing,lifted
+        local ride=run({steps=330,speed=4,controls=function(step)
+            if step<=15 then return {} end
+            if step<=75 then return {manual=.5} end
+            if step==76 then return {manual=0,hop=true} end
+            if step>=150 then return {manual=.5} end
+            return {manual=0}
+        end,each=function(step,body,out,wheels,samples)
+            if step==76 then hop_step=out.hop_applied end
+            local any=gap(samples[1])<=.005 or gap(samples[2])<=.005
+            if step>76 then
+                if not any and not landed then air=(air or 0)+1 elseif air and not landed then landed=step;landing=pitch_of(body) end
+            end
+            if step>=150 and gap(samples[1])>.2 and not lifted then lifted=step end
+        end})
+        check(hop_step==true and ride.refused==0,"the hop leaves from the manual")
+        check(air and air>=40,"a full hop: "..tostring(air).." steps in the air")
+        check(landing and math.abs(landing)<15,"landing near level: "..tostring(landing))
+        check(landed and landed<150 and lifted and lifted<=180,"and the manual lifts again after it: "..tostring(lifted))
     end)
     return {cases=cases,assertions=n,native_authority=false,constructed=true}
 end

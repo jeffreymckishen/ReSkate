@@ -126,7 +126,8 @@ function Controller:preview(h,body,wheels,samples,controls)
     local issue=speed_issue(body,state.kernel.tuning)
     if issue then return invalid(issue) end
     -- The raw pad and Mapping's action record stay unchanged. All force
-    -- channels are neutral except each stage's finite, bounded authored inputs.
+    -- channels are neutral except each stage's finite, bounded authored inputs:
+    -- the nose manual, air inputs and tricks stay neutral in every stage.
     local selected=Forces.controls()
     if STAGE=="pedal" or STAGE=="ride" or hop_stage then
         local pedal=controls and controls.pedal
@@ -135,14 +136,18 @@ function Controller:preview(h,body,wheels,samples,controls)
         selected.pedal=pedal
     end
     if STAGE=="ride" or STAGE=="hop_ride" then
-        -- Both driving stages pass steer/brake. Only hop_ride also selects
-        -- the hop policy below; manuals, air inputs and tricks remain neutral.
-        local steer,brake=controls and controls.steer,controls and controls.brake
+        -- Both driving stages pass steer, brake and the manual. Only hop_ride
+        -- also selects the hop policy below. Mapping sends the manual only
+        -- while a wheel is on the ground; the kernel engages it only on the
+        -- rear wheel.
+        local steer,brake,manual=controls and controls.steer,controls and controls.brake,controls and controls.manual
         if steer==nil then steer=0 end
         if brake==nil then brake=0 end
+        if manual==nil then manual=0 end
         if not M.finite(steer) or steer<-1 or steer>1 then return invalid("invalid_steer") end
         if not M.finite(brake) or brake<0 or brake>1 then return invalid("invalid_brake") end
-        selected.steer,selected.brake=steer,brake
+        if not M.finite(manual) or manual<0 or manual>1 then return invalid("invalid_manual") end
+        selected.steer,selected.brake,selected.manual=steer,brake,manual
         -- Far past riding speed, use the existing bounded brake law before
         -- the hard measured-speed stop.
         local tuning=state.kernel.tuning

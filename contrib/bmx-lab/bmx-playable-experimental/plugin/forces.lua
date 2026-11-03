@@ -30,7 +30,7 @@ local function floor_softness(h,body,contact,basis,fraction)
 end
 local defaults={gravity={0,-9.8,0},wheelbase=1.203956057050485*scale,steer_limit=.4,steer_speed_scale=8,
     pedal_torque=75,front_brake_torque=60,rear_brake_torque=45,friction={longitudinal_friction=1,lateral_friction=1},
-    balance_stiffness=1600,balance_damping=360,balance_torque_limit=1200,lean_limit=.52,manual_pitch=.4,
+    balance_stiffness=1600,balance_damping=360,balance_torque_limit=1200,lean_limit=.52,
     air_yaw_torque=200,air_pitch_torque=160,neutral_air_damping_rate=2.75,hop_delta_speed=4.5,
     contact_gap=.02,maximum_penetration=.10,recovery_fraction=.15,recovery_speed_limit=.4,
     force_limit=40000,torque_limit=4000,wheel_speed_limit=500,contact_iterations=12,pedal_fade_start=7,pedal_cutoff=8,
@@ -50,7 +50,27 @@ local defaults={gravity={0,-9.8,0},wheelbase=1.203956057050485*scale,steer_limit
     tyre_section_radius=.03,
     -- Braking uses grip the corner wanted. Under a full brake the cornering limit gives up this share, and the
     -- rider eases the rear brake to this share of what the rear tyre can hold, as they would by feel.
-    brake_lateral_cut=.6,rear_brake_load_share=.6}
+    brake_lateral_cut=.6,rear_brake_load_share=.6,
+    -- A manual: the bike on its back wheel, held there by the rider's weight. A pitch couple on the one rigid body
+    -- stands for the rider moving the whole centre of mass by couple/weight, so it is held to what a rider can
+    -- shift: this far back (arms straight, hips behind the saddle) and this far forward (chest to the bars). The
+    -- centre of mass sits .637 m over the rear axle and .4158 m ahead of it, so the bike balances at 33.1 degrees
+    -- to the surface and the rider can hold it from 17.9 to 44.5. The target is how far the centre of mass sits
+    -- ahead of the rear contact: low at the start of the stick's band (20 degrees), and at its end 3 degrees past
+    -- the balance (36.4), where the rider leans toward the bars to hold it.
+    manual_hold_back=.20,manual_hold_forward=.15,manual_low=.17,manual_high=-.05,
+    -- Lifting the front from level needs 432 N*m, more than any weight shift gives (208 at manual_hold_back). A
+    -- rider throws the bike up: this much is allowed while the front is still below about 15 degrees, fading out
+    -- over manual_pull_ramp of offset.
+    manual_pull=800,manual_pull_ramp=.08,
+    -- The front moves at most this fast (rad/s), toward the target at this gain (1/s), on this damping (N*m*s).
+    -- A plain spring overshot past the loop-out on high targets: 156 N*m forward cannot stop a fast lift.
+    manual_rate=1.5,manual_gain=4,manual_damping=560,
+    -- Slower than this the rider cannot keep their side balance on one wheel and the front comes down.
+    manual_min_speed=1.0,
+    -- With the front up nothing corners the bike: the bars turn the rider's hips, carving at most this yaw rate
+    -- (rad/s, reached from 2 m/s), on this damping and no more than this torque.
+    manual_carve_rate=.6,manual_carve_damping=100,manual_carve_torque=150}
 function F.tuning(overrides)
     local out=M.copy(defaults) for key,value in overrides or {} do assert(out[key]~=nil,"unknown force tuning") out[key]=M.copy(value) end return out
 end
@@ -71,7 +91,8 @@ local function result(issue)
         balance_reference_up={0,0,0},desired_balance_up={0,0,0},balance_torque={0,0,0},air_control_torque={0,0,0},
         motor_torque={0,0,0},contact_torque={0,0,0},pre_contact_prediction_available=false,pump_force={0,0,0},
         air_damping_torque={0,0,0},air_rotation_reserved=false,neutral_air_damping_active=false,pedaling=false,
-        landing_approach_mask=0,compliant_normal_mask=0,landing_recovery_mask=0,approach_normal_impulse={0,0},approach_normal_force={0,0}}
+        landing_approach_mask=0,compliant_normal_mask=0,landing_recovery_mask=0,approach_normal_impulse={0,0},approach_normal_force={0,0},
+        manual_active=false,manual_couple=0,manual_offset=0,manual_target_offset=0,manual_carve_rate=0,manual_shift=0}
 end
 local function tuning_valid(t)
     if not M.vec(t.gravity,100) or M.length(t.gravity)<.1 then return false end
@@ -83,13 +104,18 @@ local function tuning_valid(t)
         if not M.finite(t[name]) or t[name]<=0 or t[name]>1e6 then return false end
     end
     for _,name in {"pedal_torque","front_brake_torque","rear_brake_torque","balance_stiffness","balance_damping","balance_torque_limit",
-        "lean_limit","manual_pitch","air_yaw_torque","air_pitch_torque","hop_delta_speed","contact_gap","maximum_penetration",
+        "lean_limit","air_yaw_torque","air_pitch_torque","hop_delta_speed","contact_gap","maximum_penetration",
         "recovery_fraction","recovery_speed_limit","pedal_fade_start","pedal_cutoff","pedal_top_speed","pedal_resume_speed","rider_power",
         "curvature_rate_limit","curvature_step_limit","curvature_min_speed","neutral_air_damping_rate",
-        "rolling_resistance","air_drag","tyre_section_radius","brake_lateral_cut","rear_brake_load_share"} do if not M.finite(t[name]) or t[name]<0 or t[name]>1e6 then return false end end
+        "rolling_resistance","air_drag","tyre_section_radius","brake_lateral_cut","rear_brake_load_share",
+        "manual_hold_back","manual_hold_forward","manual_pull","manual_pull_ramp","manual_rate","manual_gain","manual_damping",
+        "manual_min_speed","manual_carve_rate","manual_carve_damping","manual_carve_torque"} do if not M.finite(t[name]) or t[name]<0 or t[name]>1e6 then return false end end
+    if not M.finite(t.manual_low) or not M.finite(t.manual_high) then return false end
     if type(t.friction)~="table" then return false end
     for _,key in {"longitudinal_friction","lateral_friction"} do local x=t.friction[key] if not M.finite(x) or x<0 or x>10 then return false end end
-    return t.brake_lateral_cut<=1 and t.rear_brake_load_share<=1 and t.steer_limit<=1 and t.lean_limit<=.8 and t.manual_pitch<=.6 and t.hop_delta_speed<=4.5 and t.contact_gap<=.05 and
+    if t.manual_hold_back>.3 or t.manual_hold_forward>.3 or t.manual_high< -.3 or t.manual_high>=t.manual_low or t.manual_low>.3 or
+        t.manual_pull>t.balance_torque_limit or t.manual_pull_ramp<=0 or t.manual_rate>4 or t.manual_gain>10 then return false end
+    return t.brake_lateral_cut<=1 and t.rear_brake_load_share<=1 and t.steer_limit<=1 and t.lean_limit<=.8 and t.hop_delta_speed<=4.5 and t.contact_gap<=.05 and
         t.maximum_penetration<=.15 and t.recovery_fraction<=1 and t.recovery_speed_limit<=1 and t.pedal_fade_start<t.pedal_cutoff and
         t.pedal_cutoff<=50 and t.pedal_resume_speed<t.pedal_top_speed and t.pedal_top_speed<=t.pedal_cutoff and t.curvature_rate_limit<=10 and t.curvature_step_limit<=.35 and t.curvature_min_speed<=5 and t.neutral_air_damping_rate<=10
 end
@@ -149,8 +175,9 @@ function F.new(tuning)
 end
 -- reset clears the pedal latch with the rest. invalidate_continuity and a
 -- refused step keep it: it holds no derivative, and outside the band this
--- step's speed decides it alone.
-function Controller:reset() self.last_hop_event=0 self.normals={{},{}} self.landing_impact={false,false} self.travel_direction=0 self.air={} self.steering={} self.pump=Pump.new() self.pump:reset() self.pedal_latch=F.pedal_state() self.brake_share=0 self.brake_squeeze=0 end
+-- step's speed decides it alone. Whether the bike is in a manual is kept the
+-- same way, so a hitch does not drop the front of a held manual.
+function Controller:reset() self.last_hop_event=0 self.normals={{},{}} self.landing_impact={false,false} self.travel_direction=0 self.air={} self.steering={} self.pump=Pump.new() self.pump:reset() self.pedal_latch=F.pedal_state() self.brake_share=0 self.brake_squeeze=0 self.manual_engaged=false end
 function Controller:invalidate_continuity()
     -- A missed command breaks one-step derivative and state-machine history.
     -- Accepted hop consumption and authored tuning remain authoritative. The
@@ -175,6 +202,7 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     local prior_impact=M.copy(self.landing_impact)
     local prior_load={prior_normals[1].normal_load or 0,prior_normals[2].normal_load or 0}
     local prior_brake_share,prior_squeeze=self.brake_share,self.brake_squeeze
+    local prior_manual=self.manual_engaged==true
     self.normals={{},{}} self.landing_impact={false,false} self.travel_direction=0 self.air={} self.steering={} self.pump:reset()
     if not M.finite(h) or math.abs(h-F.native_seconds)>1e-8 then out.issue="unsupported_step" return out end
     if not tuning_valid(t) or not M.valid_body(measured) or not M.vec(measured.linear_velocity,50) or not M.vec(measured.angular_velocity,40) or
@@ -347,11 +375,34 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
         end end
         if count>0 then out.desired_support_angular_velocity=M.mul(transport,1/count) end
     end
+    -- A manual starts on the rear wheel with the stick in its band, rolling at least manual_min_speed. It lasts
+    -- while the front is up, so a release still has the law below to put a bike past its balance back down, and
+    -- ends in the air, on the front wheel alone, or on both wheels with the stick let go.
+    local manual_amount=c.enabled and math.clamp(c.manual,0,1) or 0
+    local rear_support,front_support=bit32.band(support_mask,2)~=0,bit32.band(support_mask,1)~=0
+    local manual_engaged=false
+    if rear_support and c.enabled and contacts[2].status=="hit" then
+        manual_engaged=manual_amount>0 and speed>=t.manual_min_speed or prior_manual and not front_support
+    end
+    local manual_wanted=manual_engaged and manual_amount>0 and speed>=t.manual_min_speed
+    local carving=manual_engaged and not front_support
     out.requested_front_steer_angle=-steer*t.steer_limit/(1+math.abs(speed)/t.steer_speed_scale) out.front_steer_angle=out.requested_front_steer_angle
     local axis=M.unit(M.turn(q,steering_axis)) if not axis then return out end
     local up=support_mask~=0 and M.unit(support_sum) or nil
     local forward=up and M.unit(M.sub(body_forward,M.mul(up,M.dot(body_forward,up)))) or nil
     local balance_frame=up~=nil and forward~=nil
+    -- The rear tyre pushes along the surface's normal, so the balance is the centre of mass over the contact along
+    -- that normal. Measured level instead, a bike rolling down a 15% ramp looped out and one going up 8% chattered
+    -- at the bottom of the window; along the normal all of them hold the same manual against the surface.
+    local manual_d,manual_v=0,0
+    if manual_engaged then
+        if not balance_frame then return out end
+        local rel=M.sub(measured.center_of_mass,contacts[2].point)
+        manual_d,manual_v=M.dot(rel,forward),M.dot(rel,up)
+    end
+    -- Let go below the balance point, the ordinary spring sets the front down. Past it, the law brings the bike
+    -- back toward the low target, under the same limits, so letting go is no save beyond what the rider can do.
+    local manual_law=manual_engaged and (manual_wanted or manual_d<0)
     -- This is a body-local joint angle, so its accepted history remains valid
     -- when support disappears. Slew the same joint through loss/reacquisition;
     -- support, balance and raw air-trick intent keep their independent gates.
@@ -378,6 +429,13 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
             out.front_steer_angle=candidate_angle*low out.steering_limited=true turn=heading(out.front_steer_angle) if turn==nil then return out end
         end
         out.turning_lean_angle=math.atan(-speed*speed*math.tan(turn)/(M.length(t.gravity)*t.wheelbase))
+    end
+    -- The lifted front corners nothing: its row is normal only. The lean the bars asked for leaned the bike and
+    -- yawed it the wrong way (+.48 rad/s at 29 degrees). In a manual the bars carve: a yaw rate the rider turns the
+    -- bike through, and the lean that turn needs.
+    if carving then
+        out.manual_carve_rate=-steer*t.manual_carve_rate*math.clamp(math.abs(speed)/2,0,1)
+        out.turning_lean_angle=math.atan(-speed*out.manual_carve_rate/M.length(t.gravity))
     end
     local wheel_axes={}
     for i=1,2 do
@@ -415,8 +473,12 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     -- The brake takes priority over a held pedal. Feed the same decision to
     -- the motor, pump and drawn crank rather than driving against the brake.
     -- Keeping the existing latch still prevents a brake tap from resetting
-    -- a spin-out while speed remains above the resume threshold.
-    local cadence,next_latch=F.pedal_cadence(prior_latch,{enabled=c.enabled,pedal=braking and 0 or math.clamp(c.pedal,0,1),motor_speed=motor_speed,
+    -- a spin-out while speed remains above the resume threshold. A manual
+    -- coasts: the drive at the rear contact, about a metre under the centre of
+    -- mass, lifts the nose by 170 to 300 N*m, more than the 156 N*m the rider
+    -- can lean forward, so a pedalled manual loops out at once. The cranks then
+    -- stay still with it, and the top-speed latch is left as it was.
+    local cadence,next_latch=F.pedal_cadence(prior_latch,{enabled=c.enabled,pedal=(braking or manual_engaged) and 0 or math.clamp(c.pedal,0,1),motor_speed=motor_speed,
         top_speed=t.pedal_top_speed,resume_speed=t.pedal_resume_speed})
     if not cadence.valid then return out end out.pedaling=cadence.pedaling
     local pedal_scale=math.clamp((t.pedal_cutoff-motor_speed)/(t.pedal_cutoff-t.pedal_fade_start),0,1)
@@ -435,11 +497,43 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
             local plumb=M.unit(M.sub(world_up,M.mul(forward,M.dot(world_up,forward))))
             local neutral=plumb and math.atan2(M.dot(forward,M.cross(up,plumb)),M.dot(up,plumb)) or 0
             local roll=math.clamp(neutral+out.turning_lean_angle,-MAXIMUM_CAMBER,MAXIMUM_CAMBER)
-            local desired=M.around(M.around(up,lateral,pitch*t.manual_pitch),forward,roll)
+            -- In a manual the spring keeps only the roll: it is aimed at the body's own pitch, and what pitch it
+            -- has left is taken out below, where the manual law sets the pitch instead.
+            local tilt=manual_law and math.atan2(M.dot(body_up,forward),M.dot(body_up,up)) or 0
+            local desired=M.around(M.around(up,lateral,tilt),forward,roll)
             out.desired_balance_up=desired
             local omega=M.sub(measured.angular_velocity,M.mul(up,M.dot(measured.angular_velocity,up)))
             local desired_omega=M.sub(out.desired_support_angular_velocity,M.mul(up,M.dot(out.desired_support_angular_velocity,up)))
             assist=M.limited(M.sub(M.mul(M.cross(body_up,desired),t.balance_stiffness),M.mul(M.sub(omega,desired_omega),t.balance_damping)),t.balance_torque_limit)
+            local weight=measured.mass*math.max(0,-M.dot(t.gravity,up))
+            if manual_law then
+                -- The pitch couple is the rider's weight shift. It carries the weight at the offset the bike has
+                -- (N*d), and turns the bike toward the target at no more than manual_rate, damped; whatever it asks
+                -- is held to the shift a rider has, back and forward, with the throw allowed only near level.
+                assist=M.sub(assist,M.mul(lateral,M.dot(assist,lateral)))
+                local target=manual_wanted and t.manual_low+(t.manual_high-t.manual_low)*manual_amount or t.manual_low
+                local reach=math.sqrt(manual_d*manual_d+manual_v*manual_v)
+                -- The nose-up turn still needed to bring the centre of mass to the target offset.
+                local delta=math.acos(math.clamp(target/reach,-1,1))-math.atan2(manual_v,manual_d)
+                local rate=-M.dot(measured.angular_velocity,lateral)
+                local want=math.clamp(t.manual_gain*delta,-t.manual_rate,t.manual_rate)
+                local couple=weight*manual_d+t.manual_damping*(want-rate)
+                local ramp=math.clamp((manual_d-t.manual_hold_back)/t.manual_pull_ramp,0,1)
+                local up_cap=weight*t.manual_hold_back+ramp*math.max(0,t.manual_pull-weight*t.manual_hold_back)
+                couple=math.clamp(couple,-weight*t.manual_hold_forward,up_cap)
+                assist=M.add(assist,M.mul(lateral,-couple))
+                out.manual_target_offset=target
+            end
+            if carving then
+                local yaw_rate=M.dot(measured.angular_velocity,up)
+                assist=M.add(assist,M.mul(up,math.clamp(t.manual_carve_damping*(out.manual_carve_rate-yaw_rate),-t.manual_carve_torque,t.manual_carve_torque)))
+            end
+            if manual_engaged then
+                assist=M.limited(assist,t.balance_torque_limit)
+                -- What the pose shows: the pitch couple this step applies, nose up positive, as the rider's shift.
+                out.manual_couple=-M.dot(assist,lateral)
+                out.manual_shift=weight>0 and out.manual_couple/weight or 0
+            end
             out.balance_torque=assist
         end
     elseif c.enabled then assist=M.add(M.mul(world_up,-math.clamp(c.air_yaw,-1,1)*t.air_yaw_torque),M.mul(body_left,pitch*t.air_pitch_torque)) out.air_control_torque=assist end
@@ -516,6 +610,7 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     if loaded and not out.hop_applied then reservation(air,c.recovery_step_verified,c.enabled,true,intent,launch) end
     self.air=air out.air_rotation_reserved=air.reserved==true if c.enabled then self.steering={valid=true,angle=out.front_steer_angle} end
     self.brake_share=brake_share self.brake_squeeze=brake
+    out.manual_active=manual_engaged out.manual_offset=manual_d self.manual_engaged=manual_engaged
     self.pump=pump self.pedal_latch=next_latch out.valid=true out.issue="none" return out
 end
 function Controller:_recovery_mask(h,body,samples,c,baseline)
@@ -549,7 +644,7 @@ end
 function Controller:_adopt(other)
     self.last_hop_event=other.last_hop_event self.normals=other.normals self.landing_impact=other.landing_impact self.travel_direction=other.travel_direction
     self.air=other.air self.steering=other.steering self.pump=other.pump self.pedal_latch=other.pedal_latch
-    self.brake_share=other.brake_share self.brake_squeeze=other.brake_squeeze
+    self.brake_share=other.brake_share self.brake_squeeze=other.brake_squeeze self.manual_engaged=other.manual_engaged
 end
 function Controller:step(h,body,wheels,samples,controls,speculative)
     local c=F.controls(controls) local baseline_controller=self:clone()

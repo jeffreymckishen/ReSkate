@@ -721,6 +721,7 @@ local function stop(s, reason)
     -- can replace the first cause or advance cancellation generation again.
     local text=tostring(reason or "unavailable")
     count_stop(s,text)
+    s.manual_active=false
     if not s.stopped then
         s.stopped=true;s.generation+=1;s.issue=detail(text)
         score_stop(s,text)
@@ -1179,10 +1180,26 @@ end
 local function ahead(s,frame,body,options,contact)
     local q=M.normalized(body.orientation)
     local up=M.turn(q,{0,1,0})
+    local forward=M.turn(q,{0,0,1})
+    local origin=M.sub(body.center_of_mass,M.turn(q,s.geometry.com))
+    -- In a manual the bike is pitched 20 to 36 degrees. Its knee lanes started a metre up and climbed with it, and
+    -- from 30 degrees a car's vertical face is too steep to its up to count as one, so a car was ridden into. The
+    -- lanes are laid as on the bike set down level about its rear hub, on the ground under the rear wheel; the
+    -- front then reads about .12 m ahead of the lifted tyre at 30 degrees, so a car is stopped at slightly early.
+    local rear=contact.samples[2]
+    if s.manual_active and rear and rear.contact.status=="hit" and rear.separation<=.02 then
+        local ground=M.unit(rear.contact.normal)
+        local level=ground and M.unit(M.sub(forward,M.mul(ground,M.dot(forward,ground))))
+        if level then
+            local g=s.geometry
+            local hub=M.add(body.center_of_mass,M.turn(q,M.sub(g.rear_axle,g.com)))
+            up=ground
+            origin=M.sub(M.sub(hub,M.mul(up,g.rear_axle[2])),M.mul(level,g.rear_axle[3]))
+        end
+    end
     local v=body.linear_velocity
     local along=M.sub(v,M.mul(up,M.dot(v,up)))
     local speed=M.length(along)
-    local forward=M.turn(q,{0,0,1})
     local heading=M.unit(M.sub(forward,M.mul(up,M.dot(forward,up))))
     if not heading then return nil,"unread" end
     -- Slower than this the travel is no direction: look along the bike, so a bike nosed in is still watched.
@@ -1191,7 +1208,6 @@ local function ahead(s,frame,body,options,contact)
     if M.dot(heading,travel)<0 then heading=M.mul(heading,-1) end
     local side=M.unit(M.cross(up,heading))
     if not side then return nil,"unread" end
-    local origin=M.sub(body.center_of_mass,M.turn(q,s.geometry.com))
     local front=contact.samples[1]
     local under=front and front.contact.status=="hit" and M.unit(front.contact.normal) or nil
     local h=frame.seconds
@@ -1497,7 +1513,9 @@ local function observe(s,source_frame,raw,context)
         s.continuity_pending=false;s.continuity_invalidations+=1
     end
     local force_controls=copy(controls.force_controls)
-    if s.crash then force_controls.pedal=0 end
+    -- Going over the bars the rider lets go of everything: the front is left to the ordinary spring and the crash
+    -- torque, never held up by a manual.
+    if s.crash then force_controls.pedal,force_controls.manual,force_controls.nose_manual=0,0,0 end
     force_controls.rotation_reserved=force_controls.rotation_reserved or companions.rotation_reserved==true
         or (s.barspin_preview~=nil and s.barspin_preview.requests.rotation_reserved==true)
     -- Solve from the state this command will act on. Accepted commands
@@ -1636,6 +1654,8 @@ local function observe(s,source_frame,raw,context)
             s.barspin_candidate,s.barspin_preview=nil,nil
         end
         s.wheels=wheels
+        -- The accepted step's manual, which the next step's look ahead reads.
+        s.manual_active=model.manual_active==true
         -- The pose follows the accepted prediction, with the wheels it adopts;
         -- model_history names that step.
         s.pose=freeze(pose)
@@ -1679,7 +1699,7 @@ function Ride.new(force_api,models,options)
         accepted_barspin=accepted_barspin,barspin_state=accepted_barspin and accepted_barspin:status() or nil,
         alignment_options=detached(options.alignment),geometry=detached(options.geometry or Geometry),
         wheels=Forces.proposed_wheels(),phase="inert",issue="native qualification required",generation=0,
-        pose=freeze(NEUTRAL_POSE),trick_fallbacks=0,
+        pose=freeze(NEUTRAL_POSE),trick_fallbacks=0,manual_active=false,
         submitted=0,acknowledged=0,pending={},metrics=new_metrics(),backpressure_steps=0,
         continuity_pending=false,continuity_skipped_steps=0,continuity_invalidations=0,body_read_recoveries=0,
         input_queue={},input_staged=0,input_consumed=0,observed_steps=0,model_steps=0,

@@ -53,14 +53,36 @@ local function harness(ground)
         buttons={a=false,b=false,right_stick=false,lb=false,rb=false}}
     local source={input_ok=true,phase="capturing",generation=1,lease_handle=lease,
         sample={user=0,sequence="77",source_epoch="78",context_generation="79",observation_serial="80",observed_ms="1000",packet=9,pad=pad}}
-    local ride=Ride.new(api,{mapping=Mapping.new(),force=Stage.new(),contact=Contact},{body_handle=body,incarnation=incarnation})
+    -- The real stage, behind a recorder of the controls Ride sends it.
+    local stage=Stage.new()
+    local force={hop_policy=stage.hop_policy,tuning=stage.tuning}
+    function force.preview(_,...) w.controls=select(5,...);return stage:preview(...) end
+    function force._adopt(_,...) return stage:_adopt(...) end
+    function force.invalidate_continuity() return stage:invalidate_continuity() end
+    function force.admit_measured(_,...) return stage:admit_measured(...) end
+    function force.reset() return stage:reset() end
+    local ride=Ride.new(api,{mapping=Mapping.new(),force=force,contact=Contact},{body_handle=body,incarnation=incarnation})
     function w.press_a()
         local pressed=table.clone(pad)
         pressed.buttons=table.clone(pad.buttons);pressed.buttons.a=true
         source={input_ok=true,phase="capturing",generation=1,lease_handle=lease,
             sample={user=0,sequence="77",source_epoch="78",context_generation="79",observation_serial="81",observed_ms="1016",packet=10,pad=pressed}}
     end
+    -- From now on every step brings a fresh pad observation a native step on, with the right stick here.
+    local fresh
+    function w.set_pad(right_y)
+        local moved=table.clone(pad)
+        moved.buttons=table.clone(pad.buttons);moved.right_y=right_y
+        fresh=fresh or {serial=80}
+        fresh.pad=moved
+    end
     function w.step(pose)
+        if fresh then
+            fresh.serial+=1
+            source={input_ok=true,phase="capturing",generation=1,lease_handle=lease,
+                sample={user=0,sequence="77",source_epoch="78",context_generation="79",observation_serial=tostring(fresh.serial),
+                    observed_ms=tostring(1000+math.floor((fresh.serial-80)*h*1000+.5)),packet=fresh.serial,pad=fresh.pad}}
+        end
         w.serial+=1;w.time+=h
         local v=pose.velocity or {0,0,0}
         local p=pose.position
@@ -424,6 +446,72 @@ function T.run()
         local w=harness(face(NOSE+.05))
         local pose=level();pose.velocity={0,0,-1}
         check(steps(w,pose,20)==nil and math.abs(pushed(w))<500,"rolling back from a face is let go: "..pushed(w))
+    end)
+    -- A bike pitched this many degrees nose up on its rear wheel, the rear axle where a level bike's is.
+    local function wheelie(degrees,speed)
+        local rotation=pitch_of(-math.rad(degrees))
+        local rear=M.turn(rotation,M.sub(Geometry.rear_axle,Geometry.com))
+        local axle=Geometry.rear_axle[3]-Geometry.com[3]
+        return {position={0,R-rear[2],axle-rear[3]},rotation=rotation,velocity={0,0,speed or 0}}
+    end
+    -- Rides the pose a few steps on a neutral pad, then with the right stick part way back for `count` steps.
+    local function in_manual(w,pose,count)
+        check(steps(w,pose,3)==nil,"riding before the manual")
+        w.set_pad(-.53)
+        return steps(w,pose,count)
+    end
+    case(function() -- The right stick part way back lifts the front, through Mapping, the stage and the packet.
+        local w=harness(flat)
+        local pose=level();pose.velocity={0,0,4}
+        check(in_manual(w,pose,12)==nil,"a manual is ridden")
+        check(w.controls.manual>.4,"the manual reaches the stage: "..tostring(w.controls.manual))
+        check(w.submits[#w.submits].torque.x< -150,"and the packet lifts the nose: "..w.submits[#w.submits].torque.x)
+    end)
+    case(function() -- Going over the bars the manual is let go: the stage gets none while the crash runs.
+        local w=harness(flat)
+        local pose=level();pose.velocity={0,0,7.5}
+        check(in_manual(w,pose,10)==nil and w.controls.manual>.4,"in a manual at speed")
+        pose.velocity={0,0,7.2}
+        check(steps(w,pose,1)==nil,"the first step of the hit")
+        pose.velocity={0,0,.8}
+        check(steps(w,pose,3)==nil,"the hit")
+        check(w.controls.manual==0 and w.controls.nose_manual==0,"no manual reaches the stage in a crash: "..tostring(w.controls.manual))
+    end)
+    case(function() -- In a manual a parked car is still seen: pitched 32 degrees, the bike's own lanes climbed over it.
+        local w=harness(face(NOSE+.5))
+        local pose=wheelie(32,7)
+        check(steps(w,pose,3)==nil,"riding at the car")
+        w.set_pad(-.53)
+        local braked,manual=0,false
+        for _=1,12 do
+            local before=#w.submits
+            check(not w.step(pose).stop_requested,"riding at the car in a manual")
+            manual=manual or w.controls.manual>.4
+            if manual and #w.submits>before then braked=math.min(braked,w.submits[#w.submits].force.z) end
+        end
+        check(manual and braked< -1000,"the car ahead brakes the bike in its manual: "..braked)
+    end)
+    case(function() -- A quarter pipe ahead of a manual is still a ramp, not a wall.
+        local function quarter(ahead_of)
+            local w=harness(function(from,to,count,i)
+                if math.abs(to.z-from.z)>4*math.abs(to.y-from.y) and math.abs(to.z-from.z)>math.abs(to.x-from.x) then
+                    if from.y<.3 then return face(NOSE+.2,M.unit({0,.7,-.71}))(from,to) end
+                    return ahead_of(from,to)
+                end
+                return flat(from,to)
+            end)
+            check(in_manual(w,wheelie(30,6),12)==nil,"the manual rides at it")
+            return pushed(w)
+        end
+        local walled,open=quarter(face(NOSE+.6,M.unit({0,.17,-.98}))),quarter(flat)
+        check(math.abs(walled-open)<500,"a quarter pipe ahead of a manual is not a wall: "..walled.." against "..open)
+    end)
+    case(function() -- A held manual is not a fall; a bike gone over backwards still is.
+        local w=harness(flat)
+        check(in_manual(w,wheelie(36,4),120)==nil,"36 degrees on the rear wheel rides on")
+        local over=harness(flat)
+        local at=in_manual(over,wheelie(70,4),40)
+        check(at==18-3,"70 degrees from the surface ends after its .3 s: "..tostring(at))
     end)
     return {cases=cases,assertions=n,native_authority=false,constructed=true}
 end

@@ -32,6 +32,26 @@ function Ground.bump(at,height,length)
     return {height=function(x,z) local s=u(z);if s<=0 or s>=1 then return 0 end;return height*.5*(1-math.cos(2*math.pi*s)) end,
         grad=function(x,z) local s=u(z);if s<=0 or s>=1 then return 0,0 end;return 0,height*math.pi*math.sin(2*math.pi*s)/length end}
 end
+-- A kicker across the road from z=at: a face this steep up to a deck this high, curved into at its foot and over at
+-- its lip along blend metres.
+function Ground.kicker(at,angle,blend,top)
+    local k=math.tan(angle)
+    local lip=at+top/k
+    local function height(z)
+        if z<=at then return 0 end
+        if z<=at+blend then return k*(z-at)^2/(2*blend) end
+        if z<=lip then return k*(z-at-blend/2) end
+        if z<=lip+blend then local d=z-lip;return k*(lip-at-blend/2)+k*d-k*d*d/(2*blend) end
+        return k*(lip-at-blend/2)+k*blend/2
+    end
+    local function slope(z)
+        if z<=at or z>=lip+blend then return 0 end
+        if z<=at+blend then return k*(z-at)/blend end
+        if z<=lip then return k end
+        return k*(1-(z-lip)/blend)
+    end
+    return {height=function(x,z) return height(z) end,grad=function(x,z) return 0,slope(z) end}
+end
 local function turned(yaw) return {0,math.sin(yaw/2),0,math.cos(yaw/2)} end
 local function place(ground,speed,yaw)
     local body,wheels=Forces.proposed_body(),Forces.proposed_wheels()
@@ -486,6 +506,29 @@ function T.run()
             end
         end
     end)
+    case(function() -- A held manual rides over a bump or a kicker at a jog: the throw above 17.9 degrees is the lift's alone.
+        -- The offset is measured along the surface under the rear wheel, so a rising face reads a bike at 34 degrees
+        -- to level as about 17 to its ground. With the throw allowed there in a held manual, it threw the bike up
+        -- the face at 450 to 630 N*m, and over the crest the bike went past its balance and over backwards (89 to
+        -- 90 degrees). With the throw ending at 17.9 it rode on at 34 to 38.
+        for _,row in ipairs({
+            {what="an 8 cm bump .6 m long at 2 m/s",ground=Ground.bump(4.5,.08,.6),speed=2,m=1,pitch=36.4},
+            {what="an 8 cm bump .8 m long at 2.5 m/s",ground=Ground.bump(4.5,.08,.8),speed=2.5,m=.88,pitch=34.4},
+            {what="an 8 cm bump .8 m long at 3 m/s",ground=Ground.bump(4.5,.08,.8),speed=3,m=1,pitch=36.4},
+            {what="a 16 degree kicker onto a 20 cm deck at 4 m/s",ground=Ground.kicker(6,math.rad(16),.3,.2),speed=4,m=.88,pitch=34.4},
+        }) do
+            local most,last=-math.huge,nil
+            local ride=run({steps=215,speed=row.speed,ground=row.ground,controls=function(step) return {manual=step>15 and row.m or 0} end,
+                each=function(step,body,out)
+                    local p=pitch_of(body)
+                    most=math.max(most,p)
+                    if step==215 then last={pitch=p,active=out.manual_active} end
+                end})
+            check(ride.refused==0 and most<45,string.format("%s at m=%.2f: no fall, at most %.1f degrees",row.what,row.m,most))
+            check(last.active==true and math.abs(last.pitch-row.pitch)<=1.5,
+                string.format("%s: the manual is still held after it at %.1f degrees",row.what,last.pitch))
+        end
+    end)
     case(function() -- Too far back: past where the rider can hold it the bike goes over, B saves it, and inside the window it comes back.
         local over
         run({steps=60,speed=4,pitch=46,controls=function() return {manual=1} end,each=function(step,body)
@@ -628,6 +671,87 @@ function T.run()
             -- The speed along the surface, not along the pitched body: a 28 degree manual came down at 1.13 m/s.
             check(down_speed and down_speed<=t.manual_min_speed+.05,what..": the manual coasts down to a walk: "..tostring(down_speed))
         end
+    end)
+    case(function() -- Up a street grade with A and the stick held from a stop: one lift, then the rider pedals on up.
+        -- Trial mn5, up a 10 degree grade: pedalled to the start speed, the front lifted, the bike fell below a walk
+        -- in .4 s, the front came down and the rider pedalled again, every 1.6 s. Here, before the manual waited for
+        -- the stick to be let go, it lifted seven times in 10 s up 8% and 10% and five up 17.6%, and the cranks
+        -- started and stopped 10 to 14 times.
+        for _,grade in ipairs({.08,.1,.176}) do
+            local lifts,up,switches,last=0,false,0,nil
+            local ride=run({steps=600,ground=Ground.plane(0,grade),controls=function() return {pedal=1,manual=.5} end,
+                each=function(step,body,out,wheels,samples)
+                    local front=gap(samples[1])
+                    if front>.05 and not up then up=true;lifts+=1 elseif front<=.005 and up then up=false end
+                    if last~=nil and last~=out.pedaling then switches+=1 end
+                    last=out.pedaling
+                end})
+            local what=string.format("up %.1f%%",grade*100)
+            check(ride.refused==0 and lifts==1,what..": the front lifts once in 10 s: "..lifts)
+            check(switches<=3,what..": the cranks stop and start "..switches.." times")
+            check(last==true,what..": and the rider is pedalling up the hill at the end")
+        end
+    end)
+    case(function() -- A manual that slowed to a walk starts again once the stick has been let go; one B put down, once B is.
+        local t=Forces.tuning()
+        -- On the flat from a stop with A held: up at the start speed, coasting down to a walk, pedalled on with the
+        -- stick still held and no second lift at the start speed. Let go for half a second and pulled again, it lifts.
+        local lifts,up,down_speed,pedalled={},false,nil,false
+        local ride=run({steps=720,controls=function(step)
+            return {pedal=1,manual=(step<=480 or step>510) and .5 or 0}
+        end,each=function(step,body,out,wheels,samples)
+            local front=gap(samples[1])
+            if front>.05 and not up then up=true;lifts[#lifts+1]=step
+            elseif front<=.005 and up then up=false;down_speed=down_speed or M.length(body.linear_velocity) end
+            if step>420 and step<=480 and out.pedaling then pedalled=true end
+        end})
+        check(ride.refused==0 and lifts[1] and lifts[1]*h<1,"the front lifts from a stop: "..tostring(lifts[1]))
+        check(down_speed and down_speed<=t.manual_min_speed+.05,"and comes down at a walk: "..tostring(down_speed))
+        check(pedalled and not (lifts[2] and lifts[2]<=510),"the rider pedals on with the stick held, and it does not lift: "..tostring(lifts[2]))
+        check(#lifts==2 and lifts[2]>510 and (lifts[2]-510)*h<=.3,"let go and pulled again, it lifts: "..tostring(lifts[2]))
+        -- B puts a manual down and stops the bike, the stick held: let go of B, A pedals it to the start speed and the
+        -- front lifts, as it did before the manual waited for the stick.
+        local braked,relift=false,nil
+        run({steps=420,speed=4,controls=function(step)
+            if step<=15 then return {} end
+            return {manual=.5,brake=step>105 and step<=225 and 1 or 0,pedal=step>225 and 1 or 0}
+        end,each=function(step,body,out,wheels,samples)
+            if step>105 and step<=225 and gap(samples[1])<=.005 then braked=true end
+            if step>225 and not relift and gap(samples[1])>.05 then relift=step end
+        end})
+        check(braked and relift and (relift-225)*h<1.5,"after B the held stick lifts the front again: "..tostring(relift))
+    end)
+    case(function() -- Up a kerb ramp onto the sidewalk, a manual started on the ramp still reaches its angle.
+        -- Trial mn4: the stick held at .88 from 2.4 degrees up a kerb ramp. The rear wheel went light over the ramp's
+        -- crest, struck the 5 cm lip onto the sidewalk and landed from it, each a push up under the rear wheel that
+        -- took the front's rise at 20 to 25 degrees, and the bike crawled at 19 to 21 degrees for 1.4 s instead of
+        -- going on to 35. The throw ended at 17.9 degrees, where the weight shift alone only just holds the bike. The
+        -- ramp is mn4's, as its rear hub measured it, from the rear hub's start.
+        local points={{2.40,0},{2.55,.020},{3.40,.068},{4.80,.110},{5.93,.144},{6.55,.145},{7.10,.196}}
+        local back=G.rear_axle[3]-G.com[3]
+        local function piece(z)
+            z-=back
+            if z<=points[1][1] then return nil,points[1][2] end
+            if z>=points[#points][1] then return nil,points[#points][2] end
+            for i=1,#points-1 do
+                local a,b=points[i],points[i+1]
+                if z<b[1] then local k=(b[2]-a[2])/(b[1]-a[1]);return k,a[2]+k*(z-a[1]) end
+            end
+        end
+        local kerb={height=function(x,z) local _,y=piece(z);return y end,grad=function(x,z) return 0,piece(z) or 0 end}
+        local function reaches(ground)
+            local at
+            local ride=run({steps=170,speed=5.75,ground=ground,controls=function(step)
+                return {pedal=step<33 and 1 or 0,manual=step>=36 and .88 or nil}
+            end,each=function(step,body) if not at and pitch_of(body)>=30 then at=step*h end end})
+            return ride,at
+        end
+        local over,reached=reaches(kerb)
+        local flat,flat_reached=reaches(Ground.plane(0,0))
+        check(over.refused==0 and flat.refused==0,"every step of both rides is sent")
+        check(reached and flat_reached and reached-flat_reached<=.25,
+            string.format("over the kerb the manual reaches 30 degrees within .25 s of the flat road: %s against %s",
+                tostring(reached),tostring(flat_reached)))
     end)
     case(function() -- A hop from any manual pops level: the rider pushes the bars forward on either side of the balance.
         -- With the law past the balance the pop was a 156 N*m nudge: m=.85 landed at 9 degrees and m=.9 at 33, on the

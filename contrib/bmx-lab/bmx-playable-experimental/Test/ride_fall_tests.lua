@@ -55,10 +55,15 @@ local function harness(ground)
         buttons={a=false,b=false,right_stick=false,lb=false,rb=false}}
     local source={input_ok=true,phase="capturing",generation=1,lease_handle=lease,
         sample={user=0,sequence="77",source_epoch="78",context_generation="79",observation_serial="80",observed_ms="1000",packet=9,pad=pad}}
-    -- The real stage, behind a recorder of the controls Ride sends it.
+    -- The real stage, behind a recorder of the controls Ride sends it and the step it previews from them.
     local stage=Stage.new()
     local force={hop_policy=stage.hop_policy,tuning=stage.tuning}
-    function force.preview(_,...) w.controls=select(5,...);return stage:preview(...) end
+    function force.preview(_,...)
+        w.controls=select(5,...)
+        local model,candidate=stage:preview(...)
+        w.model=model
+        return model,candidate
+    end
     function force._adopt(_,...) return stage:_adopt(...) end
     function force.invalidate_continuity() return stage:invalidate_continuity() end
     function force.admit_measured(_,...) return stage:admit_measured(...) end
@@ -779,6 +784,87 @@ function T.run()
             if manual and #w.submits>before then braked=math.min(braked,w.submits[#w.submits].force.z) end
         end
         check(manual and braked< -1000,"the car ahead brakes the bike in its manual: "..braked)
+    end)
+    case(function() -- A kerb's bevel under the rear wheel of a manual does not hide the car: the lanes stay on the ground.
+        -- In a manual the lanes lie on the ground under the rear wheel. A bevel row there ({0,.35,-.94}) laid them
+        -- about 70 degrees over for its step, and the car at stopping distance was not seen.
+        local bevel=M.unit({0,.35,-.94})
+        local function crossing(car)
+            local over=false
+            local w=harness(function(from,to,count,i)
+                if over and count==2 and i==2 then return hit(from,to,0,bevel) end
+                return car(from,to)
+            end)
+            w.prompt=true
+            local pose=wheelie(32,7)
+            check(steps(w,pose,3)==nil,"riding at the car")
+            w.set_pad(-.53)
+            local rows,manual={},false
+            for k=1,24 do
+                over=k==13
+                local before=#w.submits
+                local out=w.step(pose)
+                check(not out.stop_requested and #w.submits>before,"step "..k.." of the crossing is sent")
+                local row=out.metrics.samples[#out.metrics.samples]
+                -- Ride lays the lanes level for the manual of the step it accepted before.
+                rows[k]={push=w.submits[#w.submits].force.z,seen=row.ahead_gap~=nil,manual=manual}
+                manual=w.model.manual_active==true
+            end
+            return rows
+        end
+        local car,road=crossing(face(NOSE+.5)),crossing(flat)
+        -- The bevel's row is a hard knock for the kernel too, which loses the manual for a step after it; the lanes
+        -- are then on the bike, pitched past where a car's face counts as one. That step is the kernel's, not this.
+        local held=0
+        for k=8,24 do
+            if car[k].manual then held+=1;check(car[k].seen,"in the manual the car is seen on step "..k) end
+        end
+        check(car[13].manual and held>=14,"the manual is held over the bevel and through most of the crossing: "..held)
+        check(car[13].push-road[13].push< -5000,"and the stop pushes on the bevel's step: "..car[13].push.." against "..road[13].push)
+    end)
+    case(function() -- A slow manual over a kerb's bevel comes back after the bevel's step, as a faster one does.
+        -- The manual's speed is taken along the ground under the wheels, which the bevel's row tilts nearly upright
+        -- for its step: 1.6 to 2.5 m/s read .53 to .84. Read as a manual that had slowed to a walk, it kept the manual
+        -- from starting again until the stick was let go, and the front came down onto the sidewalk.
+        local bevel=M.unit({0,.35,-.94})
+        for _,speed in ipairs({1.6,2,2.5,4}) do
+            local over=false
+            local w=harness(function(from,to,count,i)
+                if over and count==2 and i==2 then return hit(from,to,0,bevel) end
+                return flat(from,to)
+            end)
+            w.prompt=true
+            local pose=wheelie(32,speed)
+            check(steps(w,pose,3)==nil,"riding at the kerb at "..speed.." m/s")
+            w.set_pad(-.53)
+            local line=""
+            for k=1,40 do
+                over=k==13
+                check(not w.step(pose).stop_requested,"step "..k.." over the kerb at "..speed.." m/s")
+                line..=w.model.manual_active and "M" or "."
+            end
+            check(string.match(line,"^%.*M+%.?M+$")~=nil and #string.match(line,"M+$")>=20,
+                "at "..speed.." m/s the manual is back a step after the bevel and held to the end: "..line)
+        end
+    end)
+    case(function() -- Going over the bars at a car from a manual, the manual is let go from the crash's first step.
+        -- The pitched bike's own lanes do not count a car's face as one; the manual's level lanes find it already close.
+        local w=harness(face(NOSE+.3))
+        w.prompt=true
+        local pose=wheelie(32,7)
+        check(steps(w,pose,3)==nil,"riding at the car")
+        w.set_pad(-.53)
+        local first,sent,before_crash=nil,nil,false
+        for k=1,20 do
+            local before=#w.submits
+            check(not w.step(pose).stop_requested and #w.submits>before,"step "..k.." is sent")
+            -- The crash's torque, nose down on top of the stage's, marks the step it starts.
+            if not first and w.submits[#w.submits].torque.x-w.model.torque[1]>1000 then first,sent=k,w.controls end
+            if not first then before_crash=before_crash or w.controls.manual>.4 end
+        end
+        check(before_crash and first,"the manual is up before the crash comes: "..tostring(first))
+        check(sent.manual==0 and sent.nose_manual==0 and sent.pedal==0,
+            "and the crash's first step sends no manual: "..sent.manual.." "..sent.nose_manual.." "..sent.pedal)
     end)
     case(function() -- A quarter pipe ahead of a manual is still a ramp, not a wall.
         local function quarter(ahead_of)

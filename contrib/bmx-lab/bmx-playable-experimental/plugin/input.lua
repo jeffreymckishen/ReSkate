@@ -22,6 +22,11 @@ local defaults = {
     manual_hop_back_threshold = 0.85,
 }
 
+-- Held time is a sum of steps: whole milliseconds from Mapping, or the native step of 1/60 s in float32
+-- (.01666666567) offline, six of which come to .0999999940. Compared within this much, both reach a threshold on
+-- the same step; within 1e-9 the offline world entered and carried a manual a step later than the game.
+local HELD_SLACK = 1e-6
+
 local function finite(value)
     return type(value) == "number" and value == value and value > -math.huge and value < math.huge
 end
@@ -152,7 +157,7 @@ function Mapper:_ground(rear, seconds, out)
     if not self._hop_pending and self._rear_armed and back then
         self._hop_pending, self._rear_armed = true, false
         self._charge_seconds, self._release_seconds = 0, 0
-        self._manual_carry = live and (self._manual_established or self._manual_seconds >= settings.manual_carry_seconds - 1e-9)
+        self._manual_carry = live and (self._manual_established or self._manual_seconds >= settings.manual_carry_seconds - HELD_SLACK)
         self._manual_established = self._manual_carry
     end
     if self._hop_pending then
@@ -193,10 +198,10 @@ function Mapper:_ground(rear, seconds, out)
         if self._manual_side ~= nil and self._manual_side ~= side then self._manual_seconds, live = 0, false end
         self._manual_side = side
         self._manual_seconds = self._manual_seconds + seconds
-        if live or self._manual_seconds >= settings.manual_entry_seconds - 1e-9 then
+        if live or self._manual_seconds >= settings.manual_entry_seconds - HELD_SLACK then
             if side < 0 then
                 out.manual, self._manual_held = balance, true
-                if self._manual_seconds >= settings.manual_carry_seconds - 1e-9 then self._manual_established = true end
+                if self._manual_seconds >= settings.manual_carry_seconds - HELD_SLACK then self._manual_established = true end
             else
                 out.nose_manual = balance
             end

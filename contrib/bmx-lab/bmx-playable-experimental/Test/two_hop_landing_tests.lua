@@ -328,6 +328,34 @@ function Tests.run()
                 "World.controls matches Mapping "..(grounded and "on the ground" or "in the air")..": "..copy.manual.." "..c.manual)
         end
     end
+    do -- sim_world enters a manual, and carries one into a hop's charge, on the same step as Mapping.
+        -- Mapping times the stick in whole milliseconds, sim_world in native steps of 1/60 s in float32, six of which
+        -- come to .0999999940: short of the .10 s entry by more than input.lua allowed, so the offline world entered
+        -- a manual a step after the game did, and fifteen fell short of the .25 s carry the same way.
+        local function simulated(pads)
+            local world=World.new({terrain=terrain,speed=4})
+            world:step({}) -- The neutral pad the mapper starts from, as Mapping's prime.
+            local out={}
+            for i,pad in ipairs(pads) do out[i]=world:step(pad).manual end
+            return out
+        end
+        local function mapped(pads)
+            local d=driver()
+            local out={}
+            for i,pad in ipairs(pads) do out[i]=d.step(pad).manual end
+            return out
+        end
+        local entry,carry={},{}
+        for i=1,12 do entry[i]={right_y=-.53} end
+        for i=1,20 do carry[i]={right_y=i<=15 and -.53 or -1} end
+        for _,row in ipairs({{"entry",entry},{"carry",carry}}) do
+            local name,pads=row[1],row[2]
+            local sim,game=simulated(pads),mapped(pads)
+            for i=1,#pads do
+                check(math.abs(sim[i]-game[i])<1e-9,string.format("%s step %d: sim_world sends %.3f where Mapping sends %.3f",name,i,sim[i],game[i]))
+            end
+        end
+    end
     return {cases=3,assertions=n,steps=finished_step,hop_commands=commands,hop_applications=applications,
         first_landing_release_step=release_step,second_press_step=second_press_step,native_actions=0,game_evidence=false}
 end

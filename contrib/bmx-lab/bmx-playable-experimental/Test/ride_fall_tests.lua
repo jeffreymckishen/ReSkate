@@ -847,6 +847,90 @@ function T.run()
                 "at "..speed.." m/s the manual is back a step after the bevel and held to the end: "..line)
         end
     end)
+    case(function() -- A kerb's bevel read on two rows in a row, at a slow manual's 2 m/s, still does not hide the car.
+        local bevel=M.unit({0,.35,-.94})
+        local over=false
+        local w=harness(function(from,to,count,i)
+            if over and count==2 and i==2 then return hit(from,to,0,bevel) end
+            return face(NOSE+.5)(from,to)
+        end)
+        w.prompt=true
+        local pose=wheelie(32,2)
+        check(steps(w,pose,3)==nil,"riding at the car")
+        w.set_pad(-.53)
+        local line,missed="",0
+        for k=1,24 do
+            over=k==13 or k==14
+            local out=w.step(pose)
+            check(not out.stop_requested,"step "..k.." of the crossing")
+            local seen=out.metrics.samples[#out.metrics.samples].ahead_gap~=nil
+            local manual=w.model.manual_active==true
+            line..=(manual and "M" or ".")..(seen and "S" or "_")
+            if k>=8 and manual and not seen then missed+=1 end
+        end
+        check(missed==0 and string.match(line,"MSMSMS$")~=nil,"in the manual the car is seen on every step from the 8th: "..line)
+    end)
+    case(function() -- In a manual up a ramp met at a kink, the car stop takes the ramp as the ground and sees a car on it in time.
+        -- The ramp's normal is past 18 degrees from level and more than .2 rad from the road's, so it was never taken
+        -- as the ground: the lanes stayed on the road behind and ran into the ramp ahead. A car 3 m up a 20 degree
+        -- ramp was first seen 13 cm off at 7 m/s, and one up 25 degrees only once it was reached. Rays are answered
+        -- by a plain ray and plane scene, every ray the same way, the rear hub rolling along the road and then
+        -- parallel to the ramp, the bike held 32 degrees up from the ground under it.
+        local function scene(theta,wall_at)
+            local c,sn=math.cos(theta),math.sin(theta)
+            local normal={0,c,-sn}
+            local function height(z) return z<0 and 0 or z*sn/c end
+            local base={0,wall_at*sn,wall_at*c}
+            local surfaces={
+                {p={0,0,0},n={0,1,0},ok=function(q) return q[3]<0 end},
+                {p={0,0,0},n=normal,ok=function(q) return q[3]>=0 end},
+                {p=base,n={0,0,-1},ok=function(q) local k=q[2]-height(q[3]) return k>=0 and k<=1.5 end},
+            }
+            return function(from,to)
+                local f,d={from.x,from.y,from.z},{to.x-from.x,to.y-from.y,to.z-from.z}
+                local best,bn,bp
+                for _,surface in surfaces do
+                    local den=M.dot(d,surface.n)
+                    if den<0 then
+                        local t=M.dot(M.sub(surface.p,f),surface.n)/den
+                        if t>=0 and t<=1 then
+                            local q=M.add(f,M.mul(d,t))
+                            if surface.ok(q) and (not best or t<best) then best,bn,bp=t,surface.n,q end
+                        end
+                    end
+                end
+                if not best then return clear() end
+                return {status="hit",position=vector.create(bp[1],bp[2],bp[3]),fraction=best,normal=vector.create(bn[1],bn[2],bn[3]),
+                    surface_velocity=vector.create(0,0,0),normal_available=true,surface_velocity_available=true,motion="measured"}
+            end
+        end
+        local function first_seen(degrees,speed)
+            local theta=math.rad(degrees)
+            local w=harness(scene(theta,3))
+            w.prompt=true
+            local touch=-R*math.tan(theta/2)
+            local s=touch-speed*h*16
+            local first,manual
+            for k=1,3+16+24 do
+                if k==4 then w.set_pad(-.53) end
+                local hub,slope={0,R,s},0
+                if s>touch then hub,slope=M.add({0,R,touch},M.mul({0,math.sin(theta),math.cos(theta)},s-touch)),theta end
+                local rotation=pitch_of(-(math.rad(32)+slope))
+                local p=M.sub(hub,M.turn(rotation,M.sub(Geometry.rear_axle,Geometry.com)))
+                local out=w.step({position=p,rotation=rotation,velocity=M.mul({0,math.sin(slope),math.cos(slope)},speed)})
+                check(not out.stop_requested,"step "..k.." up the "..degrees.." degree ramp")
+                local gap=out.metrics.samples[#out.metrics.samples].ahead_gap
+                if slope>0 and gap and not first then first,manual=gap,w.model.manual_active==true end
+                s+=speed*h
+            end
+            return first,manual
+        end
+        for _,degrees in ipairs({20,25}) do
+            local first,manual=first_seen(degrees,7)
+            check(manual==true and first and first>.8,string.format("up %d degrees at 7 m/s, in the manual the car is first seen %s m off",
+                degrees,tostring(first and string.format("%.2f",first))))
+        end
+    end)
     case(function() -- Going over the bars at a car from a manual, the manual is let go from the crash's first step.
         -- The pitched bike's own lanes do not count a car's face as one; the manual's level lanes find it already close.
         local w=harness(face(NOSE+.3))

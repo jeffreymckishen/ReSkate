@@ -83,7 +83,9 @@ local AHEAD_FACE_UP, AHEAD_FACING = .5, .25
 local AHEAD_LOW = {0,.15,.73}
 -- In a manual the lanes lie on the ground under the rear wheel. A new ground this close to the last one taken (the
 -- cosine of the kernel's curvature_step_limit, .2 rad in a step) is the same surface curving, as up a quarter pipe.
+-- One the rear has stood on for AHEAD_GROUND_ROWS rows in a row, each this close to the one before, is ground too.
 local AHEAD_GROUND_TURN = math.cos(.2)
+local AHEAD_GROUND_ROWS = 3
 -- The stop is the landing law turned sideways, on the forecast this step's command acts on: closing speed is let
 -- through down to what this deceleration can still take out before the face, on at most this force. At a face it
 -- bounces back this share of the speed, so the bike can steer away, and pedalling stops within the pedal gap.
@@ -1403,18 +1405,23 @@ local function ahead(s,frame,body,options,contact)
     -- from 30 degrees a car's vertical face is too steep to its up to count as one, so a car was ridden into. The
     -- lanes are laid as on the bike set down level about its rear hub, on the ground under the rear wheel; the
     -- front then reads about .12 m ahead of the lifted tyre at 30 degrees, so a car is stopped at slightly early.
-    -- The ground is the rear ray's normal only while it is near level, or near the last ground taken: a kerb's lip
-    -- or bevel under the rear wheel ({0,.35,-.94}) laid the lanes about 70 degrees over for the step, and the car
-    -- stop saw nothing. Otherwise the last ground stands in, and with none the lanes stay on the bike.
+    -- The ground is the rear ray's normal only while it is near level, near the last ground taken, or held for
+    -- AHEAD_GROUND_ROWS rows: a kerb's lip or bevel under the rear wheel ({0,.35,-.94}) laid the lanes about 70
+    -- degrees over for the step, and the car stop saw nothing. Otherwise the last ground stands in, and with none the
+    -- lanes stay on the bike. Taken only near level or near the last, a ramp met at a kink steeper than 18 degrees
+    -- was never taken: the lanes stayed on the road behind, ran into the ramp ahead, and a car 3 m up a 20 degree
+    -- ramp was first seen 13 cm off at 7 m/s, one up 25 degrees not before it was reached.
     local rear=contact.samples[2]
     local ground=rear and rear.contact.status=="hit" and rear.separation<=.02 and M.unit(rear.contact.normal) or nil
     if ground then
         local world=M.unit(M.mul(s.force.tuning.gravity,-1))
-        local last=s.ahead_ground
-        if world and M.dot(ground,world)>=CURB_FLAT or last and M.dot(ground,last)>=AHEAD_GROUND_TURN then
+        local last,seen=s.ahead_ground,s.ahead_rear
+        local held=seen and M.dot(ground,seen)>=AHEAD_GROUND_TURN and (s.ahead_held or 1)+1 or 1
+        s.ahead_rear,s.ahead_held=ground,held
+        if world and M.dot(ground,world)>=CURB_FLAT or last and M.dot(ground,last)>=AHEAD_GROUND_TURN or held>=AHEAD_GROUND_ROWS then
             s.ahead_ground=ground
         else ground=last end
-    end
+    else s.ahead_rear,s.ahead_held=nil,nil end
     if s.manual_active and ground then
         local level=M.unit(M.sub(forward,M.mul(ground,M.dot(forward,ground))))
         if level then

@@ -573,13 +573,23 @@ function T.run()
                 ..(struck[1][1] and " struck "..struck[1][1][2] or "").." at "..phase)
             check(#struck[2]==1 and math.abs(struck[2][1][2]-.15)<.005,"and the rear, rolled into it after, strikes it all: "
                 ..#struck[2]..(struck[2][1] and " struck "..struck[2][1][2] or "").." at "..phase)
-            -- 4.5 cm short a step before and 5 to 6 cm short at the edge: it strikes, for no more than it was short there.
-            lift=fall(-.045,19)
-            _,struck=roll_over(kerb(edge_at(lift,19,phase),.15),7.4,STEPS,lift)
-            local short=.045+.05*phase
-            local front=struck[1][1] and struck[1][1][2]
-            check(#struck[1]==1 and front>.04 and front<=short+.001,"a front tyre short at the edge strikes no more than that: "
-                ..#struck[1].." struck "..tostring(front).." of "..short.." at "..phase)
+        end
+        -- Short at the edge, wherever in the step it lies: it strikes for the depth there, give or take half the 5 cm
+        -- the tyre came down in the step. 2 cm short a step before and late in the step is 6.5 cm short at the edge.
+        for _,over in ipairs({-.045,-.02}) do
+            for _,phase in ipairs({.1,.3,.5,.7,.9}) do
+                local lift=fall(over,19)
+                local _,struck=roll_over(kerb(edge_at(lift,19,phase),.15),7.4,STEPS,lift)
+                local short=-over+.05*phase
+                local front=struck[1][1] and struck[1][1][2]
+                if short>=.05 then
+                    check(#struck[1]==1 and math.abs(front-short)<=.026,"a front tyre short at the edge strikes about that: "
+                        ..#struck[1].." struck "..tostring(front).." of "..short.." at "..phase)
+                else
+                    check(#struck[1]<=1 and (front or 0)<=short+.026,"a tyre a little short strikes no more than half a step over: "
+                        ..#struck[1].." struck "..tostring(front).." of "..short.." at "..phase)
+                end
+            end
         end
     end)
     case(function() -- A kerb struck while braking for a car: its push adds to the stop's rather than taking its place.

@@ -782,6 +782,7 @@ function T.run()
         pose.velocity={0,0,.8}
         check(steps(w,pose,3)==nil,"the hit")
         check(w.controls.manual==0 and w.controls.nose_manual==0,"no manual reaches the stage in a crash: "..tostring(w.controls.manual))
+        check(w.controls.nose_manual_held==false,"nor a stick held for a nose manual: "..tostring(w.controls.nose_manual_held))
     end)
     case(function() -- In a manual a parked car is still seen: pitched 32 degrees, the bike's own lanes climbed over it.
         local w=harness(face(NOSE+.5))
@@ -998,6 +999,121 @@ function T.run()
         local over=harness(flat)
         local at=in_nose_manual(over,nose_down(70,4),40)
         check(at==18-3,"70 degrees over the front ends after its .3 s, as over the back does: "..tostring(at))
+    end)
+    case(function() -- In a nose manual a parked car is still seen: the lanes are laid from the front wheel on the ground.
+        -- Laid on the bike pitched nose down, the lanes started .44 to .56 m up at 20 degrees and a car .5 m past the
+        -- tyre at 7 m/s asked no push (-29 N).
+        local knee=.5 -- How high ride_runtime's three high lanes (AHEAD_RAYS) sit over the ground they are laid on.
+        for _,degrees in ipairs({20,25.6,31,36}) do
+            for _,gap in ipairs({.5,1}) do
+                -- The height each of the three high lanes starts at, on the last look.
+                local car,heights=face(NOSE+gap),{}
+                local w=harness(function(from,to,count,i)
+                    if count==4 and i<=3 then heights[i]=from.y end
+                    return car(from,to)
+                end)
+                local pose=nose_down(degrees,7)
+                check(steps(w,pose,3)==nil,"riding at the car")
+                w.set_pad(.53)
+                local braked,engaged=0,nil
+                for i=1,12 do
+                    local before=#w.submits
+                    check(not w.step(pose).stop_requested,"riding at the car in a nose manual at "..degrees.." degrees")
+                    if not engaged and w.model.nose_manual_active==true then engaged=i end
+                    if engaged and #w.submits>before then braked=math.min(braked,w.submits[#w.submits].force.z) end
+                end
+                check(engaged and engaged<=12,"the stick puts the bike in the nose manual at "..degrees.." degrees: "..tostring(engaged))
+                for i=1,3 do
+                    check(heights[i] and math.abs(heights[i]-knee)<.01,string.format(
+                        "lane %d starts at the knees over the ground at %.1f degrees: %s",i,degrees,tostring(heights[i])))
+                end
+                if gap<1 then
+                    check(braked<= -5000,string.format("a car %.1f m past the tyre brakes a nose manual at %.1f degrees: %.0f",gap,degrees,braked))
+                else
+                    check(braked>= -100,string.format("one %.1f m past it asks nothing yet at %.1f degrees: %.0f",gap,degrees,braked))
+                end
+            end
+        end
+    end)
+    case(function() -- A kerb's bevel under the front wheel of a nose manual does not hide the car.
+        -- In a nose manual the lanes lie on the ground under the front wheel, so a bevel row there ({0,.35,-.94}) is
+        -- the rear manual's bevel under its rear wheel. Laid on the bike, the car was missed on every nose manual
+        -- step from the 8th, 16 of 16 at 2 m/s.
+        local bevel=M.unit({0,.35,-.94})
+        local function crossing(car,speed,rows)
+            local over=false
+            local w=harness(function(from,to,count,i)
+                if over and count==2 and i==1 then return hit(from,to,0,bevel) end
+                return car(from,to)
+            end)
+            w.prompt=true
+            local pose=nose_down(28,speed)
+            check(steps(w,pose,3)==nil,"riding at the car")
+            w.set_pad(.53)
+            local out_rows,nose={},false
+            for k=1,24 do
+                over=k==13 or rows==2 and k==14
+                local before=#w.submits
+                local out=w.step(pose)
+                check(not out.stop_requested,"step "..k.." of the crossing at "..speed.." m/s")
+                -- Ride lays the lanes for the nose manual of the step it accepted before.
+                out_rows[k]={push=#w.submits>before and w.submits[#w.submits].force.z or nil,
+                    seen=out.metrics.samples[#out.metrics.samples].ahead_gap~=nil,nose=nose}
+                nose=w.model.nose_manual_active==true
+            end
+            return out_rows
+        end
+        for _,rows in ipairs({1,2}) do
+            for _,speed in ipairs({2,7}) do
+                local car=crossing(face(NOSE+.5),speed,rows)
+                local line,missed,held="",0,0
+                for k=1,24 do
+                    line..=(car[k].nose and "N" or ".")..(car[k].seen and "S" or "_")
+                    if k>=8 and car[k].nose then held+=1;if not car[k].seen then missed+=1 end end
+                end
+                local road=crossing(flat,speed,rows)
+                check(missed==0 and held>=10,string.format("over %d bevel row(s) at %d m/s the car is seen on every nose manual step from the 8th: %s",
+                    rows,speed,line))
+                if speed==7 then
+                    check(car[13].push and road[13].push and car[13].push-road[13].push<= -3000,
+                        string.format("and the stop pushes on the bevel's step: %s against %s",tostring(car[13].push),tostring(road[13].push)))
+                end
+            end
+        end
+    end)
+    case(function() -- A corner only a bar end meets is still met in a nose manual: the bar ends lead the tyre.
+        for _,degrees in ipairs({20,31}) do
+            for _,gap in ipairs({.1,.2,.3,.4}) do
+                local w=harness(face(NOSE+gap,nil,.2))
+                local pose=nose_down(degrees,7)
+                check(steps(w,pose,3)==nil,"riding at the corner")
+                w.set_pad(.53)
+                local braked,engaged=0,false
+                for _=1,12 do
+                    local before=#w.submits
+                    check(not w.step(pose).stop_requested,"riding at the corner in a nose manual")
+                    engaged=engaged or w.model.nose_manual_active==true
+                    if engaged and #w.submits>before then braked=math.min(braked,w.submits[#w.submits].force.z) end
+                end
+                check(engaged and braked<= -5000,string.format("a corner %.1f m past the tyre at %d degrees stops the nose manual: %.0f",
+                    gap,degrees,braked))
+            end
+        end
+    end)
+    case(function() -- Going over the bars from a nose manual, the stick is let go: the stage gets no held stick while the crash runs.
+        local w=harness(flat)
+        local pose=nose_down(28,7.5)
+        check(in_nose_manual(w,pose,10)==nil and w.model.nose_manual_active==true and w.controls.nose_manual_held==true,
+            "in a nose manual at speed")
+        pose.velocity={0,0,7.2}
+        check(steps(w,pose,1)==nil,"the first step of the hit")
+        pose.velocity={0,0,.8}
+        check(steps(w,pose,3)==nil,"the hit")
+        -- The crash's torque, nose down on top of the stage's, says it is running.
+        local crashing=w.submits[#w.submits].torque.x-w.model.torque[1]
+        check(crashing>1000,"over the bars: "..crashing)
+        check(w.controls.manual==0 and w.controls.nose_manual==0 and w.controls.nose_manual_held==false,
+            "no nose manual and no held stick reach the stage in a crash: "..tostring(w.controls.nose_manual).." "..tostring(w.controls.nose_manual_held))
     end)
     -- Where a drawn wheel's tyre touches down, the lowest point of its disc, against where the body's does.
     local function touch(m)

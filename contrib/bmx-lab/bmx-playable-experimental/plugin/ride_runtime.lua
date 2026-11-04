@@ -934,6 +934,7 @@ local function stop(s, reason)
     local text=tostring(reason or "unavailable")
     count_stop(s,text)
     s.manual_active=false
+    s.nose_manual_active=false
     if not s.stopped then
         s.stopped=true;s.generation+=1;s.issue=detail(text)
         score_stop(s,text)
@@ -1411,24 +1412,39 @@ local function ahead(s,frame,body,options,contact)
     -- lanes stay on the bike. Taken only near level or near the last, a ramp met at a kink steeper than 18 degrees
     -- was never taken: the lanes stayed on the road behind, ran into the ramp ahead, and a car 3 m up a 20 degree
     -- ramp was first seen 13 cm off at 7 m/s, one up 25 degrees not before it was reached.
-    local rear=contact.samples[2]
-    local ground=rear and rear.contact.status=="hit" and rear.separation<=.02 and M.unit(rear.contact.normal) or nil
+    -- In a nose manual the front wheel is the one on the ground, so the lanes are laid the same way about the front
+    -- hub, and the bar ends lead the tyre at every pitch, so the side lanes reach at least as far ahead as the bar ends
+    -- are. Laid on the bike pitched 20 to 36 degrees nose down, a car .5 m past the tyre at 7 m/s asked no push (-29
+    -- N), and neither did a corner only a bar end meets. With the side lanes at the level bike's bar lead, that corner
+    -- .3 m past the tyre at 20 degrees was braked at -4230 N, against -5429 with them.
+    local wheel=s.nose_manual_active and 1 or 2
+    local below=contact.samples[wheel]
+    local taken=false
+    local ground=below and below.contact.status=="hit" and below.separation<=.02 and M.unit(below.contact.normal) or nil
     if ground then
         local world=M.unit(M.mul(s.force.tuning.gravity,-1))
         local last,seen=s.ahead_ground,s.ahead_rear
         local held=seen and M.dot(ground,seen)>=AHEAD_GROUND_TURN and (s.ahead_held or 1)+1 or 1
         s.ahead_rear,s.ahead_held=ground,held
         if world and M.dot(ground,world)>=CURB_FLAT or last and M.dot(ground,last)>=AHEAD_GROUND_TURN or held>=AHEAD_GROUND_ROWS then
-            s.ahead_ground=ground
+            s.ahead_ground,taken=ground,true
         else ground=last end
     else s.ahead_rear,s.ahead_held=nil,nil end
-    if s.manual_active and ground then
+    local bar_lead=AHEAD_RAYS[2][3]
+    if (s.manual_active or s.nose_manual_active) and ground then
         local level=M.unit(M.sub(forward,M.mul(ground,M.dot(forward,ground))))
         if level then
             local g=s.geometry
-            local hub=M.add(body.center_of_mass,M.turn(q,M.sub(g.rear_axle,g.com)))
+            local axle=s.nose_manual_active and g.front_axle or g.rear_axle
+            local hub=M.add(body.center_of_mass,M.turn(q,M.sub(axle,g.com)))
             up=ground
-            origin=M.sub(M.sub(hub,M.mul(up,g.rear_axle[2])),M.mul(level,g.rear_axle[3]))
+            origin=M.sub(M.sub(hub,M.mul(up,axle[2])),M.mul(level,axle[3]))
+            if s.nose_manual_active then
+                for _,grip in ipairs({g.left_grip,g.right_grip}) do
+                    local at=M.add(body.center_of_mass,M.turn(q,M.sub(grip,g.com)))
+                    bar_lead=math.max(bar_lead,M.dot(M.sub(at,origin),level))
+                end
+            end
         end
     end
     local v=body.linear_velocity
@@ -1443,12 +1459,16 @@ local function ahead(s,frame,body,options,contact)
     local side=M.unit(M.cross(up,heading))
     if not side then return nil,"unread" end
     local front=contact.samples[1]
-    local under=front and front.contact.status=="hit" and M.unit(front.contact.normal) or nil
+    -- In a nose manual the front ray is also the ground's, so a row under it the lanes did not take, a kerb's bevel,
+    -- is not the ground a face is steep against either: at 2 m/s a bevel row ({0,.35,-.94}) under the front wheel
+    -- hid the car on its step.
+    local under=front and front.contact.status=="hit" and (taken or not s.nose_manual_active) and M.unit(front.contact.normal) or nil
     local h=frame.seconds
     local reach=math.clamp(speed*(2*h+.02)+speed*speed/(2*AHEAD_DECEL)+.4,AHEAD_MIN,AHEAD_MAX)
     local plan,parts={},{}
     for i,ray in ipairs({AHEAD_RAYS[1],AHEAD_RAYS[2],AHEAD_RAYS[3],AHEAD_LOW}) do
-        local part=M.add(M.add(origin,M.mul(side,ray[1])),M.add(M.mul(up,ray[2]),M.mul(heading,ray[3])))
+        local lead=(i==2 or i==3) and math.max(ray[3],bar_lead) or ray[3]
+        local part=M.add(M.add(origin,M.mul(side,ray[1])),M.add(M.mul(up,ray[2]),M.mul(heading,lead)))
         local from=M.sub(part,M.mul(travel,AHEAD_BEHIND))
         local to=M.add(from,M.mul(travel,reach+AHEAD_BEHIND))
         if not M.vec(from,100000) or not M.vec(to,100000) then return nil,"unread" end
@@ -1749,8 +1769,11 @@ local function observe(s,source_frame,raw,context)
     end
     local force_controls=copy(controls.force_controls)
     -- Going over the bars the rider lets go of everything: the front is left to the ordinary spring and the crash
-    -- torque, never held up by a manual.
-    if s.crash then force_controls.pedal,force_controls.manual,force_controls.nose_manual=0,0,0 end
+    -- torque, never held up by a manual. The stick is let go too, or the nose manual's air hold could keep the
+    -- bike's angle while it goes over the bars.
+    if s.crash then
+        force_controls.pedal,force_controls.manual,force_controls.nose_manual,force_controls.nose_manual_held=0,0,0,false
+    end
     force_controls.rotation_reserved=force_controls.rotation_reserved or companions.rotation_reserved==true
         or (s.barspin_preview~=nil and s.barspin_preview.requests.rotation_reserved==true)
     -- Solve from the state this command will act on. Accepted commands
@@ -1790,7 +1813,7 @@ local function observe(s,source_frame,raw,context)
         s.crash={speed=s.ahead_hit,steps=0,way=M.dot(body.linear_velocity,forward)<0 and -1 or 1,face=s.ahead.face}
         -- The rider lets go from this first step too, as for a crash already running. Set after that was done
         -- above, the step still sent the manual that holds the front up.
-        force_controls.pedal,force_controls.manual,force_controls.nose_manual=0,0,0
+        force_controls.pedal,force_controls.manual,force_controls.nose_manual,force_controls.nose_manual_held=0,0,0,false
     end
     -- Going over the bars tips the rays off the face. The tyre jammed at it stops the bike there: its travel
     -- along the ground is taken out while it is near the face, and only that, so it still falls.
@@ -1900,6 +1923,7 @@ local function observe(s,source_frame,raw,context)
         s.wheels=wheels
         -- The accepted step's manual, which the next step's look ahead reads.
         s.manual_active=model.manual_active==true
+        s.nose_manual_active=model.nose_manual_active==true
         -- The pose follows the accepted prediction, with the wheels it adopts;
         -- model_history names that step.
         s.pose=freeze(pose);s.drawn_ground=ground
@@ -1943,7 +1967,7 @@ function Ride.new(force_api,models,options)
         accepted_barspin=accepted_barspin,barspin_state=accepted_barspin and accepted_barspin:status() or nil,
         alignment_options=detached(options.alignment),geometry=detached(options.geometry or Geometry),
         wheels=Forces.proposed_wheels(),phase="inert",issue="native qualification required",generation=0,
-        pose=freeze(NEUTRAL_POSE),trick_fallbacks=0,manual_active=false,
+        pose=freeze(NEUTRAL_POSE),trick_fallbacks=0,manual_active=false,nose_manual_active=false,
         submitted=0,acknowledged=0,pending={},metrics=new_metrics(),backpressure_steps=0,
         continuity_pending=false,continuity_skipped_steps=0,continuity_invalidations=0,body_read_recoveries=0,
         input_queue={},input_staged=0,input_consumed=0,observed_steps=0,model_steps=0,

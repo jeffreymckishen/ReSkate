@@ -39,7 +39,7 @@ function Tests.run()
         end
         function R.skater.telemetry()
             if f.on_telemetry then f.on_telemetry() end
-            return {skater=true,airborne=f.airborne,teleport_pending=false,watch={valid=true,state=f.stock,ragdoll_known=true,ragdoll=false}}
+            return {skater=true,airborne=f.airborne,teleport_pending=false,watch={valid=true,state=f.stock,ragdoll_known=true,ragdoll=f.ragdoll==true}}
         end
         function R.storage.keys() if f.keys_raise then error("keys unavailable") end;return f.keys end
         function R.world.physics.prepare()
@@ -452,15 +452,33 @@ function Tests.run()
         f.latest=cleaned();f.stock=504;f.on_ready504=function()return true,2 end
         f.tick();f.await_mount();f.tick()
         check(f.mounts==2 and f.entry:status().phase=="riding","fresh504ACK and full survey still precede the new mounted session")
-        local expired=pending_fall();expired.tick();expired.now+=20000;expired.tick()
-        check(expired.entry:status().phase=="blocked" and not expired.entry:status().recovery_pending
-            and expired.toggles==0 and expired.mounts==1,"original stop+20s is never restarted or extended for known300")
+        -- A rider still down past stop+20 s used to end the recovery for good here. The ordinary Return now waits
+        -- for them, still with no stock input, and switches once they stand.
+        local expired=pending_fall();expired.tick();expired.now+=20000;expired.tick(5)
+        check(expired.entry:status().phase=="returning" and expired.entry:status().recovery_pending
+            and expired.toggles==0 and expired.mounts==1,"known300 past stop+20s waits on, with no stock input")
+        expired.stock=504;expired.tick()
+        check(expired.toggles==1 and expired.mounts==1,"standing up after it permits exactly the existing stock transaction")
         local unknown=pending_fall();unknown.ragdoll_known=false;unknown.tick()
         check(unknown.entry:status().phase=="blocked" and unknown.toggles==0,"unknown ragdoll context is never treated as a recoverable wait")
         local missing=pending_fall();missing.latest.stop_ms=nil;missing.tick()
         check(missing.entry:status().phase=="blocked" and missing.toggles==0,"missing original stop time cannot create a new recovery deadline")
         local changed=pending_fall();changed.tick();changed.level="other";changed.tick()
         check(changed.entry:status().phase=="blocked" and changed.toggles==0,"fresh level mismatch ends waiting before any stock request")
+        -- A knock-down reaches this wait with the rider in any state. One it cannot read, or a rider ragdolled on foot
+        -- after a known300, is left to the ordinary Return to wait for; both used to end the recovery for good.
+        local odd=pending_fall();odd.stock=0;odd.tick(5)
+        check(odd.entry:status().phase=="returning" and odd.entry:status().recovery_pending and odd.toggles==0,
+            "a state the wait cannot read waits on, with no stock input")
+        local rag=pending_fall();rag.tick();rag.stock=504
+        function rag.R.skater.telemetry()
+            return {skater=true,airborne=false,teleport_pending=false,
+                watch={valid=true,state=504,ragdoll_known=true,ragdoll=true,wipeouts=0}}
+        end
+        rag.on_stock=function() return false,"Stock request refused by fresh readiness or cancelled intent." end
+        rag.tick(5)
+        check(rag.entry:status().phase=="returning" and rag.entry:status().recovery_pending and rag.toggles==1,
+            "ragdolled on foot after a known300, Core is asked and refuses, and the Return waits")
     end)
     case("roll fall can recover after a separately completed Return",function()
         local f=fixture({two=true});f.riding()
@@ -791,6 +809,150 @@ function Tests.run()
         g.now+=184;g.tick()
         check(g.entry:status().phase=="blocked" and g.entry:status().detail:find("Return did not finish",1,true),
             "45 s in the game ends it")
+    end)
+    -- Core's answer to a stock request while the rider is down (bike_runtime_core.lua request_stock_toggle).
+    local DOWN="Stock request refused by fresh readiness or cancelled intent."
+    local function refused_while_down(f)
+        f.on_stock=function()
+            if f.ragdoll then return false,DOWN end
+            f.latest=cleaned();f.latest.stock_toggle_blocked=true;f.latest.cleanup_pending=true
+            return true
+        end
+    end
+    case("a knock-down mid-ride is a fall; the readiness text is still a plain Return",function()
+        local f=fixture({two=true,auto_return=true});f.riding()
+        fall(f,"rider was knocked down")
+        local s=f.entry:status()
+        check(s.fall_reason=="rider was knocked down" and s.recovery_pending and s.return_requested and f.stops==1,
+            "a knock-down starts Recover on its own")
+        local g=fixture({two=true,auto_return=true});g.riding()
+        g.focused=false;fall(g,"fresh sampled upright/focus/context/fall readiness lost")
+        s=g.entry:status()
+        check(s.return_requested and not s.recovery_pending and s.fall_reason==nil,
+            "the readiness text, as losing focus gives, goes back to the board")
+    end)
+    case("a rider kept down after a crash is returned once they stand, not stopped at 45 s",function()
+        -- loop3 (2026-11-04): the rider lay beside an SUV, Core refused every switch, and after 45 s the Return gave up for good.
+        local f=fixture({two=true,auto_return=true});f.riding()
+        fall(f,"hit something at 4.5 m/s")
+        f.latest=cleaned();f.ragdoll=true;refused_while_down(f)
+        for _=1,400 do f.now+=184;f.tick() end
+        local s=f.entry:status()
+        check(s.phase=="returning" and s.recovery_pending and f.toggles>=100,
+            "80 s down, asked every 500 ms or so all along, is still a Return: "..tostring(s.phase).." "..tostring(f.toggles))
+        check(f.entry:help_line()=="Waiting for the rider to get up.","while down the HUD says so")
+        local asked=f.toggles
+        f.ragdoll=false;f.now+=500;f.tick()
+        check(f.toggles==asked+1 and f.entry:status().stock_attempted,"once they stand the next ask arms the switch")
+        check(f.entry:help_line()=="Going back to the skateboard: let go of the controls.","and the HUD goes back to its usual line")
+        f.latest=cleaned();f.stock=100;f.tick()
+        s=f.entry:status()
+        check(s.phase=="stepping_off" and s.attempts_used==2,"the switch reaches the board and the remount starts")
+        -- A refusal for anything else is not a rider who is down: its line stays, and the 45 s still run (case above).
+        local g=fixture({two=true,auto_return=true});g.riding();fall(g,"hit something at 4.5 m/s")
+        g.latest=cleaned();g.on_stock=function() return false,"constructed refusal" end
+        g.now+=5000;g.tick(3)
+        check(g.entry:help_line()=="Going back to the skateboard: let go of the controls.","another refusal keeps the usual line")
+        -- The hard cap still ends a Return that never finishes.
+        local h=fixture({two=true,auto_return=true});h.riding();fall(h,"hit something at 4.5 m/s")
+        h.latest=cleaned();h.ragdoll=true;refused_while_down(h)
+        local from=h.now
+        for _=1,1000 do h.now+=184;h.tick();if h.entry:status().phase=="blocked" then break end end
+        s=h.entry:status()
+        check(s.phase=="blocked" and s.detail:find("Return did not finish",1,true) and h.now-from>=179000 and h.now-from<=181000,
+            "three minutes down ends it: "..tostring(h.now-from).." ms")
+    end)
+    case("the remount after a crash waits out a rider off the board as it steps off",function()
+        -- The user's crash of 2026-11-02 19:35: the board read once, the step-off read the rider off it 1.1 s later,
+        -- and the remount stopped for good with 'Attempt two lost its stock100 baseline before admission.'
+        local f=fixture({two=true,auto_return=true});f.riding()
+        fall(f,"rider was knocked down")
+        f.latest=cleaned();f.tick();check(f.toggles==1,"the Return's one switch")
+        f.latest=cleaned();f.stock=100;f.tick()
+        check(f.entry:status().phase=="stepping_off" and f.entry:status().attempts_used==2,"on the board, Recover's Mount steps off")
+        f.ragdoll=true;f.tick(3)
+        check(f.entry:status().phase=="stepping_off" and f.stepoffs==nil,"a ragdoll sample waits rather than stopping")
+        f.ragdoll=false;f.stock=504;f.tick(3);f.stock=100
+        check(f.entry:status().phase=="stepping_off" and f.stepoffs==nil,"and so does one on foot")
+        local quiet=f.now
+        f.await_stepoff()
+        check(f.stepoffs==1 and f.now-quiet>=600,"back on the board, the full quiet window runs again before the step-off")
+        f.latest=cleaned();f.stock=504;f.on_ready504=function()return true,2 end
+        f.tick();f.await_mount();f.tick()
+        check(f.mounts==2 and f.entry:status().phase=="riding","and the ride goes on")
+        -- A Mount the rider chose keeps its rule: off the board before the step-off spends it.
+        local g=fixture({two=true});first_return(g)
+        check(g.entry:mount(),"a deliberate second Mount")
+        g.ragdoll=true;g.tick()
+        check(g.entry:status().phase=="blocked" and g.entry:status().detail:find("stock100 baseline",1,true),
+            "its step-off still stops on the same sample")
+        -- Still off the board when the step-off's 60 s run out: the rider is told plainly what to press.
+        local h=fixture({two=true,auto_return=true});h.riding();fall(h,"rider was knocked down")
+        h.latest=cleaned();h.tick();h.latest=cleaned();h.stock=100;h.tick()
+        check(h.entry:status().phase=="stepping_off","Recover's step-off")
+        h.stock=504
+        for _=1,400 do h.now+=184;h.tick();if h.entry:status().phase=="blocked" then break end end
+        check(h.entry:status().phase=="blocked" and h.stepoffs==nil,"60 s off the board ends the step-off")
+        check(h.entry:help_line()=="Press Y for your skateboard, then hold LB and press A.","the notice says what to press")
+        h.now+=4000;h.tick()
+        check(h.entry:help_line()=="Press Y for your skateboard, then hold LB and press A.","and so does the line after it")
+    end)
+    case("a Mount from a blocked ride that cannot start yet keeps the blocked help line up",function()
+        local f=fixture({two=true});f.riding();f.on_stock=function() return false,"constructed refusal" end
+        check(f.entry:return_to_skateboard(),"Return accepted")
+        f.latest=cleaned()
+        for _=1,300 do f.now+=184;f.tick();if f.entry:status().phase=="blocked" then break end end
+        check(f.entry:status().phase=="blocked","the Return gave up on foot")
+        local mounted,why=f.entry:mount()
+        check(not mounted and why=="Get on your skateboard, then hold LB and press A.","on foot, Mount says why")
+        check(f.entry:status().phase=="blocked","and the ride stays blocked rather than 'skateboard'")
+        f.now+=4000;f.tick()
+        check(f.entry:help_line()=="That didn't finish. Get on your skateboard, then hold LB and press A.",
+            "so the HUD keeps a line after the notice")
+        f.stock=100
+        check(f.entry:mount() and f.entry:status().phase=="stepping_off","on the board the same Mount goes")
+    end)
+    case("the log says which readiness failed and why a switch's settle gave up",function()
+        local lines={}
+        local f=fixture({two=true});f.R.log=function(line) lines[#lines+1]=line end
+        f.riding()
+        fall(f,"rider was knocked down")
+        f.latest.readiness={state=504,ragdoll=true,wipeouts=1};f.latest.initial_readiness={wipeouts=0}
+        f.latest.equipment={phase="done",outcome="failed",reason="settle_deadline",suffix={last_failure="ragdoll_true"}}
+        f.tick()
+        local found=false
+        for _,line in lines do
+            if line:find("ready_state=504 ready_ragdoll=true ready_wipeouts=1/0 settle_failure=ragdoll_true",1,true) then found=true end
+        end
+        check(found,"one lifecycle line carries the frozen facts and the settle suffix's last failure")
+    end)
+    case("an F8 whose position Core could not measure goes on as a plain Return",function()
+        local f=fixture({two=true});f.riding()
+        function f.owner:request_return()
+            -- Core's request_return: stop the bike always, then say the capture failed (bike_runtime_core.lua).
+            self:request_stop("explicit return to skateboard")
+            f.latest.return_capture_issue="Return measured support unavailable"
+            return false,"Return measured support unavailable"
+        end
+        check(f.entry:return_to_skateboard(),"the Return is accepted")
+        local s=f.entry:status()
+        check(s.phase=="returning" and s.return_position==nil and f.stops==1,"with no placement, and the one stop Core made")
+        f.tick(3);check(f.toggles==0,"no switch before cleanup finishes")
+        f.latest=cleaned();f.tick();check(f.toggles==1,"one switch once it has")
+        f.latest=cleaned();f.stock=100;f.tick()
+        check(f.entry:status().phase=="skateboard" and f.stops==1,"and the Return ends on the board")
+        -- A refusal from before Core, or one without Core's stop and capture issue, still ends the Return and asks
+        -- for the ordinary stop.
+        for _,stopped in {false,true} do
+            local g=fixture({two=true});g.riding()
+            function g.owner:request_return()
+                if stopped then self:request_stop("explicit return to skateboard") end
+                return false,"Live Return owner unavailable"
+            end
+            check(not g.entry:return_to_skateboard() and g.entry:status().phase=="blocked",
+                "a refusal Core did not explain stays a failure")
+            check(g.stops==(stopped and 2 or 1) and g.toggles==0,"with the ordinary stop asked for, as before")
+        end
     end)
     return {cases=cases,assertions=assertions,constructed=true,native_authority=false,gameplay=false}
 end

@@ -423,6 +423,85 @@ function T.run()
         check(#w.creates==2 and w.entry:status().phase=="skateboard","and does not ask again by itself")
         check(player_remounts(w) and #w.creates==3,"the next Mount rides")
     end)
+    -- Ticks until the Entry rides a mount after `from` or stops, noting each HUD line shown on the way.
+    local function until_riding(w,from,limit)
+        local shown={}
+        for _=1,limit or 4000 do
+            w.tick();shown[w.entry:help_line() or "none"]=true
+            local p=w.entry:status().phase
+            if p=="blocked" or riding(w,from) then break end
+        end
+        return riding(w,from),shown
+    end
+    case(function() -- Knocked down mid-ride: the user's beta sessions of 2026-11-02 and 2026-11-04, and loop3 beside an SUV.
+        local w=start();w.ragdoll=true
+        local stood
+        w.on_tick=function()
+            if w.stop_seen_at and not stood and w.now-w.stop_seen_at>=8000 then stood=w.now;w.ragdoll=false end
+        end
+        local rode,shown=until_riding(w,1)
+        w.on_tick=nil
+        local s=w.entry:status()
+        check(s.last_stop=="rider was knocked down","the stop says the rider was knocked down: "..tostring(s.last_stop))
+        check(rode and s.attempts_used==2,"and the rider gets back on the bike once they stand: "..tostring(s.phase).." "..tostring(s.detail))
+        check(stood and w.pulses[1] and w.pulses[1].at>=stood,"no Y while the rider was down")
+        check(shown["Waiting for the rider to get up."],"while down the HUD says so")
+    end)
+    case(function() -- A crash that keeps the rider down for over a minute, as beside the SUV in loop3 (2026-11-04).
+        for _,down in ipairs({{stock=504,name="on foot, ragdolled"},{stock=300,name="fallen"}}) do
+            local w=start();w.tilt_stop(59.7)
+            local stood
+            w.on_tick=function()
+                if not w.stop_seen_at or stood then return end
+                if w.now-w.stop_seen_at<65000 then w.ragdoll=true;w.stock=down.stock
+                else stood=w.now;w.ragdoll=false;w.stock=504 end
+            end
+            local rode,shown=until_riding(w,1,8000)
+            w.on_tick=nil
+            local s=w.entry:status()
+            check(rode and s.attempts_used==2,down.name.." 65 s, the rider still gets back on the bike: "..tostring(s.phase).." "..tostring(s.detail))
+            check(stood and w.pulses[1] and w.pulses[1].at>=stood,down.name..": no Y while the rider was down")
+            check(shown["Waiting for the rider to get up."] and not shown["That didn't finish. Get on your skateboard, then hold LB and press A."],
+                down.name..": the HUD said why it waited, and never that it gave up")
+        end
+    end)
+    case(function() -- The rider reads off the board as the remount after a crash steps off: the user's crash of 2026-11-02 19:35.
+        local w=start();w.tilt_stop(59.7)
+        local hit,cleared
+        w.on_tick=function()
+            if not hit and w.entry:status().phase=="stepping_off" then hit=w.now;w.ragdoll=true end
+            if hit and not cleared and w.now-hit>=1100 then cleared=w.now;w.ragdoll=false end
+        end
+        local rode=until_riding(w,1)
+        w.on_tick=nil
+        check(hit and cleared and rode and w.entry:status().attempts_used==2,
+            "a ragdoll sample in the step-off waits, and the mount still happens: "..tostring(w.entry:status().detail))
+        check(w.pulses[2] and w.pulses[2].at>=cleared+600,"the step-off's Y waits a full quiet window after it")
+    end)
+    case(function() -- The game loses focus mid-ride: the same readiness stop as before, and a plain Return to the board.
+        local w=start();w.focused=false
+        w.on_tick=function() if w.stop_seen_at and w.now-w.stop_seen_at>=5000 then w.focused=true end end
+        for _=1,4000 do w.tick();local p=w.entry:status().phase;if p=="skateboard" or p=="blocked" then break end end
+        w.on_tick=nil
+        local s=w.entry:status()
+        check(s.last_stop=="fresh sampled upright/focus/context/fall readiness lost" and s.fall_reason==nil,
+            "the stop keeps its old text and is not a fall: "..tostring(s.last_stop))
+        check(s.phase=="skateboard" and w.stock==100 and s.attempts_used==1 and not s.recovery_pending,
+            "the Return ends on the board: "..tostring(s.phase).." "..tostring(s.detail))
+        w.tick(300)
+        check(w.entry:status().phase=="skateboard" and w.entry:status().attempts_used==1,"and does not get back on the bike by itself")
+    end)
+    case(function() -- F8 where Core cannot measure where to put the rider: Core stops the bike anyway, and the Return goes on.
+        local w=start()
+        check(w.entry:return_to_skateboard(),"the Return is accepted")
+        local s,core=w.entry:status(),w.manager:status()
+        check(s.phase=="returning" and s.return_position==nil and core.stop_latched and type(core.return_capture_issue)=="string",
+            "Core stopped the bike and measured nothing: "..tostring(core.return_capture_issue))
+        for _=1,3000 do w.tick();local p=w.entry:status().phase;if p=="skateboard" or p=="blocked" then break end end
+        check(w.entry:status().phase=="skateboard" and w.stock==100 and w.pulse_n==1,
+            "one Y after cleanup reaches the board: "..tostring(w.entry:status().detail))
+        check(player_remounts(w),"and the next Mount rides")
+    end)
     case(function() -- Nothing else going wrong: the mod remounts by itself.
         local w=start();w.tilt_stop(59.7)
         for _=1,3000 do w.tick();if riding(w,1) then break end end

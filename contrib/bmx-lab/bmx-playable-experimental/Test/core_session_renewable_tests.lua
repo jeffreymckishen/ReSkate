@@ -21,8 +21,9 @@ local function fixture(session,options)
     function R.input.allowed() return true end
     function R.menu.game() return {open=false} end
     function R.skater.get() return {airborne=false,position=vector.create(0,0,0),heading=0} end
-    function R.skater.telemetry() return {skater=true,airborne=false,teleport_pending=false,
-        watch={valid=true,state=504,ragdoll_known=true,ragdoll=false,wipeouts=0}} end
+    -- A case may change what the hidden on-foot rider reads: f.state, f.ragdoll, f.wipeouts, f.teleport, f.skater, f.valid.
+    function R.skater.telemetry() return {skater=f.skater~=false,airborne=false,teleport_pending=f.teleport==true,
+        watch={valid=f.valid~=false,state=f.state or 504,ragdoll_known=true,ragdoll=f.ragdoll==true,wipeouts=f.wipeouts or 0}} end
     function R.skater.pose() return true end
     function R.level.current() return {name=f.level} end
     function R.json.encode() return "bounded constructed Core diagnostic" end
@@ -312,6 +313,44 @@ function Tests.run()
         check(f.T.stop_at==stopped_at and f.now-stopped_at==50 and not f.T.cleanup_expired,"cleanup keeps its original stop time and20s watchdog")
         check(f.body_reads==reads and f.renews==renews and f.probes==probes,"stopped cleanup never reads, renews or queries another ride sample")
         check(out.pose.stopped and out.pose.nil_accepted and out.board.state=="restored","context stop releases pose and restores board")
+    end)
+    case("a knock-down mid-ride is its own stop, and every other readiness loss keeps its text",function()
+        -- The user's beta sessions of 2026-11-02 and 2026-11-04: the game bailed the hidden on-foot rider mid-ride and
+        -- the ride ended as 'readiness lost', which Entry cannot tell from an alt-tab.
+        for _,knock in {
+            {name="ragdoll",change=function(f)f.ragdoll=true end},
+            {name="fallen state",change=function(f)f.state=300 end},
+            {name="on the board",change=function(f)f.state=100 end},
+            {name="wipeout",change=function(f)f.wipeouts=1 end},
+        } do
+            local f=fixture(true);f.start();f.tick()
+            knock.change(f);local out=f.tick()
+            check(out.stop_latched and out.stop_reason=="rider was knocked down" and f.stops==1,
+                knock.name.." mid-ride is a knock-down: "..tostring(out.stop_reason))
+            check(out.readiness.state==(f.state or 504) and out.readiness.ragdoll==(f.ragdoll==true)
+                and out.readiness.wipeouts==(f.wipeouts or 0),knock.name.." leaves the facts that failed in readiness")
+            check(out.phase=="done" and out.bike_cleanup_complete and not out.cleanup_unknown and f.acks==1,
+                knock.name.." finishes the same cleanup")
+        end
+        -- A rider down while the game is out of front, in another level, being moved, or with no skater to read is
+        -- not called a knock-down: it is the readiness text the tests above pin.
+        for _,other in {
+            {name="focus",change=function(f)f.ragdoll=true;f.focused=false end},
+            {name="level",change=function(f)f.ragdoll=true;f.level="another" end},
+            {name="teleport",change=function(f)f.ragdoll=true;f.teleport=true end},
+            {name="no skater",change=function(f)f.state=0;f.skater=false end},
+            {name="watch unreadable",change=function(f)f.state=0;f.valid=false end},
+        } do
+            local f=fixture(true);f.start();f.tick()
+            other.change(f);local out=f.tick()
+            check(out.stop_latched and out.stop_reason=="fresh sampled upright/focus/context/fall readiness lost",
+                other.name.." keeps the readiness text: "..tostring(out.stop_reason))
+        end
+        -- Before the ride follows, the same reading is not a knock-down either.
+        local g=fixture(true);g.ragdoll=true
+        local out=g.core:step(16)
+        check(out.stop_latched and out.stop_reason=="fresh sampled upright/focus/context/fall readiness lost",
+            "a stop before following is never a knock-down: "..tostring(out.stop_reason))
     end)
     case("missing body epoch cannot bypass owner proof",function()
         local f=fixture(true);f.start();f.tick();f.omit_epoch=true

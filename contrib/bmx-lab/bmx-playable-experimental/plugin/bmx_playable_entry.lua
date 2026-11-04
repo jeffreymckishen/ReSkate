@@ -23,7 +23,9 @@ local function fall_cause(s)
     if type(issue)=="string" and (issue:match("^measured tilt [%d%.]+ deg over the %d+ deg Ride stop$")
         or issue:match("^measured roll rate [%d%.]+ rad/s over the %d+ rad/s Ride stop$")
         or issue:match("^hit something at [%d%.]+ m/s$")
-        or issue=="rider came off the bike") then return text(issue) end
+        or issue=="rider came off the bike"
+        -- Core's own stop when the game bails the hidden on-foot rider mid-ride (bike_runtime_core.lua knocked_down).
+        or issue=="rider was knocked down") then return text(issue) end
     return nil
 end
 -- One line of what the lifecycle says, for the log. The ledger is cleared at the next load, so this is what outlives a launch.
@@ -34,15 +36,21 @@ local function lifecycle_line(s)
     local ride=plain(s.ride) and s.ride or {}
     local source=plain(s.source) and s.source or {}
     local spawn=plain(s.spawn) and s.spawn or {}
+    -- The facts Core read last, frozen at a stop, so a readiness stop says which one failed. The switch's settle
+    -- suffix says why a switch that did not reach its target gave up (settle_deadline says only that it did).
+    local ready=plain(s.readiness) and s.readiness or {}
+    local initial=plain(s.initial_readiness) and s.initial_readiness or {}
+    local suffix=plain(e.suffix) and e.suffix or {}
     return string.format("core=%s detail=%q stop=%q ride_issue=%q bike_clean=%s pending=%s unknown=%s blocked=%s gear_unknown=%s late=%s closed=%s"
         .." source=%s gear=%s/%s/%s attempt=%s retained=%s pulse=%s press=%s neutral=%s debt=%s mask=%s fall_state=%s fall_ragdoll=%s fall_wipeouts=%s/%s"
-        .." origin=%s miss=%s refusal=%s",
+        .." origin=%s miss=%s refusal=%s ready_state=%s ready_ragdoll=%s ready_wipeouts=%s/%s settle_failure=%s",
         tostring(s.phase),text(s.detail,""),text(s.stop_reason,""),text(ride.issue,""),tostring(s.bike_cleanup_complete),tostring(s.cleanup_pending),
         tostring(s.cleanup_unknown),tostring(s.stock_toggle_blocked),tostring(s.gear_unknown),tostring(s.cleanup_expired),tostring(s.startup_closed),
         tostring(source.phase),tostring(e.phase),tostring(e.outcome),tostring(e.reason),tostring(e.attempt),tostring(e.retained),
         tostring(r.status),tostring(r.press_publications),tostring(r.neutral_publications),tostring(r.report_debt),tostring(r.first_rejection_mask),
         tostring(f.state),tostring(f.ragdoll),tostring(f.wipeouts),tostring(f.baseline_wipeouts),
-        tostring(spawn.origin),tostring(spawn.reuse_miss),tostring(spawn.creation_refusal))
+        tostring(spawn.origin),tostring(spawn.reuse_miss),tostring(spawn.creation_refusal),
+        tostring(ready.state),tostring(ready.ragdoll),tostring(ready.wipeouts),tostring(initial.wipeouts),tostring(suffix.last_failure))
 end
 function Entry.new(R,Runtime,Survey,options)
     assert(type(R)=="table" and type(Runtime)=="table" and type(Survey)=="table","entry dependencies required")
@@ -67,8 +75,15 @@ function Entry.new(R,Runtime,Survey,options)
     local used,mount_issued,return_pending,stock_attempted=false,false,false,false
     local attempts_used=0
     local STOCK_RETRIES,STOCK_RETRY_MS,NOTICE_MS,RETURN_LIMIT_MS=4,500,4000,45000
+    -- A rider the game has not stood up yet spends none of RETURN_LIMIT_MS: after a crash the game kept riders down
+    -- for 17 s, 24 s and over 45 s in the trials. This much longer cap still ends a Return that never finishes.
+    local RETURN_HARD_MS=180000
     -- Time a Return has spent where the game could take the switch, and the previous tick's clock and answer.
     local return_used,return_seen,return_open=0,nil,false
+    -- All of that time, the rider down or not, for the hard cap. Whether the rider was down as of the last tick: the
+    -- stance read nothing the switch can act on, or Core's last answer to the switch was its readiness refusal, which
+    -- it gives until the rider is upright and on the ground (refused_down).
+    local return_total,return_down,refused_down=0,false,false
     local notice,notice_until,last_clock=nil,0,nil
     local mount_charged,last_stop,logged_phase,logged_line=false,nil,nil,nil
     -- What this Mount's stop has told the rider, so a stop is told once and not every tick it stays latched. Each
@@ -96,6 +111,13 @@ function Entry.new(R,Runtime,Survey,options)
     local unspent,mount_refunded=0,false
     local function mount_left() return attempt_limit==nil or attempts_used-unspent<attempt_limit end
     local fallen,recover_pending,recover_wait_context=nil,false,nil
+    -- The automatic remount after a crash, fall or knock-down: auto_mount is set only while Recover's own Mount runs,
+    -- and second_recovering says the step-off now waiting is that Mount's. second_off_board says that step-off's last
+    -- sample read the rider off the board.
+    local auto_mount,second_recovering,second_off_board=false,false,false
+    -- What the HUD says while blocked when the failure knows more than the general line does.
+    local blocked_help=nil
+    local OFF_BOARD="Press Y for your skateboard, then hold LB and press A."
     local stopped,cancel_sent,cancelled,unloaded,ticking=false,false,false,false,false
     local generation,latest,known=0,nil,false
     local prep_at,prep_last,prep_calls,survey=nil,nil,0,nil
@@ -155,6 +177,7 @@ function Entry.new(R,Runtime,Survey,options)
     end
     local function fail(why)
         phase,detail="blocked",text(why,"Operation failed; no retry in this session.")
+        blocked_help=nil
         return_pending=false;second_prepare_pending=false;second_terrain_pending=false;recover_pending=false;generation+=1
         -- A preparation that never asked for a bike used none of the launch's mounts.
         if mount_charged and not mount_issued then attempts_used-=1 end
@@ -512,11 +535,13 @@ function Entry.new(R,Runtime,Survey,options)
         -- window or a menu, when no Y may be sent, does not run out a Return that is waiting to send one. A gap
         -- between ticks, as when the game stops ticking out of focus, counts as no more than 250 ms.
         if started and return_seen and started>return_seen and open and return_open then
-            return_used+=math.min(started-return_seen,250)
+            local spent=math.min(started-return_seen,250)
+            return_total+=spent
+            if not return_down then return_used+=spent end
         end
         return_seen,return_open=started,open
-        if return_used>=RETURN_LIMIT_MS then
-            return_used,return_seen,return_open=0,nil,false
+        if return_used>=RETURN_LIMIT_MS or return_total>=RETURN_HARD_MS then
+            return_used,return_total,return_seen,return_open,return_down,refused_down=0,0,nil,false,false,false
             fail("Return did not finish: "..text(known and latest.detail,"lifecycle unknown"));return
         end
         if not known or not clean(latest) then detail="Returning: waiting for confirmed cleanup; no stock input sent.";return end
@@ -563,7 +588,10 @@ function Entry.new(R,Runtime,Survey,options)
         -- During a queued placement handback_step tolerates missing/transient
         -- samples without admitting an effect. Only its actual100 convergence
         -- reaches this fresh state check and final Return path.
-        local observed=state();if observed==nil or generation~=version or cancelled or unloaded then return end
+        local observed=state();if generation~=version or cancelled or unloaded then return end
+        -- Mid fall or mid air the rider is down; on the board or on foot they are down only while Core still refuses.
+        return_down=observed==nil or refused_down
+        if observed==nil then return end
         if observed==100 then
             if return_plan and (not stock_attempted or return_position.observed~=true) then return_plan,return_position=nil,nil end
             return_pending=false
@@ -602,9 +630,14 @@ function Entry.new(R,Runtime,Survey,options)
         local out=call(owner.request_stock_toggle,owner,slot)
         if generation~=version or cancelled or unloaded then return end
         if not out[1] or out[2]~=true then
-            -- Still moving or just landed: no transaction started, so this tries again as the rider settles.
+            -- Still moving or just landed: no transaction started, so this tries again as the rider settles. Core's
+            -- readiness refusal (bike_runtime_core.lua request_stock_toggle, or the facade's before Core) is what a
+            -- rider still down after a crash gets, and that wait does not run out the Return.
+            refused_down=out[1] and type(out[3])=="string" and string.find(out[3],"refused by fresh readiness",1,true)~=nil
+            return_down=refused_down
             stock_attempted=false;stock_retry_at=(clock() or 0)+STOCK_RETRY_MS;detail="Waiting for the rider to settle.";return
         end
+        refused_down,return_down=false,false
         phase,detail="returning","Stock transition armed. Release all controls and wait for the skateboard."
     end
     local function reset_second_quiet()
@@ -647,8 +680,18 @@ function Entry.new(R,Runtime,Survey,options)
         if expected==504 and (watch.state~=504 or watch.ragdoll) then
             fail("Terrain retry lost its acknowledged on-foot504 baseline.");return false
         elseif expected==100 and (watch.state==504 or watch.state==300 or watch.ragdoll) then
+            local sample="state "..tostring(watch.state).." ragdoll "..tostring(watch.ragdoll)
+            if second_recovering then
+                -- The remount after a crash waits for a rider the game has not put on the board yet: in the user's
+                -- crash of 2026-11-02 the board read once, then the rider read off it 1.1 s later. This waits, with
+                -- the quiet window started again, inside the step-off's existing 60 s admission deadline.
+                if not second_off_board then trace("Recover step-off waits for the board: "..sample..".") end
+                second_off_board=true;reset_second_quiet();return false
+            end
+            trace("Step-off sample off the board: "..sample..".")
             fail("Attempt two lost its stock100 baseline before admission.");return false
         end
+        if expected==100 then second_off_board=false end
         if not released or watch.state~=expected or a[2].airborne or w.airborne or w.teleport_pending then
             reset_second_quiet();return false
         end
@@ -683,11 +726,17 @@ function Entry.new(R,Runtime,Survey,options)
         second_terrain_pending=false -- no Y, archive or admission callback here
         prep_step(checked)
     end
+    -- A remount after a crash whose step-off ran out of time with the rider off the board says plainly what to do.
+    local function second_expired(why)
+        local stranded=phase=="stepping_off" and second_recovering and second_off_board
+        fail(why)
+        if stranded then blocked_help=OFF_BOARD;announce(OFF_BOARD) end
+    end
     local function step_off(now)
         local version=generation
         if second_prepare_pending then
             if not second_admitted_at or now<second_admitted_at or now-second_admitted_at>=60000 then
-                fail("Second Mount admission deadline expired; no step-off request.");return
+                second_expired("Second Mount admission deadline expired; no step-off request.");return
             end
             if not environment(false) then reset_second_quiet();return end
             if generation~=version or cancelled or unloaded then return end
@@ -774,16 +823,22 @@ function Entry.new(R,Runtime,Survey,options)
             return true
         end
         -- A Return that could not finish leaves a cleaned-up ride: Mount from the board may go again.
+        local reopened=nil
         if (phase=="blocked" or phase=="spent" or phase=="fallen") and attempts_used>=1 and two_cycle then
             if not known or not clean(latest) then return tell(waiting_text()) end
             local ready=call(owner.can_prepare_next_mount,owner)
             if not ready[1] or ready[2]~=true then return tell(no_body() or "The bike is stuck: restart the game to ride again.") end
-            phase="skateboard"
+            reopened=phase;phase="skateboard"
         end
         if not mount_left() then return tell("All "..attempt_limit.." mounts are used: restart the game to ride again.") end
         if unloaded or ticking or cancelled or not namespace_clear or not mount_left()
             or used and (not two_cycle or phase~="skateboard") then return false,"Consumed, busy or retained attempt; not available." end
-        if attempts_used>=1 and state()~=100 then return tell("Get on your skateboard, then hold LB and press A.") end
+        if attempts_used>=1 and state()~=100 then
+            -- A Mount from a blocked or spent ride that cannot start yet leaves it as it was, so its help line stays
+            -- up rather than an empty one for 'skateboard'. A fall keeps 'skateboard': Recover and auto-return read it.
+            if reopened=="blocked" or reopened=="spent" then phase=reopened end
+            return tell("Get on your skateboard, then hold LB and press A.")
+        end
         if attempts_used==0 and state()~=504 then return tell("Step off your skateboard with Y, then hold LB and press A.") end
         attempts_used+=1;used=true;generation+=1;stop_told=nil;mount_refunded=false
         terrain_refusals={}
@@ -804,6 +859,7 @@ function Entry.new(R,Runtime,Survey,options)
             local now=clock()
             if not now or generation~=version or cancelled or unloaded then return false,detail end
             second_admitted_at=math.floor(now);reset_second_quiet()
+            second_recovering,second_off_board=auto_mount,false
             second_prepare_pending=true
             return true
         end
@@ -816,13 +872,28 @@ function Entry.new(R,Runtime,Survey,options)
         if unloaded or ticking or cancelled or not mount_issued or return_pending or stock_attempted then
             return false,"Return is unavailable; Cancel may stop an unfinished preparation."
         end
-        return_pending=true;return_plan=nil;return_position=nil;stock_retries=0;stock_retry_at=nil;return_used,return_seen,return_open=0,nil,false;generation+=1;phase,detail="returning","Stopping the bike before returning to the skateboard."
+        return_pending=true;return_plan=nil;return_position=nil;stock_retries=0;stock_retry_at=nil;return_used,return_seen,return_open=0,nil,false
+        return_total,return_down,refused_down=0,false,false
+        generation+=1;phase,detail="returning","Stopping the bike before returning to the skateboard."
         if type(owner.request_return)=="function" then
             stopped=true -- one capture/stop callback, even if it refuses or raises
             local version=generation
             local out=call(owner.request_return,owner)
             if generation~=version or cancelled or unloaded then return false,"Return cancelled" end
             if not out[1] or out[2]~=true or out.n~=2 and out.n~=3 then
+                -- Core stops the bike even when it cannot measure where to put the rider, and its status then carries
+                -- why (return_capture_issue) beside the stop. That Return goes on as one that measured no position,
+                -- the same as Return after a fall, which Core also answers with no position: the switch still waits
+                -- for Core's finished cleanup and passes Core's own checks.
+                if out[1] and out[2]==false then
+                    local s=call(owner.status,owner)
+                    if generation~=version or cancelled or unloaded then return false,"Return cancelled" end
+                    if s[1] and s.n==2 and plain(s[2]) and s[2].stop_latched==true and type(s[2].return_capture_issue)=="string"
+                        and s[2].unloaded==false and s[2].session_retired~=true then
+                        trace("Return goes on without a placement: "..text(out[3],"capture refused"))
+                        return true
+                    end
+                end
                 -- The cold/busy facade may refuse before it reaches Core stop.
                 -- Reissue the ordinary idempotent stop rather than suppress cleanup.
                 stopped=false;fail(text(out[3],"Live Return capture failed; cleanup continues."));return false,detail
@@ -844,13 +915,16 @@ function Entry.new(R,Runtime,Survey,options)
     local function recovery_stock_wait(version)
         -- Only a positively known fallen300 may wait; this grants no stock
         -- input authority and never changes the ordinary Return state contract.
+        -- A rider the game is still standing up, which after a knock-down can read any state for a while, is left to
+        -- that ordinary Return rather than stopped here: it waits for a state it can act on, Core refuses its switch
+        -- until the rider is upright and on the ground, and that wait does not run out its time limit.
         local out=call(R.skater and R.skater.telemetry)
         if generation~=version or cancelled or unloaded then return false end
         local w=out[2];local watch=plain(w) and w.watch or nil
         if not out[1] or out.n~=2 or not plain(w) or not plain(watch) or watch.valid~=true
             or not finite(watch.state) or watch.state%1~=0
             or watch.state~=300 and watch.state~=100 and watch.state~=504 then
-            fail("Fall recovery stock observation unavailable or unqualified.");return false
+            return false
         end
         if not recover_wait_context and watch.state~=300 then return false end
         local initial=known and latest.initial_readiness
@@ -871,25 +945,20 @@ function Entry.new(R,Runtime,Survey,options)
         if generation~=version or cancelled or unloaded then return false end
         local now=clock()
         if generation~=version or cancelled or unloaded then return false end
-        if not now or now<c.stop_ms or now>=c.stop_ms+20000 then
+        if not now or now<c.stop_ms then
             fail("Original fall cleanup deadline expired before stock recovery.");return false
         end
         if latest.stop_ms~=c.stop_ms or initial.level~=c.level
             or not level[1] or level.n~=2 or not plain(level[2]) or level[2].name~=c.level then
             fail("Fall recovery stock context changed; no switch was sent.");return false
         end
+        -- Past the original cleanup window a rider still down is the ordinary Return's to wait for, as above.
+        if now>=c.stop_ms+20000 then return false end
         if watch.state==300 then
             detail="Fall recovery: waiting for known stock300 to settle within the original cleanup window."
-            return true
+            return_down=true;return true
         end
-        if watch.state~=100 and watch.state~=504 then
-            fail("Fall recovery stock state is no longer qualified.");return false
-        end
-        local a=actor()
-        if generation~=version or cancelled or unloaded then return false end
-        if not a or a.airborne~=false or w.airborne~=false or watch.ragdoll~=false then
-            fail("Fall recovery requires actual grounded stock before its existing switch.");return false
-        end
+        -- Still ragdolled or in the air on the board or on foot: Core refuses the switch until the rider stands.
         return false -- Existing Return, stock target/ACK and successor checks decide.
     end
     local function recoverable()
@@ -944,7 +1013,7 @@ function Entry.new(R,Runtime,Survey,options)
                 local now=clock()
                 if now then
                     if attempts_used>=2 and (not second_admitted_at or now<second_admitted_at or now-second_admitted_at>=60000) then
-                        fail("Second Mount admission deadline expired; no new survey or mount.");return
+                        second_expired("Second Mount admission deadline expired; no new survey or mount.");return
                     end
                     if phase=="stepping_off" then step_off(now)
                     elseif phase=="preparing" then
@@ -991,7 +1060,9 @@ function Entry.new(R,Runtime,Survey,options)
             call(self.return_to_skateboard,self)
         elseif recover_pending and not cancelled and not unloaded and phase=="skateboard" then
             recover_pending=false -- Consume before fresh Mount callbacks; no automatic retry.
+            auto_mount=true
             local out=call(self.mount,self)
+            auto_mount=false
             if not out[1] or out[2]~=true then fail(text(out[3],"Recovery Mount refused; the intent is spent.")) end
         end
     end
@@ -1012,6 +1083,9 @@ function Entry.new(R,Runtime,Survey,options)
             if now and now<notice_until then return notice end
             notice=nil
         end
+        -- Letting go of the controls cannot help a rider the game has not stood up yet; say what is happening instead.
+        if phase=="returning" and return_down then return "Waiting for the rider to get up." end
+        if phase=="blocked" and blocked_help then return blocked_help end
         return HELP[phase]
     end
     function object:score_view()

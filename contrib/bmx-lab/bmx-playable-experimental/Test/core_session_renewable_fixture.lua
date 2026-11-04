@@ -1226,6 +1226,17 @@ local function base_ready(f,stock)
     return f and f.focused and f.gameplay and (stock and f.upright_stock or f.upright_onfoot)
         and (not T.level or f.level==T.level) and (not T.wipeouts or T.bike_cleanup_complete or f.wipeouts==T.wipeouts)
 end
+-- The game bailed the hidden on-foot rider in the middle of a ride: the game is in front and in play on the same level,
+-- nothing is moving the rider and the skater is there to read, but it no longer stands on foot. Its state left 504,
+-- it went ragdoll, or its wipeouts counted one. In the user's beta sessions the SDK's Follow lease said
+-- revocation=actor_state on the same tick. Every other readiness loss (focus, play, level, a teleport, no skater)
+-- keeps the one readiness text it always had.
+local function knocked_down(f)
+    return T.phase=="following" and type(f)=="table" and f.focused==true and f.gameplay==true
+        and T.level~=nil and f.level==T.level and f.teleport_pending==false and f.skater==true and f.watch_valid==true
+        and (f.ragdoll_known==true and f.ragdoll==true or finite(f.state) and f.state~=504
+            or T.wipeouts~=nil and finite(f.wipeouts) and f.wipeouts~=T.wipeouts)
+end
 closed_ready=function(f,grounded,stock)
     return base_ready(f,stock) and f.interface_closed and f.game_menu_closed and f.input_allowed
         and (not grounded or f.grounded)
@@ -2020,7 +2031,8 @@ local function tick(dt)
     if T.active and now and not T.stop_latched then
         local f=facts();T.facts=f;tick_facts=f
         if not base_ready(f,T.gear_requested and T.gear_purpose=="mount") then
-            stop_all("fresh sampled upright/focus/context/fall readiness lost")
+            -- The facts that failed stay in status().readiness, frozen at this stop, and Entry logs them.
+            stop_all(knocked_down(f) and "rider was knocked down" or "fresh sampled upright/focus/context/fall readiness lost")
         elseif T.gear_requested then
             -- Equipment owns its report transaction. No selected source yet.
         elseif not T.source_armed then

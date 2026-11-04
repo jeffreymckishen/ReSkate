@@ -166,6 +166,8 @@ function Admission.facts(call,lookup,diagnostic)
         upright_stock=upright,upright_onfoot=upright and watch.state==504,
         grounded=p.airborne==false and w.airborne==false,wipeouts=wipeouts,
         state=watch.state,ragdoll_known=watch.ragdoll_known,ragdoll=watch.ragdoll,teleport_pending=w.teleport_pending,
+        -- Whether the skater is there and its watch readable, so a state that left 504 can be told from no skater.
+        skater=w.skater==true,watch_valid=watch.valid==true,
         scope="Sampled Lua observations only; not actor/allocation/session identity"}
 end
 

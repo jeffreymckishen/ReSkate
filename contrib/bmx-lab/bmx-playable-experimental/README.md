@@ -90,9 +90,10 @@ offline the game does not keep it, so set it again each launch.
 - Riding into a kerb costs some speed as each tyre strikes it, more for a taller one. Hop clear of its top to keep
   your speed: a hop that falls short still strikes it.
 - A stopped bike holds on a street grade, so hold A for a moment to start down a gentle hill. Ramps steeper than about 15% roll back.
-- A crash (the bike going over, a hit at speed, or the rider being knocked off) gets back on the bike after a few
-  seconds. Banks and quarter pipes do not count as going over. If there is no room to get back on, move and mount
-  again.
+- A crash (the bike going over, a hit at speed, or the rider being knocked off, as by a car) gets back on the bike
+  after a few seconds. While the game keeps the rider down the HUD says "Waiting for the rider to get up.", and the
+  mod waits for that, up to three minutes. Banks and quarter pipes do not count as going over. If there is no room to
+  get back on, move and mount again.
 - A slower bump into something just stops the bike, and it has no reverse. If it is stuck, go back to the skateboard.
 - A nose manual rides over small bumps and kerb ramps. With the stick past about half way, a steep kerb face or a
   bump of about 12 cm often throws it over the bars below about 3 m/s and can still do it at 5 m/s, and so can a

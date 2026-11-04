@@ -948,7 +948,7 @@ function T.run()
         local t=Forces.tuning()
         local defaults={nose_hold_forward=.26,nose_hold_back=.20,nose_low=.23,nose_high=.13,nose_carve_rate=.6,
             nose_carve_lateral=2.5,nose_yaw_damping=300,nose_yaw_torque=300,nose_roll_gain=1.6,
-            nose_catch_torque=800,nose_catch_rate=.6,nose_catch_span=.5,nose_catch_seconds=.4,nose_air_seconds=.5,
+            nose_catch_torque=800,nose_catch_rate=.6,nose_catch_span=.25,nose_catch_seconds=.4,nose_air_seconds=.5,
             nose_brake_fade=.05}
         for name,value in defaults do check(t[name]==value,"the nose manual's "..name.." is "..tostring(t[name])) end
         local flat=Ground.plane(0,0)
@@ -1244,6 +1244,34 @@ function T.run()
             end
         end
     end)
+    case(function() -- Carving on its front wheel at full lock over an 8 cm bump downhill, the bike does not spin round.
+        -- Off the bump the bike is in the air for a moment and the nose manual begins again as it lands. The bars were
+        -- brought back to the front wheel's path from there at twice the stick's rate, as on the way in, and were left past
+        -- it for several steps: yaw 2.2 rad/s at 4 m/s, and at 5 m/s the bike spun round, 89 degrees off its travel. Once
+        -- on that path they now keep to it for the rest of the nose manual.
+        local FRONT=G.front_axle[3]-G.com[3]
+        for _,row in ipairs({{grade=-.08,speed=4,m=.01},{grade=-.08,speed=5,m=.5}}) do
+            local what=string.format("an 8 cm bump from %.1f m/s down %d%% at full lock, m=%.2f",row.speed,math.floor(-row.grade*100+.5),row.m)
+            local at=FRONT+row.speed*3.2
+            local plane,bump=Ground.plane(0,row.grade),Ground.bump(at,.08,.4)
+            local ground={height=function(x,z) return plane.height(x,z)+bump.height(x,z) end,
+                grad=function(x,z) local px,pz=plane.grad(x,z);local bx,bz=bump.grad(x,z);return px+bx,pz+bz end}
+            local ride,rows=nose({m=row.m,speed=row.speed,ground=ground,hold=330,after=0,during=function(t) return {steer=t>60 and 1 or 0} end})
+            local met,carving,yaw,slip=nil,false,0,0
+            for _,r in rows do
+                if not met and r.body.center_of_mass[3]+FRONT>=at then met=r.speed;carving=r.out.nose_manual_active==true end
+                yaw=math.max(yaw,math.abs(r.body.angular_velocity[2]))
+                local f,v=M.turn(M.normalized(r.body.orientation),{0,0,1}),r.body.linear_velocity
+                local fl,vl=math.sqrt(f[1]^2+f[3]^2),math.sqrt(v[1]^2+v[3]^2)
+                if vl>=.5 and fl>1e-6 then slip=math.max(slip,math.abs(math.deg(math.asin(math.clamp((f[1]*v[3]-f[3]*v[1])/(fl*vl),-1,1))))) end
+            end
+            -- Kept on the front wheel, the tyre meets the bump's face pressed down, and on two steps it goes past the
+            -- penetration limit, which the kernel refuses.
+            check(ride.refused<=2 and met~=nil and carving,string.format("%s: met at %.2f m/s in the nose manual, %d steps refused",
+                what,met or -1,ride.refused))
+            check(not fell(rows) and yaw<=2 and slip<=30,string.format("%s: no spin, at most %.2f rad/s and %.1f degrees off its travel",what,yaw,slip))
+        end
+    end)
     case(function() -- Carving on its front wheel into a small bump at pedalling speed, the bike keeps carving and stays up.
         -- With the lean following whatever yaw the bump gave and the twist rolling the pitched body, all three spun
         -- round at 3 to 3.8 rad/s, 89 degrees off their travel, and the two downhill fell. On both wheels the same rides
@@ -1268,6 +1296,28 @@ function T.run()
             check(ride.refused==0 and met~=nil and met>=5 and carving,string.format("%s: met at %.2f m/s in the nose manual",what,met or -1))
             check(not fell(rows),what..": no fall")
             check(yaw<=1.2 and slip<=8,string.format("%s: no spin, at most %.2f rad/s and %.1f degrees off its travel",what,yaw,slip))
+        end
+    end)
+    case(function() -- Carving on its front wheel down a hill at 10 m/s, the steer stick let go or eased: the lean follows the yaw up.
+        -- With the lean target held between none and the carve the bars ask for, the stick let go pinned it upright while
+        -- the bike still yawed: the lean swung through upright to the other side, the nose manual ended and the bike fell,
+        -- 88 degrees over from 7 and 7.6 m/s down 13%, and with the stick eased to .3 it went 84 to 88 degrees over.
+        local n=M.unit({0,1,.13})
+        for _,row in ipairs({{speed=7,steer=1,m=1,eased=0},{speed=7.6,steer=1,m=1,eased=0},{speed=7.6,steer=1,m=1,eased=.3},
+            {speed=7.6,steer=1,m=.5,eased=0},{speed=7.6,steer=.5,m=1,eased=0}}) do
+            local what=string.format("from %.1f m/s down 13%%, steer %.1f eased to %.1f, m=%.2f",row.speed,row.steer,row.eased,row.m)
+            local ride,rows=nose({m=row.m,speed=row.speed,ground=Ground.plane(0,-.13),hold=330,after=0,
+                during=function(t) return {steer=t>60 and (t<=210 and row.steer or row.steer*row.eased) or 0} end})
+            local before,after,engaged,speed=0,0,true,0
+            for _,r in rows do
+                local left=M.turn(M.normalized(r.body.orientation),{1,0,0})
+                local lean=math.abs(math.deg(math.asin(math.clamp(M.dot(left,n),-1,1))))
+                if r.hold and r.t>150 and r.t<=210 then before=math.max(before,lean) speed=r.speed end
+                if r.hold and r.t>210 then after=math.max(after,lean) engaged=engaged and r.out.nose_manual_active==true end
+            end
+            check(ride.refused==0 and speed>=9.5 and not fell(rows),string.format("%s: at %.1f m/s at the let-go, and no fall",what,speed))
+            check(engaged,what..": still in the nose manual")
+            check(after<=1.5*before,string.format("%s: leans at most %.1f degrees after, against %.1f carving",what,after,before))
         end
     end)
     case(function() -- Dropped front first with the stick held, the bike lands into the nose manual; with it let go, onto both wheels.

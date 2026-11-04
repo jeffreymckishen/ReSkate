@@ -92,10 +92,15 @@ offline the game does not keep it, so set it again each launch.
   seconds, which spends a mount. On the last mount of a launch it goes back to the skateboard instead. Banks and
   quarter pipes do not count as going over. If there is no room to get back on, move and mount again.
 - A slower bump into something just stops the bike, and it has no reverse. If it is stuck, go back to the skateboard.
-- A nose manual rides over small bumps and kerb ramps, but a steep kerb face or a big bump met at walking pace or a
-  slow jog, below about 3 m/s and most of all with the stick all the way forward, can still throw it over the bars.
+- A nose manual rides over small bumps and kerb ramps. With the stick past about half way, a steep kerb face or a
+  bump of about 12 cm often throws it over the bars below about 3 m/s and can still do it at 5 m/s, and so can a
+  pothole or dip of 6 to 10 cm met at 2.5 to 3 m/s. Held low, with the stick a little forward, it rides a 12 cm bump
+  at a jog, and on two wheels or in a manual the same kerb face just stops the bike.
+  Carved at full lock, a bump of about 8 cm met at 4 to 6.5 m/s can swing the back of the bike right round, and now
+  and then throws it over; carved at full lock down a steep hill, a 5 cm bump met faster than about 7.5 m/s can too.
   The rider is drawn hips up over the bars, which shows less of the weight shift than the physics uses.
-- Riding into a parked car stops the bike at the bumper. Faster than about 4 m/s it is a crash, over the bars.
+- Riding into a parked car stops the bike at the bumper, in a nose manual too: the back wheel comes down with the
+  front tyre at the bumper. Faster than about 4 m/s it is a crash, over the bars.
 - Mounting refuses ground steeper than 12 degrees and anywhere without room for the bike.
 - The score panel is the mod's own, and its numbers are not yet tuned against the game's scoring.
 

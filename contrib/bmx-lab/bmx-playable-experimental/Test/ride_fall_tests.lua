@@ -78,11 +78,13 @@ local function harness(ground)
         source={input_ok=true,phase="capturing",generation=1,lease_handle=lease,
             sample={user=0,sequence="77",source_epoch="78",context_generation="79",observation_serial="81",observed_ms="1016",packet=10,pad=pressed}}
     end
-    -- From now on every step brings a fresh pad observation a native step on, with the right stick here.
+    -- From now on every step brings a fresh pad observation a native step on, with the right stick here, and the left
+    -- stick across when given.
     local fresh
-    function w.set_pad(right_y)
+    function w.set_pad(right_y,left_x)
         local moved=table.clone(pad)
         moved.buttons=table.clone(pad.buttons);moved.right_y=right_y
+        if left_x then moved.left_x=left_x end
         fresh=fresh or {serial=80}
         fresh.pad=moved
     end
@@ -139,6 +141,42 @@ local function face(z,normal,min_x)
                 normal_available=true,surface_velocity_available=true,motion="measured"}
         end
         return flat(from,to)
+    end
+end
+-- A face through (0, 0, z) turned this many degrees about up, facing back toward a bike coming along +z, met only by
+-- rays running along the road.
+local function turned(z,degrees)
+    local a=math.rad(degrees)
+    local n={-math.sin(a),0,-math.cos(a)}
+    return function(from,to)
+        local dx,dy,dz=to.x-from.x,to.y-from.y,to.z-from.z
+        if math.sqrt(dx*dx+dz*dz)>4*math.abs(dy) then
+            local across=dx*n[1]+dz*n[3]
+            if math.abs(across)<1e-9 then return clear() end
+            local f=(-from.x*n[1]+(z-from.z)*n[3])/across
+            if f<0 or f>1 then return clear() end
+            return {status="hit",position=vector.create(from.x+dx*f,from.y+dy*f,from.z+dz*f),fraction=f,
+                normal=vector.create(n[1],n[2],n[3]),surface_velocity=vector.create(0,0,0),
+                normal_available=true,surface_velocity_available=true,motion="measured"}
+        end
+        return flat(from,to)
+    end,n
+end
+-- A road whose height along it is height(z), with slope(z) its gradient: each ray is marched to where it first meets it.
+local function profile(height,slope)
+    return function(from,to)
+        local function above(f) return from.y+(to.y-from.y)*f-height(from.z+(to.z-from.z)*f) end
+        if above(0)<0 then return clear() end
+        local a,b=nil,nil
+        for k=1,96 do if above(k/96)<=0 then a,b=(k-1)/96,k/96 break end end
+        if not a then return clear() end
+        for _=1,50 do local middle=(a+b)/2 if above(middle)>0 then a=middle else b=middle end end
+        local f=(a+b)/2
+        local z=from.z+(to.z-from.z)*f
+        local n=M.unit({0,1,-slope(z)})
+        return {status="hit",position=vector.create(from.x+(to.x-from.x)*f,from.y+(to.y-from.y)*f,z),fraction=f,
+            normal=vector.create(n[1],n[2],n[3]),surface_velocity=vector.create(0,0,0),normal_available=true,
+            surface_velocity_available=true,motion="measured"}
     end
 end
 -- The front of the front tyre of a level bike whose centre of mass is at z = 0.
@@ -1143,10 +1181,138 @@ function T.run()
             check(deepest<=.03,string.format("%s: the front tyre goes at most %.3f m into the car",what,deepest))
         end
     end)
+    case(function() -- Stopped at a car in a nose manual, the bike comes to rest there with the front tyre at the bumper.
+        -- The body moves here. Levelling about the front hub held at the face, the rigid body's centre of mass goes back
+        -- .34 m, and the push that does that left the bike rolling back at 1.2 to 1.5 m/s once the rear was down: 1.8 to
+        -- 3.2 m off the car 4.3 s in and 5.3 to 7.5 m off it at 10 s, held stick or not. Let go at rest, let go still
+        -- rolling, and against a face turned 20 or 40 degrees, the bike is now still a second after the rear lands.
+        local WALL=4.5
+        for _,row in ipairs({{.35,2,"held",0},{.53,2.5,"held",0},{1,3.9,"held",0},{.53,2,"rest",0},{1,3,"rest",0},
+            {.35,2.5,"early",0},{.53,3.5,"early",0},{1,3.9,"early",0},{.53,3,"held",20},{.53,2.5,"held",40},{1,3.5,"held",40},
+            {.53,3,"early",40}}) do
+            local stick,speed,mode,degrees=row[1],row[2],row[3],row[4]
+            local what=string.format("stick %.2f at %.1f m/s, %s, a face turned %d degrees",stick,speed,
+                mode=="held" and "held" or mode=="rest" and "let go at rest" or "let go still rolling",degrees)
+            local ground,n=turned(WALL,degrees)
+            local w=harness(ground)
+            w.prompt=true
+            local b=World.place(World.terrain.flat(),{speed=speed})
+            local deepest,nosed,lifted,down,released,depth,rolling=-math.huge,false,false,nil,false,nil,nil
+            for step=1,400 do
+                if step==4 then w.set_pad(stick) end
+                local out
+                out,b=w.ride_step(b)
+                check(not out.stop_requested,what..": the ride goes on: "..tostring(out.issue))
+                nosed=nosed or w.model and w.model.nose_manual_active==true
+                local q=M.normalized(b.orientation)
+                local hub=M.add(b.center_of_mass,M.turn(q,M.sub(Geometry.front_axle,Geometry.com)))
+                local rear=M.add(b.center_of_mass,M.turn(q,M.sub(Geometry.rear_axle,Geometry.com)))
+                local f,u=M.turn(q,{0,0,1}),M.turn(q,{0,1,0})
+                -- How far the tyre's disc reaches past the face.
+                depth=R*math.sqrt(M.dot(n,f)^2+M.dot(n,u)^2)-M.dot(M.sub(hub,{0,0,WALL}),n)
+                deepest=math.max(deepest,depth)
+                rolling=M.dot(b.linear_velocity,f)
+                if not released and (mode=="early" and depth>-.3 or mode=="rest" and depth>-.05 and M.length(b.linear_velocity)<.1) then
+                    w.set_pad(0) released=true
+                end
+                lifted=lifted or nosed and rear[2]-R>.05
+                if lifted and not down and rear[2]-R<.006 then down=step end
+                if down and step==down+60 then break end
+            end
+            check(nosed and down,what..": into a nose manual, and the rear came down: "..tostring(down))
+            check(mode=="held" or released,what..": the stick was let go")
+            check(deepest<=(degrees>=40 and .07 or .03),string.format("%s: the front tyre goes at most %.3f m into the car",what,deepest))
+            -- Rolling along the bike, not standing up from the lean a turned face gave it.
+            check(depth>=-.03 and math.abs(rolling)<.05,string.format("%s: a second after the rear lands the tyre is %.3f m off the car, rolling at %.3f m/s",
+                what,-depth,rolling))
+        end
+    end)
+    case(function() -- A 12 cm bump at a jog in a nose manual, the stick past half way: the rider's catch mostly holds it.
+        -- The body moves here. The front meets a 12 cm bump .6 m long 1 to 1.8 s into the nose manual. Tipping on over the
+        -- bars, the rider snaps the weight back; reaching all of the catch only .5 rad/s past where it starts, it gave
+        -- 283 to 554 N m at .8 to .93 rad/s and ran out with the bike past 50 degrees, and these rides went over the bars on
+        -- 19 of 36. Below 2.25 m/s the front stops dead at the bump's face and most still go over, a real endo.
+        local high,length=.12,.6
+        local function height(z) local u=z/length if u<=0 or u>=1 then return 0 end return high*.5*(1-math.cos(2*math.pi*u)) end
+        local function slope(z) local u=z/length if u<=0 or u>=1 then return 0 end return high*math.pi*math.sin(2*math.pi*u)/length end
+        local total,report=0,{}
+        for _,row in ipairs({{2.25,.72},{2.25,1},{2.5,.72},{2.5,1}}) do
+            local speed,stick=row[1],row[2]
+            local over={}
+            for k=0,8 do
+                local at=1+k*.1
+                local w=harness(profile(height,slope))
+                w.prompt=true
+                w.set_pad(0)
+                local b=World.place(World.terrain.flat(),{speed=speed,z=-(speed*at+.5158)})
+                local out
+                for _=1,3 do out,b=w.ride_step(b) end
+                w.set_pad(stick)
+                for _=1,240 do
+                    out,b=w.ride_step(b)
+                    if out.stop_requested then over[#over+1]=string.format("%.1f",at) break end
+                end
+            end
+            total+=#over
+            report[#report+1]=string.format("%.2f m/s stick %.2f: %d of 9 (%s)",speed,stick,#over,table.concat(over,","))
+            check(#over<=3,string.format("at %.2f m/s with the stick at %.2f, %d of 9 go over the bars",speed,stick,#over))
+        end
+        check(total<=8,"at most 8 of 36 go over the bars: "..table.concat(report,"; "))
+    end)
+    case(function() -- In a nose manual a corner only a bar end meets is rested against, and a face met at a glance ridden past.
+        -- The body moves here. Each lane presses with its own part of the bike. With the front hub's travel read in every
+        -- lane, the rear coming down shoved the bike .1 to .9 m back off a corner only the left bar end met, and a nose
+        -- manual steered at 5.5 to 7.5 m/s into a face turned 5 to 25 degrees went over at 70 to 90 degrees.
+        local WALL=4.5
+        for _,row in ipairs({{.35,2},{.35,3.9},{.53,3},{1,2},{1,3.9}}) do
+            local stick,speed=row[1],row[2]
+            local what=string.format("a corner only the left bar end meets, stick %.2f at %.1f m/s",stick,speed)
+            local w=harness(face(WALL,nil,.2))
+            w.prompt=true
+            local b=World.place(World.terrain.flat(),{speed=speed})
+            local deepest,last,nosed=-math.huge,nil,false
+            for step=1,300 do
+                if step==4 then w.set_pad(stick) end
+                local out
+                out,b=w.ride_step(b)
+                check(not out.stop_requested,what..": the ride goes on: "..tostring(out.issue))
+                nosed=nosed or w.model and w.model.nose_manual_active==true
+                local q=M.normalized(b.orientation)
+                local grip=M.add(b.center_of_mass,M.turn(q,M.sub(Geometry.left_grip,Geometry.com)))
+                last=grip[3]+.055*Geometry.scale-WALL
+                deepest=math.max(deepest,last)
+            end
+            check(nosed,what..": into a nose manual")
+            check(deepest<=.06,string.format("%s: the bar end goes at most %.3f m into the corner",what,deepest))
+            check(last>=-.03 and M.length(b.linear_velocity)<.05,string.format("%s: it rests %.3f m off the corner at %.3f m/s",
+                what,-last,M.length(b.linear_velocity)))
+        end
+        for _,row in ipairs({{5.5,-.75,-15},{6,-1,-5},{6,-.75,-25},{6.5,-1,-15},{6.5,-.75,-25},{7,-1,-15},{7,-.75,-25},{7.5,-1,-25}}) do
+            local speed,steer,degrees=row[1],row[2],row[3]
+            local what=string.format("steer %.2f at %.1f m/s into a face turned %d degrees",steer,speed,degrees)
+            local w=harness((turned(4+speed*1.5,degrees)))
+            w.prompt=true
+            local b=World.place(World.terrain.flat(),{speed=speed})
+            local nosed,issue=false,nil
+            for step=1,300 do
+                if step==4 then w.set_pad(.53) elseif step==30 then w.set_pad(.53,steer) end
+                local out
+                out,b=w.ride_step(b)
+                nosed=nosed or w.model and w.model.nose_manual_active==true
+                if out.stop_requested then issue=tostring(out.issue) break end
+            end
+            check(nosed,what..": into a nose manual")
+            -- Closing as fast as a hit is a crash at the face, as on a bike on both wheels; going over sideways is not.
+            check(issue==nil or issue:find("hit something",1,true)~=nil,what..": no fall over sideways: "..tostring(issue))
+        end
+    end)
     case(function() -- From a rear manual straight into a nose manual, the drawn hips swing forward no faster than in either alone.
         -- The body moves here. Eased a sixth of the way a step from the rear manual's shift to the nose manual's, the
         -- hips moved .095 m in one frame and stopped dead as the shift crossed to forward. Composed as Core does, a
-        -- rear manual alone moves them at most .055 m and a nose manual .030.
+        -- rear manual alone moves them at most .055 m and a nose manual .030. The bound is for a switch from a rear
+        -- manual held a second, as here. From one held a third of a second the first two steps after the stick goes
+        -- forward move the hips .066 and .065 m with the rear manual still on: that is the rear manual's own let-go,
+        -- the same with the stick let go instead, and was there before the nose manual.
         for _,row in ipairs({{-.53,3},{-.53,4},{-.72,3},{-.72,4}}) do
             local back,speed=row[1],row[2]
             local what=string.format("stick %.2f then .53 at %.1f m/s",back,speed)

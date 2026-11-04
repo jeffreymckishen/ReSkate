@@ -111,8 +111,12 @@ local defaults={gravity={0,-9.8,0},wheelbase=1.203956057050485*scale,steer_limit
     nose_hold_forward=.26,nose_hold_back=.20,nose_low=.23,nose_high=.13,
     -- Tipping on over the bars faster than nose_catch_rate (rad/s), the rider snaps the weight back, up to
     -- nose_catch_torque, all of it nose_catch_span faster, for at most nose_catch_seconds of pulling past
-    -- nose_hold_back a lift. Without it a 12 cm bump or a 10 cm kerb ramp met at 1.6 to 2.5 m/s threw the bike over.
-    nose_catch_torque=800,nose_catch_rate=.6,nose_catch_span=.5,nose_catch_seconds=.4,
+    -- nose_hold_back a lift. Without it the bike went over the bars on each of a 12 cm bump and a 10 cm kerb ramp met
+    -- at 1.6 to 2.5 m/s in the kernel's own rides. Through Ride, with the stick past half way and the front meeting a
+    -- 12 cm bump .6 m long 1 to 1.8 s into the nose manual, it still goes over on 6 of 36 rides at 2.25 and 2.5 m/s, and
+    -- on most at 2 m/s, where the front stops dead at the bump's face. With all of the catch only .5 rad/s past
+    -- nose_catch_rate, 19 of those 36 went over: at .8 to .93 rad/s it gave 283 to 554 N m and ran out past 50 degrees.
+    nose_catch_torque=800,nose_catch_rate=.6,nose_catch_span=.25,nose_catch_seconds=.4,
     -- Thrown off the front by a bump or a kerb's top with the stick still held, the rider holds the bike's angle with
     -- the air pitch's authority for at most nose_air_seconds. Without it an 8 cm bump at 4 m/s, a 12 cm one at 2.5
     -- to 7 m/s, a 25 degree kicker and a 15 cm kerb ramp at 7 m/s threw the bike over the bars.
@@ -245,7 +249,7 @@ end
 -- is kept the same way.
 function Controller:reset() self.last_hop_event=0 self.normals={{},{}} self.landing_impact={false,false} self.travel_direction=0 self.air={} self.steering={} self.pump=Pump.new() self.pump:reset() self.pedal_latch=F.pedal_state() self.brake_share=0 self.brake_squeeze=0 self.manual_engaged=false self.manual_throw_seconds=0 self.manual_risen=false self.manual_slowed=false self.manual_ground=nil
     self.nose_engaged=false self.nose_throw_seconds=0 self.nose_risen=false self.nose_slowed=false self.nose_ground=nil
-    self.nose_catch_spent=0 self.nose_air_clock=-1 self.nose_air_target=0 end
+    self.nose_catch_spent=0 self.nose_air_clock=-1 self.nose_air_target=0 self.nose_bars_on_path=false end
 function Controller:invalidate_continuity()
     -- A missed command breaks one-step derivative and state-machine history.
     -- Accepted hop consumption and authored tuning remain authoritative. The
@@ -278,6 +282,7 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     local prior_nose=self.nose_engaged==true
     local prior_nose_throw=M.finite(self.nose_throw_seconds) and math.max(0,self.nose_throw_seconds) or 0
     local prior_nose_risen=self.nose_risen==true
+    local prior_bars_on_path=self.nose_bars_on_path==true
     local prior_nose_slowed=self.nose_slowed==true
     local prior_nose_ground=M.unit(self.nose_ground)
     local prior_nose_catch=M.finite(self.nose_catch_spent) and math.max(0,self.nose_catch_spent) or 0
@@ -593,12 +598,16 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     end
     -- On its front wheel the rider swings the rear round it. The lean follows the yaw the bike has, and the bars
     -- turn no further than the contact's own path, nose_d ahead of the centre of mass.
+    local bars_on_path=prior_bars_on_path and (nose_engaged or prior_nose_air>=0 and prior_nose_air<t.nose_air_seconds)
     if nose_carving then
-        out.manual_carve_rate=-steer*math.min(t.nose_carve_rate*math.clamp(math.abs(speed)/2,0,1),t.nose_carve_lateral/math.max(math.abs(speed),.1))
-        -- The lean follows that yaw only between none and the carve the bars ask for. Past it, a yaw a bump gave
-        -- asked for more lean, the leaned front tyre turned the bike harder, and at 5 to 7.6 m/s it spun round.
-        local lean_yaw=M.dot(measured.angular_velocity,up)
-        lean_yaw=out.manual_carve_rate>=0 and math.clamp(lean_yaw,0,out.manual_carve_rate) or math.clamp(lean_yaw,out.manual_carve_rate,0)
+        local full=math.min(t.nose_carve_rate*math.clamp(math.abs(speed)/2,0,1),t.nose_carve_lateral/math.max(math.abs(speed),.1))
+        out.manual_carve_rate=-steer*full
+        -- The lean follows that yaw either way, up to a quarter more than the carve at full lock. Following all of it,
+        -- a yaw a bump gave asked for more lean, the leaned front tyre turned the bike harder, and at 5 to 7.6 m/s it
+        -- spun round. Held between none and the carve the bars ask for, it could not follow the yaw once the stick was
+        -- let go or eased: at 10 m/s down a hill the lean swung through upright to the other side and the bike fell. Up
+        -- to the full-lock carve alone, the lean weaved there and grew to 52 degrees.
+        local lean_yaw=math.clamp(M.dot(measured.angular_velocity,up),-1.25*full,1.25*full)
         out.turning_lean_angle=math.atan(-manual_speed*lean_yaw/M.length(t.gravity))
         if balance_frame and M.dot(body_up,up)>.2 then
             local most=math.atan(math.abs(out.manual_carve_rate)*math.max(nose_d,0)/math.max(math.abs(speed),.5))
@@ -611,11 +620,16 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
                 -- they turn to the stick. Cut to it in one step, a steered bike's bars snapped up to .18 rad (10
                 -- degrees) as its rear lifted. At the stick's own rate they stayed past the path for six steps at 7 m/s:
                 -- the yaw grew from 1.10 to 1.34 rad/s and the front tyre left the ground for a step. At twice it the
-                -- yaw peaked at 1.16 and the tyre stayed down.
+                -- yaw peaked at 1.16 and the tyre stayed down. Once the bars have reached the path they keep to it for
+                -- the rest of the nose manual, the moment in the air off a bump included: slewed back to it on landing as
+                -- well, they stayed past it for several steps, and full-lock carves over an 8 cm bump spun round.
                 local limited=out.front_steer_angle*low
-                if prior_steering.valid then limited=math.clamp(limited,prior_steering.angle-2*rate_delta,prior_steering.angle+2*rate_delta) end
+                if prior_steering.valid and not bars_on_path then
+                    limited=math.clamp(limited,prior_steering.angle-2*rate_delta,prior_steering.angle+2*rate_delta)
+                end
+                bars_on_path=bars_on_path or limited==out.front_steer_angle*low
                 out.front_steer_angle=limited out.steering_limited=true
-            end
+            else bars_on_path=true end
         end
     end
     local wheel_axes={}
@@ -856,7 +870,7 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     self.manual_risen=risen self.manual_ground=manual_ground
     out.nose_manual_active=nose_engaged out.nose_manual_offset=nose_d self.nose_engaged=nose_engaged self.nose_slowed=nose_slowed
     self.nose_throw_seconds=nose_engaged and not rear_support and nose_d>t.nose_hold_forward and prior_nose_throw+h or 0
-    self.nose_risen=nose_risen self.nose_ground=nose_ground
+    self.nose_risen=nose_risen self.nose_ground=nose_ground self.nose_bars_on_path=bars_on_path
     self.nose_catch_spent=nose_engaged and not rear_support and prior_nose_catch+(nose_catching and h or 0) or 0
     -- The air hold's clock: 0 on a step on the front with the rear up, counting in the air after one, off otherwise.
     if out.hop_applied then self.nose_air_clock,self.nose_air_target=-1,0
@@ -901,7 +915,7 @@ function Controller:_adopt(other)
     self.manual_ground=other.manual_ground
     self.nose_engaged=other.nose_engaged self.nose_throw_seconds=other.nose_throw_seconds self.nose_risen=other.nose_risen
     self.nose_slowed=other.nose_slowed self.nose_ground=other.nose_ground self.nose_catch_spent=other.nose_catch_spent
-    self.nose_air_clock=other.nose_air_clock self.nose_air_target=other.nose_air_target
+    self.nose_air_clock=other.nose_air_clock self.nose_air_target=other.nose_air_target self.nose_bars_on_path=other.nose_bars_on_path
 end
 function Controller:step(h,body,wheels,samples,controls,speculative)
     local c=F.controls(controls) local baseline_controller=self:clone()

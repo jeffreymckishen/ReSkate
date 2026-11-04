@@ -52,6 +52,12 @@ function Ground.kicker(at,angle,blend,top)
     end
     return {height=function(x,z) return height(z) end,grad=function(x,z) return 0,slope(z) end}
 end
+-- A kerb ramp across the road from z=at: a smooth step this high over length metres.
+function Ground.rise(at,high,length)
+    local function height(z) local u=math.clamp((z-at)/length,0,1);return high*u*u*(3-2*u) end
+    local function slope(z) local u=(z-at)/length;if u<=0 or u>=1 then return 0 end;return high*6*u*(1-u)/length end
+    return {height=function(x,z) return height(z) end,grad=function(x,z) return 0,slope(z) end}
+end
 local function turned(yaw) return {0,math.sin(yaw/2),0,math.cos(yaw/2)} end
 local function place(ground,speed,yaw)
     local body,wheels=Forces.proposed_body(),Forces.proposed_wheels()
@@ -940,7 +946,8 @@ function T.run()
     case(function() -- The nose manual's tuning: its defaults, and a step refused on tuning outside its limits.
         local t=Forces.tuning()
         local defaults={nose_hold_forward=.26,nose_hold_back=.20,nose_low=.23,nose_high=.13,nose_carve_rate=.6,
-            nose_carve_lateral=2.5,nose_yaw_damping=300,nose_yaw_torque=300,nose_roll_gain=1.6}
+            nose_carve_lateral=2.5,nose_yaw_damping=300,nose_yaw_torque=300,nose_roll_gain=1.6,
+            nose_catch_torque=800,nose_catch_rate=.6,nose_catch_span=.5,nose_catch_seconds=.4}
         for name,value in defaults do check(t[name]==value,"the nose manual's "..name.." is "..tostring(t[name])) end
         local flat=Ground.plane(0,0)
         local body,wheels=place(flat,4)
@@ -950,7 +957,8 @@ function T.run()
         end
         check(valid(nil),"the defaults are valid")
         for _,bad in ipairs({{nose_hold_forward=.31},{nose_hold_back=.31},{nose_high=.23},{nose_low=.27},{nose_carve_rate=5},
-            {nose_carve_lateral=11},{nose_yaw_torque=1201},{nose_roll_gain=.9},{nose_roll_gain=3.1}}) do
+            {nose_carve_lateral=11},{nose_yaw_torque=1201},{nose_roll_gain=.9},{nose_roll_gain=3.1},
+            {nose_catch_torque=1201},{nose_catch_span=0},{nose_catch_seconds=1.1}}) do
             local name,value=next(bad)
             check(not valid(bad),"a step is refused on "..name.."="..value)
         end
@@ -1285,6 +1293,41 @@ function T.run()
                     check(ended and ended<=1 and down and down<=1,what..": the nose manual ends with the rear down: "..tostring(ended).." "..tostring(down))
                 end
             end
+        end
+    end)
+    -- Where the front axle is 1.2 s into a nose manual begun after 15 steps, and how long to hold it: over the shape, a
+    -- metre more, and a second after.
+    local FRONT_AXLE=G.front_axle[3]-G.com[3]
+    local function met(row) return FRONT_AXLE+row.speed*(1.2+15*h),math.ceil((1.2+(row.length+1)/row.speed+1)/h) end
+    case(function() -- A bump or a kerb ramp at walking pace in a nose manual: the rider snaps the weight back, briefly.
+        -- Each tips the bike on over the bars faster than the law asks. With no more than the static pull back
+        -- (nose_hold_back) every one of these went over the bars.
+        for _,row in ipairs({
+            {what="a 12 cm bump .4 m long",shape=function(at) return Ground.bump(at,.12,.4) end,length=.4,speed=1.6,m=.3},
+            {what="a 12 cm bump .4 m long",shape=function(at) return Ground.bump(at,.12,.4) end,length=.4,speed=1.6,m=1},
+            {what="a 12 cm bump .6 m long",shape=function(at) return Ground.bump(at,.12,.6) end,length=.6,speed=1.6,m=.3},
+            {what="a 12 cm bump .6 m long",shape=function(at) return Ground.bump(at,.12,.6) end,length=.6,speed=2.5,m=1},
+            {what="a 10 cm kerb ramp over .2 m",shape=function(at) return Ground.rise(at,.10,.2) end,length=.2,speed=1.6,m=.3},
+            {what="a 10 cm kerb ramp over .2 m",shape=function(at) return Ground.rise(at,.10,.2) end,length=.2,speed=2.5,m=.3},
+            {what="a 10 cm kerb ramp over .2 m",shape=function(at) return Ground.rise(at,.10,.2) end,length=.2,speed=2.5,m=1},
+            {what="a 15 cm kerb ramp over .2 m",shape=function(at) return Ground.rise(at,.15,.2) end,length=.2,speed=1.6,m=.3},
+        }) do
+            local what=string.format("%s at %.1f m/s, m=%.1f",row.what,row.speed,row.m)
+            local at,hold=met(row)
+            local ride,rows=nose({m=row.m,speed=row.speed,ground=row.shape(at),hold=hold,after=0})
+            local peak,pulled,most=0,0,0
+            for _,r in rows do
+                if r.hold then
+                    peak=math.max(peak,r.tilt)
+                    -- The steps of a lift the rider pulls back past the static limit: at most nose_catch_seconds.
+                    if r.out.nose_manual_active and r.rear>.02 then
+                        if r.out.manual_couple>W*.20+1 then pulled+=1 end
+                    else pulled=0 end
+                    most=math.max(most,pulled)
+                end
+            end
+            check(ride.refused==0 and not fell(rows) and peak<=47,string.format("%s: no fall, at most %.1f degrees from world up",what,peak))
+            check(most<=25,string.format("%s: the catch pulls past the static limit on %d steps of a lift",what,most))
         end
     end)
     return {cases=cases,assertions=n,native_authority=false,constructed=true}

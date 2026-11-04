@@ -1464,6 +1464,17 @@ local function ahead(s,frame,body,options,contact)
         end
     end
     local v=body.linear_velocity
+    -- In a nose manual the lanes travel with the front hub, .64 m under the centre of mass. As the rear comes down the
+    -- hub swings forward while the centre of mass stays where it is: brought to rest at a car's bumper with the lanes
+    -- on the centre of mass's travel, the rear came down and the front tyre rolled .25 to .35 m into the car, and once
+    -- a push moved the centre of mass back the lanes looked behind. Held at the bumper by its hub, the bike is pushed
+    -- back off it instead, as a free-rolling bike would be. The stop pushes on whichever of the hub and the centre of
+    -- mass closes faster, since on the way up the hub slows and the bars do not; the closing it reports, which a hit
+    -- reads, stays the centre of mass's.
+    local mass_velocity=v
+    if s.nose_manual_active and M.vec(body.angular_velocity,1e5) then
+        v=M.add(v,M.cross(body.angular_velocity,M.turn(q,M.sub(s.geometry.front_axle,s.geometry.com))))
+    end
     local along=M.sub(v,M.mul(up,M.dot(v,up)))
     local speed=M.length(along)
     local heading=M.unit(M.sub(forward,M.mul(up,M.dot(forward,up))))
@@ -1521,11 +1532,12 @@ local function ahead(s,frame,body,options,contact)
         end
     end
     if not face then return nil end
-    local closing=-M.dot(v,face.normal)
+    local closing=-M.dot(mass_velocity,face.normal)
     local out={gap=face.gap,closing=closing,face=face}
-    if closing<=0 then return out end
-    local allowed=face.gap>0 and math.sqrt((AHEAD_DECEL*h)^2+2*AHEAD_DECEL*face.gap)-AHEAD_DECEL*h or -AHEAD_REBOUND*closing
-    if closing>allowed then out.force=M.mul(face.normal,math.min(body.mass*(closing-allowed)/h,AHEAD_FORCE)) end
+    local pressing=math.max(closing,-M.dot(v,face.normal))
+    if pressing<=0 then return out end
+    local allowed=face.gap>0 and math.sqrt((AHEAD_DECEL*h)^2+2*AHEAD_DECEL*face.gap)-AHEAD_DECEL*h or -AHEAD_REBOUND*pressing
+    if pressing>allowed then out.force=M.mul(face.normal,math.min(body.mass*(pressing-allowed)/h,AHEAD_FORCE)) end
     return out
 end
 local function packet(model,companions,h,crash,push)

@@ -11,6 +11,7 @@ local Visual=require("./bike_visual")
 local Identity=require("./lease_identity")
 local M=require("./force_math")
 local MP=require("./mounted_pose")
+local World=require("./sim_world")
 local T={}
 local h=Forces.native_seconds
 local R=Geometry.wheel_radius
@@ -19,7 +20,7 @@ local function pitch_of(angle) return {math.sin(angle/2),0,0,math.cos(angle/2)} 
 -- ground(from,to) answers each ray with a row or {status="clear"}.
 local function harness(ground)
     local body,incarnation,lease,epoch=newproxy(),newproxy(),newproxy(),newproxy()
-    local w={serial=1000,time=1,submits={},requested={},samples={},ground=ground}
+    local w={serial=1000,time=1,submits={},requested={},samples={},ground=ground,by_serial={}}
     local api={}
     function api.probe_batch(got,plan)
         if w.unreadable and #plan==4 then
@@ -35,6 +36,7 @@ local function harness(ground)
     function api.submit(_,value)
         sequence+=1
         w.submits[#w.submits+1]=value
+        w.by_serial[w.serial]=value
         w.requested[tostring(sequence)]=tostring(w.serial)
         return true,nil,tostring(sequence)
     end
@@ -92,13 +94,26 @@ local function harness(ground)
                     observed_ms=tostring(1000+math.floor((fresh.serial-80)*h*1000+.5)),packet=fresh.serial,pad=fresh.pad}}
         end
         w.serial+=1;w.time+=h
-        local v=pose.velocity or {0,0,0}
+        local v,a=pose.velocity or {0,0,0},pose.angular_velocity or {0,0,0}
         local p=pose.position
         local raw={epoch=epoch,serial=tostring(w.serial),time=w.time,seconds=h,mass=Geometry.mass,
             position=vector.create(p[1],p[2],p[3]),velocity=vector.create(v[1],v[2],v[3]),
-            angular_velocity=vector.create(0,0,0),inertia=vector.create(26,32,10),rotation=pose.rotation}
+            angular_velocity=vector.create(a[1],a[2],a[3]),inertia=vector.create(26,32,10),rotation=pose.rotation}
         w.samples[w.serial]=raw
         return ride:observe(source,raw,{now_ms=1000,focused=true,menu_open=false,loaded=true})
+    end
+    -- A step of a body that moves: Ride observes b, and b moves on by the packet Ride sent the step before, so a
+    -- packet made from one sample acts between the next two, as the game applies it. Returns Ride's result and b moved.
+    function w.ride_step(b)
+        local out=w.step({position=b.center_of_mass,velocity=b.linear_velocity,angular_velocity=b.angular_velocity,rotation=b.orientation})
+        local sent=w.by_serial[w.serial-1]
+        local packet={force={0,0,0},torque={0,0,0},hop_impulse={0,0,0}}
+        if sent then
+            packet.force={sent.force.x,sent.force.y,sent.force.z}
+            packet.torque={sent.torque.x,sent.torque.y,sent.torque.z}
+            if sent.impulse then packet.hop_impulse={sent.impulse.x,sent.impulse.y,sent.impulse.z} end
+        end
+        return out,World.integrate(b,packet,Forces.tuning().gravity,h)
     end
     return w
 end
@@ -1098,6 +1113,34 @@ function T.run()
                 check(engaged and braked<= -5000,string.format("a corner %.1f m past the tyre at %d degrees stops the nose manual: %.0f",
                     gap,degrees,braked))
             end
+        end
+    end)
+    case(function() -- Brought to rest at a car in a nose manual, the rear comes down with the front tyre at the bumper, not in it.
+        -- The body moves here. As the rear comes down the front hub, .64 m under the centre of mass, swings forward
+        -- while the centre of mass stays put: with the stop's closing taken from the centre of mass alone, it saw none,
+        -- and the front tyre rolled .25 to .35 m into the car. A manual and plain riding rest at the bumper too.
+        local WALL=4.5
+        for _,row in ipairs({{.35,2},{.35,3.9},{.53,2},{.53,2.5},{.53,3.9},{1,2.5},{1,3.9},{-.53,2.5},{0,2.5}}) do
+            local stick,speed=row[1],row[2]
+            local what=string.format("stick %.2f at %.1f m/s",stick,speed)
+            local w=harness(face(WALL))
+            w.prompt=true
+            local b=World.place(World.terrain.flat(),{speed=speed})
+            local deepest,nosed,down=-math.huge,false,nil
+            for step=1,260 do
+                if step==4 then w.set_pad(stick) end
+                local out
+                out,b=w.ride_step(b)
+                check(not out.stop_requested,what..": the ride goes on: "..tostring(out.issue))
+                local nosing=w.model and w.model.nose_manual_active==true
+                nosed=nosed or nosing
+                if nosed and not nosing and not down then down=step end
+                local q=M.normalized(b.orientation)
+                local hub=M.add(b.center_of_mass,M.turn(q,M.sub(Geometry.front_axle,Geometry.com)))
+                deepest=math.max(deepest,hub[3]+R-WALL)
+            end
+            if stick>0 then check(nosed and down,what..": into a nose manual, and the rear came down: "..tostring(down)) end
+            check(deepest<=.03,string.format("%s: the front tyre goes at most %.3f m into the car",what,deepest))
         end
     end)
     case(function() -- Going over the bars from a nose manual, the stick is let go: the stage gets no held stick while the crash runs.

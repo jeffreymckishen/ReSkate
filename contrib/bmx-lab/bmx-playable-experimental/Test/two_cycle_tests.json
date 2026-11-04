@@ -5,7 +5,7 @@
   "quota_file_count": 90,
   "expected_processes": 47,
   "expected_cases": 424,
-  "expected_assertions": 39696,
+  "expected_assertions": 39701,
   "source_admission": "UNCHANGED_FALSE",
   "files": [
     {
@@ -221,8 +221,8 @@
     {
       "source": "plugin/bike_spawn.lua",
       "destination": "bike_spawn.lua",
-      "bytes": 30803,
-      "sha256": "C9AFD96F4A031E84CB8A6E71FEBB56964173A9FDE5DE6190425EF584DDFAC067"
+      "bytes": 31466,
+      "sha256": "B51FF78684ABCAEAC23A92DCDB86545AFFFF3605966869C8497F0BDA5C1C1D73"
     },
     {
       "source": "plugin/ride_runtime.lua",
@@ -420,8 +420,8 @@
     {
       "source": "Test/playable_grade_spawn_tests.lua",
       "destination": "playable_grade_spawn_tests.lua",
-      "bytes": 16541,
-      "sha256": "D872E3F977A48CFEDDF89CB33BE96AA6CBB36F110FD706E93B525D02DF3D0EB3"
+      "bytes": 18973,
+      "sha256": "772D0736BB48745E83DB2E614715EBB4BF79A8C9F5B7A111AF9A0D6B1D4DB77A"
     },
     {
       "source": "Test/core_session_renewable_tests.lua",
@@ -573,8 +573,8 @@
     },
     {
       "source": "plugin/bike_spawn.lua",
-      "bytes": 30803,
-      "sha256": "C9AFD96F4A031E84CB8A6E71FEBB56964173A9FDE5DE6190425EF584DDFAC067"
+      "bytes": 31466,
+      "sha256": "B51FF78684ABCAEAC23A92DCDB86545AFFFF3605966869C8497F0BDA5C1C1D73"
     },
     {
       "source": "plugin/bike_visual.lua",
@@ -703,8 +703,8 @@
     },
     {
       "source": "README.md",
-      "bytes": 8043,
-      "sha256": "F6D12F34373D179BA8B2D6F800F8B30B25EBFA007FBF6791EA63778647623FE3"
+      "bytes": 9238,
+      "sha256": "17965E6401F4F90EDFA844E0FBDA475EC89DA413F0AC6C7E2E382BC4A246C671"
     },
     {
       "source": "reskate-plugin.json",
@@ -972,7 +972,7 @@
       "invoked": "playable_grade_spawn_tests",
       "context": "flat",
       "expected_cases": 1,
-      "expected_assertions": 66
+      "expected_assertions": 71
     },
     {
       "suite": "core_session_renewable_tests",

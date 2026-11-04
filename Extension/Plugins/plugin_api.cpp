@@ -17,7 +17,7 @@ namespace {
 struct Event {
     std::string_view name, permission;
 };
-constexpr std::array<Event, 31> events{{
+constexpr std::array<Event, 32> events{{
     {"load", {}}, {"unload", {}}, {"tick", {}}, {"level_loaded", {}}, {"level_unloading", {}},
     {"trick_started", "events.tricks"}, {"trick_landed", "events.tricks"}, {"line_broken", "events.tricks"},
     {"draw", "overlay"}, {"player_joined", "session.read"}, {"player_left", "session.read"}, {"message", "net.session"},
@@ -26,7 +26,7 @@ constexpr std::array<Event, 31> events{{
     {"board_landed", "events.skater"}, {"body_hit", "events.skater"}, {"bail_end", "events.skater"},
     {"physics_step", "events.physics"}, {"launch", "events.skater"}, {"trick_notes", "events.tricks"},
     {"throwdown_ui", "throwdowns"}, {"touch", "session.skaters"}, {"touch_end", "session.skaters"}, {"camera_cycle", "camera"},
-    {"poll_answer", "server"}, {"poll_closed", "server"},
+    {"poll_answer", "server"}, {"poll_closed", "server"}, {"favorites_changed", "menu"},
 }};
 constexpr std::size_t maximum_key = 128;
 constexpr std::size_t maximum_command = 48;
@@ -572,7 +572,9 @@ struct ApiFunctions {
     }
     // skater.teleport: true means queued, not an arrival or equipment acknowledgement; false
     // and why when the host has turned teleporting off, it cannot be done now, or it is asked too often.
-    // Explicit on_board sets the native spawn preference at dispatch. The engine may retain it
+    // Explicit on_board sets the native spawn preference at dispatch, when it can be set (not against a
+    // match's own lock, nor while No Bail holds the board); otherwise the move happens with the board
+    // as it is. The engine may retain it
     // for later teleports; omitted options leave that preference unchanged. This is native state,
     // not a saved SDK setting, and no automatic restoration is promised.
     static int skater_teleport(lua_State* L) {
@@ -663,6 +665,8 @@ struct ApiFunctions {
         lua_setfield(L, -2, "detail");
         lua_pushboolean(L, now->manual);
         lua_setfield(L, -2, "manual");
+        lua_pushnumber(L, now->timer);
+        lua_setfield(L, -2, "timer");
         return 1;
     }
     // Modules come from the plugin's own package, beside its entry: require("./rules") or
@@ -746,13 +750,14 @@ void Api::install(Plugin& plugin, lua_State* L) {
         lua_setfield(L, -2, name);
     };
     const auto same = [](std::string_view w) { return w; };
-    lua_createtable(L, 0, 13);
+    lua_createtable(L, 0, 14);
     push_enum("Side", std::array{Side::client, Side::server, Side::both}, [](Side side) { return std::string_view(side_name(side)); });
     push_enum("Event", events, [](const Event& event) { return event.name; });
     push_enum("Key", key_names, [](const auto& key) { return key.first; });
     for (const auto& [name, words] : {std::pair<const char*, Words>{"LogLevel", log_levels}, {"Align", aligns}, {"Launch", launches},
                                       {"Stance", stances}, {"Pop", pops}, {"Space", spaces}, {"Throwdown", throwdown_modes},
-                                      {"Card", throwdown_cards}, {"EntityStatus", entity_statuses}, {"Target", send_targets}})
+                                      {"Card", throwdown_cards}, {"EntityStatus", entity_statuses}, {"Target", send_targets},
+                                      {"ItemSource", item_sources}})
         push_enum(name, words, same);
     readonly();
     lua_setfield(L, -2, "Enums");
@@ -782,6 +787,8 @@ void Api::install(Plugin& plugin, lua_State* L) {
     install_capture_api(plugin, L);
     install_effects_api(plugin, L);
     install_viewmodel_api(plugin, L);
+    install_object_physics_api(plugin, L);
+    install_values_api(plugin, L);
     readonly();
     lua_setglobal(L, "reskate");
     lua_pushcfunction(L, ApiFunctions::print, "print");

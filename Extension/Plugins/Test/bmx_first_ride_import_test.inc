@@ -97,7 +97,7 @@ void run_bmx_first_ride_import_fixture(const std::filesystem::path& plugin_direc
         check(status.commands.empty(), "import fixture registers no console commands");
     };
     check(!import_entry.empty(), "exact inert import entry is required");
-    check(Limits{}.call_ms == 50 && Limits{}.tick_ms == 2, "first-ride import fixture retains default Host budgets");
+    check(Limits{}.call_ms == 50 && Limits{}.tick_ms == 6, "first-ride import fixture retains default Host budgets");
     for (const auto& permissions : {std::string{}, std::string(R"("input.lease","input.capture")")}) {
         const std::string id = permissions.empty() ? "bmx-first-ride-import-denied" : "bmx-first-ride-import-capable";
         const std::string control_id = id + "-control";

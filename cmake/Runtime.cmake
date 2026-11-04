@@ -8,6 +8,9 @@ add_library(dingosdk_runtime SHARED
     Extension/Skater/native_input_pulse.cpp
     Extension/Skater/native_input_pulse_environment.cpp
     Runtime/runtime_init.cpp
+    Extension/Objects/placement_physics.cpp
+    Extension/Objects/placement_adapters.cpp
+    Extension/Skater/skater_movement.cpp
     Runtime/runtime_state.cpp
     Runtime/client_tick.cpp
     Runtime/frame_timing.cpp
@@ -27,7 +30,6 @@ add_library(dingosdk_runtime SHARED
     Extension/BMX/bmx_skeleton_phase_probe.cpp
     Extension/BMX/bmx_chassis_probe.cpp
     Extension/BMX/bmx_native_chassis.cpp
-    Extension/World/owned_bodies.cpp
     Extension/BMX/bmx_chassis_ride.cpp
     Extension/BMX/bmx_bail.cpp
     Extension/BMX/bmx_binding_observer.cpp
@@ -63,6 +65,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Multiplayer/Remote/native_skater_spawn.cpp
     Extension/Multiplayer/Remote/puppet_cost.cpp
     Extension/Multiplayer/Remote/native_cosmetics.cpp
+    Extension/Multiplayer/Remote/stand_ins.cpp
     Extension/Multiplayer/Remote/native_audio.cpp
     Extension/Multiplayer/Remote/native_vfx.cpp
     Extension/Multiplayer/Voice/voice_chat.cpp
@@ -125,6 +128,7 @@ add_library(dingosdk_runtime SHARED
     Extension/World/stack_check_report.cpp
     Extension/World/texture_handle_limit.cpp
     Extension/World/texture_handle_guard.cpp
+    Extension/World/reference_list_guard.cpp
     Extension/World/physics_wake_guard.cpp
     Extension/World/streaming_copy_guard.cpp
     Extension/Settings/replay_drafts.cpp
@@ -144,6 +148,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Objects/console_commands.cpp
     Extension/Objects/ParkEditor/park_editor_commands.cpp
     Extension/Objects/ParkEditor/park_editor_runtime.cpp
+    Extension/Objects/ParkEditor/park_editor_bodies.cpp
     Extension/Objects/ParkEditor/park_editor_preview.cpp
     Extension/Objects/ParkEditor/park_editor_selection.cpp
     Extension/Objects/ParkEditor/world_pick.cpp
@@ -170,6 +175,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Plugins/plugin_commands.cpp
     Extension/Plugins/plugin_http.cpp
     Extension/Plugins/plugin_game_runtime.cpp
+    Extension/Plugins/plugin_ui_values.cpp
     Extension/Rendering/plugin_effects.cpp
     Extension/Plugins/plugin_joystick.cpp
     Extension/Skater/skater_animation.cpp
@@ -184,6 +190,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Skater/xray_render.cpp
     Extension/Skater/xray_skeleton.cpp
     Extension/Skater/game_speed.cpp
+    Extension/Skater/grind_target.cpp
     Extension/Skater/launches.cpp
     Extension/Skater/pad_hide.cpp
     Extension/Skater/trick_rewrite.cpp

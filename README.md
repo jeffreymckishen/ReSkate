@@ -304,9 +304,9 @@ On Linux and macOS, use the launch option in [Linux (Proton)](#linux-proton) or
 [macOS](https://docs.reskate.dev/macos) in the docs.
 
 **A plugin stopped "over the plugin time budget".** It took longer each tick than its budget allows, so
-ReSkate stopped it to keep the game smooth. If you trust the plugin, raise **Plugin time budget** in the
-launcher's **Settings → GAME** (up to 6 ms) and start the game again. `plugin list` in the console shows what
-each plugin takes.
+ReSkate stopped it to keep the game smooth. If you trust the plugin and lowered **Plugin time budget** in the
+launcher's **Settings → GAME**, raise it again (6 ms, the default, is the most) and start the game again.
+`plugin list` in the console shows what each plugin takes.
 
 **The game crashes.** Turn your mods off and try again first: many crashes come from mods. If it still
 crashes, [open an issue](https://github.com/Dingo-Shenanigans/ReSkate/issues/new/choose) with your ReSkate
@@ -317,7 +317,8 @@ on (it is by default), the crash details have already been sent; see
 ## Mods
 
 - Install mods from the launcher's **MODS** page: browse Thunderstore, or drag a `.zip` or folder onto the
-  window.
+  window. A Thunderstore zip of a mod you already have asks to replace it, even when the browser saved a
+  second copy as `Team-Name-1.2.3 (1).zip`, so one mod never ends up installed twice.
 - **PROFILES** on that page saves which mods are on, and in what order, under a name. Loading a profile
   switches to it and downloads any of its mods you do not have; every mod stays installed once. **COPY CODE**
   and **SAVE FILE** share a profile, and **IMPORT CODE** and **IMPORT FILE** take one in. The codes and
@@ -326,13 +327,15 @@ on (it is by default), the crash details have already been sent; see
 - Mods are checked against the game build they were made for. Outdated mods, or mods that can't be merged
   cleanly, are left out with a message naming them, and the rest still load.
 - A plugin mod (one with a `reskate-plugin.json`) runs Luau scripts in a sandbox with a time budget: on
-  average over a second it may take 2 ms of each game tick, and one that stays over its budget for 3 seconds
-  is stopped. **Plugin time budget** in the launcher's **Settings → GAME** gives every plugin 3, 4, 5 or 6 ms
-  instead, from the next launch; plugins that drive physics every tick can need about 4 ms. `plugin list` in
-  the console shows the budget and what each plugin takes of it. The launcher saves the choice as
-  `plugin_tick_ms` in `ReSkateLauncher.settings.json` (in the `--dev-data-root` folder when there is one) and
-  passes it as `--plugin-tick-ms=<ms>`, which `ReSkateLauncher.exe --no-gui` takes too. A plugin cannot change
-  its own budget, and a dedicated server's plugins keep 2 ms.
+  average over a second it may take 6 ms of each game tick, and one that stays over its budget for 5 seconds
+  is stopped. **Plugin time budget** in the launcher's **Settings → GAME** gives every plugin 2, 3, 4 or 5 ms
+  instead, from the next launch, for a player who runs several plugins and would rather keep frames; plugins
+  that drive physics every tick can need about 4 ms. `plugin list` in the console shows the budget and what
+  each plugin takes of it. The launcher saves the choice as `plugin_tick_ms` in `ReSkateLauncher.settings.json`
+  (in the `--dev-data-root` folder when there is one) and passes it as `--plugin-tick-ms=<ms>`, which
+  `ReSkateLauncher.exe --no-gui` takes too. A settings file saved while 2 ms was the default holds 2 ms
+  whether or not the player picked it, so that 2 ms is read as the default, 6 ms. A plugin cannot change its own budget,
+  and a dedicated server's plugins get 6 ms.
 - A mod that adds songs can give them their own playlist in the game's music screen with a
   `reskate-music.json` in its folder:
 
@@ -477,8 +480,8 @@ Useful launcher flags:
 ### Tests
 
 Each module keeps its regression tests in a `Test/` folder. Turn them on with any of
-`DINGOSDK_BUILD_MULTIPLAYER_TESTS`, `DINGOSDK_BUILD_LAUNCHER_TESTS`, `DINGOSDK_BUILD_PARK_EDITOR_TESTS`
-and `DINGOSDK_BUILD_CRASH_REPORT_TESTS`, then run CTest:
+`DINGOSDK_BUILD_MULTIPLAYER_TESTS`, `DINGOSDK_BUILD_LAUNCHER_TESTS`, `DINGOSDK_BUILD_PARK_EDITOR_TESTS`,
+`DINGOSDK_BUILD_CRASH_REPORT_TESTS` and `DINGOSDK_BUILD_PLUGIN_TESTS`, then run CTest:
 
 ```powershell
 cmake --preset vs2022-x64 -DDINGOSDK_BUILD_MULTIPLAYER_TESTS=ON -DDINGOSDK_BUILD_LAUNCHER_TESTS=ON

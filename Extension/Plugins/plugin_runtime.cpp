@@ -7,6 +7,7 @@
 #include "plugin_camera.h"
 #include "plugin_http.h"
 #include "plugin_game_runtime.h"
+#include "Extension/Objects/placement_physics.h"
 #include "plugin_wire.h"
 #include "Engine/Vfs/thunderstore_package.h"
 #include "Engine/Vfs/initfs.h"
@@ -271,7 +272,7 @@ void read_tricks() {
     signals.wipeout = skater.skater && skater.physics_state >= 300 && skater.physics_state < 400;
     const auto event = trick_watch.update(signals);
     environment->score_now = ScoreState{hud->line_score, hud->multiplier, trick_watch.in_trick(), hud->header, hud->descriptor,
-                                        tricks::names_manual(*hud)};
+                                        tricks::names_manual(*hud), hud->line_timer};
     if (!hud->header.empty()) last_trick_name = hud->header;
     const auto now = std::chrono::steady_clock::now();
     TrickNews news;
@@ -617,6 +618,7 @@ void on_client_tick() noexcept {
         last_tick = now;
         if (host->wants_tricks()) read_tricks();
         else environment->score_now.reset();
+        placement_physics::client_tick();
         host->tick(dt);
         if (serving) server_host->tick(dt);
     } catch (const std::exception& error) {
@@ -629,6 +631,7 @@ void set_level(std::string_view level) noexcept {
     try {
         // A new level starts a new line: a trick going on before it scores nothing.
         if (level != watched_level) {
+            placement_physics::reset();
             watched_level = std::string(level);
             trick_watch = tricks::TrickWatch{};
         }
@@ -650,7 +653,7 @@ bool run_console(const std::string& text) noexcept {
 
 // Another player's plugin message. On a lobby's host the server copies hear what is for them and
 // what is for everyone; the authority's words come only from the authority (session.cpp checks).
-void receive_message(std::uint64_t sender, const std::vector<std::uint8_t>& bytes) noexcept {
+void receive_message(std::uint64_t sender, const std::vector<std::uint8_t>& bytes, bool to_client) noexcept {
     try {
         std::lock_guard lock(messages_mutex);
         const auto to = wire::to_of(bytes);
@@ -660,8 +663,8 @@ void receive_message(std::uint64_t sender, const std::vector<std::uint8_t>& byte
         if (serving) {
             if (wire::from_authority(bytes)) return;
             if (to == wire::authority || to == 0) put(server_mail);
-            if (to != wire::authority) put(client_mail);
-        } else if (to != wire::authority) put(client_mail);
+            if (to != wire::authority && to_client) put(client_mail);
+        } else if (to != wire::authority && to_client) put(client_mail);
     } catch (...) {}
 }
 

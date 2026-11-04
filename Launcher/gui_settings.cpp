@@ -390,9 +390,9 @@ bool plugin_budget_choice(Settings& settings) {
         ImGui::EndCombo();
     }
     setting_note("How long each plugin mod may take of a game tick, on average over a second, before ReSkate stops it "
-                 "so the game stays smooth. Raise it when a plugin you trust is stopped for going over the plugin time "
-                 "budget: plugins that drive physics can need 4 ms. plugin list in the console shows what each one "
-                 "takes. Applies from the next launch.");
+                 "so the game stays smooth. Lower it to keep frames when you run several plugins; raise it again when a "
+                 "plugin you trust is stopped for going over the plugin time budget: plugins that drive physics can need "
+                 "4 ms. plugin list in the console shows what each one takes. Applies from the next launch.");
     return changed;
 }
 
@@ -524,8 +524,31 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
         if (page == "GRAPHICS") graphics_options(fonts, ui, running);
         break;
     }
-    case 3:
+    case 3: {
         section_caption(fonts, "LAUNCHER");
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Interface size");
+        ImGui::SameLine(S(200));
+        ImGui::SetNextItemWidth(S(160));
+        const auto chosen = std::ranges::find(interface_sizes, settings.interface_size);
+        int size_index = static_cast<int>(chosen - interface_sizes.begin());
+        if (ImGui::Combo("##interface_size", &size_index, interface_size_names.data(), static_cast<int>(interface_size_names.size()))) {
+            settings.interface_size = interface_sizes[static_cast<std::size_t>(size_index)];
+            launcher.save();
+        }
+        // Fonts and the window's smallest size are made at startup, so the new size needs a new window.
+        if (settings.interface_size != g_interface_size) {
+            ImGui::SameLine();
+            ImGui::BeginDisabled(busy);
+            if (ImGui::Button("Restart launcher")) {
+                launcher.save();
+                launcher.request_restart();
+            }
+            ImGui::EndDisabled();
+        }
+        setting_note("Makes the launcher's text and layout bigger or smaller. A size too big for this screen is cut to "
+                     "the largest that fits. Applies when the launcher starts again.");
+        ImGui::Spacing();
         setting_check("Keep the launcher open after launch",
                       "Hide while you play and return when Skate closes. Turn off to close after a successful launch.",
                       settings.keep_open_after_launch);
@@ -577,6 +600,7 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
         if (ImGui::Button("Terms of Service")) ui.legal.open = Legal::terms;
         setting_note("What ReSkate collects and sends, and the rules for using it and its servers.");
         break;
+    }
     }
     ImGui::EndChild();
     store_game_settings(ui);

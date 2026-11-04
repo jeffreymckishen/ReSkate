@@ -12,7 +12,8 @@
 namespace dingosdk::plugins {
 namespace {
 // What each permission opens, where it is not plain from its name: "skater.control" the skater's
-// push (with push_wait / push_reset), hold and the competition's stock physics (reskate.physics);
+// push (with push_wait / push_reset), hold, flip speed (reskate.skater.flip_speed) and the competition's
+// stock physics (reskate.physics);
 // "camera" the free and pad-flown cameras and the Bone Cam (reskate.skater.bone_cam);
 // "session.read" spectating and the session's world (reskate.session.world); "events.tricks" the
 // trick events, the trick list's feed and flick diagrams (reskate.tricks); "throwdowns" the
@@ -20,14 +21,18 @@ namespace {
 // (reskate.server.parks, park_spawn, park_remove); "variants" choosing which of its own mod's
 // variants is in the game (reskate.package.choose); "viewmodel" a model of its own drawn in front of
 // the camera (reskate.viewmodel); "strings" the text the game shows for its ids (reskate.strings).
-// "world.physics" permits native bodies the plugin owns and, with "world.raycast", measured ray
-// batches beside one. "world.physics.observe" permits bounded passive
-// synchronizer observations of an existing owned body and probe_batch's passive diagnostics, which
-// also need "world.raycast": include_shape_categories (a read-time category mask), include_hit_owner
-// (an equality-only token for a hit shape's owner slot) and query_preset "all" (a filter that tests
-// every shape with a category, actors' shapes included). It also requires "world.physics". It grants no
-// force, raw filter, exclusion or actor identity. probe_batch's require_named_actor_categories_absent
-// shows no category and needs only "world.physics" and "world.raycast".
+// "outfit.stand_ins" what this PC shows in place of other players' items it does not have
+// (reskate.outfit.stand_ins, Extension/Multiplayer/Remote/stand_ins.h); never a paid store item.
+// "world.physics" native rigid bodies the plugin
+// owns (reskate.world.physics: create, read, submit, receipt, acknowledge, release, prepare) and,
+// with "world.raycast", measured ray batches beside one (probe_batch). "world.physics.observe" adds
+// bounded passive synchronizer observations of an existing owned body, and probe_batch's passive
+// diagnostics, which also need "world.raycast": include_shape_categories (a read-time
+// category mask), include_hit_owner (an equality-only token for a hit shape's owner slot) and
+// query_preset "all" (a filter that tests every shape with a category, actors' shapes included).
+// It also requires "world.physics". It grants no force, raw filter, exclusion or actor identity.
+// probe_batch's require_named_actor_categories_absent shows no category and needs only
+// "world.physics" and "world.raycast".
 // "world.physics.follow" permits a local actor to follow an owned body and
 // requires "world.physics". It grants no input or equipment-transition access.
 // Its optional position lead uses only the followed body's own measured motion;
@@ -40,15 +45,21 @@ namespace {
 // Session mode also requires "world.physics.follow.renew". Both modes require
 // "world.physics" and "world.physics.follow", and grant no input, equipment,
 // recovery, force or new actor state.
-// A manifest's "resident" list and "variants" are
-// the merge's (Engine/Vfs/mod_list.h ResidentAssets, Variants), not the plugin host's.
-constexpr std::array<std::string_view, 62> permissions{
-    "console", "storage", "overlay", "menu", "ui.screen", "input", "input.control", "input.lease", "input.capture", "hud", "events.tricks", "events.skater",
+// A manifest's "resident" list and "variants" are the merge's
+// (Engine/Vfs/mod_list.h ResidentAssets, Variants), not the plugin host's.
+// "objects.physics" lets the plugin claim its own local park placements (at most 32, offline only)
+// and make them fall, roll and be knocked over (reskate.objects.physics, velocity, pose, motion;
+// Extension/Objects/placement_physics.h); a claimed object's moved pose is never saved to the park.
+// "marker.read" reads the local skater's marker saves and returns (reskate.marker.events).
+// "ui.models" publishes bounded plugin-namespaced floats for authored native UI (not stock fields).
+constexpr std::array<std::string_view, 68> permissions{
+    "console", "storage", "overlay", "menu", "ui.screen", "input", "input.control", "input.lease", "input.capture", "input.write", "hud", "events.tricks", "events.skater",
     "skater.read", "skater.teleport", "skater.control", "skater.animation", "skater.input_trace", "trainer", "camera",
     "world.raycast", "world.physics", "world.physics.observe", "world.physics.follow", "world.physics.follow.renew", "world.physics.follow.session", "world.objects", "world.entities", "world.environment", "world.ai", "travel", "session.read",
     "session.skaters", "session.nametags", "net.session", "net.http", "voice.control", "chat.read",
-    "chat.send", "chat.local", "server", "server.parks", "throwdowns", "replay", "music", "progression.read", "settings.read", "audio.ui", "audio", "outfit", "board", "mods.read",
-    "events.physics", "game.speed", "files", "variants", "settings.write", "room", "capture", "effects", "events.physics.geometry", "viewmodel", "strings"};
+    "chat.send", "chat.local", "chat.commands", "server", "server.parks", "throwdowns", "replay", "music", "progression.read", "settings.read", "audio.ui", "audio", "outfit", "board", "mods.read",
+    "events.physics", "game.speed", "files", "variants", "settings.write", "room", "capture", "effects", "events.physics.geometry", "viewmodel", "strings", "outfit.stand_ins",
+    "objects.physics", "marker.read", "ui.models"};
 }
 
 bool known_permission(std::string_view name) noexcept {

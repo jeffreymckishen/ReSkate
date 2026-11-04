@@ -8,6 +8,7 @@
 #include "Extension/UI/Overlay/cursor.h"
 #include "Extension/Skater/no_bail.h"
 #include "Extension/Throwdowns/throwdown_kit.h"
+#include "Extension/UI/NativeMenu/throwdown_menu.h"
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -37,6 +38,11 @@ bool game_window_foreground(HWND) { unavailable("overlay::detail::game_window_fo
 }
 namespace dingosdk::throwdowns::kit {
 Match match() noexcept { unavailable("throwdowns::kit::match"); }
+}
+// Asked by output_allowed() only while a game controller read takes a plugin's input.write
+// replacement, and this fixture makes no controller read.
+namespace dingosdk::multiplayer {
+bool native_throwdown_gameplay_input_allowed() noexcept { unavailable("multiplayer::native_throwdown_gameplay_input_allowed"); }
 }
 namespace dingosdk {
 bool inspect_no_bail_owner(std::uintptr_t, std::uintptr_t, NoBailSkater&, bool&) noexcept {

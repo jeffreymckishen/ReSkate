@@ -64,13 +64,22 @@ Settings load_settings(const fs::path& path) {
             settings.console_key = static_cast<int>(launcher::default_console_key);
         }
         // A value that is not one of the choices (a file edited by hand) is the default, and the
-        // rest of the settings are still read.
-        if (const auto found = json.find("plugin_tick_ms"); found != json.end() && found->is_number_integer())
-            settings.plugin_tick_ms = plugin_time_budget::or_default(found->get<std::int64_t>());
+        // rest of the settings are still read. One saved while it was the default follows today's
+        // default (plugin_time_budget::from_saved); a file without plugin_tick_ms_default was saved
+        // while 2 ms was the default.
+        if (const auto found = json.find("plugin_tick_ms"); found != json.end() && found->is_number_integer()) {
+            const auto saved_under = json.find("plugin_tick_ms_default");
+            const std::int64_t saved_default = saved_under != json.end() && saved_under->is_number_integer() ?
+                saved_under->get<std::int64_t>() : plugin_time_budget::legacy_default_ms;
+            settings.plugin_tick_ms = plugin_time_budget::from_saved(found->get<std::int64_t>(), saved_default);
+        }
         const auto level = json.value("log_level", std::string("info"));
         for (std::size_t index = 0; index < log_levels.size(); ++index)
             if (level == log_levels[index]) settings.log_level = static_cast<int>(index);
         settings.arguments = json.value("arguments", std::string());
+        if (const int size = json.value("interface_size", settings.interface_size);
+            std::ranges::find(interface_sizes, size) != interface_sizes.end())
+            settings.interface_size = size;
         // Keep the original settings key so existing launcher preferences survive.
         settings.keep_open_after_launch = !json.value("close_on_launch", !settings.keep_open_after_launch);
         settings.updates = json.value("updates", settings.updates);
@@ -116,8 +125,10 @@ void save_settings(const fs::path& path, const Settings& settings) {
     json["menu_key"] = settings.menu_key;
     json["console_key"] = settings.console_key;
     json["plugin_tick_ms"] = settings.plugin_tick_ms;
+    json["plugin_tick_ms_default"] = plugin_time_budget::default_ms;
     json["log_level"] = log_levels[static_cast<std::size_t>(settings.log_level)];
     json["arguments"] = settings.arguments;
+    json["interface_size"] = settings.interface_size;
     json["close_on_launch"] = !settings.keep_open_after_launch;
     json["updates"] = settings.updates;
     json["crash_reports"] = settings.crash_reports;
@@ -280,7 +291,7 @@ void Launcher::answer(std::optional<std::string> value) {
 
 void Launcher::restart() {
     auto arguments = arguments_;
-    if (std::find(arguments.begin(), arguments.end(), L"--reskate-updated") == arguments.end())
+    if (!settings_restart_ && std::find(arguments.begin(), arguments.end(), L"--reskate-updated") == arguments.end())
         arguments.emplace_back(L"--reskate-updated");
     launcher_app::relaunch(session_.self, arguments);
 }
@@ -637,6 +648,10 @@ void Launcher::run_play() {
         "Offline mode: playing without Steam as Unknown Player; multiplayer is hidden." :
         settings_.keep_open_after_launch ? "The launcher hides while you play and returns when Skate closes." :
         "The launcher closes now; Skate keeps starting on its own.");
+}
+
+int saved_interface_size(const launcher_app::Session& session) {
+    return load_settings(settings_path(session)).interface_size;
 }
 
 } // namespace dingosdk::launcher_gui::detail

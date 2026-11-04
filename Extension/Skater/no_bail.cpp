@@ -3144,26 +3144,39 @@ bool prepare_on_board_teleport(std::uintptr_t client, std::uintptr_t entity) noe
     logging::write(logging::Level::info,logging::Channel::skater,"Match countdown: native on-board spawn option prepared.");
     return true;
 }
-bool prepare_teleport_equipment(std::uintptr_t client, const NoBailSkater& expected, bool on_board) noexcept {
+namespace {
+// Both forms below: the owner update_no_bail published, its chain resolved again under the
+// shared lock, must still be `expected` (and, when `client` is not zero, that client's).
+bool prepare_published_teleport_equipment(std::uintptr_t client, const NoBailSkater& expected, bool on_board) noexcept {
     LastError error;
     auto& p = protection();
+    if (!p.ready.load(std::memory_order_acquire) || !TryAcquireSRWLockShared(&p.lock)) return false;
+    struct Unlock { SRWLOCK& lock; ~Unlock() { ReleaseSRWLockShared(&lock); } } unlock{p.lock};
+    const auto published = p.lease.owner;
     Owner opening, closing;
     if (!p.ready.load(std::memory_order_acquire) || expected.base != p.base ||
-        !resolve(client, expected.entity, opening)) return false;
-    if (opening.entity != expected.entity || opening.core != expected.core ||
-        opening.context != expected.context || opening.rig != expected.rig ||
-        !TryAcquireSRWLockShared(&p.lock)) return false;
-    struct Unlock { SRWLOCK& lock; ~Unlock() { ReleaseSRWLockShared(&lock); } } unlock{p.lock};
-    // Keep all existing protection/board-lock publications stable through the
-    // byte write. A pending board-preference restoration owns this byte too.
-    if (!p.ready.load(std::memory_order_acquire) || p.board_rearm ||
-        action_protection_locked(opening, GetTickCount64()) || dark_pop_protecting(GetTickCount64()) ||
-        !resolve(client, expected.entity, closing) || closing != opening) return false;
+        (client && client != published.client) ||
+        !resolve(published.client, published.entity, opening) || opening != published ||
+        opening.entity != expected.entity || opening.core != expected.core ||
+        opening.context != expected.context || opening.rig != expected.rig) return false;
+    const auto now = GetTickCount64();
+    // Retain this baseline's independent protection and board-lock precedence. The mounted-BMX
+    // lease holds the board as well (action_protection_locked), and a pending board-preference
+    // restoration owns this byte too.
+    if (p.lease.active(now) || action_protection_locked(opening, now) || dark_pop_protecting(now) || p.board_rearm ||
+        !resolve(published.client, published.entity, closing) || closing != opening) return false;
     std::uint8_t board{};
     if (!read(opening.component + addr::no_bail::teleport_on_board_option, board) || board > 1) return false;
     const std::uint8_t wanted = on_board ? 1 : 0;
     if (board != wanted && !set_teleport_equipment(opening.component, on_board)) return false;
-    return resolve(client, expected.entity, closing) && closing == opening;
+    return resolve(published.client, published.entity, closing) && closing == opening;
+}
+}
+bool prepare_teleport_equipment(const NoBailSkater& expected, bool on_board) noexcept {
+    return prepare_published_teleport_equipment(0, expected, on_board);
+}
+bool prepare_teleport_equipment(std::uintptr_t client, const NoBailSkater& expected, bool on_board) noexcept {
+    return client && prepare_published_teleport_equipment(client, expected, on_board);
 }
 void update_board_lock(std::uintptr_t client, std::uintptr_t entity, bool locked) noexcept {
     LastError error;

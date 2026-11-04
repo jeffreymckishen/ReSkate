@@ -74,6 +74,9 @@ bool no_bail_skater(NoBailSkater& skater) noexcept;
 // At an admitted local teleport dispatch, set only the captured owner's arrival
 // preference. Unknown/replaced owners or protected board state refuse. The game
 // can retain this preference; this neither restores it nor acknowledges arrival.
+bool prepare_teleport_equipment(const NoBailSkater& expected, bool on_board) noexcept;
+// The same, for a caller that observed the owner with try_no_bail_skater and kept its client:
+// that client must also still be the published owner's.
 bool prepare_teleport_equipment(std::uintptr_t client, const NoBailSkater& expected, bool on_board) noexcept;
 // Read-only full local ownership/protection query for an owner-pinned handoff.
 // false means unavailable/changed; protected_owner includes manual/flight/BMX

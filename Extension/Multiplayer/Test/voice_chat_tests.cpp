@@ -137,12 +137,12 @@ int main() try {
             check(!decode(std::span(encoded).first(i)), "Truncated voice policy accepted");
         auto invalid = encoded; invalid[end - 8] = 2;
         check(!decode(invalid), "Invalid host voice toggle accepted");
-        // All guest-tools bits are assigned; bit 7 now permits guest ollies.
+        // Every bit of the guest tools byte has a meaning now (128: guest ollies), so none is refused.
         auto only_ollies = encoded; only_ollies[end - 1] = 128;
         const auto ollies = decode(only_ollies);
         check(ollies && ollies->guest_ollies && !ollies->guest_noclip && !ollies->guest_no_bail &&
               !ollies->guest_boosts && !ollies->enforce_tuning && !ollies->server_votes,
-              "Guest ollies bit changed unrelated guest tools or vote policy");
+              "The guest tools byte's top bit is not guest ollies alone");
         check(encode(*ollies) == only_ollies, "Guest ollies policy did not round-trip exactly");
         invalid = encoded;
         for (std::size_t i = end - 7; i < end - 3; ++i) invalid[i] = 0;

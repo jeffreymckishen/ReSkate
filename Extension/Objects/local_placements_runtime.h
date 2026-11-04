@@ -76,8 +76,9 @@ struct PlacementsRuntime {
     std::vector<PendingResize> resizes;
     std::vector<PlacementRow> rows;
     std::uint64_t next_token{1};
-    // Actual queued teleports. Writers take native_mutex before this queue's
-    // guard; native observers take only its Try-only observation guard.
+    // Actual queued teleports: the placement teleport's row token and a teleport of the local
+    // skater to a position (console tp, the host's tpall), with its board choice. Writers take
+    // native_mutex before this queue's guard; native observers take only its Try-only observation guard.
     teleport_observation::Queue teleport_queue;
     // The heading the pending position teleport faces (teleport_local_skater_heading), radians about
     // world up; unset means the identity rotation the other teleports use (facing +Z).

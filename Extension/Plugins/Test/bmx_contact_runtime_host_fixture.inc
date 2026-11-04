@@ -60,7 +60,7 @@ void bmx_lua_contacts_use_actual_decoder_and_force_modules() {
             reskate.log("BMX Lua contacts: 48 cases, 128 assertions, constructed SDK boundaries")
         end)
     )";
-    check(Limits{}.call_ms == 50 && Limits{}.tick_ms == 2,
+    check(Limits{}.call_ms == 50 && Limits{}.tick_ms == 6,
         "contact Host regression uses unchanged default call and tick limits");
     TestEnvironment environment;
     Host host(environment, Side::client);

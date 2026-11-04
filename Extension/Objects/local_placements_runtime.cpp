@@ -4,6 +4,7 @@
 #include "Engine/Game/Build/20260929/local_placements.h"
 #include "Extension/Customization/local_customization_runtime.h"
 #include "local_placements_runtime.h"
+#include "placement_physics.h"
 #include "Extension/Objects/ParkEditor/park_editor_runtime.h"
 #include "network_object_runtime.h"
 #include "Extension/Profile/runtime_internal.h"
@@ -98,6 +99,7 @@ void queue_placement_save() {
 }
 
 void placement_reset_session() {
+    placement_physics::reset();
     placement_table_changed();
     reset_network_object_world();
     reset_park_editor();
@@ -491,6 +493,7 @@ void update_placement_poses() {
     if (!placement_session_ready()) return;
     update_placement_creates();
     update_park_editor_moves();
+    placement_physics::server_tick();
     update_network_object_moves();
     update_placement_resizes();
     if (!placement_session_ready() || r.clearing || park_editor_owns_placements() || GetTickCount64() < r.next_poll) return;
@@ -501,6 +504,8 @@ void update_placement_poses() {
     auto& objects = r.document.maps[r.map]; bool changed{};
     for (auto& row : r.rows) {
         if (!row.spawned) continue;
+        // A plugin's physics moves it (placement_physics.h): where it falls is not where it is saved.
+        if (row.saved_id && placement_physics::claimed(row.saved_id)) continue;
         if (std::any_of(r.resizes.begin(), r.resizes.end(), [&](const auto& x) { return x.entity == row.entity; }))
             continue; // Its native scale is still 1x, or the resize is not yet read back.
         alignas(16) std::array<std::uint64_t, 2> reference{};
@@ -632,7 +637,7 @@ void update_position_teleport() {
     // This marker spans the native transition constructor, call and teardown.
     if (!skater_action::enter_motion_writer(writer)) return;
     auto& r = placements_runtime();
-    bool dropped{}, equipment_refused{};
+    bool dropped{}, equipment_kept{};
     std::array<float, 3> at{};
     std::uint32_t request{};
     {
@@ -652,37 +657,41 @@ void update_position_teleport() {
             queue.begin_dispatch();
             queue.write().clear_position();
             // Keep the dispatch busy from before the clear through transition
-            // destruction, including same-thread native callbacks.
+            // destruction, including same-thread native callbacks. Preserve the
+            // native flag's complete facing basis. The teleport manager still
+            // handles streaming, ground checks and physics reset.
             alignas(16) std::array<std::uint64_t, 2> transition{};
             r.transition_ctor(transition.data());
             struct Destroy { decltype(r.transition_destroy) call; void* value; ~Destroy() { call(value); } } destroy{r.transition_destroy, transition.data()};
+            // The local teleport manager works in offline play. RequestTeleport's
+            // social/player lookup can reject the same local skater with UINT32_MAX.
+            // The session tick prepares the validated skater's native board option
+            // before this queued move, so this path also starts a plugin's match on the board.
             if (on_board.has_value()) {
                 NoBailSkater owner;
                 std::uintptr_t client{};
                 const auto match = dingosdk::throwdowns::kit::match();
                 const bool offboard = !match.input_lock && (multiplayer::throwdown_relay_waits_offboard() || match.offboard);
-                if ((match.input_lock && !*on_board) || (offboard && *on_board) ||
+                // When the board option cannot be set (a match's own lock, No Bail's protection holding the
+                // board, which it renews every tick while No Bail is on, or a lost race), the move still
+                // happens with the board as it is: the plugin was told it was queued, and the move is
+                // already off the queue.
+                equipment_kept = (match.input_lock && !*on_board) || (offboard && *on_board) ||
                     !try_no_bail_skater(0, owner, client) ||
-                    !prepare_teleport_equipment(client, owner, *on_board)) {
-                    equipment_refused = true;
-                } else {
-                    request = r.teleport(manager, transform.data(), 1, transition.data());
-                }
-            } else {
-                request = r.teleport(manager, transform.data(), 1, transition.data());
+                    !prepare_teleport_equipment(client, owner, *on_board);
             }
+            request = r.teleport(manager, transform.data(), 1, transition.data());
         }
-    }
-    if (equipment_refused) {
-        dingosdk::logging::event(dingosdk::logging::Channel::objects,
-            "{\"event\":\"position_teleport_equipment_refused\"}");
-        return;
     }
     if (dropped) {
         dingosdk::logging::write(dingosdk::logging::Level::warning, dingosdk::logging::Channel::objects,
                                  "Teleport dropped: the skater was busy for 5 s (a bail, a menu or an activity).");
         return;
     }
+    // Logged after the queue scope, so the queue's observers are not refused while a line is written.
+    if (equipment_kept)
+        dingosdk::logging::event(dingosdk::logging::Channel::objects,
+            "{\"event\":\"position_teleport_equipment_kept\"}");
     dingosdk::logging::event(dingosdk::logging::Channel::objects, dingosdk::Json{{"event", "position_teleport_requested"},
         {"x", at[0]}, {"y", at[1]}, {"z", at[2]}, {"request", request}}.dump().c_str());
 }

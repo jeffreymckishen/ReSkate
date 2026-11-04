@@ -14,7 +14,7 @@ blueprint per part) under names, GUIDs, resource ids and material keys of their 
 an asset of the ReSkate FPV Drone mod (whether the two then draw side by side is for a game trial). After the build, builder --check-own-names checks that nothing of the drone's is
 left; a failed check fails the build. --keep-template-names (database, block-hashes, section-names, partition-guid)
 keeps the template's value for those, for a game trial that has to find which of them the game minds; such a pack
-is not checked to pass.
+must fail the check, and only in the checks the kept values explain.
 
 Steps: check the game is the supported build; take the template from git; validate the template's mesh declaration
 (builder --extract-template); turn each of the eight parts into native mesh and geometry files with
@@ -64,8 +64,12 @@ TEMPLATE_FILES = {'.reskate-studio-patch', 'initfs_win32', 'layout.toc',
 PACK_FILES = ('.reskate-studio-patch', 'layout.toc', 'BMX-NATIVE.txt',
               'Win32/configurations/layout/initialinstallpackage/cas_01.cas',
               'Win32/levels/game/dingolevel_root/dingolevel_root.toc')
-# What the builder's --keep-template-names can keep of the template's.
-KEEP_NAMES = {'database', 'block-hashes', 'section-names', 'partition-guid'}
+# What the builder's --keep-template-names can keep of the template's, and the --check-own-names checks a
+# kept value fails: C1 finds the template's identities, C6 checks the database, C5 the depot, C3 the meshes'
+# OriginalPartitionGuid.
+KEEP_FAILS = {'database': {'C1', 'C6'}, 'block-hashes': {'C1', 'C5'}, 'section-names': {'C1'},
+              'partition-guid': {'C1', 'C3'}}
+KEEP_NAMES = set(KEEP_FAILS)
 
 
 def sha(data):
@@ -178,7 +182,8 @@ def main():
     parser.add_argument('--keep-work', type=Path, help='keep the intermediate folders here (a NEW folder)')
     parser.add_argument('--keep-template-names', default='',
                         help='comma list of database, block-hashes, section-names, partition-guid: keep the '
-                             'template\'s value for those (a bisect build for a game trial; its check may fail)')
+                             'template\'s value for those (a bisect build for a game trial; its check must fail, '
+                             'and only where the kept values explain)')
     args = parser.parse_args()
     output = args.output.resolve()
     if output.exists():
@@ -215,11 +220,26 @@ def main():
         # The pack as the mod folder will hold it: nothing of the drone's may be left in it.
         command = [args.builder, '--check-own-names', output, work/'template', args.game_root]
         print('>', ' '.join(str(c) for c in command), flush=True)
-        checked = subprocess.run([str(c) for c in command]).returncode
-        if checked and not keep:
-            raise SystemExit(f'The pack in {output} keeps names of the FPV drone template (--check-own-names failed)')
-        if checked:
-            print('Bisect build: --check-own-names fails, as a pack that keeps', ', '.join(keep), 'must', flush=True)
+        if not keep:
+            if subprocess.run([str(c) for c in command]).returncode:
+                raise SystemExit(f'The pack in {output} keeps names of the FPV drone template (--check-own-names failed)')
+        else:
+            # A bisect pack must fail, and only in the checks its kept values explain; a check that
+            # stopped on an error prints no verdict line.
+            result = subprocess.run([str(c) for c in command], capture_output=True, text=True, errors='replace')
+            sys.stdout.write(result.stdout)
+            sys.stderr.write(result.stderr)
+            sys.stdout.flush()
+            verdict = [line for line in result.stdout.splitlines() if line.startswith('own names: ')]
+            failed = set(verdict[-1].removeprefix('own names: FAIL in').split()) \
+                if verdict and verdict[-1].startswith('own names: FAIL in') else set()
+            explained = set().union(*(KEEP_FAILS[name] for name in keep))
+            if result.returncode != 1 or not failed or not failed <= explained:
+                raise SystemExit(f'--check-own-names on the pack in {output} did not fail as a pack that keeps '
+                                 f'{", ".join(keep)} must: exit {result.returncode}, failed '
+                                 f'{" ".join(sorted(failed)) or "nothing"}, explained {" ".join(sorted(explained))}')
+            print('Bisect build: --check-own-names fails in', ' '.join(sorted(failed)), 'as a pack that keeps',
+                  ', '.join(keep), 'must', flush=True)
     finally:
         if not args.keep_work:
             shutil.rmtree(work, ignore_errors=True)

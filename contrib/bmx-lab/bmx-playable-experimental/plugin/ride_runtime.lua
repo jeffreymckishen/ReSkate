@@ -75,6 +75,10 @@ local CRASH_TILT_DEG, CRASH_STEPS = 75, 60
 -- either side. A ray starts this far behind that, so a face pressed against the bike is still seen.
 local AHEAD_RAYS = {{0,.5,.73},{-.28,.5,.36},{.28,.5,.36}}
 local AHEAD_BEHIND, AHEAD_MIN, AHEAD_MAX = .13, 1, 6
+-- The part of the bike in each lane, whose own travel a nose manual's stop reads: the front hub, then the bar ends.
+local AHEAD_LANE_PARTS = {"front_axle","right_grip","left_grip"}
+-- Slower than this a nose manual's lanes travel with all of the front hub's swing; from it, with its pitch alone.
+local AHEAD_NOSE_TURNING = 2.5
 -- A face is steep against the bike's own up and against the ground under the front wheel, and it faces the bike
 -- more than this: a wall met at a glance is ridden along. A ray low along the road in front of the tyre finds a
 -- ramp or a tight quarter pipe the bike will roll onto before it reaches what the high rays see, and then they
@@ -1472,12 +1476,25 @@ local function ahead(s,frame,body,options,contact)
     -- hub swings forward while the centre of mass stays where it is: brought to rest at a car's bumper with the lanes
     -- on the centre of mass's travel, the rear came down and the front tyre rolled .25 to .35 m into the car, and once
     -- a push moved the centre of mass back the lanes looked behind. Held at the bumper by its hub, the bike is pushed
-    -- back off it instead, as a free-rolling bike would be. The stop pushes on whichever of the hub and the centre of
-    -- mass closes faster, since on the way up the hub slows and the bars do not; the closing it reports, which a hit
-    -- reads, stays the centre of mass's.
-    local mass_velocity=v
+    -- back off it instead, as a free-rolling bike would be. The stop pushes on whichever of the centre of mass and the
+    -- parts in the lanes that see the face closes fastest, since on the way up the hub slows and the bars do not; the
+    -- closing it reports, which a hit reads, stays the centre of mass's.
+    -- Each lane presses with its own part of the bike: the hub in the tyre's lane, a grip in a bar end's. The grips sit
+    -- about level with the centre of mass, so the rear coming down hardly moves them; read from the hub, a corner only a
+    -- bar end met had the bike shoved .1 to .9 m back off it as the rear came down, where it had rested against it.
+    -- From AHEAD_NOSE_TURNING up only the hub's pitch swing counts. The stop pushes at the centre of mass, and against a
+    -- hub moving with the bike's roll that push leaned it further over: a nose manual steered at 5.5 to 7.5 m/s into a
+    -- face met at a glance went over at 70 to 90 degrees, where it had ridden on. Slower, the bike being brought to rest,
+    -- its roll and yaw count as well: pushed along a face turned 40 degrees, the bike leans and turns and its hub swings
+    -- in with that, and on the pitch alone the tyre went .2 to .5 m into the car.
+    local mass_velocity,turning=v,nil
     if s.nose_manual_active and M.vec(body.angular_velocity,1e5) then
-        v=M.add(v,M.cross(body.angular_velocity,M.turn(q,M.sub(s.geometry.front_axle,s.geometry.com))))
+        turning=body.angular_velocity
+        if M.length(M.sub(v,M.mul(up,M.dot(v,up))))>=AHEAD_NOSE_TURNING then
+            local across=M.turn(q,{1,0,0})
+            turning=M.mul(across,M.dot(turning,across))
+        end
+        v=M.add(v,M.cross(turning,M.turn(q,M.sub(s.geometry.front_axle,s.geometry.com))))
     end
     local along=M.sub(v,M.mul(up,M.dot(v,up)))
     local speed=M.length(along)
@@ -1520,7 +1537,7 @@ local function ahead(s,frame,body,options,contact)
     if usable(low) and math.abs(M.dot(M.unit(low.normal),up))>=AHEAD_FACE_UP then
         ramp=M.dot(M.sub(low.position,parts[4]),travel)
     end
-    local face
+    local face,pressing=nil,nil
     for i=1,#AHEAD_RAYS do
         local row=decoded.rays[i]
         if usable(row) then
@@ -1532,13 +1549,19 @@ local function ahead(s,frame,body,options,contact)
                 and facing>AHEAD_FACING and not (ramp and ramp<reached) then
                 local gap=reached*facing
                 if not face or gap<face.gap then face={gap=gap,normal=n,point=copy(row.position)} end
+                if turning then
+                    local g=s.geometry
+                    local at=M.turn(q,M.sub(g[AHEAD_LANE_PARTS[i]],g.com))
+                    local lane=-M.dot(M.add(mass_velocity,M.cross(turning,at)),n)
+                    pressing=math.max(pressing or lane,lane)
+                end
             end
         end
     end
     if not face then return nil end
     local closing=-M.dot(mass_velocity,face.normal)
     local out={gap=face.gap,closing=closing,face=face}
-    local pressing=math.max(closing,-M.dot(v,face.normal))
+    pressing=math.max(closing,pressing or closing)
     if pressing<=0 then return out end
     local allowed=face.gap>0 and math.sqrt((AHEAD_DECEL*h)^2+2*AHEAD_DECEL*face.gap)-AHEAD_DECEL*h or -AHEAD_REBOUND*pressing
     if pressing>allowed then out.force=M.mul(face.normal,math.min(body.mass*(pressing-allowed)/h,AHEAD_FORCE)) end

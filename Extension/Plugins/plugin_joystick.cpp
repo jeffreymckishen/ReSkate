@@ -70,8 +70,10 @@ ComPtr<IDirectInputDevice8W> open(IDirectInput8W& input, const GUID& instance) {
     DIPROPDWORD dead{};
     dead.diph = {sizeof(dead), sizeof(dead.diph), 0, DIPH_DEVICE};
     const auto dead_zone_result = device->SetProperty(DIPROP_DEADZONE, &dead.diph);
-    // read() divides by `range`; a controller that refused it would give plugins wrong axes, so it
-    // is left out rather than listed. A success that changed nothing (DI_PROPNOEFFECT) is not a refusal.
+    // read() divides by `range` and expects no dead zone. A controller that refused the range would
+    // give plugins axes on its own scale, and one that kept a dead zone would read 0 for small
+    // movements, so either is left out rather than listed. A success that changed nothing
+    // (DI_PROPNOEFFECT) is not a refusal.
     if (!detail::axis_configuration_applied(range_result, dead_zone_result)) return nullptr;
     device->Acquire();
     return device;

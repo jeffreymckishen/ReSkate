@@ -563,7 +563,12 @@ function Tests.run()
         local g=fixture({two=true,playable=true});second_terrain(g);g.rough=false
         g.now=g.second_admitted_at+30000
         local pressed=g.now;check(g.entry:mount(),"one pending terrain retry")
-        g.on_pad=function(p)p.buttons.a=true;return p end;g.now=pressed+60000;g.tick()
+        g.on_pad=function(p)p.buttons.a=true;return p end;g.tick(4)
+        check(g.entry:status().phase=="preparing","held controls keep the retry preparing")
+        g.now=pressed+50000
+        check(not g.entry:mount() and g.renewals==1 and g.second_admitted_at==pressed,
+            "a Mount press while the retry prepares renews nothing")
+        g.now=pressed+60000;g.tick()
         check(g.entry:status().phase=="blocked" and g.second_admitted_at==pressed and g.mounts==1 and g.stepoffs==1,
             "held controls cannot turn retry time into a fresh arm window")
         local h=fixture({two=true,playable=true});second_terrain(h)
@@ -571,6 +576,19 @@ function Tests.run()
         h.on_renew=function()return false,"constructed renewal refusal" end
         check(not h.entry:mount() and h.entry:status().phase=="blocked","a refused renewal is no retry")
         check(h.mounts==1 and h.stepoffs==1 and h.probes==probes and h.prepares==prepares,"refusal admits no native or survey work")
+        -- Two slow retries in a row: the second renews from its own press, not the first retry's.
+        local i=fixture({two=true,playable=true});second_terrain(i)
+        local first=i.second_admitted_at
+        i.now=first+50000
+        check(i.entry:mount() and i.renewals==1 and i.second_admitted_at==first+50000,"a first slow retry renews")
+        local s=await_terrain(i)
+        check(s.phase=="preflight_refused" and s.terrain_refusal_count==2,"its survey refuses the ground again")
+        i.rough=false;i.now=first+115000
+        check(i.entry:mount(),"a second retry 65 s after the first is still a retry: "..tostring(i.entry:status().detail))
+        check(i.renewals==2 and i.second_admitted_at==first+115000 and i.entry:status().phase=="preparing",
+            "the second retry renews from its own press")
+        i.await_mount()
+        check(i.mounts==2 and i.stepoffs==1 and i.new_calls==1,"the second retry mounts with no new step-off")
     end)
     case("eight terrain refusals of one Mount intent never allocate or evict",function()
         local f=fixture({two=true,playable=true});second_terrain(f)

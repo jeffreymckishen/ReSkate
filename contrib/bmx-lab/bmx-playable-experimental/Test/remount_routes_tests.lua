@@ -168,6 +168,7 @@ function T.run()
         local from=s.attempts_used
         w.tick(math.ceil(74000/16));w.R.world.probe=open
         check(w.stock==504,"still on foot after the walk")
+        w.clock_offset=.25 -- the press reads a fractional game time, which the runtime only takes as whole ms
         check(w.entry:mount(),"a Mount 74 s after the step-off is a terrain retry: "..tostring(w.entry:status().detail))
         check(w.entry:status().phase=="preparing","the retry surveys again rather than block")
         for _=1,1500 do w.tick();local p=w.entry:status().phase;if p=="riding" or p=="blocked" then break end end

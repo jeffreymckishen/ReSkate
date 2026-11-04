@@ -44,7 +44,8 @@ function M.new(options)
     w.log=log
     local R={time={},input={},menu={},skater={},level={},json={},storage={},entities={},world={physics={}}}
     R.log=options.log
-    function R.time.now() return w.now end
+    -- The game's clock is fractional; clock_offset lets a case read it so without changing the whole-ms logs.
+    function R.time.now() return w.now+(w.clock_offset or 0) end
     function R.input.focus() return {focused=w.focused,interface_open=w.interface_open,gameplay=w.gameplay} end
     function R.input.allowed() return true end
     function R.input.gamepad() return copy(w.pad) end

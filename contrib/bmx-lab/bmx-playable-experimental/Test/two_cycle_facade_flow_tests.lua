@@ -42,6 +42,33 @@ function T.run()
     check(not unknown.manager:second_preflight_ready(unknown_at),"unknown private proof is not a retry")
     check(not unknown.manager:request_mount(0) and unknown.core_count==1 and unknown.stock_requests==1,
         "unknown proof permanently closes second successor admission")
-    return {cases=3,assertions=n,constructed=true,native_authority=false}
+    -- Each terrain retry press renews the Mount time (reuse6 in game: the third press came 74 s after the step-off).
+    local renew=Support.new(check)
+    local first=math.floor(renew.now)
+    check(renew.manager:prepare_next_mount(0,first),"one preparation before any renewal")
+    renew.done504=true;renew.state=504;renew.old.phase="done"
+    renew.now=first+50000
+    local pressed=math.floor(renew.now)
+    check(not renew.manager:renew_second_admission(first+1,pressed),"a renewal names the current Mount time")
+    check(not renew.manager:renew_second_admission(first,first-1),"a renewal never moves the time back")
+    check(not renew.manager:renew_second_admission(first,pressed+5000),"a renewal is no later than now")
+    check(not renew.manager:renew_second_admission(first,pressed+.5),"a renewal is a whole millisecond")
+    check(renew.manager:renew_second_admission(first,pressed),"a current press renews")
+    renew.now=first+74000
+    check(not renew.manager:second_preflight_ready(first),"the step-off's time no longer proves")
+    local ok,attempt=renew.manager:second_preflight_ready(pressed)
+    check(ok and attempt==2,"the renewed time proves 74 s after the step-off")
+    renew.now=pressed+65000
+    local again=math.floor(renew.now)
+    check(not renew.manager:renew_second_admission(first,again),"the first renewal replaced the step-off's time")
+    check(renew.manager:renew_second_admission(pressed,again),"a second retry renews from its own press")
+    check(not renew.manager:second_preflight_ready(pressed),"the first retry's time no longer proves")
+    ok,attempt=renew.manager:second_preflight_ready(again)
+    check(ok and attempt==2,"the second renewal proves 65 s after the first")
+    check(renew.manager:request_mount(0),"the renewed time admits the mount")
+    check(renew.marker_arm==again and renew.marker_admitted==again,"the mount arms from the latest renewal")
+    check(not renew.manager:renew_second_admission(again,math.floor(renew.now)),"nothing renews after the mount request")
+    check(renew.core_count==2 and renew.stock_requests==1 and renew.archives==1,"renewals repeat no step-off or archive")
+    return {cases=4,assertions=n,constructed=true,native_authority=false}
 end
 return T

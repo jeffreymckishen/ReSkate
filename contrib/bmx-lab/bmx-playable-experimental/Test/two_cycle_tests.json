@@ -4,8 +4,8 @@
   "flat_file_count": 89,
   "quota_file_count": 90,
   "expected_processes": 47,
-  "expected_cases": 435,
-  "expected_assertions": 39898,
+  "expected_cases": 436,
+  "expected_assertions": 39939,
   "source_admission": "UNCHANGED_FALSE",
   "files": [
     {
@@ -23,8 +23,8 @@
     {
       "source": "Test/two_cycle_entry_tests.lua",
       "destination": "two_cycle_entry_tests.lua",
-      "bytes": 54404,
-      "sha256": "F080AF3192080259F63F7251A6CD7FE83A8363CB7F5EDFD8C9F1BCB64E3E6C17"
+      "bytes": 55658,
+      "sha256": "944557B4B8B6B55BD033AF10A3C80F1D6A815CDAAC783E2854B0754039CCFFE0"
     },
     {
       "source": "Test/two_cycle_handoff_tests.lua",
@@ -83,8 +83,8 @@
     {
       "source": "Test/two_cycle_facade_flow_tests.lua",
       "destination": "two_cycle_facade_flow_tests.lua",
-      "bytes": 3625,
-      "sha256": "4614F74DACCD68767E100BBD56B0FC3C3B818C9E650A3C71DD64FF8DEFFCCCF2"
+      "bytes": 5774,
+      "sha256": "F78D6417A3AF43DC58AB9BD1804E5FF8226AA29854BD14A22281A4890FE70C8B"
     },
     {
       "source": "Test/two_cycle_facade_cancel_tests.lua",
@@ -528,14 +528,14 @@
     {
       "source": "Test/remount_chain_fixture.lua",
       "destination": "remount_chain_fixture.lua",
-      "bytes": 33029,
-      "sha256": "376C3D465C0B83C12E944985353D6B2014B0F0CE199FE0B9F71CB296450FD76A"
+      "bytes": 33162,
+      "sha256": "7A95F9EE92F601F18CAEF812DDDF6D976F86318D65809755E3AF31FA6C4BFD7D"
     },
     {
       "source": "Test/remount_routes_tests.lua",
       "destination": "remount_routes_tests.lua",
-      "bytes": 26010,
-      "sha256": "0B3F41D19DDCCDDF9F20BAF0A8861EC79A063ED5EF888CE034C45A8EC24280DA"
+      "bytes": 26121,
+      "sha256": "DDD69486EA11C8A1C2F71875F72E6553FA2AC6909BBE0BBC4A43C29A4AF28879"
     },
     {
       "source": "Test/bike_physics_tests.lua",
@@ -776,7 +776,7 @@
       "invoked": "two_cycle_entry_tests",
       "context": "flat",
       "expected_cases": 38,
-      "expected_assertions": 1015
+      "expected_assertions": 1036
     },
     {
       "suite": "two_cycle_handoff_tests",
@@ -845,8 +845,8 @@
       "suite": "two_cycle_facade_flow_tests",
       "invoked": "two_cycle_facade_flow_tests",
       "context": "flat",
-      "expected_cases": 3,
-      "expected_assertions": 37
+      "expected_cases": 4,
+      "expected_assertions": 57
     },
     {
       "suite": "two_cycle_facade_cancel_tests",

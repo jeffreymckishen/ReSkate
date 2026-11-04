@@ -157,7 +157,7 @@ local function new_runtime(services,options,two_cycle)
                 local now=next_admitted_at~=nil and api.clock() or nil
                 if T.unloaded or T.startup_closed or T.generation~=version or not next_preparation or
                     next_admitted_at~=nil and (not now or now<next_admitted_at or now-next_admitted_at>=60000) then
-                    next_preparation=false;return false,"Original second Mount admission expired or changed"
+                    next_preparation=false;return false,"Second Mount admission expired or changed"
                 end
                 running=true
                 local next_session=(T.experimental_session or 1)+1
@@ -189,7 +189,7 @@ local function new_runtime(services,options,two_cycle)
             local now=api.clock()
             if not finite(admitted_at_ms) or admitted_at_ms<0 or admitted_at_ms%1~=0
                 or not now or admitted_at_ms>now or now-admitted_at_ms>=60000 then
-                return false,"Original second Mount admission expired"
+                return false,"Second Mount admission expired"
             end
         end
         -- A preparation that fails has spent nothing native, so the next Mount from the board can ask again.
@@ -245,7 +245,7 @@ local function new_runtime(services,options,two_cycle)
         local out=table.pack(pcall(function()
             local now=api.clock()
             if not now or now<next_admitted_at or now-next_admitted_at>=60000 then
-                return false,"Original second Mount admission expired"
+                return false,"Second Mount admission expired"
             end
             -- ready() retains full old body/Follow/Source/pose/board cleanup,
             -- NEW504 terminal ACK and fresh same-context readiness predicates.

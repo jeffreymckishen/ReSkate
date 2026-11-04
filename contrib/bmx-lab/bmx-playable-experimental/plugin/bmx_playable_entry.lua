@@ -661,7 +661,7 @@ function Entry.new(R,Runtime,Survey,options)
     local function second_terrain_step(now)
         local version=generation
         if not second_admitted_at or now<second_admitted_at or now-second_admitted_at>=60000 then
-            fail("Original second Mount admission deadline expired; no terrain retry.");return
+            fail("Second Mount admission deadline expired; no terrain retry.");return
         end
         if now-prep_at>=30000 then fail("Preparation timed out; no mount was requested.");return end
         if not environment(false) then reset_second_quiet();return end
@@ -678,7 +678,7 @@ function Entry.new(R,Runtime,Survey,options)
         local checked=clock()
         if not checked or generation~=version or cancelled or unloaded then return end
         if checked<second_admitted_at or checked-second_admitted_at>=60000 then
-            fail("Original second Mount admission deadline expired; no terrain retry.");return
+            fail("Second Mount admission deadline expired; no terrain retry.");return
         end
         second_terrain_pending=false -- no Y, archive or admission callback here
         prep_step(checked)
@@ -687,7 +687,7 @@ function Entry.new(R,Runtime,Survey,options)
         local version=generation
         if second_prepare_pending then
             if not second_admitted_at or now<second_admitted_at or now-second_admitted_at>=60000 then
-                fail("Original second Mount admission deadline expired; no step-off request.");return
+                fail("Second Mount admission deadline expired; no step-off request.");return
             end
             if not environment(false) then reset_second_quiet();return end
             if generation~=version or cancelled or unloaded then return end
@@ -763,7 +763,7 @@ function Entry.new(R,Runtime,Survey,options)
             local now=clock()
             if not now or generation~=version or cancelled or unloaded then return false,detail end
             if attempts_used>=2 and (not second_admitted_at or now<second_admitted_at or now-second_admitted_at>=60000) then
-                fail("Original second Mount admission deadline expired; no terrain retry.");return false,detail
+                fail("Second Mount admission deadline expired; no terrain retry.");return false,detail
             end
             -- Keep the reserved attempt; the deadline is this press's (above).
             -- Only a NEW survey/preparation is allowed; no old-owner Y repeats.
@@ -944,7 +944,7 @@ function Entry.new(R,Runtime,Survey,options)
                 local now=clock()
                 if now then
                     if attempts_used>=2 and (not second_admitted_at or now<second_admitted_at or now-second_admitted_at>=60000) then
-                        fail("Original second Mount admission deadline expired; no new survey or mount.");return
+                        fail("Second Mount admission deadline expired; no new survey or mount.");return
                     end
                     if phase=="stepping_off" then step_off(now)
                     elseif phase=="preparing" then

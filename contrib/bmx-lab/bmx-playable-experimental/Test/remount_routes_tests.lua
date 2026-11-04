@@ -160,6 +160,21 @@ function T.run()
         w.entry:mount();w.tick(100)
         check(player_remounts(w),"the step-off's time limit costs no ride")
     end)
+    case(function() -- On a hill, then a long walk: the late Mount itself rides, with no new step-off (reuse6 in game).
+        local w=start();local open=w.R.world.probe;steep(w);w.tilt_stop(59.7)
+        until_refused(w)
+        local s=w.entry:status()
+        check(s.phase=="preflight_refused" and s.attempts_used>=2,"the later cycle's survey refuses the hill")
+        local from=s.attempts_used
+        w.tick(math.ceil(74000/16));w.R.world.probe=open
+        check(w.stock==504,"still on foot after the walk")
+        check(w.entry:mount(),"a Mount 74 s after the step-off is a terrain retry: "..tostring(w.entry:status().detail))
+        check(w.entry:status().phase=="preparing","the retry surveys again rather than block")
+        for _=1,1500 do w.tick();local p=w.entry:status().phase;if p=="riding" or p=="blocked" then break end end
+        s=w.entry:status()
+        check(s.phase=="riding" and s.attempts_used==from,
+            "the retry rides with its own 60 s, in the same cycle: "..tostring(s.phase).." "..tostring(s.detail))
+    end)
     case(function() -- Insert opened while riding and left open past the cleanup watchdog.
         local w=start();w.interface_open=true;w.capture_hold=true
         w.on_tick=function()

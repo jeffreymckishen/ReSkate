@@ -126,6 +126,8 @@ function Tests.run()
         function owner:second_preflight_ready(admitted_at_ms)
             f.preflight_proofs=(f.preflight_proofs or 0)+1
             if f.on_preflight_proof then return f.on_preflight_proof(admitted_at_ms) end
+            -- The runtime's own window: a proof read with a Mount time 60 s old is refused (reuse6 in game).
+            if f.now<admitted_at_ms or f.now-admitted_at_ms>=60000 then return false,"Second Mount admission expired" end
             if f.stepoffs~=1 or f.mounts~=1 or admitted_at_ms~=f.second_admitted_at or f.stock~=504 then
                 return false,"No current unrequested second intent"
             end

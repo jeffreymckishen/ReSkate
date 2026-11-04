@@ -1226,6 +1226,24 @@ function T.run()
             check(part>=.25 and part<=.35,string.format("at %.1f m/s a third of the stick carves %.2f as fast",speed,part))
         end
     end)
+    case(function() -- Carved into from a turn on both wheels, the bars come back to the front wheel's path in a few steps.
+        -- Cut to that path in one step, they snapped .17 to .18 rad at full lock and .09 at half as the rear came up.
+        for _,speed in ipairs({1.8,2.5,4,7}) do
+            for _,steer in ipairs({1,.5,-1}) do
+                local what=string.format("steer %.1f at %.1f m/s",steer,speed)
+                local last,worst,engaged=nil,0,0
+                local ride=run({steps=180,speed=speed,controls=function(step) return {steer=steer,nose=step>60 and .5 or nil} end,
+                    each=function(step,body,out)
+                        if not out.valid then return end
+                        if last then worst=math.max(worst,math.abs(out.front_steer_angle-last)) end
+                        last=out.front_steer_angle
+                        if out.nose_manual_active then engaged+=1 end
+                    end})
+                check(ride.refused==0 and engaged==120,what..": in the nose manual from the first step of the stick: "..engaged)
+                check(worst<=.06,string.format("%s: the bars turn at most %.3f rad in a step",what,worst))
+            end
+        end
+    end)
     case(function() -- Dropped front first with the stick held, the bike lands into the nose manual; with it let go, onto both wheels.
         for _,deg in ipairs({8,18,28,36}) do
             for _,m in ipairs({0,.5,1}) do

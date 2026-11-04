@@ -561,9 +561,9 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     -- This is a body-local joint angle, so its accepted history remains valid
     -- when support disappears. Slew the same joint through loss/reacquisition;
     -- support, balance and raw air-trick intent keep their independent gates.
+    local steer_gain=t.steer_limit/(1+math.abs(speed)/t.steer_speed_scale) local steer_u=math.clamp(math.abs(speed)/30,0,1)
+    local rate_delta=(5-3*steer_u*steer_u*(3-2*steer_u))*steer_gain*h
     if c.enabled and prior_steering.valid then
-        local gain=t.steer_limit/(1+math.abs(speed)/t.steer_speed_scale) local u=math.clamp(math.abs(speed)/30,0,1)
-        local rate_delta=(5-3*u*u*(3-2*u))*gain*h
         local joint_delta=math.clamp(6*h,0,1)*math.abs(out.requested_front_steer_angle-prior_steering.angle)
         local delta=math.min(rate_delta,joint_delta) out.front_steer_angle=math.clamp(out.requested_front_steer_angle,prior_steering.angle-delta,prior_steering.angle+delta)
     end
@@ -603,7 +603,14 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
                 local low,high=0,1
                 for _=1,40 do local middle=(low+high)*.5 local trial=heading(out.front_steer_angle*middle) if trial==nil then return out end
                     if math.abs(trial)<=most then low=middle else high=middle end end
-                out.front_steer_angle=out.front_steer_angle*low out.steering_limited=true
+                -- The rider straightens the bars to that path as the rear comes up, at no more than twice the rate
+                -- they turn to the stick. Cut to it in one step, a steered bike's bars snapped up to .18 rad (10
+                -- degrees) as its rear lifted. At the stick's own rate they stayed past the path for six steps at 7 m/s:
+                -- the yaw grew from 1.10 to 1.34 rad/s and the front tyre left the ground for a step. At twice it the
+                -- yaw peaked at 1.16 and the tyre stayed down.
+                local limited=out.front_steer_angle*low
+                if prior_steering.valid then limited=math.clamp(limited,prior_steering.angle-2*rate_delta,prior_steering.angle+2*rate_delta) end
+                out.front_steer_angle=limited out.steering_limited=true
             end
         end
     end

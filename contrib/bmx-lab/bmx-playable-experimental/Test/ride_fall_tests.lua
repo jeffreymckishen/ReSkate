@@ -1340,6 +1340,95 @@ function T.run()
         check(sat,"and sits once it is let go")
         check(pitched==54,"the bike is drawn pitched on the kerb throughout: "..pitched)
     end)
+    case(function() -- In a nose manual the rider is drawn standing, hips up over the bars, and sits back down after it.
+        local w=harness(flat)
+        local pose=nose_down(28,4)
+        check(in_nose_manual(w,pose,20)==nil,"a nose manual held at 28 degrees")
+        local shown=w.step(pose).presentation_pose
+        check(w.model.nose_manual_active==true and w.model.manual_active~=true,"the kernel holds the nose manual")
+        check(shown.rider_shift~=nil and shown.rider_shift>=-.30 and shown.rider_shift<=-.05,
+            "the rider is drawn shifted forward by the weight the hold takes: "..tostring(shown.rider_shift).." against the model's "
+            ..tostring(w.model.manual_shift))
+        check(shown.rider_standing==1 and shown.rider_nose==1,"standing, hips up over the bars: "..tostring(shown.rider_standing)
+            .." "..tostring(shown.rider_nose))
+        -- Posed level, the bike is never thrown up, so the kernel's throw runs on: far past what the pose takes.
+        local level_w=harness(flat)
+        local ridden=level();ridden.velocity={0,0,4}
+        check(steps(level_w,ridden,3)==nil,"riding before the nose manual")
+        level_w.set_pad(.53)
+        local model_past,drawn_past,lowest=false,false,0
+        for i=1,40 do
+            local out=level_w.step(ridden)
+            check(not out.stop_requested,"the throw rides on: "..tostring(out.issue))
+            local m,a=level_w.model,out.presentation_pose
+            if m.nose_manual_active==true and m.manual_shift< -.30 then model_past=true end
+            if a.rider_shift then
+                drawn_past=drawn_past or a.rider_shift< -.10
+                lowest=math.min(lowest,a.rider_shift)
+            end
+        end
+        check(model_past,"the kernel's throw asks more than .3 m of the weight forward")
+        check(drawn_past and lowest>=-.30-1e-12,"the drawn shift follows it and stops at .3 m: "..lowest)
+        -- Let go: the shift eases out, the rider sits down, and the hips stay up as they come down.
+        level_w.set_pad(0)
+        -- This harness accepts a step every other step, so the rider sits down a sixth at a time on every second one.
+        local last,standing,fields,gone=lowest,{},0,nil
+        for i=1,60 do
+            local out=level_w.step(ridden)
+            check(not out.stop_requested,"letting go rides on: "..tostring(out.issue))
+            local a=out.presentation_pose
+            if a.rider_shift~=nil then
+                check(math.abs(a.rider_shift)<=math.abs(last)+1e-12,string.format("step %d: the shift eases toward none, %.4f to %.4f",i,last,a.rider_shift))
+                check(a.rider_nose==1,"step "..i..": the hips stay up over the bars as the shift eases out: "..tostring(a.rider_nose))
+                last=a.rider_shift
+            else
+                check(a.rider_standing==nil and a.rider_nose==nil,"step "..i..": the standing and the nose go with the shift")
+            end
+            standing[i]=a.rider_standing or 0
+            if a.rider_shift==nil and not gone then gone=i end
+            if i==60 then for _ in pairs(a) do fields+=1 end end
+        end
+        check(math.abs(standing[4]-2/3)<1e-6 and math.abs(standing[8]-1/3)<1e-6 and standing[12]<1e-6,
+            string.format("the rider sits down over a tenth of a second of accepted steps: %.3f %.3f %.3f at steps 4, 8 and 12",
+                standing[4],standing[8],standing[12]))
+        check(gone~=nil and gone<=50 and fields==8,"and ordinary riding's eight-field pose is back from step "..tostring(gone)..": "..fields)
+        -- A rear manual is drawn as before: no nose.
+        local rear=harness(flat)
+        local back=level();back.velocity={0,0,4}
+        check(in_manual(rear,back,12)==nil and rear.model.manual_active==true,"a rear manual")
+        local drawn=rear.step(back).presentation_pose
+        check(drawn.rider_shift>0 and drawn.rider_nose==nil,"a rear manual is drawn shifted back with no nose: "..tostring(drawn.rider_nose))
+        -- A nose manual rolled onto a kerb is drawn lifted onto it on its front wheel, not nodded about the rear in the air.
+        local kerb=false
+        local kerbed=harness(function(from,to,count,i)
+            if count==2 and i==1 and kerb then return hit(from,to,from.y-R+.15,{0,1,0}) end
+            return flat(from,to)
+        end)
+        kerbed.prompt=true
+        local on_road=nose_down(28,4)
+        check(in_nose_manual(kerbed,on_road,12)==nil and kerbed.model.nose_manual_active==true,"a nose manual on the road")
+        check(kerbed.step(on_road).presentation_pose.movement_bike_lift==nil,"on the road the nose manual draws the bike on its body")
+        kerb=true
+        local lifts={}
+        for i=1,6 do
+            local out=kerbed.step(on_road)
+            check(not out.stop_requested,"riding the nose manual onto the kerb: "..tostring(out.issue))
+            local lifted=out.presentation_pose
+            check(math.abs(lifted.movement_bike_pitch)<1e-6,
+                "the drawn bike is not pitched about its rear wheel in the air: "..lifted.movement_bike_pitch)
+            local front,body=drawn_touch(kerbed.samples[kerbed.serial],lifted,4)
+            local behind,rear_body=drawn_touch(kerbed.samples[kerbed.serial],lifted,3)
+            local up=front[2]-body[2]
+            lifts[i]=string.format("%.3f",up)
+            check(math.abs(front[1]-body[1])<.002 and math.abs(front[3]-body[3])<.002,string.format(
+                "the front tyre is drawn straight up off where the body's touches, not ahead of it: %.4f %.4f",front[1]-body[1],front[3]-body[3]))
+            check(M.length(M.sub(M.sub(behind,rear_body),M.sub(front,body)))<.002,"and the rear goes up with it: the whole bike is lifted")
+            if i>=3 then
+                check(math.abs(front[2]-(.15-.01))<.002,"the front tyre is drawn on the kerb top, its bottom at "..front[2].." against .15")
+            end
+        end
+        check(lifts[1]=="0.050" and lifts[2]=="0.100" and lifts[3]=="0.140","it comes up 5 cm a step: "..table.concat(lifts," "))
+    end)
     return {cases=cases,assertions=n,native_authority=false,constructed=true}
 end
 return T

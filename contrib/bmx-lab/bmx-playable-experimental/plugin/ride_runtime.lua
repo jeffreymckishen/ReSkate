@@ -106,6 +106,10 @@ local TAU = 2 * math.pi
 -- The most the rider shifts the weight in a manual, forward and back (forces.lua manual_hold_forward and
 -- manual_hold_back), and how long the drawn shift takes to follow the physics'.
 local RIDER_SHIFT_FORWARD, RIDER_SHIFT_BACK, RIDER_SHIFT_SECONDS = .15, .20, .1
+-- The most the rider is drawn shifted forward in a nose manual: MP.manual_rider's own limit. The hips-up pose draws
+-- only part of the shift, so all of it the pose can take is drawn. A held nose manual asks .23 at most (forces.lua
+-- nose_low), so only the throw that lifts the rear reaches it.
+local RIDER_SHIFT_NOSE = .30
 
 local function copy(value)
     if type(value) ~= "table" then return value end
@@ -307,13 +311,18 @@ local function presentation(previous,model,wheels,h,samples,geometry,orientation
     -- and back at a steady rate, taking RIDER_SHIFT_SECONDS, and goes with the shift once it is back at 0. A standing
     -- rider turns and lifts with all of a bike drawn on a kerb and a seated one with its seat, so on a bike drawn
     -- pitched 8.6 degrees the rider stood up or sat down in one tick turned its hips 7.6 to 8.3 degrees in it.
-    local shift,standing=previous.rider_shift,previous.rider_standing or 0
+    -- In a nose manual the shift is forward, and rider_nose goes from 0 to 1 at the standing's rate: it puts the hips
+    -- up over the bars rather than toward them (MP.manual_rider). Out of it the nose is left where it was, so the hips
+    -- come straight down as the shift eases out instead of swinging forward toward the bars first.
+    local shift,standing,nose=previous.rider_shift,previous.rider_standing or 0,previous.rider_nose or 0
     local stand=h/RIDER_SHIFT_SECONDS
-    if model.manual_active==true then
+    local on_nose=model.nose_manual_active==true and model.manual_active~=true
+    if model.manual_active==true or on_nose then
         if not M.finite(model.manual_shift) then return nil end
-        local target=math.clamp(model.manual_shift,-RIDER_SHIFT_FORWARD,RIDER_SHIFT_BACK)
+        local target=math.clamp(model.manual_shift,on_nose and -RIDER_SHIFT_NOSE or -RIDER_SHIFT_FORWARD,RIDER_SHIFT_BACK)
         shift=(shift or 0)+(target-(shift or 0))*math.min(1,h/RIDER_SHIFT_SECONDS)
         standing=math.min(1,standing+stand)
+        nose=on_nose and math.min(1,nose+stand) or math.max(0,nose-stand)
     elseif shift~=nil then
         shift-=shift*math.min(1,h/RIDER_SHIFT_SECONDS)
         standing=math.max(0,standing-stand)
@@ -321,6 +330,7 @@ local function presentation(previous,model,wheels,h,samples,geometry,orientation
     end
     pose.rider_shift=shift
     pose.rider_standing=shift~=nil and standing or nil
+    pose.rider_nose=shift~=nil and nose>0 and nose or nil
     return pose,followed
 end
 -- The measured tilt of the body's up axis from world up, in degrees, and its

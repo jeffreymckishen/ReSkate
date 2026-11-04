@@ -291,6 +291,11 @@ function Tests.run()
     local rising=table.clone(manual);rising.rider_standing=.5
     local half=capture(rising).rider
     check(half.standing==.5 and same(half,MP.manual_rider(.16,.5)),"and standing as far as Ride has it up on the pedals")
+    -- In a nose manual Ride also publishes rider_nose, and the hips go up over the bars rather than toward them.
+    local nose=table.clone(neutral.presentation_pose);nose.rider_shift=-.16;nose.rider_nose=1
+    local over=capture(nose).rider
+    check(same(over,MP.manual_rider(-.16,nil,1)) and over.hip_offset[3]==0 and math.abs(over.hip_offset[2]-.064)<1e-9,
+        "in a nose manual Core poses the rider hips up over the bars: "..tostring(over.hip_offset[2]).." "..tostring(over.hip_offset[3]))
     -- The rider's body is one read behind the one the bike is drawn from. Steer and crank are not.
     c.body_x=1
     check(capture(neutral.presentation_pose).bike.center_of_mass.x==0,"the rider is posed from the body before this read")

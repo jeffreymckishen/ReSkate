@@ -117,6 +117,9 @@ local defaults={gravity={0,-9.8,0},wheelbase=1.203956057050485*scale,steer_limit
     -- the air pitch's authority for at most nose_air_seconds. Without it an 8 cm bump at 4 m/s, a 12 cm one at 2.5
     -- to 7 m/s, a 25 degree kicker and a 15 cm kerb ramp at 7 m/s threw the bike over the bars.
     nose_air_seconds=.5,
+    -- On its front wheel past the balance the rider holds the front brake off, faded over this much offset (m) to
+    -- none past the balance. With B and the stick held, a bike placed at 44 to 48 degrees went over the bars.
+    nose_brake_fade=.05,
     -- On its front wheel the bike carves round it: at most nose_carve_rate (reached from 2 m/s), and no more
     -- sideways than nose_carve_lateral, on the rider's twist (nose_yaw_damping, at most nose_yaw_torque), with the
     -- spring's roll part taken nose_roll_gain times.
@@ -163,7 +166,7 @@ local function tuning_valid(t)
         "manual_damping","manual_min_speed","manual_start_speed","manual_carve_rate","manual_carve_damping","manual_carve_torque",
         "nose_hold_forward","nose_hold_back","nose_low","nose_high","nose_carve_rate","nose_carve_lateral","nose_yaw_damping",
         "nose_yaw_torque","nose_roll_gain","nose_catch_torque","nose_catch_rate","nose_catch_span","nose_catch_seconds",
-        "nose_air_seconds"} do if not M.finite(t[name]) or t[name]<0 or t[name]>1e6 then return false end end
+        "nose_air_seconds","nose_brake_fade"} do if not M.finite(t[name]) or t[name]<0 or t[name]>1e6 then return false end end
     if not M.finite(t.manual_low) or not M.finite(t.manual_high) then return false end
     if type(t.friction)~="table" then return false end
     for _,key in {"longitudinal_friction","lateral_friction"} do local x=t.friction[key] if not M.finite(x) or x<0 or x>10 then return false end end
@@ -173,7 +176,7 @@ local function tuning_valid(t)
     if t.nose_hold_forward>.3 or t.nose_hold_back>.3 or t.nose_high>=t.nose_low or t.nose_low>t.nose_hold_forward or
         t.nose_carve_rate>4 or t.nose_carve_lateral>10 or t.nose_yaw_torque>t.balance_torque_limit or
         t.nose_roll_gain<1 or t.nose_roll_gain>3 or t.nose_catch_torque>t.balance_torque_limit or t.nose_catch_span<=0 or
-        t.nose_catch_seconds>1 or t.nose_air_seconds>1 then return false end
+        t.nose_catch_seconds>1 or t.nose_air_seconds>1 or t.nose_brake_fade<=0 or t.nose_brake_fade>.3 then return false end
     return t.brake_lateral_cut<=1 and t.rear_brake_load_share<=1 and t.steer_limit<=1 and t.lean_limit<=.8 and t.hop_delta_speed<=4.5 and t.contact_gap<=.05 and
         t.maximum_penetration<=.15 and t.recovery_fraction<=1 and t.recovery_speed_limit<=1 and t.pedal_fade_start<t.pedal_cutoff and
         t.pedal_cutoff<=50 and t.pedal_resume_speed<t.pedal_top_speed and t.pedal_top_speed<=t.pedal_cutoff and t.curvature_rate_limit<=10 and t.curvature_step_limit<=.35 and t.curvature_min_speed<=5 and t.neutral_air_damping_rate<=10
@@ -800,7 +803,10 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     -- Last step's load, and no cap in the air, so B still stops the wheels there.
     local rear_grounded=contacts[2].status=="hit" and not contacts[2].normal_only
     local rear_limit=rear_grounded and t.rear_brake_load_share*t.friction.longitudinal_friction*prior_load[2]*wheels[2].radius or nil
-    prediction,out.wheels,effects=Solver.solve(h,prediction,out.wheels,contacts,t,brake,wheel_axes,rear_limit)
+    -- On its front wheel past the balance the front brake's pull at the contact pitches the bike on over the bars,
+    -- so the rider holds it off there: full at the hold, none past the balance.
+    local front_limit=nose_engaged and not rear_support and t.front_brake_torque*math.clamp(nose_d/t.nose_brake_fade,0,1) or nil
+    prediction,out.wheels,effects=Solver.solve(h,prediction,out.wheels,contacts,t,brake,wheel_axes,rear_limit,front_limit)
     if not prediction then return result() end
     local base_linear=M.sub(M.mul(M.sub(M.sub(actuated.linear_velocity,measured.linear_velocity),gravity_delta),measured.mass),out.hop_impulse)
     local base_angular=M.tensor(measured,M.sub(actuated.angular_velocity,measured.angular_velocity),false)

@@ -948,7 +948,8 @@ function T.run()
         local t=Forces.tuning()
         local defaults={nose_hold_forward=.26,nose_hold_back=.20,nose_low=.23,nose_high=.13,nose_carve_rate=.6,
             nose_carve_lateral=2.5,nose_yaw_damping=300,nose_yaw_torque=300,nose_roll_gain=1.6,
-            nose_catch_torque=800,nose_catch_rate=.6,nose_catch_span=.5,nose_catch_seconds=.4,nose_air_seconds=.5}
+            nose_catch_torque=800,nose_catch_rate=.6,nose_catch_span=.5,nose_catch_seconds=.4,nose_air_seconds=.5,
+            nose_brake_fade=.05}
         for name,value in defaults do check(t[name]==value,"the nose manual's "..name.." is "..tostring(t[name])) end
         local flat=Ground.plane(0,0)
         local body,wheels=place(flat,4)
@@ -959,7 +960,8 @@ function T.run()
         check(valid(nil),"the defaults are valid")
         for _,bad in ipairs({{nose_hold_forward=.31},{nose_hold_back=.31},{nose_high=.23},{nose_low=.27},{nose_carve_rate=5},
             {nose_carve_lateral=11},{nose_yaw_torque=1201},{nose_roll_gain=.9},{nose_roll_gain=3.1},
-            {nose_catch_torque=1201},{nose_catch_span=0},{nose_catch_seconds=1.1},{nose_air_seconds=1.1}}) do
+            {nose_catch_torque=1201},{nose_catch_span=0},{nose_catch_seconds=1.1},{nose_air_seconds=1.1},
+            {nose_brake_fade=0},{nose_brake_fade=.31}}) do
             local name,value=next(bad)
             check(not valid(bad),"a step is refused on "..name.."="..value)
         end
@@ -1170,6 +1172,16 @@ function T.run()
             local _,rows=nose({m=1,speed=4,pitch=-deg,before=0,hold=150,after=0,during=function(t) return {nose=t==1 and 1 or 0,nose_held=false} end})
             if deg==50 then check(not fell(rows) and rows[150].rear<=.02,"let go at 50 degrees the rear comes down: "..rows[150].rear)
             else check(fell(rows),"let go at "..deg..", it goes over the bars") end
+        end
+    end)
+    case(function() -- B past the balance does not throw the bike over the bars: the rider holds the front brake off there.
+        -- The front brake's pull at the contact pitches the bike on round it. Whole there, B and the held stick took
+        -- a bike placed at 44, 46 and 48 degrees over the bars.
+        for _,deg in ipairs({44,46,48}) do
+            local _,rows=nose({m=1,speed=4,pitch=-deg,before=0,hold=150,after=0,during=function() return {brake=1} end})
+            local over=fell(rows)
+            check(rows[1].out.nose_manual_active==true and not over and rows[150].rear<=.02,
+                string.format("placed at %d with B held, the rear comes down: over the bars %s, the rear %.3f up",deg,tostring(over),rows[150].rear))
         end
     end)
     case(function() -- Steering a nose manual swings the rear round the front wheel, the way the bars turn the bike on two.

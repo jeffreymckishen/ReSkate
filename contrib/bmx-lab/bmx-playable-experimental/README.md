@@ -11,6 +11,9 @@ An older separate `BMX_Prototype` pack is no longer needed. Remove it from `Mods
 bike, and whichever is higher in the mod list supplies it, so an old copy can stand in for this mod's bike. The mod
 refuses a bike whose wheels are not authored about their own hubs and says so.
 
+Do not turn this mod on together with the ReSkate FPV Drone mod. The bike is built on the drone's template and uses
+its frame texture's names, so with both on, one of them is drawn with the other's texture.
+
 ## Playing
 
 Put this folder in `Mods`, start the game and turn the plugin on when it asks. The bike's model loads with the

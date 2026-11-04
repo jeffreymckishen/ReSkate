@@ -22,9 +22,16 @@ of 4096 by 2048. The credits are in the mod's `CREDITS.md` and the pack's `BMX-N
   edge collapse that only keeps the model's own corners, keeps each object's exact bounds,
   keeps the shafts, axles and pedal pins whole and the pedal tops flat, and holds each
   object to a surface error goal (0.5 mm; 0.4 mm on the grips, 0.7 mm on the spokes, 1 mm
-  on the tyres). The grip tape's hidden overlapping layers are dropped. It writes
-  `bike-geometry.npz`, `albedo.png` and `bike-data.json`, deterministically: `--expect`
-  checks a rerun gives the committed files (about 10 minutes on 7 processes).
+  on the tyres), measured from every source corner and face centre to the lightened surface
+  (one way: the lightened surface's distance back to the source is not bounded). The grip
+  tape's hidden overlapping layers are dropped. It writes `bike-geometry.npz`, `albedo.png`
+  and `bike-data.json`, deterministically: `--expect` checks a rerun gives the committed
+  files (about 10 minutes on 7 processes).
+- The atlas's colour maps are read from the download's zip by entry (`--zip`). The zip
+  holds two different `textures/base_BaseColor.png`: entry 3 is the "base" material's map
+  and entry 6 the "rul" material's (grips and bars). The atlas has always held entry 6, and
+  the "base" parts are drawn with it too; `ATLAS_TILES` in `lighten_free_model.py` pins
+  both and records why.
 - `validate_lightened_bike.py` checks that data: the triangle budget and per-part counts;
   the axles, bottom bracket, pedals and wheelbase exactly where `bike_geometry.lua` has them;
   the grips, pedal tops and steerer within 0.5 mm and 0.5 degrees of the source model's own

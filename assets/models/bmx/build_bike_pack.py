@@ -130,16 +130,21 @@ def credits(report):
         'Bike model: "BMX (Free)" by Ermakov (https://sketchfab.com/Ermakovv)\n'
         'https://sketchfab.com/3d-models/bmx-free-547a95dab9dd4f598237f7ab2885443d\n'
         'Licensed under CC BY 4.0: https://creativecommons.org/licenses/by/4.0/\n'
-        f'Changed: lightened from {report["triangles_before"]:,} to {report["triangles_after"]:,} triangles, with the '
-        'hidden overlapping layers of the grip tape removed; its 185 objects grouped into 8 parts (frame, fork, rear '
-        'wheel, front wheel, cranks, handlebars, two pedals); scaled to a 0.2630808 m wheel radius and re-centred; the '
-        'wheels and cranks given their origins at their hubs; the two base-colour maps packed into one 2048x1024 '
-        'atlas; its normal, roughness and metallic maps not used; converted to native meshes.\n\n'
+        f'Changed: lightened from {report["triangles_before"]:,} to {report["triangles_after"]:,} triangles, every '
+        'corner and face centre of the original surface within 0.5 mm of the lightened one (1 mm on the tyres, 0.7 mm '
+        'on the spokes), with the hidden overlapping layers of the grip tape removed; its 185 objects grouped into 8 '
+        'parts (frame, fork, rear wheel, front wheel, cranks, handlebars, two pedals); scaled to a 0.2630808 m wheel '
+        'radius and re-centred; the wheels and cranks given their origins at their hubs; two of its three base-colour '
+        'maps packed into one 2048x1024 atlas, the grips\' and bars\' map ("rul"), which its "base" parts are drawn '
+        'with too, and the "extra" map; the "base" parts\' own colour map and its normal, roughness and metallic maps '
+        'not used; converted to native meshes.\n\n'
         'Native material and mesh template: "FPV Drone" by PinaPipe, built into a pack by ReSkate Studio\n'
         'https://sketchfab.com/3d-models/fpv-drone-92152c31ec9a4a87b2a0478bd114d293\n'
         'Licensed under CC BY 4.0: https://creativecommons.org/licenses/by/4.0/\n'
-        'Changed: its frame textures replaced with the bike\'s atlas and a flat normal; the bike\'s parts reuse its '
-        'mesh and blueprint structure.\n')
+        'Changed: its frame colour and normal textures replaced with the bike\'s atlas and a flat normal; its frame '
+        'mask texture kept and drawn on the bike; the bike\'s parts reuse its mesh, material and blueprint structure.\n\n'
+        'This pack keeps the drone template\'s asset names, so it cannot be turned on together with the ReSkate FPV '
+        'Drone mod: one of the two would be drawn with the other\'s frame texture.\n')
 
 
 def file_list(root):

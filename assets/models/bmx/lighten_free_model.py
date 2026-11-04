@@ -1,10 +1,10 @@
 """Lighten the supplied "BMX (Free)" model into the bike data the BMX mod carries (our own code).
 
-Reads Ermakov's BMX_sf.fbx and its two base-colour textures (CC BY 4.0, see the mod's CREDITS.md) and writes
-a NEW folder with:
+Reads Ermakov's BMX_sf.fbx and two of its base-colour maps (CC BY 4.0, see the mod's CREDITS.md; which maps, and
+why, is under ATLAS_TILES) and writes a NEW folder with:
 
   bike-geometry.npz  every object of the model, lightened, in the drawn bike's frame (see write_geometry)
-  albedo.png         the two base-colour maps packed into one 2048x1024 two-tile atlas
+  albedo.png         those two maps packed into one 2048x1024 two-tile atlas
   bike-data.json     source and output hashes, the goals, per-object and per-part counts and errors, and the
                      source's own anchor fits, which validate_lightened_bike.py checks the output against
 
@@ -22,13 +22,16 @@ How the model is lightened, object by object (185 objects):
     bracket) and pedal pins. The pedals keep every vertex of their upward flat tops, where the feet go.
     A vertex closer to another category's surface behind it than its own error goal is kept, so a sleeve
     cannot sink into the bar it covers.
-  * Each object's collapse tolerance is binary-searched so its measured surface error (from every source
-    vertex and triangle centroid to the result) stays at or under its category's goal in GOALS.
+  * Each object's collapse tolerance is binary-searched so its measured surface error stays at or under its
+    category's goal in GOALS. The error is measured one way: from every source vertex and triangle centroid to
+    the lightened surface, not from the lightened surface back to the source.
 
-The run is deterministic: the same inputs give the same bytes. It takes about 13 minutes on 7 processes.
+The run is deterministic: the same inputs give the same bytes. It takes about 10 minutes on 7 processes.
 
-Usage: python -I -B lighten_free_model.py --fbx BMX_sf.fbx --textures <bmx-free/textures> --output <new folder>
+Usage: python -I -B lighten_free_model.py --fbx BMX_sf.fbx --zip <bmx-free.zip> --output <new folder>
            [--expect <bike-data.json>] [--workers 7] [--steps 8]
+       (--textures <extracted bmx-free/textures> in place of --zip works only if its base_BaseColor.png is the
+       map ATLAS_TILES pins: the download holds two files of that name, see there.)
 """
 from pathlib import Path
 import argparse
@@ -66,7 +69,31 @@ ANCHORS = {'rear_axle': [0.0, 0.26302757455140674, -0.46579076860836216],
 TILE, GUTTER = 2048, 8
 INTERIOR = TILE-2*GUTTER
 ATLAS_SIZE = (2048, 1024)
-TEXTURES = ('base_BaseColor.png', 'extra_BaseColor.png')
+# The download as Sketchfab serves it (bmx-free.zip).
+DOWNLOAD_SHA = 'cc8375c11deba3d48fd1d1d8ea71f90bbd3028e88774664c4f05f00bb0f7d1a3'
+# The FBX gives each of its three materials its own base-colour map: "base" (174 objects: the frame, fork, chain,
+# spokes, cranks, pedals, pegs and the rest) uses Texture 4k\base_BaseColor.png, "rul" (2 objects: the grips and the
+# bars) uses Texture 4k\rul\base_BaseColor.png, and "extra" (9 objects: the tyres, rims, hubs, valves and seat) uses
+# Texture 4k\extra_BaseColor.png. The download flattens the two folders into textures/, so its zip holds
+# textures/base_BaseColor.png twice, and an extractor keeps whichever it likes (Windows kept the later one, entry 6).
+# Drawing each material's UV islands over both shows entry 3 is the "base" map and entry 6 the "rul" map. The bike
+# has always been drawn from entry 6: tile 0 holds the "rul" map and the "base" objects sample it too, so the "base"
+# map is not used. Giving the base objects their own map would change how the bike looks in game, so it is left as
+# it is until that is decided.
+ATLAS_TILES = (
+    {'tile': 0, 'name': 'textures/base_BaseColor.png', 'zip_entry': 6, 'material': 'rul',
+     'fbx_texture': 'Texture 4k\\rul\\base_BaseColor.png', 'drawn_on': ['rul', 'base'],
+     'sha256': '711d17bd229e09a871d8157f8842c2f25f7d0b20485f2d7a3b8dc01c669efd70'},
+    {'tile': 1, 'name': 'textures/extra_BaseColor.png', 'zip_entry': 7, 'material': 'extra',
+     'fbx_texture': 'Texture 4k\\extra_BaseColor.png', 'drawn_on': ['extra'],
+     'sha256': '1a0027f713191c2cef7feb3c7f4f819a6792e3b277619aac42ccfd20cb57ce22'},
+)
+UNUSED_MAPS = (
+    {'name': 'textures/base_BaseColor.png', 'zip_entry': 3, 'material': 'base',
+     'fbx_texture': 'Texture 4k\\base_BaseColor.png',
+     'sha256': 'eb1fc8b5d8d2489fe4b513b02233ab024e4f47ac088a634cc819e9f74668cf55'},
+)
+TILE_OF = {material: t['tile'] for t in ATLAS_TILES for material in t['drawn_on']}
 
 # Objects that define anchors by their own vertices keep every vertex:
 # wheel shafts (axles), frame shaft (bottom bracket), pedal pins (pedal spindles).
@@ -123,9 +150,9 @@ def load_objects(fbx_path):
         if m['polygon_material'] is not None and len(set(m['polygon_material'].tolist())) != 1:
             raise ValueError('Mixed-material object needs per-polygon tiles')
         world = (m['vertices']/100.0-SOURCE_ORIGIN)*UNIFORM_SCALE
-        # "rul" names a texture folder the download does not have; it uses the base maps (tile 0).
+        # "rul" and "base" both draw from tile 0, which holds the "rul" map (see ATLAS_TILES).
         objects.append({'name': m['name'], 'geometry_id': int(m['geometry_id']), 'category': category(m['name']),
-                        'part': part_of[m['name']], 'material': material, 'tile': int(material == 'extra'),
+                        'part': part_of[m['name']], 'material': material, 'tile': TILE_OF[material],
                         'vertex_positions': world, 'wedge_vertex': corner,
                         'wedge_position': world[corner], 'wedge_normal': m['wedge_normals'],
                         'wedge_uv': m['wedge_uv'], 'triangles': tris})
@@ -470,14 +497,39 @@ def read_geometry(path):
     return objects
 
 
-def make_atlas(textures, path):
-    """The 4096x2048 atlas prepare_free_native_parts.make_atlases built (the same bytes), halved to 2048x1024."""
+def read_tile_maps(download=None, folder=None):
+    """The bytes of each ATLAS_TILES map: by zip entry from the download, or by file name from a folder it was
+    extracted to. Each must be the pinned file, so an extractor that kept the other base_BaseColor.png is refused."""
+    if download is not None:
+        if sha(download.read_bytes()) != DOWNLOAD_SHA:
+            raise SystemExit('This is not the supplied bmx-free.zip')
+        with zipfile.ZipFile(download) as archive:
+            entries = archive.infolist()
+            maps = []
+            for t in ATLAS_TILES:
+                if entries[t['zip_entry']].filename != t['name']:
+                    raise SystemExit(f"bmx-free.zip entry {t['zip_entry']} is not {t['name']}")
+                maps.append(archive.read(entries[t['zip_entry']]))
+    else:
+        maps = [(folder/Path(t['name']).name).read_bytes() for t in ATLAS_TILES]
+    for t, data in zip(ATLAS_TILES, maps):
+        if sha(data) != t['sha256']:
+            raise SystemExit(f"{t['name']} is not the \"{t['material']}\" map tile {t['tile']} holds (bmx-free.zip entry "
+                             f"{t['zip_entry']}); the download has two files of that name, so pass the zip with --zip")
+    return maps
+
+
+def make_atlas(maps, path):
+    """The 4096x2048 atlas prepare_free_native_parts.make_atlases built (the same bytes), halved to 2048x1024.
+    `maps`: the bytes of each ATLAS_TILES map, in tile order (read_tile_maps)."""
     atlas = Image.new('RGBA', (2*TILE, TILE))
     inputs = []
-    for tile, name in enumerate(TEXTURES):
-        source = textures/name
-        with Image.open(source) as image:
-            inputs.append({'name': name, 'sha256': sha(source.read_bytes()), 'size': list(image.size)})
+    for t, data in zip(ATLAS_TILES, maps):
+        tile = t['tile']
+        with Image.open(io.BytesIO(data)) as image:
+            inputs.append({'tile': tile, 'name': t['name'], 'zip_entry': t['zip_entry'], 'material': t['material'],
+                           'fbx_texture': t['fbx_texture'], 'drawn_on': t['drawn_on'], 'sha256': sha(data),
+                           'size': list(image.size)})
             content = image.convert('RGBA').resize((INTERIOR, INTERIOR), Image.Resampling.LANCZOS)
         x = tile*TILE+GUTTER
         atlas.paste(content, (x, GUTTER))
@@ -491,7 +543,8 @@ def make_atlas(textures, path):
     full = io.BytesIO()
     atlas.save(full, format='PNG')
     atlas.convert('RGB').resize(ATLAS_SIZE, Image.Resampling.LANCZOS).save(path, optimize=True)
-    return {'inputs': inputs, 'atlas_4096x2048_sha256': sha(full.getvalue()), 'size': list(ATLAS_SIZE),
+    return {'inputs': inputs, 'not_used': list(UNUSED_MAPS),
+            'atlas_4096x2048_sha256': sha(full.getvalue()), 'size': list(ATLAS_SIZE),
             'tile': TILE//2, 'gutter': GUTTER//2,
             'uv': 'u=(tile*2048+8+2032*u)/4096; v=(8+2032*(1-v))/2048 (normalized, so the same at 2048x1024)'}
 
@@ -499,7 +552,11 @@ def make_atlas(textures, path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     parser.add_argument('--fbx', type=Path, required=True, help='BMX_sf.fbx from the "BMX (Free)" download')
-    parser.add_argument('--textures', type=Path, required=True, help='the download\'s textures folder')
+    maps = parser.add_mutually_exclusive_group(required=True)
+    maps.add_argument('--zip', type=Path, help='bmx-free.zip, the download as Sketchfab serves it (the base-colour '
+                      'maps are read from it by entry)')
+    maps.add_argument('--textures', type=Path, help='the download\'s extracted textures folder, if its '
+                      'base_BaseColor.png is the one ATLAS_TILES pins')
     parser.add_argument('--output', type=Path, required=True, help='a NEW folder')
     parser.add_argument('--expect', type=Path, help='a bike-data.json whose geometry and atlas hashes this run must give')
     parser.add_argument('--steps', type=int, default=8)
@@ -509,13 +566,14 @@ def main():
         raise SystemExit('Output must be a NEW folder')
     if sha(args.fbx.read_bytes()) != SOURCE_SHA:
         raise SystemExit('This is not the supplied BMX_sf.fbx')
+    tile_maps = read_tile_maps(args.zip, args.textures)
     started = time.time()
     objects = load_objects(args.fbx)
     lightened, rows = lighten(objects, args.steps, args.workers)
     args.output.mkdir(parents=True)
     geometry = args.output/'bike-geometry.npz'
     write_geometry(geometry, objects, lightened)
-    atlas = make_atlas(args.textures, args.output/'albedo.png')
+    atlas = make_atlas(tile_maps, args.output/'albedo.png')
     import validate_lightened_bike as check
     source = check.source_reference(objects)
     parts = {part: {'objects': sum(r['part'] == part for r in rows),
@@ -526,6 +584,7 @@ def main():
     report = {'format': FORMAT, 'tool': 'assets/models/bmx/lighten_free_model.py',
               'source': {'model': '"BMX (Free)" by Ermakov, CC BY 4.0',
                          'url': 'https://sketchfab.com/3d-models/bmx-free-547a95dab9dd4f598237f7ab2885443d',
+                         'download': 'bmx-free.zip', 'download_sha256': DOWNLOAD_SHA,
                          'fbx': 'source/BMX_sf.fbx', 'fbx_sha256': SOURCE_SHA, 'objects': len(objects)},
               'frame': {'source_origin_m': SOURCE_ORIGIN.tolist(), 'uniform_scale': UNIFORM_SCALE,
                         'wheel_radius_m': WHEEL_RADIUS_M, 'part_pivots': PIVOTS, 'pivots': ANCHORS},

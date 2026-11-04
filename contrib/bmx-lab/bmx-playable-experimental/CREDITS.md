@@ -9,24 +9,26 @@ The bike is **"BMX (Free)" by Ermakov** (<https://sketchfab.com/Ermakovv>),
 What was changed for this mod:
 
 - **Lightened** from 206,424 to 49,405 triangles. Every corner that is left is one of the model's own, with its own
-  position, normal and texture coordinate; each object keeps its exact size and stays within half a millimetre of
-  its original surface (a millimetre on the tyres, 0.7 mm on the spokes). The grip tape's hidden, overlapping
-  layers were removed.
+  position, normal and texture coordinate; each object keeps its exact size, and every corner and face centre of
+  its original surface is within half a millimetre of the lightened surface (a millimetre on the tyres, 0.7 mm on
+  the spokes). The grip tape's hidden, overlapping layers were removed.
 - **Split into 8 parts**: its 185 objects grouped into the frame, fork, rear wheel, front wheel, cranks,
   handlebars and the two pedals, so the wheels, cranks, bars and pedals can move.
 - **Rescaled** to a 0.2630808 m wheel radius and re-centred, and the wheels and cranks given their origins at their
   hubs, so they spin in place.
-- **Re-textured**: the model's two base-colour maps packed into one 2048 by 1024 atlas. Its normal, roughness and
-  metallic maps are not used; the bike has a flat normal.
+- **Re-textured**: two of the model's three base-colour maps packed into one 2048 by 1024 atlas: the grips' and
+  bars' map ("rul"), which the frame, fork, chain, spokes, cranks, pedals and the other "base" parts are drawn with
+  as well, and the map of the tyres, rims, hubs, valves and seat ("extra"). The "base" parts' own colour map, and the
+  model's normal, roughness and metallic maps, are not used; the bike has a flat normal.
 - **Converted** to the game's native meshes.
 
 ## The native material and mesh template
 
 The bike's parts are built on **"FPV Drone" by PinaPipe**,
 <https://sketchfab.com/3d-models/fpv-drone-92152c31ec9a4a87b2a0478bd114d293>, licensed under
-[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), as built into a pack by ReSkate Studio. Its frame
-textures were replaced with the bike's atlas and a flat normal, and the bike's parts reuse its mesh and blueprint
-structure.
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), as built into a pack by ReSkate Studio. Its frame colour
+and normal textures were replaced with the bike's atlas and a flat normal; its frame mask texture is kept, and the
+bike is drawn with it; the bike's parts reuse its mesh, material and blueprint structure.
 
 ## Where the files are
 

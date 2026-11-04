@@ -4,6 +4,8 @@
  "source": {
   "model": "\"BMX (Free)\" by Ermakov, CC BY 4.0",
   "url": "https://sketchfab.com/3d-models/bmx-free-547a95dab9dd4f598237f7ab2885443d",
+  "download": "bmx-free.zip",
+  "download_sha256": "cc8375c11deba3d48fd1d1d8ea71f90bbd3028e88774664c4f05f00bb0f7d1a3",
   "fbx": "source/BMX_sf.fbx",
   "fbx_sha256": "00ce4d383a31b786837a0d229dcb8d651dc7580166aff8741308c202647caa2a",
   "objects": 185
@@ -76,7 +78,15 @@
  "atlas": {
   "inputs": [
    {
-    "name": "base_BaseColor.png",
+    "tile": 0,
+    "name": "textures/base_BaseColor.png",
+    "zip_entry": 6,
+    "material": "rul",
+    "fbx_texture": "Texture 4k\\rul\\base_BaseColor.png",
+    "drawn_on": [
+     "rul",
+     "base"
+    ],
     "sha256": "711d17bd229e09a871d8157f8842c2f25f7d0b20485f2d7a3b8dc01c669efd70",
     "size": [
      4096,
@@ -84,12 +94,28 @@
     ]
    },
    {
-    "name": "extra_BaseColor.png",
+    "tile": 1,
+    "name": "textures/extra_BaseColor.png",
+    "zip_entry": 7,
+    "material": "extra",
+    "fbx_texture": "Texture 4k\\extra_BaseColor.png",
+    "drawn_on": [
+     "extra"
+    ],
     "sha256": "1a0027f713191c2cef7feb3c7f4f819a6792e3b277619aac42ccfd20cb57ce22",
     "size": [
      4096,
      4096
     ]
+   }
+  ],
+  "not_used": [
+   {
+    "name": "textures/base_BaseColor.png",
+    "zip_entry": 3,
+    "material": "base",
+    "fbx_texture": "Texture 4k\\base_BaseColor.png",
+    "sha256": "eb1fc8b5d8d2489fe4b513b02233ab024e4f47ac088a634cc819e9f74668cf55"
    }
   ],
   "atlas_4096x2048_sha256": "0595c4f42f9a289713ea48c5d3ef04200a5f566db5971d15d873bb4c8c8b1b03",

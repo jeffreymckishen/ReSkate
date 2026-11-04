@@ -44,8 +44,9 @@ controls while the bike gets ready. The BMX page in the Insert menu says the sam
 - Hold B in a nose manual and the back wheel comes down in under half a second. It stays down while B is held. Past
   the balance the rider eases off the front brake, so B does not throw the bike over the bars.
 - To hop out of a nose manual, click the right stick. Pulling the stick back to charge a flick hop lets the nose
-  manual go first, so the back wheel comes down before the bike pops. Hold the stick part way forward as the bike
-  lands front first and it lands into a nose manual.
+  manual go, but the back wheel takes about a third of a second to come down, so a flick pops with it still up and
+  the bike leaves nose down. For a level hop, let the stick go and flick once the back wheel is down. Hold the stick
+  part way forward as the bike lands front first and it lands into a nose manual.
 - Tipped on past about 50 degrees, by a bump, a kerb or a landing too steep, the bike goes over the bars and it is a
   crash. The stick alone never takes it that far.
 - In the air, hold a button and push the right stick all the way over for a trick: LB or RB and down for a barspin
@@ -82,9 +83,9 @@ offline the game does not keep it, so set it again each launch.
   seconds, which spends a mount. On the last mount of a launch it goes back to the skateboard instead. Banks and
   quarter pipes do not count as going over. If there is no room to get back on, move and mount again.
 - A slower bump into something just stops the bike, and it has no reverse. If it is stuck, go back to the skateboard.
-- A nose manual rides over small bumps and kerb ramps, but a steep kerb face or a big bump met at walking pace can
-  still throw it over the bars. The rider is drawn hips up over the bars, which shows less of the weight shift than
-  the physics uses.
+- A nose manual rides over small bumps and kerb ramps, but a steep kerb face or a big bump met at walking pace or a
+  slow jog, below about 3 m/s and most of all with the stick all the way forward, can still throw it over the bars.
+  The rider is drawn hips up over the bars, which shows less of the weight shift than the physics uses.
 - Riding into a parked car stops the bike at the bumper. Faster than about 4 m/s it is a crash, over the bars.
 - Mounting refuses ground steeper than 12 degrees and anywhere without room for the bike.
 - The score panel is the mod's own, and its numbers are not yet tuned against the game's scoring.

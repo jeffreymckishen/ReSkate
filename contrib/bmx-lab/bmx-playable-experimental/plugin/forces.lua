@@ -596,11 +596,14 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     -- turn no further than the contact's own path, nose_d ahead of the centre of mass.
     local bars_on_path=prior_bars_on_path and (nose_engaged or prior_nose_air>=0 and prior_nose_air<t.nose_air_seconds)
     if nose_carving then
-        out.manual_carve_rate=-steer*math.min(t.nose_carve_rate*math.clamp(math.abs(speed)/2,0,1),t.nose_carve_lateral/math.max(math.abs(speed),.1))
-        -- The lean follows that yaw only between none and the carve the bars ask for. Past it, a yaw a bump gave
-        -- asked for more lean, the leaned front tyre turned the bike harder, and at 5 to 7.6 m/s it spun round.
-        local lean_yaw=M.dot(measured.angular_velocity,up)
-        lean_yaw=out.manual_carve_rate>=0 and math.clamp(lean_yaw,0,out.manual_carve_rate) or math.clamp(lean_yaw,out.manual_carve_rate,0)
+        local full=math.min(t.nose_carve_rate*math.clamp(math.abs(speed)/2,0,1),t.nose_carve_lateral/math.max(math.abs(speed),.1))
+        out.manual_carve_rate=-steer*full
+        -- The lean follows that yaw either way, up to a quarter more than the carve at full lock. Following all of it,
+        -- a yaw a bump gave asked for more lean, the leaned front tyre turned the bike harder, and at 5 to 7.6 m/s it
+        -- spun round. Held between none and the carve the bars ask for, it could not follow the yaw once the stick was
+        -- let go or eased: at 10 m/s down a hill the lean swung through upright to the other side and the bike fell. Up
+        -- to the full-lock carve alone, the lean weaved there and grew to 52 degrees.
+        local lean_yaw=math.clamp(M.dot(measured.angular_velocity,up),-1.25*full,1.25*full)
         out.turning_lean_angle=math.atan(-manual_speed*lean_yaw/M.length(t.gravity))
         if balance_frame and M.dot(body_up,up)>.2 then
             local most=math.atan(math.abs(out.manual_carve_rate)*math.max(nose_d,0)/math.max(math.abs(speed),.5))

@@ -1265,7 +1265,10 @@ function T.run()
                 local fl,vl=math.sqrt(f[1]^2+f[3]^2),math.sqrt(v[1]^2+v[3]^2)
                 if vl>=.5 and fl>1e-6 then slip=math.max(slip,math.abs(math.deg(math.asin(math.clamp((f[1]*v[3]-f[3]*v[1])/(fl*vl),-1,1))))) end
             end
-            check(ride.refused==0 and met~=nil and carving,string.format("%s: met at %.2f m/s in the nose manual",what,met or -1))
+            -- Kept on the front wheel, the tyre meets the bump's face pressed down, and on two steps it goes past the
+            -- penetration limit, which the kernel refuses.
+            check(ride.refused<=2 and met~=nil and carving,string.format("%s: met at %.2f m/s in the nose manual, %d steps refused",
+                what,met or -1,ride.refused))
             check(not fell(rows) and yaw<=2 and slip<=30,string.format("%s: no spin, at most %.2f rad/s and %.1f degrees off its travel",what,yaw,slip))
         end
     end)
@@ -1293,6 +1296,28 @@ function T.run()
             check(ride.refused==0 and met~=nil and met>=5 and carving,string.format("%s: met at %.2f m/s in the nose manual",what,met or -1))
             check(not fell(rows),what..": no fall")
             check(yaw<=1.2 and slip<=8,string.format("%s: no spin, at most %.2f rad/s and %.1f degrees off its travel",what,yaw,slip))
+        end
+    end)
+    case(function() -- Carving on its front wheel down a hill at 10 m/s, the steer stick let go or eased: the lean follows the yaw up.
+        -- With the lean target held between none and the carve the bars ask for, the stick let go pinned it upright while
+        -- the bike still yawed: the lean swung through upright to the other side, the nose manual ended and the bike fell,
+        -- 88 degrees over from 7 and 7.6 m/s down 13%, and with the stick eased to .3 it went 84 to 88 degrees over.
+        local n=M.unit({0,1,.13})
+        for _,row in ipairs({{speed=7,steer=1,m=1,eased=0},{speed=7.6,steer=1,m=1,eased=0},{speed=7.6,steer=1,m=1,eased=.3},
+            {speed=7.6,steer=1,m=.5,eased=0},{speed=7.6,steer=.5,m=1,eased=0}}) do
+            local what=string.format("from %.1f m/s down 13%%, steer %.1f eased to %.1f, m=%.2f",row.speed,row.steer,row.eased,row.m)
+            local ride,rows=nose({m=row.m,speed=row.speed,ground=Ground.plane(0,-.13),hold=330,after=0,
+                during=function(t) return {steer=t>60 and (t<=210 and row.steer or row.steer*row.eased) or 0} end})
+            local before,after,engaged,speed=0,0,true,0
+            for _,r in rows do
+                local left=M.turn(M.normalized(r.body.orientation),{1,0,0})
+                local lean=math.abs(math.deg(math.asin(math.clamp(M.dot(left,n),-1,1))))
+                if r.hold and r.t>150 and r.t<=210 then before=math.max(before,lean) speed=r.speed end
+                if r.hold and r.t>210 then after=math.max(after,lean) engaged=engaged and r.out.nose_manual_active==true end
+            end
+            check(ride.refused==0 and speed>=9.5 and not fell(rows),string.format("%s: at %.1f m/s at the let-go, and no fall",what,speed))
+            check(engaged,what..": still in the nose manual")
+            check(after<=1.5*before,string.format("%s: leans at most %.1f degrees after, against %.1f carving",what,after,before))
         end
     end)
     case(function() -- Dropped front first with the stick held, the bike lands into the nose manual; with it let go, onto both wheels.

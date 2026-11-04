@@ -8,15 +8,15 @@
   "sha256": "ca1a8c1a8f0d58be15fd82787231783d071b744f77e9cb84e6abcc5201bc22f0"
  },
  "BMX-NATIVE.txt": {
-  "bytes": 1788,
-  "sha256": "a6455626c2d483c1e9b8a1ab13a2fd24b052e9e2059264f6f676c9d8f5be1b19"
+  "bytes": 1780,
+  "sha256": "b148ff04db98a7d6bc14e6578a15851662696464c5349b4f0cbfcf3f3fb2aabc"
  },
  "Win32/configurations/layout/initialinstallpackage/cas_01.cas": {
-  "bytes": 7815511,
-  "sha256": "63d81c5b8b01d75664dda8578e51f69944ed69d57a76144abe39e45b83716a58"
+  "bytes": 7815570,
+  "sha256": "cbbe70b3374c80d4f81776dd686ad90369f5acb04ab2ea3611e364b4fa32ce39"
  },
  "Win32/levels/game/dingolevel_root/dingolevel_root.toc": {
   "bytes": 421416,
-  "sha256": "b4104d7e82d32bfb681354e13d897ebb6f32766fd0582a9df549619dc960c930"
+  "sha256": "ff08a7e1287b695c54b4b6eccdf8ef608e4687930657bcea67307a7d941bf8f3"
  }
 }

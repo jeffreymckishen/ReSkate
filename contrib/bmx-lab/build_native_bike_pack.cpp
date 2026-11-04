@@ -277,6 +277,9 @@ std::string depot_name() {
 std::uint64_t depot_rid() { return id("material/depot") | std::uint64_t{1}; }
 constexpr std::string_view database_name = "reskate/bmx/meshvariationdb_win32";
 fb::Guid database_file() { return guid("meshvariationdb"); }
+// The database's exported instances, by their place in it: its root, RadiosityMaterials and
+// MeshMaterialVariations.
+fb::Guid database_instance(std::size_t index) { return guid("meshvariationdb/instance" + std::to_string(index)); }
 struct Part {
     std::string part, name, mesh_name, lod_name;
     fb::Guid mesh_file, mesh_root, blueprint_file, blueprint_root, blueprint_model, chunk;
@@ -970,6 +973,17 @@ int build(const fs::path& root, const fs::path& parts, const fs::path& output, c
     if (!keep.database) {
         variations.fileGuid = own::database_file();
         field(database_root, "Name").value.data = std::string(own::database_name);
+        // Its instances' GUIDs are Studio's: none is in any of the game's variation databases, so
+        // with the FPV Drone mod on they would be the drone database's too. Each gets the bike's
+        // own; the entries point at them by index, and nothing imports them.
+        std::set<fb::Guid> old_instances;
+        for (std::size_t i = 0; i < variations.instances.size(); ++i) {
+            auto& instance = variations.instances[i];
+            if (!instance.exported) continue;
+            old_instances.insert(instance.instanceGuid);
+            instance.instanceGuid = own::database_instance(i);
+            require(!old_instances.contains(instance.instanceGuid), "Own database instance GUID collides with the template's");
+        }
     } else require(std::get<std::string>(field(database_root, "Name").value.data) == slot_database_name, "Template database name differs");
     // Its RadiosityMaterials carry the mesh sections' names: renamed with them or not at all.
     {
@@ -1146,7 +1160,8 @@ int build(const fs::path& root, const fs::path& parts, const fs::path& output, c
     credits << "Private local BMX prototype pack; not a redistribution pack.\n"
         "Every asset it adds has a name of its own (reskate/bmx/...); none of the FPV Drone template's assets is in it.\n"
         "Native structure: the mesh, material, blueprint and texture layouts, the shader depot's blocks and the variation\n"
-        "database's stock-derived instances follow ReSkate Studio's FPV Drone pack (\"FPV Drone\" by PinaPipe, CC BY 4.0).\n"
+        "database's material variations (which refer to the game's own) follow ReSkate Studio's FPV Drone pack\n"
+        "(\"FPV Drone\" by PinaPipe, CC BY 4.0).\n"
         "https://sketchfab.com/3d-models/fpv-drone-92152c31ec9a4a87b2a0478bd114d293\nhttps://creativecommons.org/licenses/by/4.0/\n"
         "The bike's frame mask is the drone's mask value (one texel).\n"
         << part_names.size() << " articulated render parts, no borrowed collision volumes.\n";
@@ -1224,9 +1239,8 @@ std::vector<Needle> drone_identities(const Pack& tpl, const DroneTemplate& drone
         const auto& name = tpl.bundle.ebx[i].name;
         const auto document = ebx::read_document(tpl.payload(fb::AssetKind::ebx, i));
         add("file GUID of " + name + " " + document.fileGuid.string(), as_bytes(document.fileGuid));
-        // The database's instances (its root, RadiosityMaterials and MeshMaterialVariations) are
-        // Studio's copies of stock data, which the bike's database keeps on purpose.
-        if (i == drone.database) continue;
+        // The database's too (its root, RadiosityMaterials and MeshMaterialVariations): their GUIDs
+        // are Studio's, in none of the game's variation databases.
         for (const auto& instance : document.instances)
             if (instance.exported) add("instance GUID in " + name + " " + instance.instanceGuid.string(), as_bytes(instance.instanceGuid));
     }

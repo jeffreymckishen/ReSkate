@@ -138,7 +138,7 @@ def write_parts(objects, inspection, target):
 def credits(report, keep=()):
     note = (
         'BMX bike for the BMX mod: a native pack built on this machine by assets/models/bmx/build_bike_pack.py from\n'
-        'the mod\'s own bike data and this game\'s own files. The mod\'s CREDITS.md says the same.\n\n'
+        'the mod\'s own bike data and this game\'s own files.\n\n'
         'Bike model: "BMX (Free)" by Ermakov (https://sketchfab.com/Ermakovv)\n'
         'https://sketchfab.com/3d-models/bmx-free-547a95dab9dd4f598237f7ab2885443d\n'
         'Licensed under CC BY 4.0: https://creativecommons.org/licenses/by/4.0/\n'
@@ -155,7 +155,8 @@ def credits(report, keep=()):
         'Licensed under CC BY 4.0: https://creativecommons.org/licenses/by/4.0/\n'
         'Changed: none of its assets is in this pack. The bike\'s parts reuse the Studio pack\'s structure: its EBX '
         'layouts (mesh, materials, blueprint, textures), its shader depot\'s blocks and its variation database\'s '
-        'stock-derived instances, written under the bike\'s own names. The bike\'s frame mask is the drone\'s mask '
+        'material variations (which refer to the game\'s own), written under the bike\'s own names. The bike\'s frame '
+        'mask is the drone\'s mask '
         'value (one texel); its colour and normal are the bike\'s atlas and a flat normal.\n')
     if keep:
         note += f'\nBisect build for a game trial: it keeps the FPV drone template\'s {", ".join(keep)}.\n'

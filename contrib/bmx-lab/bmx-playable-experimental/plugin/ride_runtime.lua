@@ -98,6 +98,10 @@ local AHEAD_GROUND_ROWS = 3
 local AHEAD_DECEL, AHEAD_FORCE, AHEAD_REBOUND, AHEAD_PEDAL_GAP = 45, 5400, .25, .25
 -- Going over the bars, the tyre jammed at the face stops the bike there while it is this near the face.
 local AHEAD_HOLD_REACH = 2.5
+-- A nose manual the stop pushes within this gap of a face, moving slower than this along the bike, is brought to rest
+-- there: the rider stalls on the brakes with the front tyre at the face until the bike is level and still, for at most
+-- this many steps, or until the front hub is this far off the face (m).
+local AHEAD_STALL_GAP, AHEAD_STALL_SPEED, AHEAD_STALL_STEPS, AHEAD_STALL_OFF = .03, .6, 90, .08
 -- Steps in a row the force model may refuse before Ride stops: a second and a half.
 local MAX_REFUSED_STEPS = 90
 local ROLL_STOP_RATE = 14
@@ -1475,10 +1479,10 @@ local function ahead(s,frame,body,options,contact)
     -- In a nose manual the lanes travel with the front hub, .64 m under the centre of mass. As the rear comes down the
     -- hub swings forward while the centre of mass stays where it is: brought to rest at a car's bumper with the lanes
     -- on the centre of mass's travel, the rear came down and the front tyre rolled .25 to .35 m into the car, and once
-    -- a push moved the centre of mass back the lanes looked behind. Held at the bumper by its hub, the bike is pushed
-    -- back off it instead, as a free-rolling bike would be. The stop pushes on whichever of the centre of mass and the
-    -- parts in the lanes that see the face closes fastest, since on the way up the hub slows and the bars do not; the
-    -- closing it reports, which a hit reads, stays the centre of mass's.
+    -- a push moved the centre of mass back the lanes looked behind. Held at the bumper by its hub, the centre of mass is
+    -- pushed back as the bike levels, and the stall (AHEAD_STALL_GAP) takes that out again. The stop pushes on whichever
+    -- of the centre of mass and the parts in the lanes that see the face closes fastest, since on the way up the hub
+    -- slows and the bars do not; the closing it reports, which a hit reads, stays the centre of mass's.
     -- Each lane presses with its own part of the bike: the hub in the tyre's lane, a grip in a bar end's. The grips sit
     -- about level with the centre of mass, so the rear coming down hardly moves them; read from the hub, a corner only a
     -- bar end met had the bike shoved .1 to .9 m back off it as the rear came down, where it had rested against it.
@@ -1860,6 +1864,43 @@ local function observe(s,source_frame,raw,context)
     local unread
     if looked then s.ahead,unread=ahead(s,frame,folded[2],query_options,contact) end
     if s.stopped then return end
+    -- Brought to rest at a face in a nose manual, the rider stalls there on the brakes while the rear comes down. The
+    -- body is rigid, so as it levels about the front hub held at the face its centre of mass has to go back .34 m, the
+    -- rider's weight going back over the bike, and the push that does that left it rolling back at 1.2 to 1.5 m/s once
+    -- the rear was down: 5 to 7.5 m off a parked car 10 s later. While it stalls, on any step with no push to answer the
+    -- hub's travel along the ground is taken out: while the nose is up only when the hub moves off the face, so the stop
+    -- still has the bike when it presses in, and once the rear is down whichever way it moves. With that the centre of
+    -- mass goes back the .34 m and at a square face the bike is still .07 s after the rear lands, the front tyre within
+    -- .03 m of the bumper. At a face turned 40 degrees it is rolling at under .05 m/s a second after, settling the lean
+    -- the turned face gave it.
+    do
+        local b,g=folded[2],s.geometry
+        local q=M.normalized(b.orientation)
+        if not s.crash and s.nose_manual_active and s.ahead and s.ahead.force and s.ahead.gap<=AHEAD_STALL_GAP
+            and math.abs(M.dot(b.linear_velocity,M.turn(q,{0,0,1})))<AHEAD_STALL_SPEED then
+            s.ahead_stall=s.ahead_stall or {face=s.ahead.face,steps=0}
+        end
+        local stall=s.ahead_stall
+        if stall then
+            stall.steps+=1
+            local r=M.turn(q,M.sub(g.front_axle,g.com))
+            local n=stall.face.normal
+            local hub=M.add(b.linear_velocity,M.cross(b.angular_velocity,r))
+            local off=M.dot(M.sub(M.add(b.center_of_mass,r),stall.face.point),n)-g.wheel_radius
+            local still=not s.nose_manual_active and M.length(b.linear_velocity)<.03 and M.length(b.angular_velocity)<.05
+            if s.crash or stall.steps>AHEAD_STALL_STEPS or off>AHEAD_STALL_OFF or still then s.ahead_stall=nil
+            elseif (M.dot(hub,n)>0 or not s.nose_manual_active) and not (s.ahead and s.ahead.force) then
+                local down=M.unit(s.force.tuning.gravity)
+                local away=M.sub(hub,M.mul(down,M.dot(hub,down)))
+                local moving=M.length(away)
+                if moving>1e-6 then
+                    local hold=M.mul(away,-math.min(b.mass/sample.seconds,AHEAD_FORCE/moving))
+                    if s.ahead then s.ahead.force=hold
+                    else s.ahead={gap=math.max(off,0),closing=-M.dot(b.linear_velocity,n),face=stall.face,force=hold} end
+                end
+            end
+        end
+    end
     local closing_face=s.ahead~=nil and s.ahead.closing>0
     if s.ahead and s.ahead.force and s.ahead.closing>=HIT_DROP then s.ahead_hit=math.max(s.ahead_hit or 0,s.ahead.closing)
     elseif looked and not unread and not closing_face then s.ahead_hit=nil end

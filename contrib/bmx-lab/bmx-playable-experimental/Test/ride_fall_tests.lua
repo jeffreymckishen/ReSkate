@@ -1164,6 +1164,52 @@ function T.run()
             check(deepest<=.03,string.format("%s: the front tyre goes at most %.3f m into the car",what,deepest))
         end
     end)
+    case(function() -- Stopped at a car in a nose manual, the bike comes to rest there with the front tyre at the bumper.
+        -- The body moves here. Levelling about the front hub held at the face, the rigid body's centre of mass goes back
+        -- .34 m, and the push that does that left the bike rolling back at 1.2 to 1.5 m/s once the rear was down: 1.8 to
+        -- 3.2 m off the car 4.3 s in and 5.3 to 7.5 m off it at 10 s, held stick or not. Let go at rest, let go still
+        -- rolling, and against a face turned 20 or 40 degrees, the bike is now still a second after the rear lands.
+        local WALL=4.5
+        for _,row in ipairs({{.35,2,"held",0},{.53,2.5,"held",0},{1,3.9,"held",0},{.53,2,"rest",0},{1,3,"rest",0},
+            {.35,2.5,"early",0},{.53,3.5,"early",0},{1,3.9,"early",0},{.53,3,"held",20},{.53,2.5,"held",40},{1,3.5,"held",40},
+            {.53,3,"early",40}}) do
+            local stick,speed,mode,degrees=row[1],row[2],row[3],row[4]
+            local what=string.format("stick %.2f at %.1f m/s, %s, a face turned %d degrees",stick,speed,
+                mode=="held" and "held" or mode=="rest" and "let go at rest" or "let go still rolling",degrees)
+            local ground,n=turned(WALL,degrees)
+            local w=harness(ground)
+            w.prompt=true
+            local b=World.place(World.terrain.flat(),{speed=speed})
+            local deepest,nosed,lifted,down,released,depth,rolling=-math.huge,false,false,nil,false,nil,nil
+            for step=1,400 do
+                if step==4 then w.set_pad(stick) end
+                local out
+                out,b=w.ride_step(b)
+                check(not out.stop_requested,what..": the ride goes on: "..tostring(out.issue))
+                nosed=nosed or w.model and w.model.nose_manual_active==true
+                local q=M.normalized(b.orientation)
+                local hub=M.add(b.center_of_mass,M.turn(q,M.sub(Geometry.front_axle,Geometry.com)))
+                local rear=M.add(b.center_of_mass,M.turn(q,M.sub(Geometry.rear_axle,Geometry.com)))
+                local f,u=M.turn(q,{0,0,1}),M.turn(q,{0,1,0})
+                -- How far the tyre's disc reaches past the face.
+                depth=R*math.sqrt(M.dot(n,f)^2+M.dot(n,u)^2)-M.dot(M.sub(hub,{0,0,WALL}),n)
+                deepest=math.max(deepest,depth)
+                rolling=M.dot(b.linear_velocity,f)
+                if not released and (mode=="early" and depth>-.3 or mode=="rest" and depth>-.05 and M.length(b.linear_velocity)<.1) then
+                    w.set_pad(0) released=true
+                end
+                lifted=lifted or nosed and rear[2]-R>.05
+                if lifted and not down and rear[2]-R<.006 then down=step end
+                if down and step==down+60 then break end
+            end
+            check(nosed and down,what..": into a nose manual, and the rear came down: "..tostring(down))
+            check(mode=="held" or released,what..": the stick was let go")
+            check(deepest<=(degrees>=40 and .07 or .03),string.format("%s: the front tyre goes at most %.3f m into the car",what,deepest))
+            -- Rolling along the bike, not standing up from the lean a turned face gave it.
+            check(depth>=-.03 and math.abs(rolling)<.05,string.format("%s: a second after the rear lands the tyre is %.3f m off the car, rolling at %.3f m/s",
+                what,-depth,rolling))
+        end
+    end)
     case(function() -- In a nose manual a corner only a bar end meets is rested against, and a face met at a glance ridden past.
         -- The body moves here. Each lane presses with its own part of the bike. With the front hub's travel read in every
         -- lane, the rear coming down shoved the bike .1 to .9 m back off a corner only the left bar end met, and a nose

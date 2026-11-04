@@ -22,6 +22,8 @@ function Tests.run()
         function controller:cancel() f.cancels+=1;return true end
         function controller:step(dt) f.steps+=1;f.last_dt=dt end
         function controller:unload() f.unloads+=1 end
+        -- What Entry's HUD help says; nil (the default) is none.
+        function controller:help_line() return f.help end
         function controller:score_view()
             f.score_reads+=1
             if score_view==nil then return nil,"ride_unavailable","unavailable" end
@@ -225,6 +227,28 @@ function Tests.run()
         f.callbacks.unload();f.callbacks.draw(draw)
         check(f.unloads==1 and #draw.calls==6 and draw.sizes==1 and draw.measures==6 and #draw.panels==1 and f.score_reads==1,
             "unload clears the display cache without any late draw or score read")
+    end)
+    case("before the first ride the HUD panel still shows the help line",function()
+        -- With no Ride yet ScoreHUD.lines is nil, and copying it raised inside the tick's pcall, so nothing was drawn
+        -- while the bike got ready, checked for room or said why a Mount did not start.
+        local f=setup()
+        local draw={calls={},panels={}}
+        function draw:size() return vector.create(1920,1080,0) end
+        function draw:measure(text,style) return vector.create(#text*8,style.size,0) end
+        function draw:rect(a,b,style) self.panels[#self.panels+1]={a=a,b=b,style=style} end
+        function draw:text(position,text,style) self.calls[#self.calls+1]={position=position,text=text,style=style} end
+        f.callbacks.tick(16);f.callbacks.draw(draw)
+        check(#draw.calls==0 and #draw.panels==0,"no Ride and no help draws nothing, as before")
+        f.help="Getting the bike ready: stand still."
+        f.callbacks.tick(16);f.callbacks.draw(draw)
+        check(#draw.calls==1 and draw.calls[1].text==f.help and #draw.panels==1,"the help is the panel's one row")
+        f.help="Step off your skateboard with Y, then hold LB and press A."
+        draw.calls,draw.panels={},{}
+        f.callbacks.tick(16);f.callbacks.draw(draw)
+        check(#draw.calls==1 and draw.calls[1].text==f.help,"and a refused Mount's notice shows the same way")
+        f.help=nil;draw.calls,draw.panels={},{}
+        f.callbacks.tick(16);f.callbacks.draw(draw)
+        check(#draw.calls==0,"and it goes when the help does")
     end)
     return {cases=cases,assertions=assertions,game_evidence=false,native_actions=0}
 end

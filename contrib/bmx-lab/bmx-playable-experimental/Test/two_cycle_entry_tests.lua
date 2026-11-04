@@ -954,6 +954,53 @@ function Tests.run()
             check(g.stops==(stopped and 2 or 1) and g.toggles==0,"with the ordinary stop asked for, as before")
         end
     end)
+    case("a ride's end is told in plain words, and the log and status keep Core's reason",function()
+        -- The beta told riders 'Ride ended: fresh sampled upright/focus/context/fall readiness lost' and the like.
+        local function logged(lines,line)
+            for _,l in lines do if l==line then return true end end
+            return false
+        end
+        local lines={}
+        local f=fixture({two=true,auto_return=true});f.R.log=function(line) lines[#lines+1]=line end
+        f.riding();fall(f,"hit something at 4.5 m/s")
+        check(f.entry:help_line()=="The rider came off. Getting back on the bike.","a crash says the rider came off and what comes next")
+        check(logged(lines,"[BMX] Ride ended: hit something at 4.5 m/s")
+            and logged(lines,"[BMX] told: The rider came off. Getting back on the bike."),"the log keeps Core's reason and what was told")
+        check(f.entry:status().last_stop=="hit something at 4.5 m/s","and the status, for the menu page, keeps the reason")
+        local k=fixture({two=true,auto_return=true});k.riding();fall(k,"rider was knocked down")
+        check(k.entry:help_line()=="The rider came off. Getting back on the bike.","a knock-down is told the same way")
+        lines={}
+        local g=fixture({two=true,auto_return=true});g.R.log=function(line) lines[#lines+1]=line end
+        -- Core's own stop: its reason is the stop's, as when focus is lost (bike_runtime_core.lua stop_all).
+        g.riding();g.focused=false
+        g.latest=cleaned();g.latest.phase="stopping";g.latest.bike_cleanup_complete=false
+        g.latest.bike_authority=true;g.latest.cleanup_pending=true;g.latest.stock_toggle_blocked=true
+        g.latest.stop_reason="fresh sampled upright/focus/context/fall readiness lost"
+        g.latest.ride={stop_requested=true,issue=g.latest.stop_reason}
+        g.tick()
+        check(g.entry:help_line()=="The ride stopped. Hold LB and press A to ride again.","any other end says the ride stopped and how to ride again")
+        check(logged(lines,"[BMX] Ride ended: fresh sampled upright/focus/context/fall readiness lost")
+            and g.entry:status().last_stop=="fresh sampled upright/focus/context/fall readiness lost","with the reason kept in the log and status")
+        -- With no mount left (an SDK that cannot reuse the bike), a fall goes back to the skateboard instead.
+        local h=fixture({auto_return=true});h.riding();fall(h,"hit something at 4.5 m/s")
+        check(h.entry:help_line()=="The rider came off. Going back to the skateboard." and h.entry:status().return_requested,
+            "a fall with no mount left says where the rider is going")
+        local m=fixture({two=true});m.riding();fall(m,"hit something at 4.5 m/s")
+        check(m.entry:help_line()=="The rider came off. Hold LB and press A to ride again.","without the automatic Return the rider is told what to press")
+    end)
+    case("a failure shows the blocked help line, and the log keeps why",function()
+        local lines={}
+        local f=fixture({two=true,auto_return=true});f.R.log=function(line) lines[#lines+1]=line end
+        f.riding();fall(f,"hit something at 4.5 m/s")
+        check(f.entry:help_line()=="The rider came off. Getting back on the bike.","the ride's end is up")
+        f.step_raise=true;f.tick()
+        check(f.entry:status().phase=="blocked","the lifecycle step failing ends it")
+        check(f.entry:help_line()=="That didn't finish. Get on your skateboard, then hold LB and press A.",
+            "at once the HUD shows what to do, not the internal reason or the earlier notice")
+        local found=false
+        for _,line in lines do if line=="[BMX] Stopped: Lifecycle step unavailable; cleanup remains required." then found=true end end
+        check(found,"the log keeps why it stopped")
+    end)
     return {cases=cases,assertions=assertions,constructed=true,native_authority=false,gameplay=false}
 end
 return Tests

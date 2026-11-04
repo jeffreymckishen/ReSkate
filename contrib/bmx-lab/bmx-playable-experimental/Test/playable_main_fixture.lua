@@ -15,6 +15,9 @@ local function score_snapshot()
     local lines=ScoreHUD.lines(view,issue,landing)
     local help=bike.help_line and bike:help_line()
     if not help then return lines end
+    -- Before the first ride there is no score to show, and the help is all the panel has: getting ready, checking
+    -- for room, or why a Mount did not start.
+    if lines==nil then return table.freeze({help}) end
     local shown=table.clone(lines) -- The panel's six rows are full: this takes the last one while the mod is busy.
     shown[#shown]=help
     return shown

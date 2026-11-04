@@ -16,9 +16,10 @@ function Tests.run()
     local function fixture()
         local f={now=0,position=vector.create(0,.5,0),heading=0,slope=0,rough=true,overlay=false,
             focused=true,stock=504,keys={},latest=idle(),news=0,mounts=0,stops=0,stock_calls=0,
-            prepares=0,probes=0,floor_probes=0,unloads=0}
+            prepares=0,probes=0,floor_probes=0,unloads=0,logs={}}
         local R={time={},input={},menu={},skater={},storage={},world={physics={}}}
         function R.time.now() return f.now end
+        function R.log(line) f.logs[#f.logs+1]=line end
         function R.input.focus()return{focused=f.focused,gameplay=true,interface_open=f.overlay}end
         function R.menu.game()return{open=false}end
         function R.skater.get()return{position=f.position,heading=f.heading}end
@@ -152,12 +153,35 @@ function Tests.run()
             check(f.prepares<=20,"original20call bound")
         end
     end)
-    case("11 freshness movement guard stays sticky after passing survey",function()
+    -- What the HUD and the log say to a first ride's rider who is not where the Mount can start.
+    local STEP_OFF="Step off your skateboard with Y, then hold LB and press A."
+    local MOVED="Stand still while the bike gets ready. Hold LB and press A again."
+    local function told(f,message)
+        for _,line in ipairs(f.logs) do if line=="[BMX] told: "..message then return true end end
+        return false
+    end
+    -- Until 2026-11-04 a rider who moved after a passing survey ended the launch's rides ('stuck: restart the game').
+    case("11 freshness movement guard asks for a new first-ride Mount; a stale survey stays sticky",function()
         local f=fixture();f.rough=false;f.overlay=true
         check(f.entry:mount(),"first intent");f.tick(100)
         check(f.entry:status().phase=="awaiting_mount","survey passes while overlay delays mount")
         f.position=vector.create(.3,.5,0);f.overlay=false;f.tick()
-        check(f.entry:status().phase=="blocked" and not f.entry:mount() and f.mounts==0,"no stale/moved survey retry")
+        local s=f.entry:status()
+        check(s.phase=="preflight_refused" and s.preflight_retry_available and f.mounts==0 and f.stops==0,
+            "no mount from a moved survey, and the retry stays open")
+        check(s.detail:find("rider moved 0.30 m",1,true)~=nil and f.entry:help_line()==MOVED and told(f,MOVED),
+            "the menu keeps the measured reason, and the HUD and log say to stand still and mount again")
+        check(f.entry:mount(),"the next Mount retries");s=f.await()
+        check(s.mount_requested and f.mounts==1 and f.prepares==2 and s.terrain_refusal_count==0,
+            "a new preparation and survey where the rider now stands, then one mount")
+        local t=fixture();t.rough=false;t.overlay=true
+        check(t.entry:mount(),"first intent");t.tick(100)
+        t.heading=math.rad(10);t.overlay=false;t.tick()
+        check(t.entry:status().phase=="preflight_refused" and t.mounts==0 and t.entry:help_line()==MOVED,"turning away is the same")
+        local g=fixture();g.rough=false;g.overlay=true
+        check(g.entry:mount(),"first intent");g.tick(100)
+        g.now+=46000;g.overlay=false;g.tick()
+        check(g.entry:status().phase=="blocked" and not g.entry:mount() and g.mounts==0,"a survey too old to trust is not about where the rider is")
     end)
     case("12 malformed or non-inert proof never gains terrain retry",function()
         local mutations={function(s)s.used=nil end,function(s)s.used=true end,function(s)s.cleanup_unknown=true end,
@@ -212,6 +236,54 @@ function Tests.run()
         local f=fixture();f.on_status=function()f.on_status=nil;f.entry:cancel()end
         check(f.entry:mount(),"first intent");f.tick(100)
         check(f.entry:status().cancelled and f.mounts==0 and f.stops==1,"proof callback cannot overwrite cancel or duplicate stop")
+    end)
+    case("20 a first-ride retry from the skateboard says to step off and stays open",function()
+        -- The refusal says to move: the rider rides the board somewhere better and presses LB + A there.
+        local f=fixture();f.refuse();local prepares=f.prepares
+        for _,stock in ipairs({100,300}) do
+            f.stock=stock
+            local mounted,why=f.entry:mount()
+            check(not mounted and why==STEP_OFF,"Mount off foot ("..stock..") says to step off first")
+            check(f.entry:status().phase=="preflight_refused" and f.entry:status().preflight_retry_available,"and the retry stays open")
+        end
+        check(f.entry:help_line()==STEP_OFF and told(f,STEP_OFF),"the HUD and the log say so")
+        f.now+=5000;f.tick()
+        check(f.entry:help_line()==STEP_OFF,"and the HUD keeps saying so after the notice, not 'No room here'")
+        check(f.prepares==prepares and f.mounts==0 and f.stops==0,"nothing is prepared or asked for while on the board")
+        f.stock=504;f.position=vector.create(20,.5,0);f.rough=false
+        check(f.entry:mount(),"on foot the same retry goes")
+        local s=f.await()
+        check(s.mount_requested and f.mounts==1 and s.attempts_used==1 and s.terrain_refusal_count==1,
+            "one mount, the same intent, and the refusal still recorded")
+        -- Without the proof that nothing is held, the press still ends it.
+        local g=fixture();g.refuse();g.stock=100;g.latest.startup.pending=true
+        check(not g.entry:mount() and g.entry:status().phase=="blocked","a lost proof still blocks")
+    end)
+    case("21 a first ride's passing survey with the rider on the board waits for the next Mount",function()
+        local f=fixture();f.rough=false;f.overlay=true
+        check(f.entry:mount(),"first intent");f.tick(100)
+        check(f.entry:status().phase=="awaiting_mount","survey passes while overlay delays mount")
+        f.stock=100;f.overlay=false;f.tick()
+        local s=f.entry:status()
+        check(s.phase=="preflight_refused" and s.preflight_retry_available and f.mounts==0 and f.stops==0,
+            "no bike asked for, and the retry stays open")
+        check(f.entry:help_line()==STEP_OFF and told(f,STEP_OFF),"the HUD and the log say to step off")
+        f.now+=5000;f.tick();check(f.entry:help_line()==STEP_OFF,"and the HUD keeps saying so")
+        local mounted,why=f.entry:mount()
+        check(not mounted and why==STEP_OFF and f.prepares==1,"still on the board, Mount says so again and does no work")
+        f.stock=504;f.rough=true
+        check(f.entry:mount(),"on foot the same Mount retries");s=f.await()
+        f.now+=5000;f.tick()
+        check(s.phase=="preflight_refused" and s.terrain_refusal_count==1
+            and f.entry:help_line()=="No room here or too steep: move, then hold LB and press A.",
+            "a terrain refusal on that retry says so, not to step off")
+        f.rough=false
+        check(f.entry:mount(),"and the next Mount goes");s=f.await()
+        check(s.mount_requested and f.mounts==1 and f.prepares==3,"a new preparation and survey each time, then the bike")
+        local g=fixture();g.rough=false;g.overlay=true
+        check(g.entry:mount(),"first intent");g.tick(100)
+        g.stock=100;g.overlay=false;g.latest.startup.loaded=1;g.tick()
+        check(g.entry:status().phase=="blocked" and g.mounts==0,"without the proof that nothing is held, it still stops")
     end)
     return{cases=cases,assertions=assertions}
 end

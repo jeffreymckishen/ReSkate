@@ -90,7 +90,8 @@ function HUD.lines(view,issue,landing_phase)
         end
     end
     local state="READY"
-    if rawget(view,"stopped") then state="STOPPED: "..label(rawget(view,"issue"),30,"unknown")
+    -- Why it stopped is the lifecycle's wording, for the log, and the HUD has already told the rider in plain words.
+    if rawget(view,"stopped") then state="STOPPED"
     elseif rawget(view,"active") then state="PENDING"
     else
         local closed=rawget(view,"last_closed")

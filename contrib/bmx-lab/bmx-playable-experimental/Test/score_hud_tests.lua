@@ -26,7 +26,8 @@ function Tests.run()
     check(has(text[5],"bank 400"),"underlying force observation alone cannot grow the displayed bank")
     v.stopped=true;v.active=false;v.issue="source stopped";v.pending_score=0;v.eligible_pending_score=0
     text=HUD.lines(v,"source stopped","unavailable")
-    check(has(text[6],"STOPPED: source stopped"),"stopped score state is explicit")
+    -- The row used to carry the stop's internal reason, cut at 30 characters ('STOPPED: fresh sampled upright/focus/co').
+    check(text[6]=="Landing: unavailable | STOPPED","stopped score state is explicit, without the internal reason")
     check(has(text[5],"bank 400"),"stop preserves prior qualified local totals")
     local missing=HUD.lines(nil,"disabled","unavailable")
     check(has(missing[2],"Scoring unavailable"),"disabled scoring is not invented zero credit")
@@ -70,7 +71,7 @@ function Tests.run()
     check(text[3]=="Last lost: Barspin + Tailwhip" and has(text[6],"LOCAL COMBO LOST")
         and not has(text[6],"BANKED"),"a lost combo is never relabelled as banked")
     v.stopped=true;v.issue="source stopped";text=HUD.lines(v,"source stopped","unavailable")
-    check(has(text[3],"Last lost:") and has(text[6],"STOPPED: source stopped"),"history does not replace the stopped-state warning")
+    check(has(text[3],"Last lost:") and text[6]=="Landing: unavailable | STOPPED","history does not replace the stopped-state warning")
     v.stopped=false;v.last_closed.rows=nil
     check(HUD.lines(v,"none","unavailable")[3]=="Tricks: none","legacy closed records with no rows preserve old behavior without invented names")
     v.last_closed=closed("landed",{})

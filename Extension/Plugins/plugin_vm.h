@@ -399,6 +399,7 @@ private:
     std::uint64_t body_query_sequence_{};
     unsigned sync_probe_starts_{}, sync_probe_polls_{}; // bounded passive observation calls since the last tick
     unsigned body_prepares_{}; // explicit generic setup/readiness attempts since the last tick
+    unsigned body_reuses_{};   // creates that asked to reuse a parked native body since the last tick
     unsigned follow_reserves_{}, follow_publishes_{}, follow_reads_{}, follow_stops_{}, follow_acknowledgements_{};
     unsigned follow_renewals_{}, follow_lease_reads_{}; // their own counters, so neither starves the receipt reads
     std::optional<float> touch_reach_;

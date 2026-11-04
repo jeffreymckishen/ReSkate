@@ -193,6 +193,10 @@ public:
     }
     std::string body_prepare() override { return owned_bodies::prepare(); }
     std::string body_create(std::uint64_t owner, const owned_body::Definition& d, owned_body::Handle& h) override { return owned_bodies::create(owner, d, h); }
+    std::string body_create_reusing(std::uint64_t owner, const owned_body::Definition& d, owned_body::Handle& h, bool reuse,
+                                    owned_body::CreateReport& report) override {
+        return owned_bodies::create(owner, d, h, reuse, report);
+    }
     std::string body_read(std::uint64_t owner, const owned_body::Handle& h, owned_body::Sample& s) override { return owned_bodies::read(owner, h, s); }
     std::string body_begin_sync_probe(std::uint64_t owner, const owned_body::Handle& h, std::uint64_t& sequence) override { return owned_bodies::begin_sync_probe(owner, h, sequence); }
     std::string body_poll_sync_probe(std::uint64_t owner, const owned_body::Handle& h, std::uint64_t sequence, body_sync_probe::Result& out) override { return owned_bodies::poll_sync_probe(owner, h, sequence, out); }

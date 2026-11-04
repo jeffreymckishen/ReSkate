@@ -468,6 +468,7 @@ void Plugin::tick(double dt_ms) {
     body_prepares_ = 0;
     follow_reserves_ = follow_publishes_ = follow_reads_ = follow_stops_ = follow_acknowledgements_ = 0;
     follow_renewals_ = follow_lease_reads_ = 0;
+    body_reuses_ = 0;
     effect_calls_ = 0;
     prune_effects();
     deliver_preloads(*this);

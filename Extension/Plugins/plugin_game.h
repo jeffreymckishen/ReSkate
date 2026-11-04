@@ -308,6 +308,11 @@ public:
     // Generic deferred producer setup and readiness only; no owner or definition is kept.
     virtual std::string body_prepare() { return unavailable; }
     virtual std::string body_create(std::uint64_t, const owned_body::Definition&, owned_body::Handle&) { return unavailable; }
+    // create with options: true asks to re-activate one of this owner's own parked bodies before
+    // allocating, and the report says which happened (owned_bodies::create).
+    virtual std::string body_create_reusing(std::uint64_t, const owned_body::Definition&, owned_body::Handle&, bool, owned_body::CreateReport&) {
+        return unavailable;
+    }
     virtual std::string body_read(std::uint64_t, const owned_body::Handle&, owned_body::Sample&) { return unavailable; }
     virtual std::string body_begin_sync_probe(std::uint64_t, const owned_body::Handle&, std::uint64_t&) { return unavailable; }
     virtual std::string body_poll_sync_probe(std::uint64_t, const owned_body::Handle&, std::uint64_t, body_sync_probe::Result&) { return unavailable; }

@@ -57,6 +57,8 @@ constexpr Capability capabilities[] = {
     {"world.physics.follow", "WORLD", Risk::red, "Move your skater with a physical body the plugin owns"},
     {"world.physics.follow.renew", "WORLD", Risk::red, "Extend that skater-follow movement using renewable leases"},
     {"world.physics.follow.session", "WORLD", Risk::red, "Renew skater-follow movement without a fixed lifetime"},
+    // Grey: it adds no authority to world.physics, only a way to bring back its own parked body.
+    {"world.physics.reuse", "WORLD", Risk::grey, "Reuse its own parked bodies"},
     {"objects.physics", "WORLD", Risk::red, "Make your own park's objects fall, roll and get knocked over (offline)"},
     {"travel", "WORLD", Risk::red, "Travel to locations and levels"},
     {"world.environment", "WORLD", Risk::red, "Change the time of day, world controls and parks"},
@@ -291,6 +293,7 @@ std::string approval_prompt(const std::vector<PermissionGroup>& groups) {
             if (has("world.physics.follow")) actions.push_back("move your skater with a physical body the plugin owns");
             if (has("world.physics.follow.renew")) actions.push_back("extend skater-follow movement using renewable leases");
             if (has("world.physics.follow.session")) actions.push_back("renew skater-follow movement without a fixed lifetime");
+            if (has("world.physics.reuse")) actions.push_back("reuse its own parked bodies");
             if (has("objects.physics")) actions.push_back("make your own park's objects fall, roll, and get knocked over (offline)");
             if (has("travel")) actions.push_back("travel to locations and levels");
             if (has("world.environment")) actions.push_back("change parks, world controls, and time of day");

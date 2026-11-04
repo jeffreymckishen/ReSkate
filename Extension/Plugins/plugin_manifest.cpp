@@ -45,17 +45,20 @@ namespace {
 // Session mode also requires "world.physics.follow.renew". Both modes require
 // "world.physics" and "world.physics.follow", and grant no input, equipment,
 // recovery, force or new actor state.
-// A manifest's "resident" list and "variants" are the merge's
+// "world.physics.reuse" needs "world.physics" too and lets create re-activate
+// a body this same VM instance parked, with identical capsules, mass and inertia, instead of
+// spending another of the process's native allocations; it grants no slot choice, mask, force or
+// other owner's body. A manifest's "resident" list and "variants" are the merge's
 // (Engine/Vfs/mod_list.h ResidentAssets, Variants), not the plugin host's.
 // "objects.physics" lets the plugin claim its own local park placements (at most 32, offline only)
 // and make them fall, roll and be knocked over (reskate.objects.physics, velocity, pose, motion;
 // Extension/Objects/placement_physics.h); a claimed object's moved pose is never saved to the park.
 // "marker.read" reads the local skater's marker saves and returns (reskate.marker.events).
 // "ui.models" publishes bounded plugin-namespaced floats for authored native UI (not stock fields).
-constexpr std::array<std::string_view, 68> permissions{
+constexpr std::array<std::string_view, 69> permissions{
     "console", "storage", "overlay", "menu", "ui.screen", "input", "input.control", "input.lease", "input.capture", "input.write", "hud", "events.tricks", "events.skater",
     "skater.read", "skater.teleport", "skater.control", "skater.animation", "skater.input_trace", "trainer", "camera",
-    "world.raycast", "world.physics", "world.physics.observe", "world.physics.follow", "world.physics.follow.renew", "world.physics.follow.session", "world.objects", "world.entities", "world.environment", "world.ai", "travel", "session.read",
+    "world.raycast", "world.physics", "world.physics.observe", "world.physics.follow", "world.physics.follow.renew", "world.physics.follow.session", "world.physics.reuse", "world.objects", "world.entities", "world.environment", "world.ai", "travel", "session.read",
     "session.skaters", "session.nametags", "net.session", "net.http", "voice.control", "chat.read",
     "chat.send", "chat.local", "chat.commands", "server", "server.parks", "throwdowns", "replay", "music", "progression.read", "settings.read", "audio.ui", "audio", "outfit", "board", "mods.read",
     "events.physics", "game.speed", "files", "variants", "settings.write", "room", "capture", "effects", "events.physics.geometry", "viewmodel", "strings", "outfit.stand_ins",

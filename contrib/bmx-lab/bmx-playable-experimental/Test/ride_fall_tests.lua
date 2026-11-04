@@ -162,6 +162,23 @@ local function turned(z,degrees)
         return flat(from,to)
     end,n
 end
+-- A road whose height along it is height(z), with slope(z) its gradient: each ray is marched to where it first meets it.
+local function profile(height,slope)
+    return function(from,to)
+        local function above(f) return from.y+(to.y-from.y)*f-height(from.z+(to.z-from.z)*f) end
+        if above(0)<0 then return clear() end
+        local a,b=nil,nil
+        for k=1,96 do if above(k/96)<=0 then a,b=(k-1)/96,k/96 break end end
+        if not a then return clear() end
+        for _=1,50 do local middle=(a+b)/2 if above(middle)>0 then a=middle else b=middle end end
+        local f=(a+b)/2
+        local z=from.z+(to.z-from.z)*f
+        local n=M.unit({0,1,-slope(z)})
+        return {status="hit",position=vector.create(from.x+(to.x-from.x)*f,from.y+(to.y-from.y)*f,z),fraction=f,
+            normal=vector.create(n[1],n[2],n[3]),surface_velocity=vector.create(0,0,0),normal_available=true,
+            surface_velocity_available=true,motion="measured"}
+    end
+end
 -- The front of the front tyre of a level bike whose centre of mass is at z = 0.
 local NOSE=Geometry.front_axle[3]+R-Geometry.com[3]
 function T.run()
@@ -1209,6 +1226,38 @@ function T.run()
             check(depth>=-.03 and math.abs(rolling)<.05,string.format("%s: a second after the rear lands the tyre is %.3f m off the car, rolling at %.3f m/s",
                 what,-depth,rolling))
         end
+    end)
+    case(function() -- A 12 cm bump at a jog in a nose manual, the stick past half way: the rider's catch mostly holds it.
+        -- The body moves here. The front meets a 12 cm bump .6 m long 1 to 1.8 s into the nose manual. Tipping on over the
+        -- bars, the rider snaps the weight back; reaching all of the catch only .5 rad/s past where it starts, it gave
+        -- 283 to 554 N m at .8 to .93 rad/s and ran out with the bike past 50 degrees, and these rides went over the bars on
+        -- 19 of 36. Below 2.25 m/s the front stops dead at the bump's face and most still go over, a real endo.
+        local high,length=.12,.6
+        local function height(z) local u=z/length if u<=0 or u>=1 then return 0 end return high*.5*(1-math.cos(2*math.pi*u)) end
+        local function slope(z) local u=z/length if u<=0 or u>=1 then return 0 end return high*math.pi*math.sin(2*math.pi*u)/length end
+        local total,report=0,{}
+        for _,row in ipairs({{2.25,.72},{2.25,1},{2.5,.72},{2.5,1}}) do
+            local speed,stick=row[1],row[2]
+            local over={}
+            for k=0,8 do
+                local at=1+k*.1
+                local w=harness(profile(height,slope))
+                w.prompt=true
+                w.set_pad(0)
+                local b=World.place(World.terrain.flat(),{speed=speed,z=-(speed*at+.5158)})
+                local out
+                for _=1,3 do out,b=w.ride_step(b) end
+                w.set_pad(stick)
+                for _=1,240 do
+                    out,b=w.ride_step(b)
+                    if out.stop_requested then over[#over+1]=string.format("%.1f",at) break end
+                end
+            end
+            total+=#over
+            report[#report+1]=string.format("%.2f m/s stick %.2f: %d of 9 (%s)",speed,stick,#over,table.concat(over,","))
+            check(#over<=3,string.format("at %.2f m/s with the stick at %.2f, %d of 9 go over the bars",speed,stick,#over))
+        end
+        check(total<=8,"at most 8 of 36 go over the bars: "..table.concat(report,"; "))
     end)
     case(function() -- In a nose manual a corner only a bar end meets is rested against, and a face met at a glance ridden past.
         -- The body moves here. Each lane presses with its own part of the bike. With the front hub's travel read in every

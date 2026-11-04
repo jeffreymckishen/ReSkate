@@ -111,8 +111,12 @@ local defaults={gravity={0,-9.8,0},wheelbase=1.203956057050485*scale,steer_limit
     nose_hold_forward=.26,nose_hold_back=.20,nose_low=.23,nose_high=.13,
     -- Tipping on over the bars faster than nose_catch_rate (rad/s), the rider snaps the weight back, up to
     -- nose_catch_torque, all of it nose_catch_span faster, for at most nose_catch_seconds of pulling past
-    -- nose_hold_back a lift. Without it a 12 cm bump or a 10 cm kerb ramp met at 1.6 to 2.5 m/s threw the bike over.
-    nose_catch_torque=800,nose_catch_rate=.6,nose_catch_span=.5,nose_catch_seconds=.4,
+    -- nose_hold_back a lift. Without it the bike went over the bars on each of a 12 cm bump and a 10 cm kerb ramp met
+    -- at 1.6 to 2.5 m/s in the kernel's own rides. Through Ride, with the stick past half way and the front meeting a
+    -- 12 cm bump .6 m long 1 to 1.8 s into the nose manual, it still goes over on 6 of 36 rides at 2.25 and 2.5 m/s, and
+    -- on most at 2 m/s, where the front stops dead at the bump's face. With all of the catch only .5 rad/s past
+    -- nose_catch_rate, 19 of those 36 went over: at .8 to .93 rad/s it gave 283 to 554 N m and ran out past 50 degrees.
+    nose_catch_torque=800,nose_catch_rate=.6,nose_catch_span=.25,nose_catch_seconds=.4,
     -- Thrown off the front by a bump or a kerb's top with the stick still held, the rider holds the bike's angle with
     -- the air pitch's authority for at most nose_air_seconds. Without it an 8 cm bump at 4 m/s, a 12 cm one at 2.5
     -- to 7 m/s, a 25 degree kicker and a 15 cm kerb ramp at 7 m/s threw the bike over the bars.

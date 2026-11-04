@@ -948,7 +948,7 @@ function T.run()
         local t=Forces.tuning()
         local defaults={nose_hold_forward=.26,nose_hold_back=.20,nose_low=.23,nose_high=.13,nose_carve_rate=.6,
             nose_carve_lateral=2.5,nose_yaw_damping=300,nose_yaw_torque=300,nose_roll_gain=1.6,
-            nose_catch_torque=800,nose_catch_rate=.6,nose_catch_span=.5,nose_catch_seconds=.4,nose_air_seconds=.5,
+            nose_catch_torque=800,nose_catch_rate=.6,nose_catch_span=.25,nose_catch_seconds=.4,nose_air_seconds=.5,
             nose_brake_fade=.05}
         for name,value in defaults do check(t[name]==value,"the nose manual's "..name.." is "..tostring(t[name])) end
         local flat=Ground.plane(0,0)

@@ -3,13 +3,19 @@
 Ride a BMX in skate. It is a plugin mod: the bike's physics, the rider's pose, hops, tricks and the score panel
 are all Luau on ReSkate's general plugin APIs.
 
-It needs the separately installed `BMX_Prototype` asset pack for the bike's model, which is not part of this
-package, and a ReSkate build with the session follow API. The pack must have its wheels and cranks authored about
-their own hubs; the mod refuses an older one and says so.
+The bike comes with it. The mod folder holds the plugin and the bike's own native pack (`layout.toc`,
+`.reskate-studio-patch`, `BMX-NATIVE.txt` and `Win32`), so there is nothing else to install. It needs a ReSkate build
+with the session follow API. The bike is "BMX (Free)" by Ermakov, CC BY 4.0: see `CREDITS.md`.
+
+An older separate `BMX_Prototype` pack is no longer needed. Remove it from `Mods`, or turn it off: both add the same
+bike, and whichever is higher in the mod list supplies it, so an old copy can stand in for this mod's bike. The mod
+refuses a bike whose wheels are not authored about their own hubs and says so.
 
 ## Playing
 
-Put this folder in `Mods`, start the game and turn the plugin on when it asks.
+Put this folder in `Mods`, start the game and turn the plugin on when it asks. The bike's model loads with the
+game's data, so a mod turned on while the game runs needs APPLY TO LOAD in the modding menu, or a restart, before
+the bike can spawn; until then the mod says the bike's model is not loaded.
 
 Stand on foot on fairly level ground with a little room around you, hold LB, then press A, and let go of the
 controls while the bike gets ready. The BMX page in the Insert menu says the same and shows what the mod is doing.
@@ -75,3 +81,10 @@ offline the game does not keep it, so set it again each launch.
 ## Tests
 
 `Test/` holds the Lua suites and `Test/two_cycle_tests.json` lists them. See `Test/README.md`.
+
+## Rebuilding the bike
+
+In the source, `bike/` holds the bike's own data: the lightened model and its atlas. The native pack is built from
+it and the game's own files when the mod is packaged (`assets/models/bmx/build_bike_pack.py`), because the pack's
+indexes and shader tables come from the game and are not kept in the repository. `bike/README.md` says how to
+rebuild the pack, and the data itself from the model.

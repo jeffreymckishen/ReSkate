@@ -123,7 +123,10 @@ local function spawn_fixture(grade,options)
         if options.cross_at==f.rays then y+=.0031 end
         return vector.create(from.x,y,from.z)
     end
-    function api.entities.bounds() return vector.create(-.02,-G.wheel_radius,-G.wheel_radius),vector.create(.02,G.wheel_radius,G.wheel_radius) end
+    function api.entities.bounds(name)
+        if options.bounds then return options.bounds(name) end
+        return vector.create(-.02,-G.wheel_radius,-G.wheel_radius),vector.create(.02,G.wheel_radius,G.wheel_radius)
+    end
     function api.entities.set() f.sets+=1;return true end
     function api.entities.status()
         if options.expire_during_status then f.now=(grade and grade.expires_ms or f.now)+1 end
@@ -253,6 +256,43 @@ function Tests.run()
     check(math.abs(flat.definition.rotation[1])+math.abs(flat.definition.rotation[2])+math.abs(flat.definition.rotation[3])==0,
         "ordinary heading-zero flat orientation stays byte-equivalent yaw-only")
     flat.owner:stop("constructed flat cleanup")
+    -- The bike's model comes with the mod's own pack. Before the game has loaded it (a mod turned on but not yet
+    -- applied) the bounds never arrive, and the spawn says what to do instead of a bare timeout.
+    local function settle(f,ticks)
+        assert(f.owner:request())
+        for _=1,ticks do
+            f.now+=16;f.owner:update(16)
+            local phase=f.owner:status().phase
+            if phase=="spawned" or phase=="closed" or phase=="cleanup_unknown" then break end
+        end
+        return f.owner:status()
+    end
+    local unloaded=spawn_fixture(nil,{bounds=function() return nil,nil end})
+    local missing=settle(unloaded,400)
+    check(missing.phase=="closed" and unloaded.creates==0 and unloaded.sets==0,"a bike model that never loads allocates nothing")
+    check(missing.detail:find("bike's model is not loaded",1,true) and missing.detail:find("apply mods or restart",1,true)
+        and missing.detail:find("reskate/bmx/frame",1,true),"the timeout names the unloaded model and how to load it")
+    local calls=0
+    local late=spawn_fixture(nil,{bounds=function()
+        calls+=1
+        if calls<=3 then return nil,nil end
+        return vector.create(-.02,-G.wheel_radius,-G.wheel_radius),vector.create(.02,G.wheel_radius,G.wheel_radius)
+    end})
+    check(settle(late,60).phase=="spawned" and late.creates==1,"a model that loads during the preflight still spawns")
+    late.owner:stop("constructed late-load cleanup")
+    -- A wheel drawn about the bike's origin, not its hub, is what an old separate BMX_Prototype pack placed above
+    -- this mod supplies: it is refused, and the message says how to fix it.
+    local r=G.wheel_radius
+    local old=spawn_fixture(nil,{bounds=function(name)
+        if name=="reskate/bmx/rear_wheel" then
+            return vector.create(-.02,G.rear_axle[2]-r,G.rear_axle[3]-r),vector.create(.02,G.rear_axle[2]+r,G.rear_axle[3]+r)
+        end
+        return vector.create(-.02,-r,-r),vector.create(.02,r,r)
+    end})
+    local refused=settle(old,60)
+    check(refused.phase=="closed" and old.creates==0,"an off-hub wheel is refused before any allocation")
+    check(refused.detail:find("not centred on its hub",1,true) and refused.detail:find("BMX_Prototype",1,true)
+        and refused.detail:find("reskate/bmx/rear_wheel",1,true),"the refusal names the wheel and the old pack")
     return {cases=1,assertions=assertions,constructed=true,native_qualified=false}
 end
 return table.freeze(Tests)

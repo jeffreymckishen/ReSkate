@@ -237,7 +237,7 @@ function Runtime:retry_after_clock_warmup()
         return false,"Floor spawn does not repeat or reuse its one floor query."
     end
     if self.phase~="clock_prepared" or self.clock_retried then return false,"No preallocation readiness retry is available." end
-    self.clock_retried=true self.visual_requested=false self.visual_remove_requested=false self.asset_part=1
+    self.clock_retried=true self.visual_requested=false self.visual_remove_requested=false self.asset_part=1 self.asset_missing=nil
     self.phase="armed" self.phase_wall=self.wall
     self.detail="One explicit readiness retry is armed. Close the menu."
     return true
@@ -343,7 +343,10 @@ function Runtime:_assets()
     if part>#G.blueprints then return true end
     local name=G.blueprints[part]
     local low,high=self.api.entities.bounds(name)
-    if low==nil and high==nil then return false,"waiting for loaded mesh bounds: "..name end
+    -- The bike's model comes with the mod's own native pack, which the game loads with its data: a mod turned on
+    -- while the game runs has no bike until its mods are applied. The timeout below says so.
+    if low==nil and high==nil then self.asset_missing=name return false,"waiting for loaded mesh bounds: "..name end
+    self.asset_missing=nil
     if not vec(low) or not vec(high) or low.x>high.x or low.y>high.y or low.z>high.z
         or (low.x==high.x and low.y==high.y and low.z==high.z) then
         return nil,"invalid loaded mesh bounds: "..name
@@ -353,9 +356,11 @@ function Runtime:_assets()
         if math.abs(radius-G.wheel_radius)>.002 then
             return nil,string.format("wheel geometry mismatch %s: measured %.6f m, Lua %.6f m",name,radius,G.wheel_radius)
         end
-        -- A pack from before wheels were authored about their hubs would be drawn half a metre off.
+        -- A pack from before wheels were authored about their hubs would be drawn half a metre off. The mod carries
+        -- its own bike, so such a wheel comes from an old separate BMX_Prototype pack placed above this mod.
         if math.abs(low.y+high.y)>.01 or math.abs(low.z+high.z)>.01 then
-            return nil,"the BMX_Prototype pack is too old for this mod: "..name.." is not centred on its hub"
+            return nil,"the bike's model is out of date: "..name.." is not centred on its hub."
+                .." Remove or turn off an old BMX_Prototype pack, then apply mods or restart the game"
         end
     end
     self.asset_part+=1
@@ -401,7 +406,11 @@ function Runtime:_update(dt)
     end
     if not ready then self:stop("focus/menu/gameplay changed") return end
     if self.phase=="loading_assets" then
-        if self.wall-self.phase_wall>5000 then self:stop("bike asset preflight timed out") return end
+        if self.wall-self.phase_wall>5000 then
+            self:stop(self.asset_missing and "the bike's model is not loaded ("..self.asset_missing.."): apply mods or restart the game"
+                or "bike asset preflight timed out")
+            return
+        end
         local assets,why=self:_assets()
         if assets==nil then self:stop(why) return end
         if not assets then

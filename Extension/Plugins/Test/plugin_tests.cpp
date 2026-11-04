@@ -8915,15 +8915,23 @@ void joystick_requests_survive_a_later_concurrent_timestamp() {
 
 void joystick_axis_configuration_requires_applied_properties() {
     using joystick::detail::axis_configuration_applied;
-    check(axis_configuration_applied(0, 0), "both applied joystick properties allow normalized samples");
-    check(!axis_configuration_applied(-1, 0), "a failed range request refuses normalized samples");
-    check(!axis_configuration_applied(1, 0), "a no-effect range result does not prove the requested range");
-    check(!axis_configuration_applied(2, 0), "an unknown positive range result does not prove the requested range");
-    check(!axis_configuration_applied(0, -1), "a failed dead-zone request refuses the zero-dead-zone contract");
-    check(!axis_configuration_applied(0, 1), "a no-effect dead-zone result does not prove zero dead zone");
-    check(!axis_configuration_applied(0, 2), "an unknown positive dead-zone result does not prove zero dead zone");
-    check(!axis_configuration_applied(1, 1), "two no-effect results do not admit a joystick");
-    check(!axis_configuration_applied(-1, -1), "two failed property requests do not admit a joystick");
+    // HRESULTs IDirectInputDevice8::SetProperty returns, written out so the test needs no Windows
+    // headers. plugin_joystick.cpp checks the same rule against dinput.h's own values.
+    constexpr std::int32_t di_ok = 0;                                         // DI_OK, S_OK
+    constexpr std::int32_t di_propnoeffect = 1;                               // DI_PROPNOEFFECT, S_FALSE
+    constexpr auto unsupported = static_cast<std::int32_t>(0x80004001u);      // DIERR_UNSUPPORTED
+    constexpr auto invalid_param = static_cast<std::int32_t>(0x80070057u);    // DIERR_INVALIDPARAM
+    constexpr auto object_not_found = static_cast<std::int32_t>(0x80070002u); // DIERR_OBJECTNOTFOUND
+    check(axis_configuration_applied(di_ok, di_ok), "a controller that took the range and dead zone is read");
+    check(axis_configuration_applied(di_propnoeffect, di_ok), "a range that changed nothing (DI_PROPNOEFFECT) still counts as applied");
+    check(axis_configuration_applied(di_ok, di_propnoeffect), "a zero dead zone that changed nothing (DI_PROPNOEFFECT) still counts as applied");
+    check(axis_configuration_applied(di_propnoeffect, di_propnoeffect), "DI_PROPNOEFFECT for both properties still admits the controller");
+    check(!axis_configuration_applied(unsupported, di_ok), "an unsupported range leaves the controller out");
+    check(!axis_configuration_applied(invalid_param, di_ok), "a rejected range leaves the controller out");
+    check(!axis_configuration_applied(di_ok, unsupported), "an unsupported dead zone leaves the controller out");
+    check(!axis_configuration_applied(di_propnoeffect, object_not_found), "a failed dead zone is refused beside an unchanged range");
+    check(!axis_configuration_applied(object_not_found, di_propnoeffect), "a failed range is refused beside an unchanged dead zone");
+    check(!axis_configuration_applied(unsupported, invalid_param), "two failed properties leave the controller out");
 }
 
 void the_wider_set_reaches_the_game() {

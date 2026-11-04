@@ -5,12 +5,12 @@
 // axes 1..8 are X, Y, Z, Rx, Ry, Rz and the two sliders, each -1..1, 0 for one the controller
 // does not have. Windows only. Saved axis numbers from the former X, Y, Z, R, U, V layout must
 // be configured again; the new ordering is not silently remapped to the old one.
-// Devices that cannot apply the requested axis range and zero dead zone are not published.
 //
 // A thread of its own finds the controllers and reads them: looking at the device list can take
 // far longer than a plugin's tick may (empty winmm slots took over 50 ms on some PCs, and a plugin
 // was stopped for it), so a call only copies what the thread read last. It reads only while a
-// plugin has asked in the last two seconds.
+// plugin has asked in the last two seconds. A controller that refuses the thread's axis range or
+// a zero dead zone is not listed; the thread tries it again at its next look at the device list.
 #include <array>
 #include <cstdint>
 #include <string>
@@ -41,7 +41,8 @@ struct Sample {
 // The controller `device` (a number list() gives), or with -1 the first one, preferring one named
 // a radio. Not valid when there is none. Any thread; never waits on Windows.
 Sample poll(int device = -1);
-// Every controller plugged in, lowest number first. Any thread; never waits on Windows.
+// Every controller plugged in that took the axis range and dead zone, lowest number first. Any
+// thread; never waits on Windows.
 std::vector<Sample> list();
 // The first of `found` a plugin reads when it names none: one named a radio, else the lowest number.
 int preferred(const std::vector<Sample>& found);

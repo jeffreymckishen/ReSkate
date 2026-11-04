@@ -21,6 +21,21 @@ local FLOOR_MAX_DROP_M=2
 local FLOOR_CLEARANCE_M=.02
 local FLOOR_HIT_LIFETIME_MS=100
 S.limits=table.freeze({envelope_m=ENVELOPE_M,grade_slope_deg=GRADE_SLOPE_DEG})
+-- Create refusals after which no body exists and the SDK holds nothing for this mod to clean up: it reserved nothing,
+-- or kept what it reserved itself. "retry" refusals reserved nothing and may pass later. The others are for no free
+-- slot this launch ("restart"), and for a world that refuses another allocation after a partial creation or a failed
+-- re-activation ("change_level": the SDK allows one again in a new world, but this mod's rides do not carry on past a
+-- level change, so the Entry asks for a restart). Today's SDK says those in sentences; the codes beside them are the
+-- names it gives them once they are codes. Any other refusal leaves the body unknown.
+local CREATE_REFUSALS=table.freeze({body_preallocation_unavailable="retry",body_reuse_pending="retry",
+    body_slots_exhausted="restart",
+    ["the eight retained body slots are exhausted; native destruction is unproven"]="restart",
+    body_allocation_prohibited="change_level",
+    ["a previous partial allocation in this world prohibits another native allocation"]="change_level",
+    ["partial native body creation retained in quarantine; allocation retry prohibited"]="change_level",
+    ["partial native body creation retained and parked; allocation retry prohibited"]="change_level",
+    body_reactivation_failed="change_level"})
+function S.create_refusal(why) return type(why)=="string" and CREATE_REFUSALS[why] or nil end
 -- Core binds the optional floor API from this same private literal. There is
 -- no caller option and no second activation flag that can drift from Spawn.
 function S.floor_spawn_qualified() return FLOOR_SPAWN_QUALIFIED end
@@ -221,6 +236,7 @@ function Runtime:status()
         follow_visual_error=self.follow_visual_error,posed_updates=self.posed_updates,
         visual_remove_requested=self.visual_remove_requested,cleanup_unknown=self.cleanup_unknown,
         creation_attempts=self.creation_attempts,creation_unknown=self.creation_unknown,
+        creation_refusal=self.creation_refusal,origin=self.origin,reuse_miss=self.reuse_miss,
         clock_retry_available=self.phase=="clock_prepared" and not self.clock_retried,
         last_measurement=measurement,
         scope=self.follow_handed_off and "Measured bike visuals only; external trial owns body/follow cleanup; no alignment or riding proof"
@@ -459,21 +475,33 @@ function Runtime:_update(dt)
         end
         local definition=assert(Visual.definition(self.root,self.rotation))
         self.creation_attempts+=1 self.creation_unknown=true
-        self.body,self.detail=self.api.world.physics.create(definition)
+        -- Ask the SDK to re-activate this VM's own parked bike rather than spend another of its eight body slots.
+        -- One that can returns body, nil, origin ("reused" or "allocated") and, when it allocated after all, why
+        -- not. An older one ignores the option and returns the body alone, which leaves origin nil. That is only a
+        -- defensive check: a ReSkate that does not know the manifest's world.physics.reuse refuses to load the mod.
+        local made=table.pack(self.api.world.physics.create(definition,{reuse=true}))
+        self.body,self.detail=made[1],made[2]
+        if self.body and type(made[3])=="string" then
+            self.origin=string.sub(made[3],1,40)
+            self.reuse_miss=type(made[4])=="string" and string.sub(made[4],1,40) or nil
+        end
         if not self.body then
-            -- This exact refusal covers queued producer setup, unavailable anchor
-            -- capture OR clock qualification, before slot reservation/allocation.
-            -- It does not identify the cause or prove clock initialization.
-            -- No retry occurs without the separate explicit action.
-            local warmup=self.detail=="body_preallocation_unavailable"
-            if warmup then self.creation_unknown=false end
-            self:stop("body creation refused or unknown: "..tostring(self.detail))
-            if warmup and not self.clock_retried and not self.cleanup_unknown then
+            -- A retry refusal covers queued producer setup, unavailable anchor
+            -- capture OR clock qualification, or a parked bike still settling,
+            -- before slot reservation/allocation. It does not identify the cause
+            -- or prove clock initialization. No retry occurs without the
+            -- separate explicit action.
+            local why=self.detail
+            local refusal=S.create_refusal(why)
+            if refusal then self.creation_unknown=false self.creation_refusal=refusal end
+            self:stop("body creation refused or unknown: "..tostring(why))
+            if refusal=="retry" and not self.clock_retried and not self.cleanup_unknown then
+                local cause=why=="body_reuse_pending" and "Parked bike not yet reusable" or "Preallocation readiness unavailable"
                 if FLOOR_SPAWN_QUALIFIED then
-                    self.detail="Preallocation readiness unavailable; floor query consumed, so this trial cannot retry."
+                    self.detail=cause.."; floor query consumed, so this trial cannot retry."
                 else
                     self.phase="clock_prepared"
-                    self.detail="Preallocation readiness unavailable; no slot was reserved. Use the separate readiness retry once."
+                    self.detail=cause.."; no slot was reserved. Use the separate readiness retry once."
                 end
             end
             return

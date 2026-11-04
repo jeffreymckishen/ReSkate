@@ -33,13 +33,16 @@ local function lifecycle_line(s)
     local f=plain(e.first_fall) and e.first_fall or {}
     local ride=plain(s.ride) and s.ride or {}
     local source=plain(s.source) and s.source or {}
+    local spawn=plain(s.spawn) and s.spawn or {}
     return string.format("core=%s detail=%q stop=%q ride_issue=%q bike_clean=%s pending=%s unknown=%s blocked=%s gear_unknown=%s late=%s closed=%s"
-        .." source=%s gear=%s/%s/%s attempt=%s retained=%s pulse=%s press=%s neutral=%s debt=%s mask=%s fall_state=%s fall_ragdoll=%s fall_wipeouts=%s/%s",
+        .." source=%s gear=%s/%s/%s attempt=%s retained=%s pulse=%s press=%s neutral=%s debt=%s mask=%s fall_state=%s fall_ragdoll=%s fall_wipeouts=%s/%s"
+        .." origin=%s miss=%s refusal=%s",
         tostring(s.phase),text(s.detail,""),text(s.stop_reason,""),text(ride.issue,""),tostring(s.bike_cleanup_complete),tostring(s.cleanup_pending),
         tostring(s.cleanup_unknown),tostring(s.stock_toggle_blocked),tostring(s.gear_unknown),tostring(s.cleanup_expired),tostring(s.startup_closed),
         tostring(source.phase),tostring(e.phase),tostring(e.outcome),tostring(e.reason),tostring(e.attempt),tostring(e.retained),
         tostring(r.status),tostring(r.press_publications),tostring(r.neutral_publications),tostring(r.report_debt),tostring(r.first_rejection_mask),
-        tostring(f.state),tostring(f.ragdoll),tostring(f.wipeouts),tostring(f.baseline_wipeouts))
+        tostring(f.state),tostring(f.ragdoll),tostring(f.wipeouts),tostring(f.baseline_wipeouts),
+        tostring(spawn.origin),tostring(spawn.reuse_miss),tostring(spawn.creation_refusal))
 end
 function Entry.new(R,Runtime,Survey,options)
     assert(type(R)=="table" and type(Runtime)=="table" and type(Survey)=="table","entry dependencies required")
@@ -77,14 +80,22 @@ function Entry.new(R,Runtime,Survey,options)
     local stock_retries,stock_retry_at=0,nil
     local second_prepare_pending,second_terrain_pending=false,false
     local second_admitted_at,second_quiet_at,second_quiet_last,second_quiet_samples=nil,nil,nil,0
-    -- The SDK retains eight owned bodies and input leases a game launch; each mount spends one of each.
+    -- The SDK has eight native body slots a game launch, shared by every plugin; input leases are cleared at their
+    -- acknowledgement and cost nothing. An SDK that cannot reuse a parked body spends a slot on every mount, so the
+    -- cap stays at eight. Spawn asks to re-activate this VM's parked bike instead, and the first create that says where
+    -- its body came from (Spawn's origin) lifts the cap: the SDK's own refusal then says when no body is left. The
+    -- cap is a defensive check: a ReSkate without world.physics.reuse refuses the manifest, so never loads the mod.
     local attempt_limit=two_cycle and 8 or 1
+    -- Whether the SDK reports an origin: nil until a create has made a body.
+    local body_reuse=nil
+    local function mount_left() return attempt_limit==nil or attempts_used<attempt_limit end
     local fallen,recover_pending,recover_wait_context=nil,false,nil
     local stopped,cancel_sent,cancelled,unloaded,ticking=false,false,false,false,false
     local generation,latest,known=0,nil,false
     local prep_at,prep_last,prep_calls,survey=nil,nil,0,nil
     local object={}
     local return_plan,return_position
+    -- Terrain refusals of one Mount intent: each new intent starts a new list.
     local MAX_TERRAIN_REFUSALS=8
     local terrain_refusals={}
     -- These exact fields exist in the pinned facade's pre-admission status.
@@ -99,6 +110,17 @@ function Entry.new(R,Runtime,Survey,options)
             and plain(s.startup) and s.startup.pending==false and s.startup.loaded==0
             and s.startup.core_ready==false and s.startup.backend_ready==false
     end
+    -- What to tell the rider when the SDK made no body and left nothing to clean up (bike_spawn.lua create_refusal).
+    -- A level change does not help the "change_level" refusals here: rides do not carry on past one in this launch.
+    local NO_BODY={restart="No bike is left this launch: restart the game to ride again.",
+        change_level="The bike can't be made here: restart the game to ride again."}
+    -- A retry refusal is told only as the ride stops: the chain stays clean, so the next Mount asks again.
+    local NOT_READY="The bike was not ready: mount again."
+    local function refusal()
+        local b=known and plain(latest) and latest.spawn
+        return plain(b) and b.creation_refusal or nil
+    end
+    local function no_body() local class=refusal();return class and NO_BODY[class] or nil end
     local function preflight_clear()
         if attempts_used>=2 and two_cycle then
             if not used or mount_issued or return_pending or stock_attempted or second_prepare_pending
@@ -539,16 +561,16 @@ function Entry.new(R,Runtime,Survey,options)
         if observed==100 then
             if return_plan and (not stock_attempted or return_position.observed~=true) then return_plan,return_position=nil,nil end
             return_pending=false
-            if two_cycle and attempts_used<attempt_limit then
+            if two_cycle and mount_left() then
                 local ready=call(owner.can_prepare_next_mount,owner)
                 if generation~=version or cancelled or unloaded then return end
                 if not ready[1] or ready[2]~=true then
                     recover_pending=false
-                    phase,detail="spent","Skateboard observed; prior cycle did not qualify a clean successor. No further attempt."
+                    phase,detail="spent",no_body() or "Skateboard observed; prior cycle did not qualify a clean successor. No further attempt."
                     return
                 end
             end
-            phase,detail="skateboard",two_cycle and attempts_used<attempt_limit and "Skateboard observed. One fresh-allocation attempt remains; Mount first obtains on-foot504 again." or "Skateboard observed; the bounded attempts are spent."
+            phase,detail="skateboard",two_cycle and mount_left() and "Skateboard observed. Mount first obtains on-foot504 again." or "Skateboard observed; the bounded attempts are spent."
             return
         end
         if stock_attempted then
@@ -736,15 +758,16 @@ function Entry.new(R,Runtime,Survey,options)
         if (phase=="blocked" or phase=="spent" or phase=="fallen") and attempts_used>=1 and two_cycle then
             if not known or not clean(latest) then return tell(waiting_text()) end
             local ready=call(owner.can_prepare_next_mount,owner)
-            if not ready[1] or ready[2]~=true then return tell("The bike is stuck: restart the game to ride again.") end
+            if not ready[1] or ready[2]~=true then return tell(no_body() or "The bike is stuck: restart the game to ride again.") end
             phase="skateboard"
         end
-        if attempts_used>=attempt_limit then return tell("All "..attempt_limit.." mounts are used: restart the game to ride again.") end
-        if unloaded or ticking or cancelled or not namespace_clear or attempts_used>=attempt_limit
+        if not mount_left() then return tell("All "..attempt_limit.." mounts are used: restart the game to ride again.") end
+        if unloaded or ticking or cancelled or not namespace_clear or not mount_left()
             or used and (not two_cycle or phase~="skateboard") then return false,"Consumed, busy or retained attempt; not available." end
         if attempts_used>=1 and state()~=100 then return tell("Get on your skateboard, then hold LB and press A.") end
         if attempts_used==0 and state()~=504 then return tell("Step off your skateboard with Y, then hold LB and press A.") end
         attempts_used+=1;used=true;generation+=1
+        terrain_refusals={}
         mount_charged=attempts_used>=2
         local version=generation
         if attempts_used>=2 then
@@ -851,13 +874,13 @@ function Entry.new(R,Runtime,Survey,options)
         return false -- Existing Return, stock target/ACK and successor checks decide.
     end
     local function recoverable()
-        return admitted and two_cycle and attempts_used>=1 and attempts_used<attempt_limit and mount_issued and fallen~=nil
+        return admitted and two_cycle and attempts_used>=1 and mount_left() and mount_issued and fallen~=nil
             and not recover_pending and not return_pending and not unloaded and not ticking and not cancelled
             and namespace_clear and known and latest.cleanup_unknown==false
             and (phase=="fallen" or phase=="skateboard")
     end
     function object:recover()
-        if not recoverable() then return false,"Recovery needs a known fall, cleanable first attempt and one remaining attempt." end
+        if not recoverable() then return false,"Recovery needs a known fall, a cleanable attempt and a mount left." end
         recover_pending=true -- One explicit intent before any Return callback can reenter.
         recover_wait_context=nil
         if phase=="skateboard" then return true end
@@ -885,6 +908,10 @@ function Entry.new(R,Runtime,Survey,options)
             local out=call(owner.step,owner,dt_ms)
             if out[1] and out.n==2 and plain(out[2]) then latest=out[2];known=true
             else known=false;fail("Lifecycle step unavailable; cleanup remains required.") end
+            -- The first body made settles it for the launch: an origin lifts the cap, a body without one keeps it.
+            local b=known and two_cycle and body_reuse==nil and plain(latest.spawn) and latest.spawn or nil
+            if b and type(b.origin)=="string" then body_reuse=true;attempt_limit=nil
+            elseif b and (b.body==true or b.follow_handed_off==true) then body_reuse=false end
             if not cancelled and phase~="blocked" then
             if return_pending then
                 if recover_pending and not stock_attempted and known and clean(latest) then
@@ -912,13 +939,16 @@ function Entry.new(R,Runtime,Survey,options)
                 if latest.phase=="following" and latest.stop_latched~=true then
                     fallen=nil;phase,detail="riding","One-session bike active. Return or Cancel remains available."
                 elseif latest.stop_latched==true or latest.phase=="done" then
-                    fallen=fall_cause(latest) or fallen
-                    local why=fallen or text(latest.stop_reason,"Ride stopped")
-                    if why~=last_stop then last_stop=why;announce("Ride ended: "..why) end
+                    -- A refused create is not a fall, even on the remount after one: the board comes back, and a
+                    -- retry refusal waits for the rider's Mount rather than asking again by itself.
+                    fallen=fall_cause(latest) or not refusal() and fallen or nil
+                    local refused=not fallen and (no_body() or refusal()=="retry" and NOT_READY) or nil
+                    local why=fallen or refused or text(latest.stop_reason,"Ride stopped")
+                    if why~=last_stop then last_stop=why;announce(refused or "Ride ended: "..why) end
                     if fallen then phase,detail="fallen","Bike stopped after a fall: "..fallen
-                        ..(attempts_used<attempt_limit and ". Recover can return and prepare the remaining attempt."
-                            or ". Both attempts are spent; Return remains available.")
-                    else phase,detail="stopped",text(latest.stop_reason,"Ride stopped; cleanup continues. Return remains available.") end
+                        ..(mount_left() and ". Recover can return and mount again."
+                            or ". No mounts are left; Return remains available.")
+                    else phase,detail="stopped",refused or text(latest.stop_reason,"Ride stopped; cleanup continues. Return remains available.") end
                 end
             end
             end
@@ -933,9 +963,10 @@ function Entry.new(R,Runtime,Survey,options)
         logged_phase=phase
         if not advanced then known=false;fail("Entry step failed; cleanup remains required.")
         -- A ride that ended on its own hands the player back straight away: a fall gets back on the bike, anything
-        -- else returns to the skateboard, ready to mount again. A fall with no mount left to spend is anything else.
+        -- else returns to the skateboard, ready to mount again. A fall with no mount left to spend, which happens only
+        -- with an SDK that cannot reuse a parked body, is anything else.
         elseif auto_return and phase=="fallen" and recoverable() then call(self.recover,self)
-        elseif auto_return and (phase=="stopped" or phase=="fallen" and attempts_used>=attempt_limit)
+        elseif auto_return and (phase=="stopped" or phase=="fallen" and not mount_left())
             and not return_pending and not recover_pending and not cancelled and not unloaded then
             call(self.return_to_skateboard,self)
         elseif recover_pending and not cancelled and not unloaded and phase=="skateboard" then
@@ -980,7 +1011,8 @@ function Entry.new(R,Runtime,Survey,options)
             lifecycle_detail=known and (plain(latest.spawn) and text(latest.spawn.detail,nil) or text(latest.detail,nil)
                 or text(latest.stop_reason,"Lifecycle status observed.")) or "Lifecycle status is unknown; no stock switch is allowed.",
             bike_authority=not known or latest.bike_authority~=false,
-            attempts_used=attempts_used,attempt_limit=attempt_limit,new_allocation_each_cycle=two_cycle,
+            attempts_used=attempts_used,attempt_limit=attempt_limit,body_reuse=body_reuse,
+            new_allocation_each_cycle=two_cycle and body_reuse~=true,
             cleanup_pending=not known or latest.cleanup_pending~=false,cleanup_unknown=not known or latest.cleanup_unknown~=false,
             stock_toggle_blocked=not known or latest.stock_toggle_blocked~=false,session_reusable=false})
     end

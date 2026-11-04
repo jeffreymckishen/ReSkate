@@ -24,9 +24,11 @@ local function new_runtime(services,options,two_cycle)
     local function core_options()
         return {qualification_only=qualification_only,session_renewable=session_renewable}
     end
+    -- A two-cycle chain sets no mount limit of its own: the Entry keeps one only for an SDK that cannot reuse a
+    -- parked body. The marker records that, as "entry".
     local T={phase="idle",detail="Stock switching and inspection only; native bike qualification unavailable.",
         generation=0,cancel_version=0,calls={},counts={},receipts={},omitted_calls=0,omitted_receipts=0,
-        remove_attempted={},remove_accepted={},experimental_attempt_limit=two_cycle and 8 or nil}
+        remove_attempted={},remove_accepted={},experimental_attempt_limit=two_cycle and "entry" or nil}
     local object={}
     local core,api,pending,running,cancelling
     local session_owner,mounts_burned,next_preparation,next_admitted_at= nil,0,false,nil
@@ -162,7 +164,7 @@ local function new_runtime(services,options,two_cycle)
                 local next_session=(T.experimental_session or 1)+1
                 local next_state={phase="idle",detail="Next fresh-allocation session.",generation=0,cancel_version=0,
                     calls={},counts={},receipts={},omitted_calls=0,omitted_receipts=0,remove_attempted={},remove_accepted={},
-                    experimental_session=next_session,experimental_attempt_limit=8}
+                    experimental_session=next_session,experimental_attempt_limit="entry"}
                 local successor,why=session_owner:successor(R,core_options(),next_state)
                 if not successor then running=false;next_preparation=false;return false,why end
                 T=next_state;core=successor;api=Admission.bind(T,R,qualification_only)

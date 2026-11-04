@@ -376,8 +376,8 @@ function Tests.run()
             local state=entry:status()
             check(calls==1 and captured.qualification_only==true and type(captured.session_renewable)=="boolean",
                 "one inert constructor receives boolean options")
-            check(captured.session_renewable==(value.value==true) and state.admitted==false and state.attempt_limit==8,
-                "only explicit true selects session and no option admits source or extra attempts")
+            check(captured.session_renewable==(value.value==true) and state.admitted==false and state.attempt_limit==8
+                and state.body_reuse==nil,"only explicit true selects session; no option admits source or lifts the cap before a create")
         end
     end)
     case("facade forwards opt-in to first and successor Core only",function()

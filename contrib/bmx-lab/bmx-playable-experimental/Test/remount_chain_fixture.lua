@@ -2,7 +2,8 @@
 -- REAL here: bmx_playable_entry, ride_r1_record (survey), bike_runtime (facade), bike_runtime_core,
 -- bike_admission, equipment_runtime, equipment_transition, lease_source, lease_identity.
 -- CONSTRUCTED here: the SDK surface (input lease/capture, pulses, Follow, body reads, storage), plus Spawn, pose and
--- board fakes copied from core_session_renewable_tests.lua. Ride is a fake unless options.real_ride is set.
+-- board fakes copied from core_session_renewable_tests.lua. Ride is a fake unless options.real_ride is set, and Spawn
+-- is the real bike_spawn when options.create stands in for the SDK's create.
 -- Nothing here is the plugin Host, a native pulse, or the game.
 local BuildFacade=require("./two_cycle_facade_fixture")
 local BuildCore=require("./core_session_renewable_fixture")
@@ -230,8 +231,26 @@ function M.new(options)
     ---------------- Follow and body (ported from Test/core_session_renewable_tests.lua) ----------------
     local P=R.world.physics
     function P.prepare() return true end
-    local function forbidden() error("constructed chain has no native body creation",0) end
-    P.create=forbidden
+    -- options.create stands in for the SDK's create and puts the real Spawn in the chain in place of the fake one
+    -- below. It is called as create(w,...) with what Spawn passes and returns what the SDK would; a body it hands out
+    -- becomes w.body. Each call is kept in w.creates. Without it nothing in the chain creates a body.
+    if options.create then
+        w.creates={}
+        function P.create(...)
+            local args=table.pack(...)
+            local out=table.pack(options.create(w,...))
+            w.creates[#w.creates+1]={args=args,result=out}
+            if out[1]~=nil then w.body=out[1];w.body_serial=0 end
+            return table.unpack(out,1,out.n)
+        end
+        -- What the real Spawn reads before it creates: every part loaded at the wheels' size, ready, over flat ground.
+        local r=require("./bike_geometry").wheel_radius
+        function R.entities.bounds() return vector.create(-.02,-r,-r),vector.create(.02,r,r) end
+        function R.entities.status() return "ready" end
+        function R.world.raycast(from) return vector.create(from.x,0,from.z) end
+    else
+        function P.create() error("constructed chain has no native body creation",0) end
+    end
     function P.reserve_follow(body,attachment)
         assert(body==w.body,"same handed-off body")
         w.follow=newproxy();w.follow_stops=0;w.follow_acks=0;w.published=false
@@ -422,7 +441,7 @@ function M.new(options)
         function board:status() return {state=self.state,clear_result=self.state=="restored" and "cleared" or nil} end
         return board
     end
-    local overrides={["./bike_spawn"]=FakeSpawn,["./mounted_pose"]=FakePose,["./board_drop"]=FakeBoard}
+    local overrides={["./bike_spawn"]=not options.create and FakeSpawn or nil,["./mounted_pose"]=FakePose,["./board_drop"]=FakeBoard}
     if options.real_ride then overrides["./ride_runtime"]=require("./ride_runtime_qualified_fixture")
     else overrides["./ride_runtime"]=FakeRide end
     if options.overrides then for k,v in pairs(options.overrides) do overrides[k]=v end end

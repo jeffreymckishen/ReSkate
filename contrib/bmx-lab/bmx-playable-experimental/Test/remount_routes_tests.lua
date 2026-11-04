@@ -23,6 +23,55 @@ local function start(options)
     w.mount_and_ride();w.ride_ms(500)
     return w
 end
+-- The SDK's create, with the real Spawn in the chain. One that can reuse is asked to every time, allocates the first
+-- body and then re-activates the parked one, under a new handle each time.
+local function reusing_sdk(w,...)
+    local n,definition,options=select("#",...),...
+    assert(n==2 and type(definition)=="table" and type(options)=="table" and options.reuse==true,
+        "Spawn asks the SDK to reuse its parked bike")
+    if #w.creates==0 then return newproxy(),nil,"allocated","none_parked" end
+    return newproxy(),nil,"reused"
+end
+-- An older SDK ignores the option and returns the body alone.
+local function older_sdk() return newproxy() end
+local function refusing_sdk(why) return function() return nil,why end end
+-- A reusing SDK that refuses only the create numbered `at`, with `why` (body_reuse_pending by default): a parked bike
+-- still settling, or an SDK not ready yet.
+local function refusing_once(at,why)
+    return function(w,...)
+        if #w.creates+1==at then return nil,why or "body_reuse_pending" end
+        return reusing_sdk(w,...)
+    end
+end
+-- Ticks until the refused create has been cleaned up and the Entry has settled on or off the board.
+local function until_refusal_settled(w)
+    for _=1,4000 do
+        w.tick()
+        local p,core=w.entry:status().phase,w.manager:status()
+        if core.spawn and core.spawn.creation_refusal and (p=="spent" or p=="skateboard" or p=="blocked") then break end
+    end
+end
+-- What the Entry told the rider, from its log.
+local function told(lines,message)
+    for _,line in ipairs(lines) do if line=="[BMX] "..message then return true end end
+    return false
+end
+-- Every create asked for reuse with the definition alone beside it.
+local function asked_reuse(w)
+    for _,c in ipairs(w.creates) do
+        if c.args.n~=2 or type(c.args[2])~="table" or c.args[2].reuse~=true then return false end
+    end
+    return #w.creates>0
+end
+-- Falls with the automatic remount, from the mount after `from` through mount `to`.
+local function falls(w,from,to,check)
+    for used=from,to-1 do
+        w.tilt_stop(59.7)
+        for _=1,3000 do w.tick();if riding(w,used) then break end end
+        check(riding(w,used),"the fall after mount "..used.." gets back on")
+        w.ride_ms(500)
+    end
+end
 local function obstacle(w)
     w.R.world.probe=function(from,to)
         if from.y-to.y>1 then return {status="hit",position=vector.create(from.x,0,from.z)} end
@@ -39,15 +88,17 @@ local function until_refused(w)
     for _=1,1500 do w.tick();local p=w.entry:status().phase;if p=="blocked" or p=="preflight_refused" then break end end
 end
 -- Flat still ground under the bike for an explicit Return to measure, and a rider that goes where it is placed.
-local function measured(w)
+-- The ground is half a metre below the ray's start, or at floor_y when that is given.
+local function measured(w,floor_y)
     local P=w.R.world.physics
     local base=P.probe_batch
     P.probe_batch=function(body,epoch,rays,settings)
         if #rays~=4 then return base(body,epoch,rays,settings) end
         local from=rays[1].from
+        local y=floor_y or from.y-.5
         local batch={status="available",epoch=epoch,native_casts=4,budget_exhausted=false,local_actor_excluded=false,
             owned_bodies_excluded=true,requested_query_preset="camera",named_actor_categories_absent=true,rays={}}
-        batch.rays[1]={status="hit",fraction=.5/3.5,position=vector.create(from.x,from.y-.5,from.z),normal_available=true,
+        batch.rays[1]={status="hit",fraction=(from.y-y)/(from.y-rays[1].to.y),position=vector.create(from.x,y,from.z),normal_available=true,
             normal=vector.create(0,1,0),motion="measured",surface_velocity_available=true,surface_velocity=vector.create(0,0,0)}
         for i=2,4 do batch.rays[i]={status="clear"} end
         return batch
@@ -216,17 +267,102 @@ function T.run()
         w.tick(math.ceil(60000/16))
         check(player_remounts(w),"a completed Follow proves the forces are over")
     end)
-    case(function() -- A crash on the last mount of the launch: nothing left to get back on, so the board comes back.
-        local w=start()
-        for used=1,7 do
-            w.tilt_stop(59.7)
-            for _=1,3000 do w.tick();if riding(w,used) then break end end
-            check(riding(w,used),"the fall after mount "..used.." gets back on")
-            w.ride_ms(500)
-        end
+    case(function() -- Ten crashes in a launch with an SDK that reuses the parked bike: every one gets back on.
+        local w=start({create=reusing_sdk})
+        falls(w,1,11,check)
+        local s=w.entry:status()
+        check(s.attempts_used==11 and s.attempt_limit==nil and s.body_reuse==true,"no cap once the SDK says where bodies come from")
+        check(#w.creates==11 and asked_reuse(w),"every mount asked for the parked bike")
+    end)
+    case(function() -- An older SDK that returns the body alone: a crash on the eighth mount brings the board back.
+        local w=start({create=older_sdk})
+        falls(w,1,8,check)
         w.tilt_stop(59.7)
         for _=1,3000 do w.tick();if w.entry:status().phase=="skateboard" then break end end
-        check(w.entry:status().phase=="skateboard" and w.stock==100,"on the board: "..tostring(w.entry:status().phase))
+        local s=w.entry:status()
+        check(s.phase=="skateboard" and w.stock==100,"on the board: "..tostring(s.phase))
+        check(s.attempt_limit==8 and s.body_reuse==false and #w.creates==8,"the cap stays at eight")
+        local mounted,why=w.entry:mount()
+        check(not mounted and why=="All 8 mounts are used: restart the game to ride again.","a ninth Mount says why: "..tostring(why))
+    end)
+    case(function() -- Twelve Mount and Return cycles in one launch with an SDK that reuses the parked bike.
+        local w=start({create=reusing_sdk});measured(w,0) -- The rider goes back where they mounted.
+        for used=1,11 do
+            check(w.entry:return_to_skateboard(),"Return "..used.." accepted")
+            for _=1,3000 do w.tick();if w.entry:status().phase=="skateboard" then break end end
+            check(w.entry:status().phase=="skateboard","Return "..used.." reaches the board: "..tostring(w.entry:status().phase))
+            check(player_remounts(w,used),"Mount "..(used+1).." rides")
+            w.ride_ms(500)
+        end
+        local s,core=w.entry:status(),w.manager:status()
+        check(s.attempts_used==12 and s.attempt_limit==nil,"twelve mounts and no cap")
+        check(#w.creates==12 and asked_reuse(w),"every mount asked for the parked bike")
+        check(core.spawn.origin=="reused" and core.spawn.reuse_miss==nil,"the twelfth bike is the parked one")
+    end)
+    case(function() -- The SDK has no body left this launch: a clean refusal, then the board, and the rider is told.
+        for _,why in ipairs({"the eight retained body slots are exhausted; native destruction is unproven","body_slots_exhausted"}) do
+            local w=Chain.new({create=refusing_sdk(why)})
+            check(w.entry:mount(),"Mount accepted")
+            until_refusal_settled(w)
+            local s,core=w.entry:status(),w.manager:status()
+            check(core.spawn.creation_unknown==false and core.spawn.creation_refusal=="restart","no body and nothing to clean up: "..why)
+            check(core.cleanup_unknown==false and core.bike_cleanup_complete==true,"cleanup finishes")
+            check(s.phase=="spent" and w.stock==100,"back on the board: "..tostring(s.phase).." "..tostring(s.detail))
+            local mounted,told_why=w.entry:mount()
+            check(not mounted and told_why=="No bike is left this launch: restart the game to ride again.","Mount says why: "..tostring(told_why))
+            check(#w.creates==1,"and asks the SDK no more")
+        end
+    end)
+    case(function() -- A world that refuses another body, or a parked bike that could not be re-activated.
+        for _,why in ipairs({"body_reactivation_failed","a previous partial allocation in this world prohibits another native allocation",
+            "body_allocation_prohibited"}) do
+            local w=Chain.new({create=refusing_sdk(why)})
+            check(w.entry:mount(),"Mount accepted")
+            until_refusal_settled(w)
+            local core=w.manager:status()
+            check(core.spawn.creation_refusal=="change_level" and core.cleanup_unknown==false,"no body and nothing to clean up: "..why)
+            -- Rides do not carry on past a level change in this launch, so only a restart helps.
+            local mounted,told_why=w.entry:mount()
+            check(not mounted and told_why=="The bike can't be made here: restart the game to ride again.","Mount says why: "..tostring(told_why))
+            check(#w.creates==1,"and asks the SDK no more")
+        end
+    end)
+    case(function() -- The SDK is not ready, or the parked bike not settled: a clean refusal, and the next Mount rides.
+        for _,why in ipairs({"body_reuse_pending","body_preallocation_unavailable"}) do
+            local lines={}
+            local w=Chain.new({create=refusing_once(1,why),log=function(line) lines[#lines+1]=line end})
+            check(w.entry:mount(),"Mount accepted")
+            until_refusal_settled(w)
+            local core=w.manager:status()
+            check(core.spawn.creation_unknown==false and core.spawn.creation_refusal=="retry" and core.cleanup_unknown==false,
+                "no body and nothing to clean up: "..why)
+            check(w.entry:status().phase=="skateboard" and w.stock==100,"back on the board: "..tostring(w.entry:status().phase)
+                .." "..tostring(w.entry:status().detail))
+            check(told(lines,"The bike was not ready: mount again."),"the rider is told to mount again")
+            check(player_remounts(w) and #w.creates==2,"and the next Mount rides")
+        end
+    end)
+    case(function() -- Getting back on after a Return before the parked bike has settled: told, and Mount rides it.
+        local lines={}
+        local w=start({create=refusing_once(2),log=function(line) lines[#lines+1]=line end});measured(w,0)
+        check(w.entry:return_to_skateboard(),"Return accepted")
+        for _=1,3000 do w.tick();if w.entry:status().phase=="skateboard" then break end end
+        check(w.entry:mount(),"Mount 2 accepted")
+        until_refusal_settled(w)
+        local s=w.entry:status()
+        check(s.phase=="skateboard" and #w.creates==2 and told(lines,"The bike was not ready: mount again."),
+            "the refused Mount ends on the board and says so: "..tostring(s.phase).." "..tostring(s.detail))
+        check(player_remounts(w) and #w.creates==3 and w.manager:status().spawn.origin=="reused","Mount 3 rides the parked bike")
+    end)
+    case(function() -- The automatic remount after a fall refused the same way: back on the board once, and Mount rides.
+        local w=start({create=refusing_once(2)})
+        w.tilt_stop(59.7)
+        until_refusal_settled(w)
+        local s=w.entry:status()
+        check(s.phase=="skateboard" and #w.creates==2,"the refused remount ends on the board: "..tostring(s.phase).." "..tostring(s.detail))
+        w.tick(300)
+        check(#w.creates==2 and w.entry:status().phase=="skateboard","and does not ask again by itself")
+        check(player_remounts(w) and #w.creates==3,"the next Mount rides")
     end)
     case(function() -- Nothing else going wrong: the mod remounts by itself.
         local w=start();w.tilt_stop(59.7)

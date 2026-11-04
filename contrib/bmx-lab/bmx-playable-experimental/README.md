@@ -43,6 +43,21 @@ controls while the bike gets ready. The BMX page in the Insert menu says the sam
 - Hold the stick part way back as the bike lands and it lands into a manual.
 - Thrown back past about 45 degrees, by a bump or a landing too steep, the bike goes over backwards and it is a
   crash. The stick alone never takes it that far.
+- Push the right stick part of the way forward for a nose manual: the back wheel comes up and the bike rolls on its
+  front wheel, the rider's weight over the bars. A little forward holds it low, about 23 degrees, further forward
+  holds it higher, up to about 30, short of where it would tip over the bars. All the way forward holds it at its
+  highest. Let the stick go and the back wheel comes down.
+- A nose manual starts, coasts and ends like a manual: it lifts from a little faster than a walk, the rider stops
+  pedalling while the back wheel is up, and puts it down once the bike slows to a walk.
+- Steer a nose manual with the left stick: the back of the bike swings round the front wheel.
+- Hold B in a nose manual and the back wheel comes down in under half a second. It stays down while B is held. Past
+  the balance the rider eases off the front brake, so B does not throw the bike over the bars.
+- To hop out of a nose manual, click the right stick. Pulling the stick back to charge a flick hop lets the nose
+  manual go, but the back wheel takes about a third of a second to come down, so a flick pops with it still up and
+  the bike leaves nose down. For a level hop, let the stick go and flick once the back wheel is down. Hold the stick
+  part way forward as the bike lands front first and it lands into a nose manual.
+- Tipped on past about 50 degrees, by a bump, a kerb or a landing too steep, the bike goes over the bars and it is a
+  crash. The stick alone never takes it that far.
 - In the air, hold a button and push the right stick all the way over for a trick: LB or RB and down for a barspin
   left or right, LB or RB and left or right for a one hander, LT and RT together and left or right for a tailwhip,
   LT or RT and left or right for a one footer. Let the stick come back to the middle before the next one, and finish
@@ -50,7 +65,7 @@ controls while the bike gets ready. The BMX page in the Insert menu says the sam
 - F8, or hold LB + RB and click R3, goes back to the skateboard.
 - From the skateboard, hold LB, then press A to ride again. Stand still and let go while the rider steps off.
 
-Mounting and going back to the skateboard can be changed in Binds. Pedal, brake, steering, hop and manual cannot.
+Mounting and going back to the skateboard can be changed in Binds. Pedal, brake, steering, hop and the manuals cannot.
 
 ## Smooth riding
 
@@ -77,6 +92,9 @@ offline the game does not keep it, so set it again each launch.
   seconds, which spends a mount. On the last mount of a launch it goes back to the skateboard instead. Banks and
   quarter pipes do not count as going over. If there is no room to get back on, move and mount again.
 - A slower bump into something just stops the bike, and it has no reverse. If it is stuck, go back to the skateboard.
+- A nose manual rides over small bumps and kerb ramps, but a steep kerb face or a big bump met at walking pace or a
+  slow jog, below about 3 m/s and most of all with the stick all the way forward, can still throw it over the bars.
+  The rider is drawn hips up over the bars, which shows less of the weight shift than the physics uses.
 - Riding into a parked car stops the bike at the bumper. Faster than about 4 m/s it is a crash, over the bars.
 - Mounting refuses ground steeper than 12 degrees and anywhere without room for the bike.
 - The score panel is the mod's own, and its numbers are not yet tuned against the game's scoring.

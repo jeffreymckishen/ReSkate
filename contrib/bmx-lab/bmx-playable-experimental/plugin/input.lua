@@ -71,6 +71,7 @@ function Input.actions()
     return {
         active = false, hop_pressed = false, steer = 0, front_weight = 0, rear_weight = 0,
         pedal = 0, brake = 0, preload = 0, hop_strength = 0, manual = 0, nose_manual = 0, manual_held = false,
+        nose_manual_held = false,
         handlebar = "none", tailwhip = "none", air_pitch = 0, movement = catalog.none,
     }
 end
@@ -101,9 +102,10 @@ local function normalize(settings, x, y)
 end
 
 -- A manual being entered, or carried through a hop's charge, starts over on a
--- change of ground. Whether the stick still holds one (_manual_held), whether
--- that one was established enough to carry into a charge (_manual_established),
--- and whether a landing may go into one (_land_armed), carry across it.
+-- change of ground. Whether the stick still holds one (_manual_held, and
+-- _nose_held for a nose manual), whether that one was established enough to
+-- carry into a charge (_manual_established), and whether a landing may go into
+-- one (_land_armed), carry across it.
 function Mapper:_clear_gestures()
     self._rear_armed, self._air_pitch_armed, self._trick_armed = false, false, false
     self._hop_pending, self._charge_seconds, self._release_seconds = false, 0, 0
@@ -114,6 +116,7 @@ function Mapper:reset()
     self._gated, self._device_known, self._context_known = true, false, false
     self._quick_hop_held = false
     self._manual_held, self._manual_established, self._land_armed = false, false, false
+    self._nose_held = false
     self:_clear_gestures()
 end
 
@@ -134,30 +137,38 @@ end
 
 -- The right stick on the ground. Part way back is a manual, its height set by
 -- how far back; all the way back charges a hop and a flick forward pops it.
--- The same band forward is the nose manual. A manual starts only after
+-- The same band forward is the nose manual, and forward the band has no top:
+-- nothing else is bound to a full forward stick on the ground, so all the way
+-- forward holds the nose manual at its highest. Ending where the back band
+-- ends, it sent none from right_y .8 to 1. A manual starts only after
 -- manual_entry_seconds in the band, then follows the stick at once. One that
 -- was established when the stick went on to full back is held at
 -- manual_preload while the hop charges, and eased back into the band it goes
 -- on as a manual; the step the hop pops sends none, the rider pushing the bars
 -- forward to pop. From a live manual the band's top manual reaches on to
--- manual_hop_back_threshold, so a hop charges only past that.
+-- manual_hop_back_threshold, so a hop charges only past that. A nose manual is
+-- never carried into a hop's charge, so pulling back to flick-hop lets it go
+-- first: carried, it sent a rear manual of manual_preload on every charge step.
 function Mapper:_ground(rear, seconds, out)
     local settings = self._settings
     if rear.magnitude <= settings.neutral_threshold and not self._hop_pending then self._rear_armed = true end
     local live = self._manual_live
     self._manual_live = false
-    local top = live and rear.y < 0 and settings.manual_hop_back_threshold or settings.hop_back_threshold
+    local top = rear.y > 0 and math.huge or live and settings.manual_hop_back_threshold or settings.hop_back_threshold
     local aligned = math.abs(rear.x) <= settings.hop_lateral_limit
     local back = aligned and rear.y <= -top
     local amount = math.abs(rear.y)
     local band = aligned and amount >= settings.manual_threshold and amount < top
     local balance = band and math.min(1, (amount - settings.manual_threshold) / (settings.hop_back_threshold - settings.manual_threshold)) or 0
-    -- Out of the back band toward the middle or forward, a held manual is let go.
+    -- Out of the back band toward the middle or forward, a held manual is let go, and out of the forward band toward
+    -- the middle or back, a held nose manual.
     if rear.y > -settings.manual_threshold then self._manual_held, self._manual_established = false, false end
+    if rear.y < settings.manual_threshold then self._nose_held = false end
     if not self._hop_pending and self._rear_armed and back then
         self._hop_pending, self._rear_armed = true, false
         self._charge_seconds, self._release_seconds = 0, 0
-        self._manual_carry = live and (self._manual_established or self._manual_seconds >= settings.manual_carry_seconds - HELD_SLACK)
+        self._manual_carry = live and self._manual_side == -1
+            and (self._manual_established or self._manual_seconds >= settings.manual_carry_seconds - HELD_SLACK)
         self._manual_established = self._manual_carry
     end
     if self._hop_pending then
@@ -203,7 +214,7 @@ function Mapper:_ground(rear, seconds, out)
                 out.manual, self._manual_held = balance, true
                 if self._manual_seconds >= settings.manual_carry_seconds - HELD_SLACK then self._manual_established = true end
             else
-                out.nose_manual = balance
+                out.nose_manual, self._nose_held = balance, true
             end
             self._manual_live = true
         end
@@ -219,12 +230,15 @@ end
 -- a stick that has been back in the middle in this flight selects a trick
 -- (_air_trick), so one held at the top of the band since take-off, or full
 -- back charging a hop, is still the manual. Taken for a trick, both were lost
--- on a single step's lost support.
+-- on a single step's lost support. A nose manual is held the same way, so a
+-- landing with the stick forward lands back in one.
 function Mapper:_air_manual(rear, raw)
     local settings = self._settings
     if rear.y > -settings.manual_threshold then self._manual_held, self._manual_established = false, false end
+    if rear.y < settings.manual_threshold then self._nose_held = false end
     if not self:_modifiers_neutral(raw) or self._trick_armed and rear.magnitude >= settings.trick_threshold then
         self._land_armed, self._manual_held, self._manual_established = false, false, false
+        self._nose_held = false
     elseif rear.magnitude <= settings.neutral_threshold then
         self._land_armed = true
     end
@@ -308,15 +322,17 @@ local function update(self, source, context, seconds, allow_zero)
     end
     if not self._context_known or self._grounded ~= grounded then
         local known = self._context_known
-        -- Leaving the ground, a landing may go back into the manual held now.
-        if known and not grounded then self._land_armed = self._manual_held end
+        -- Leaving the ground, a landing may go back into the manual or nose manual held now.
+        if known and not grounded then self._land_armed = self._manual_held or self._nose_held end
         self:_clear_gestures()
         if known and grounded then
             -- Landing: the stick is armed if the air allowed a manual, and a
-            -- manual still held comes back at once, so a step's flicker of
-            -- lost support or a hop with the stick held leaves it as it was.
+            -- manual still held comes back at once, on the wheel it was held
+            -- on, so a step's flicker of lost support or a hop with the stick
+            -- held leaves it as it was.
             self._rear_armed = self._land_armed
-            self._manual_live = self._manual_held
+            self._manual_live = self._manual_held or self._nose_held
+            self._manual_side = self._manual_held and -1 or self._nose_held and 1 or nil
         end
         self._context_known, self._grounded = true, grounded
     end
@@ -345,8 +361,10 @@ local function update(self, source, context, seconds, allow_zero)
         self:_air_pitch(front, out)
     end
     -- Whether the stick still holds a manual, on the ground or off it, for the kernel's walk latch: the manual itself
-    -- is zero on a step's lost support, and the stick has not been let go.
+    -- is zero on a step's lost support, and the stick has not been let go. The nose manual's goes the same way, for
+    -- the kernel's air hold when a bump throws the bike off the front.
     out.manual_held = self._manual_held
+    out.nose_manual_held = self._nose_held
     return out
 end
 

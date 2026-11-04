@@ -142,7 +142,7 @@ local function tangent(state,p,wi,h,j,brake,friction,solved)
     if not valid(state) then return nil end
     solved.longitudinal_impulse=fj solved.lateral_impulse=lj return bj
 end
-function S.solve(h,body,wheels,contacts,t,brake,free_axes,rear_limit)
+function S.solve(h,body,wheels,contacts,t,brake,free_axes,rear_limit,front_limit)
     local state={body.linear_velocity[1],body.linear_velocity[2],body.linear_velocity[3],body.angular_velocity[1],body.angular_velocity[2],body.angular_velocity[3],wheels[1].angular_speed,wheels[2].angular_speed}
     local prepared={prepare(body,wheels[1],contacts[1],free_axes and free_axes[1]),prepare(body,wheels[2],contacts[2],free_axes and free_axes[2])}
     if not prepared[1] or not prepared[2] then return nil end
@@ -152,7 +152,7 @@ function S.solve(h,body,wheels,contacts,t,brake,free_axes,rear_limit)
     -- iteration; the element loops are written out, each element's arithmetic
     -- unchanged (a braked step runs this body 192 times).
     local friction=t.friction
-    local wheel_brake={brake*t.front_brake_torque,math.min(brake*t.rear_brake_torque,rear_limit or math.huge)}
+    local wheel_brake={math.min(brake*t.front_brake_torque,front_limit or math.huge),math.min(brake*t.rear_brake_torque,rear_limit or math.huge)}
     for iteration=0,(braking and t.brake_iterations or t.contact_iterations)-1 do for order=0,1 do
         local i=(iteration+order)%2+1 local wi=i+6 local effect,p=effects[i],prepared[i]
         local j=0

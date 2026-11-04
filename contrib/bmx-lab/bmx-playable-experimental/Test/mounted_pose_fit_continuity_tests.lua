@@ -201,6 +201,79 @@ function Tests.run()
     check(raised==0,"the knee floor is held off: "..raised)
     check(steepest<.0015,"a standing rider's hips behind the saddle move at most 1.5 mm up or down for 1 mm back: "..steepest)
     check(nearest>=margin-1e-9,"and clear the saddle's back edge by the margin: "..nearest.." against "..margin)
-    return {cases=4,assertions=assertions}
+
+    -- The rider in a nose manual: hips up over the bars, not toward them, so the knees clear the bars at every crank
+    -- phase. With no nose, or none given, it is the manual's rider exactly.
+    for _,row in ipairs({{.16,1},{-.12,1},{-.2,.5},{0,nil},{.3,.25}}) do
+        local plain=MP.manual_rider(row[1],row[2])
+        check(same(plain,MP.manual_rider(row[1],row[2],nil)) and same(plain,MP.manual_rider(row[1],row[2],0)),
+            "no nose is the manual's rider: "..row[1])
+    end
+    for _,bad in ipairs({-.1,1.1,0/0,"x"}) do
+        local r,why=MP.manual_rider(-.2,1,bad)
+        check(r==nil and why=="the rider's nose is 0 to 1","a nose outside 0 to 1 is refused: "..tostring(bad).." "..tostring(why))
+    end
+    local up=MP.manual_rider(-.2,1,1)
+    check(up.hip_offset[1]==0 and math.abs(up.hip_offset[2]-.08)<1e-12 and up.hip_offset[3]==0
+        and math.abs(up.lean-(MP.STANCE.lean+.16))<1e-12 and up.standing==1,"all the way on the nose the hips go up, not forward")
+    local half=MP.manual_rider(-.2,1,.5)
+    check(math.abs(half.hip_offset[2]-.04)<1e-12 and math.abs(half.hip_offset[3]-.12)<1e-12,"half way, half of each")
+    check(same(MP.manual_rider(.16,1,1),MP.manual_rider(.16,1,0)),"a back shift takes no part of the nose")
+    -- Each forward shift on the bike pitched nose down as far as it holds it (the weight's offset behind the front
+    -- contact is .8196 cos(pitch + 51 degrees), scaled bike), at 24 crank phases: the hands on the grips, the feet on
+    -- the pedals, no limb out of reach, and the knees, thighs and shins at least 9 cm off the bar line (grip to grip,
+    -- less the bar's radius), the torso at least 30 cm. Drawn toward the bars instead, the knees met them: 6 mm
+    -- into the bar at a .10 shift, 2 mm at .12.
+    local function segment(p1,q1,p2,q2)
+        local d1,d2,r=sub(q1,p1),sub(q2,p2),sub(p1,p2)
+        local function dot(a,b) return a[1]*b[1]+a[2]*b[2]+a[3]*b[3] end
+        local a,e,f=dot(d1,d1),dot(d2,d2),dot(d2,r)
+        local s,t
+        if a<=1e-12 then s=0;t=math.clamp(f/e,0,1)
+        else
+            local c=dot(d1,r)
+            local b=dot(d1,d2)
+            local den=a*e-b*b
+            s=den~=0 and math.clamp((b*f-c*e)/den,0,1) or 0
+            t=(b*s+f)/e
+            if t<0 then t=0;s=math.clamp(-c/a,0,1) elseif t>1 then t=1;s=math.clamp((b-c)/a,0,1) end
+        end
+        return distance(add(p1,{d1[1]*s,d1[2]*s,d1[3]*s}),add(p2,{d2[1]*t,d2[2]*t,d2[3]*t}))
+    end
+    local bar_radius=.055*G.scale
+    local legs,torso,palm_miss,ankle_miss=math.huge,math.huge,0,0
+    for _,f in ipairs({.06,.10,.12,.13,.15,.18,.20,.22,.23,.25,.27,.30}) do
+        local degrees=math.deg(math.acos(f/.8196))-51
+        local a=math.rad(degrees)
+        local bike={root={0,.3,0},rotation={math.sin(a/2),0,0,math.cos(a/2)}}
+        local function bike_local(p) return Q.turn(Q.conjugate(bike.rotation),sub(p,bike.root)) end
+        for phase=0,23 do
+            local out,why=MP.compose({bike=bike,articulation={crank_phase=phase/24*2*math.pi,steer=0},rider=MP.manual_rider(-f,1,1)})
+            check(out~=nil,"a nose manual's rider composes: "..tostring(why))
+            check(MP.validate_pose(out.pose),"and keeps the joint contract")
+            for i,name in ipairs({"left_arm","right_arm"}) do
+                local side=i==1 and 1 or -1
+                local planned=out.planned[name]
+                local palm=add(planned.tip,Q.turn(planned.tip_rotation,{C.palm_reach,0,side*(C.grip_radius+C.palm_gap)}))
+                palm_miss=math.max(palm_miss,distance(palm,out.targets.grips[i]))
+                check(not out.diagnostics.limbs[name].clamped,"the "..name.." reaches its grip")
+            end
+            for i,name in ipairs({"left_leg","right_leg"}) do
+                ankle_miss=math.max(ankle_miss,distance(out.planned[name].tip,out.targets.ankles[i]))
+                check(not out.diagnostics.limbs[name].clamped,"the "..name.." reaches its pedal")
+                local p=out.planned[name]
+                local hip,knee,ankle=bike_local(p.root),bike_local(p.middle),bike_local(p.tip)
+                legs=math.min(legs,segment(knee,knee,G.right_grip,G.left_grip)-bar_radius,
+                    segment(hip,knee,G.right_grip,G.left_grip)-bar_radius,segment(knee,ankle,G.right_grip,G.left_grip)-bar_radius)
+            end
+            local shoulders=bike_local({(out.planned.left_arm.root[1]+out.planned.right_arm.root[1])/2,
+                (out.planned.left_arm.root[2]+out.planned.right_arm.root[2])/2,(out.planned.left_arm.root[3]+out.planned.right_arm.root[3])/2})
+            torso=math.min(torso,segment(bike_local(out.targets.hips),shoulders,G.right_grip,G.left_grip)-bar_radius)
+        end
+    end
+    check(palm_miss<=1e-4 and ankle_miss<=1e-4,string.format("the hands hold their grips and the feet their pedals: %.6f %.6f",palm_miss,ankle_miss))
+    check(legs>=.09,string.format("the knees, thighs and shins stay %.3f off the bars at every hold and crank phase",legs))
+    check(torso>=.3,string.format("and the torso %.3f",torso))
+    return {cases=5,assertions=assertions}
 end
 return table.freeze(Tests)

@@ -260,7 +260,7 @@ function Tests.run()
             else check(zero==5 and first and math.abs(first-band)<.001,"a manual .10 s after landing: "..zero.." "..tostring(first)) end
         end
     end
-    do -- The forward band writes the nose manual, which the stage does not pass yet.
+    do -- The forward band writes the nose manual, and the stage passes it as the nose manual.
         local d=driver()
         local c
         for _=1,20 do c=d.step({right_y=.53}) end
@@ -269,7 +269,8 @@ function Tests.run()
         local level=World.place(flat,{speed=4})
         local samples=World.contacts(flat,level,tuning.gravity)
         local model=Stage.new():preview(h,level,Forces.proposed_wheels(),samples,c)
-        check(model.valid and model.manual_active==false,"and it lifts nothing")
+        check(model.valid and model.manual_active==false,"and it lifts no front")
+        check(model.nose_manual_active==true,"but the rear, in the nose manual: "..tostring(model.nose_manual_active))
     end
     -- The manual a raw right_y holds, after the .12 dead zone, over the band from .22 to .72.
     local function level(y) return math.min(1,((math.abs(y)-.12)/.88-.22)/.5) end
@@ -327,15 +328,132 @@ function Tests.run()
         for _=1,12 do if d.step({right_y=-.53},true).manual~=0 then any=true end end
         check(not any,"a trick's push lets the landing manual go until the stick has been in the middle")
     end
-    do -- sim_world's copy of the mapping sends the same manual, on the ground and in the air.
-        for _,grounded in ipairs({true,false}) do
+    do -- Part way forward: nothing for the first .10 s, then the nose manual follows the stick, and the stick holds it.
+        local d=driver()
+        local zero,first=0,nil
+        for _=1,20 do
+            local c=d.step({right_y=.53})
+            check(c.manual==0 and c.manual_held==false,"the forward band sends no manual: "..c.manual)
+            if c.nose_manual==0 and not first then
+                zero+=1
+                check(c.nose_manual_held==false,"nothing held while the nose manual is entered: "..tostring(c.nose_manual_held))
+            elseif not first then first=c.nose_manual end
+            if first then
+                check(math.abs(c.nose_manual-band)<.001,"the nose manual holds at the stick's height: "..c.nose_manual)
+                check(c.nose_manual_held==true,"and the stick holds it from its first step: "..tostring(c.nose_manual_held))
+            end
+        end
+        check(zero==5 and first and math.abs(first-band)<.001,"five steps (under .10 s) of nothing, then the nose manual: "..zero.." "..tostring(first))
+    end
+    do -- All the way forward is the nose manual at its highest, and the stick never sends both manuals on one step.
+        -- Forward, the band ended where the back one does, so right_y .8 to 1 sent no nose manual.
+        for _,row in ipairs({{.72,level(.72)},{.8,1},{.9,1},{1,1}}) do
             local d=driver()
-            local c,actions
-            for _=1,20 do c,actions=d.step({right_y=-.53,left_y=-.8},grounded) end
-            local raw=Input.raw({available=true,left_y=-.8,right_y=-.53})
-            local copy=World.controls(d.mapping._settings,actions,raw,nil,grounded,false)
-            check(copy.manual==c.manual and copy.nose_manual==c.nose_manual and copy.manual_held==c.manual_held,
-                "World.controls matches Mapping "..(grounded and "on the ground" or "in the air")..": "..copy.manual.." "..c.manual)
+            local c
+            for _=1,20 do c=d.step({right_y=row[1]}) end
+            check(math.abs(c.nose_manual-row[2])<.001 and c.manual==0 and c.nose_manual_held==true and d.hops()==0,
+                string.format("at %.2f the nose manual is %.4f, not %.4f, held %s, %d hops",row[1],c.nose_manual,row[2],
+                    tostring(c.nose_manual_held),d.hops()))
+        end
+        local sweep={}
+        for k=-20,20 do sweep[#sweep+1]=k*.05 end
+        for k=19,-20,-1 do sweep[#sweep+1]=k*.05 end
+        for _,toggle in ipairs({false,true}) do
+            local d=driver()
+            local both,count,grounded=0,0,true
+            for _,y in ipairs(sweep) do
+                for _=1,3 do
+                    count+=1
+                    if toggle and count%7==0 then grounded=not grounded end
+                    local c=d.step({right_y=y},grounded)
+                    if c.manual>0 and c.nose_manual>0 then both+=1 end
+                end
+            end
+            check(both==0,"never both manuals on one step"..(toggle and " with the ground coming and going" or "")..": "..both)
+        end
+    end
+    do -- Pulled from a nose manual to full back, the hop charges with no manual on either wheel, and the flick hops.
+        -- The charge carried the nose manual as a rear one: a rear manual of .6 on every charge step, the front lifted.
+        local function charge(d,label)
+            local sent,held=0,0
+            for _=1,5 do
+                local c=d.step({right_y=-1})
+                if c.manual~=0 or c.nose_manual~=0 then sent+=1 end
+                if c.nose_manual_held~=false then held+=1 end
+            end
+            local c,_,hopped=d.step({right_y=.8})
+            check(sent==0 and held==0 and hopped and c.manual==0 and c.nose_manual==0,
+                string.format("%s: %d of 5 charge steps sent a manual, %d still held the nose manual, hopped %s",
+                    label,sent,held,tostring(hopped)))
+        end
+        local d=driver()
+        for _=1,30 do d.step({right_y=.53}) end
+        charge(d,"from a nose manual")
+        d=driver()
+        for _=1,20 do d.step({right_y=.53}) end
+        for _=1,20 do d.step({right_y=.53},false) end
+        for _=1,30 do d.step({right_y=.53}) end
+        charge(d,"from a nose manual landed in")
+    end
+    do -- Held through a flight the stick still holds the nose manual, and the first step down is back in it.
+        local d=driver()
+        for _=1,20 do d.step({right_y=.53}) end
+        for _=1,30 do
+            local c=d.step({right_y=.53},false)
+            check(c.nose_manual==0 and c.nose_manual_held==true,
+                "no nose manual in the air, but the stick still holds one: "..c.nose_manual.." "..tostring(c.nose_manual_held))
+        end
+        local landed=d.step({right_y=.53},true)
+        check(math.abs(landed.nose_manual-band)<.001 and landed.nose_manual_held==true,
+            "the first step down sends the nose manual at once: "..landed.nose_manual)
+    end
+    do -- R3 from a nose manual pops at once with none that step, the stick still holding it, and lands back in it.
+        local d=driver()
+        for _=1,20 do d.step({right_y=.53}) end
+        local c,_,hopped=d.step({right_y=.53,r3=true})
+        check(hopped and c.nose_manual==0 and c.manual==0 and c.nose_manual_held==true,
+            "R3 hops with no nose manual on that step and the stick still holds it: "..c.nose_manual.." "..tostring(c.nose_manual_held))
+        d.step({right_y=.53})
+        for _=1,30 do d.step({right_y=.53},false) end
+        check(math.abs(d.step({right_y=.53},true).nose_manual-band)<.001,"landing with the stick held lands in the nose manual at once")
+    end
+    do -- A trick's push in the air, or LB held there, lets the nose manual go: none on landing, and none held.
+        local d=driver()
+        for _=1,3 do d.step({}) end
+        for _=1,5 do d.step({},false) end
+        for _=1,3 do d.step({right_y=.9},false) end
+        for _=1,10 do d.step({right_y=.53},false) end
+        local any,held=0,0
+        for _=1,12 do
+            local c=d.step({right_y=.53},true)
+            if c.nose_manual~=0 then any+=1 end
+            if c.nose_manual_held~=false then held+=1 end
+        end
+        check(any==0 and held==0,"after a trick's push no nose manual on landing: "..any.." sent, "..held.." held")
+        d=driver()
+        for _=1,20 do d.step({right_y=.53}) end
+        d.step({right_y=.53},false)
+        local c=d.step({right_y=.53,lb=true},false)
+        check(c.nose_manual_held==false,"LB in the air lets the stick's nose manual go: "..tostring(c.nose_manual_held))
+        any=0
+        for _=1,12 do if d.step({right_y=.53},true).nose_manual~=0 then any+=1 end end
+        check(any==0,"and the landing goes into none until the stick has been in the middle: "..any)
+    end
+    do -- sim_world's copy of the mapping sends the same manual and the same hold, on the ground and in the air.
+        for _,y in ipairs({-.53,.53}) do
+            for _,grounded in ipairs({true,false}) do
+                local d=driver()
+                local c,actions
+                -- The forward row is held on the ground first, so in the air the stick still holds its nose manual.
+                for i=1,20 do c,actions=d.step({right_y=y,left_y=-.8},grounded or y>0 and i<20) end
+                local raw=Input.raw({available=true,left_y=-.8,right_y=y})
+                local copy=World.controls(d.mapping._settings,actions,raw,nil,grounded,false)
+                local where=(y>0 and "forward " or "back ")..(grounded and "on the ground" or "in the air")
+                check(copy.manual==c.manual and copy.nose_manual==c.nose_manual and copy.manual_held==c.manual_held
+                    and copy.nose_manual_held==c.nose_manual_held,
+                    "World.controls matches Mapping "..where..": "..copy.manual.." "..c.manual.." "..tostring(copy.nose_manual_held))
+                if y>0 then check(c.nose_manual_held==true,"the forward row holds the nose manual "..where..": "..tostring(c.nose_manual_held)) end
+            end
         end
     end
     do -- sim_world enters a manual, and carries one into a hop's charge, on the same step as Mapping.

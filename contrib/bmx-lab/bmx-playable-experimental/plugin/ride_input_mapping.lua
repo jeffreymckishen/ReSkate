@@ -269,7 +269,7 @@ function Mapper:controls(context)
     -- there is none, and the left stick's air pitch is not sent as one. Whether
     -- the stick still holds one goes as manual_held either way: a manual that
     -- slowed to a walk waits for the stick to be let go, and one step's lost
-    -- support up a bumpy hill is not that.
+    -- support up a bumpy hill is not that. nose_manual_held goes the same way.
     local manual, nose = a.manual, a.nose_manual
     if not context.grounded then manual, nose = 0, 0 end
     local hop = self._pending
@@ -283,7 +283,8 @@ function Mapper:controls(context)
     actions.bar_neutral, actions.rear_neutral = rear_magnitude <= neutral, rear_magnitude <= neutral
     out.actions = actions
     out.force_controls = { enabled = true, pedal = a.pedal, brake = a.brake, steer = a.steer,
-        manual = manual, nose_manual = nose, manual_held = a.manual_held == true, air_yaw = a.steer, ground_pump = a.front_weight,
+        manual = manual, nose_manual = nose, manual_held = a.manual_held == true, nose_manual_held = a.nose_manual_held == true,
+        air_yaw = a.steer, ground_pump = a.front_weight,
         pump_operator_available = true,
         pump_inhibited = hop ~= nil or a.hop_pressed or raw.quick_hop or a.preload > 0,
         rotation_reserved = raw_rotation or self._rotation_reserved or context.rotation_reserved,

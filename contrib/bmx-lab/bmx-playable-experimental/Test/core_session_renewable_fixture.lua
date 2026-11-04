@@ -966,8 +966,9 @@ local function pose_step(sample,pose,now)
     local body=pose_body(sample)
     local input={bike={center_of_mass=body.position,rotation=body.rotation},articulation=articulation}
     -- In a manual Ride publishes how far the physics shifts the rider's weight; the rider is posed there,
-    -- standing as far as Ride has it up on the pedals, which it eases in and out with the manual.
-    if a.rider_shift~=nil then input.rider=MP.manual_rider(a.rider_shift,a.rider_standing) end
+    -- standing as far as Ride has it up on the pedals, which it eases in and out with the manual, and in a
+    -- nose manual hips up over the bars as far as Ride has it on the front wheel.
+    if a.rider_shift~=nil then input.rider=MP.manual_rider(a.rider_shift,a.rider_standing,a.rider_nose) end
     local r=poser:tick(now/1000,input)
     if r.sent==true then T.pose_sent_ticks=(T.pose_sent_ticks or 0)+1 end
     if r.ok~=true and r.reason~=nil then T.pose_issue=T.pose_issue or short(r.reason) end

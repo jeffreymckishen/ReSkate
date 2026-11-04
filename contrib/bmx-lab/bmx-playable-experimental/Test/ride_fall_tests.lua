@@ -1309,7 +1309,10 @@ function T.run()
     case(function() -- From a rear manual straight into a nose manual, the drawn hips swing forward no faster than in either alone.
         -- The body moves here. Eased a sixth of the way a step from the rear manual's shift to the nose manual's, the
         -- hips moved .095 m in one frame and stopped dead as the shift crossed to forward. Composed as Core does, a
-        -- rear manual alone moves them at most .055 m and a nose manual .030.
+        -- rear manual alone moves them at most .055 m and a nose manual .030. The bound is for a switch from a rear
+        -- manual held a second, as here. From one held a third of a second the first two steps after the stick goes
+        -- forward move the hips .066 and .065 m with the rear manual still on: that is the rear manual's own let-go,
+        -- the same with the stick let go instead, and was there before the nose manual.
         for _,row in ipairs({{-.53,3},{-.53,4},{-.72,3},{-.72,4}}) do
             local back,speed=row[1],row[2]
             local what=string.format("stick %.2f then .53 at %.1f m/s",back,speed)

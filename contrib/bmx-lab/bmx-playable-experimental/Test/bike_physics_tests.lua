@@ -100,18 +100,21 @@ end
 local function tilt_of(body)
     return math.deg(math.acos(math.clamp(M.turn(M.normalized(body.orientation),{0,1,0})[2],-1,1)))
 end
--- ride.steps, and ride.controls(step,body) -> {pedal,steer,brake,hop,manual}. ride.pitch starts the bike that many
--- degrees nose up on its rear wheel. Returns the peaks, and calls ride.each(step,body,out,wheels,samples) with the
--- wheel rays this step's command was made from.
+-- ride.steps, and ride.controls(step,body) -> {pedal,steer,brake,hop,manual,nose,nose_held}. ride.pitch starts the
+-- bike that many degrees nose up on its rear wheel, or nose down on its front wheel when it is negative, and ride.lift
+-- raises it that far. ride.push(step,body,command) may return a force sent with the command, as Ride's car stop adds
+-- one. Returns the peaks, and calls ride.each(step,body,out,wheels,samples) with the wheel rays this step's command
+-- was made from.
 local function run(ride)
     local stage=Stage.new()
     local body,wheels=place(ride.ground or Ground.plane(0,0),ride.speed or 0,ride.yaw)
     if ride.pitch then
         local a=-math.rad(ride.pitch)
         body.orientation={math.sin(a/2),0,0,math.cos(a/2)}
-        local rear=M.turn(body.orientation,M.sub(G.rear_axle,G.com))
-        body.center_of_mass={0,R-rear[2]-.005,0}
+        local axle=M.turn(body.orientation,M.sub(ride.pitch>=0 and G.rear_axle or G.front_axle,G.com))
+        body.center_of_mass={0,R-axle[2]-.005,0}
     end
+    if ride.lift then body.center_of_mass={body.center_of_mass[1],body.center_of_mass[2]+ride.lift,body.center_of_mass[3]} end
     local previous
     local angle,hop_id=0,0
     local peak={tilt=0,speed=0,refused=0,slip=0,height=0,torque=0}
@@ -129,12 +132,18 @@ local function run(ride)
         local want=ride.controls and ride.controls(step,body) or {}
         local input={pedal=want.pedal or 0,steer=want.steer or 0,brake=want.brake or 0}
         if want.hop then hop_id+=1;input.hop_event_id=hop_id;input.hop_strength=1 end
-        if want.manual then
-            -- As Mapping sends it: only while a wheel is on the ground, and whether the stick holds one either way.
+        if want.manual or want.nose then
+            -- As Mapping sends them: only while a wheel is on the ground, and whether the stick holds one either way.
             local grounded=false
             for i=1,2 do grounded=grounded or samples[i].contact.status=="hit" and Forces.eligible_support(body,samples[i],.005,.10) end
-            input.manual=grounded and want.manual or 0
-            input.manual_held=want.manual>0
+            if want.manual then
+                input.manual=grounded and want.manual or 0
+                input.manual_held=want.manual>0
+            end
+            if want.nose then
+                input.nose_manual=grounded and want.nose or 0
+                input.nose_manual_held=want.nose_held==nil and want.nose>0 or want.nose_held==true
+            end
         end
         if ride.hitch and ride.hitch(step) then stage:invalidate_continuity() end
         local out,candidate=stage:preview(h,folded,wheels,forecast,input)
@@ -152,6 +161,10 @@ local function run(ride)
             body.center_of_mass=M.add(body.center_of_mass,M.mul(body.linear_velocity,h))
         end
         previous=command
+        if command and ride.push then
+            local push=ride.push(step,body,command)
+            if push then previous=M.copy(command);previous.force=M.add(previous.force,push) end
+        end
         if command then peak.torque=math.max(peak.torque,M.length(command.torque)) end
         local flat=math.sqrt(body.linear_velocity[1]^2+body.linear_velocity[3]^2)
         local forward=M.turn(M.normalized(body.orientation),{0,0,1})
@@ -885,6 +898,393 @@ function T.run()
             check(landing>=0 and landing<15,what..": lands near level: "..tostring(landing))
             if previous then check(math.abs(landing-previous)<4,string.format("%s: a little higher lands a little higher, %.1f after %.1f",what,landing,previous)) end
             previous=landing
+        end
+    end)
+    -- Nose manuals: the bike on its front wheel with the rear up. The weight the rider shifts is measured against W.
+    local W=Forces.proposed_body().mass*M.length(Forces.tuning().gravity)
+    -- The angle the nose manual holds to the surface at the low end of the stick's band, the middle and the top.
+    local NOSE_HOLD={[.01]=23.05,[.5]=26.6,[1]=30.1}
+    local function level_pitch(body) return math.deg(math.asin(math.clamp(M.turn(M.normalized(body.orientation),{0,0,1})[2],-1,1))) end
+    -- o.m held forward from step o.before+1 for o.hold steps, then let go for o.after steps, as manual(o) does; o.during
+    -- and o.release may also set nose and nose_held. A row a step adds the nose-down pitch to the surface (nd) and to
+    -- level (lnd), the speed along the ground and the tilt from world up.
+    local function nose(o)
+        local before,hold=o.before or 15,o.hold or 120
+        local rows={}
+        local ride=run({steps=before+hold+(o.after or 60),speed=o.speed or 4,ground=o.ground,pitch=o.pitch,lift=o.lift,push=o.push,
+            controls=function(step,body)
+                if step<=before then return {pedal=o.pedal_before} end
+                if step<=before+hold then
+                    local c=o.during and o.during(step-before,body) or {}
+                    if c.nose==nil then c.nose=o.m end
+                    return c
+                end
+                local c=o.release and o.release(step-before-hold,body) or {}
+                if c.nose==nil then c.nose=0 end
+                return c
+            end,each=function(step,body,out,wheels,samples)
+                rows[step]={hold=step>before and step<=before+hold,released=step>before+hold,t=step-before,
+                    nd=-pitch_of(body,o.ground),lnd=-level_pitch(body),front=gap(samples[1]),rear=gap(samples[2]),out=out,body=body,
+                    speed=math.sqrt(body.linear_velocity[1]^2+body.linear_velocity[3]^2),tilt=tilt_of(body)}
+            end})
+        return ride,rows
+    end
+    -- Ride's fall: tilted more than 65 degrees from world up for 18 steps in a row.
+    local function fell(rows)
+        local run_of=0
+        for _,r in rows do
+            if r.tilt>65 then run_of+=1;if run_of>=18 then return true end else run_of=0 end
+        end
+        return false
+    end
+    case(function() -- The nose manual's tuning: its defaults, and a step refused on tuning outside its limits.
+        local t=Forces.tuning()
+        local defaults={nose_hold_forward=.26,nose_hold_back=.20,nose_low=.23,nose_high=.13,nose_carve_rate=.6,
+            nose_carve_lateral=2.5,nose_yaw_damping=300,nose_yaw_torque=300,nose_roll_gain=1.6}
+        for name,value in defaults do check(t[name]==value,"the nose manual's "..name.." is "..tostring(t[name])) end
+        local flat=Ground.plane(0,0)
+        local body,wheels=place(flat,4)
+        local samples=contacts(flat,body,0)
+        local function valid(overrides)
+            return Forces.new(Forces.tuning(overrides)):preview(h,body,wheels,samples,Forces.controls({nose_manual=.5})).valid
+        end
+        check(valid(nil),"the defaults are valid")
+        for _,bad in ipairs({{nose_hold_forward=.31},{nose_hold_back=.31},{nose_high=.23},{nose_low=.27},{nose_carve_rate=5},
+            {nose_carve_lateral=11},{nose_yaw_torque=1201},{nose_roll_gain=.9},{nose_roll_gain=3.1}}) do
+            local name,value=next(bad)
+            check(not valid(bad),"a step is refused on "..name.."="..value)
+        end
+        for name in defaults do
+            for _,value in ipairs({-1,0/0}) do check(not valid({[name]=value}),"a step is refused on "..name.."="..value) end
+        end
+    end)
+    case(function() -- The stage passes the nose manual and refuses a malformed one; the rear manual comes first.
+        local flat=Ground.plane(0,0)
+        local body,wheels=place(flat,4)
+        local samples=contacts(flat,body,0)
+        local out=Stage.new():preview(h,body,wheels,samples,{nose_manual=.5,nose_manual_held=true})
+        check(out.valid and out.nose_manual_active==true and out.manual_active==false and out.manual_couple<0 and out.balance_torque[1]>0,
+            "a nose manual on a level bike lifts the rear: "..tostring(out.nose_manual_active).." "..out.manual_couple.." "..out.balance_torque[1])
+        local pedalled=Stage.new():preview(h,body,wheels,samples,{pedal=1,nose_manual=.5})
+        check(pedalled.valid and pedalled.pedaling==false,"the rider does not pedal in a nose manual")
+        local function same(a,b)
+            if type(a)~="table" or type(b)~="table" then return a==b end
+            for k,v in a do if not same(v,b[k]) then return false end end
+            for k in b do if a[k]==nil then return false end end
+            return true
+        end
+        local plain=Stage.new():preview(h,body,wheels,samples,{})
+        check(same(Stage.new():preview(h,body,wheels,samples,{nose_manual=0}),plain),"a nose manual of 0 is none")
+        check(same(Stage.new():preview(h,body,wheels,samples,{nose_manual_held=true}),plain),"a stick that holds a nose manual sends none by itself")
+        for _,bad in ipairs({-.1,1.2,0/0,"half"}) do
+            local refused=Stage.new():preview(h,body,wheels,samples,{nose_manual=bad})
+            check(not refused.valid and refused.issue=="invalid_manual","the stage refuses a nose manual of "..tostring(bad))
+        end
+        local refused=Stage.new():preview(h,body,wheels,samples,{nose_manual=.5,nose_manual_held=1})
+        check(not refused.valid and refused.issue=="invalid_manual","the stage refuses a nose_manual_held that is not true or false")
+        local both=Stage.new():preview(h,body,wheels,samples,{manual=.5,nose_manual=.5,manual_held=true,nose_manual_held=true})
+        check(both.valid and both.manual_active==true and both.nose_manual_active==false,"with both asked, it is the manual")
+        local slow,slow_wheels=place(flat,1.2)
+        check(Stage.new():preview(h,slow,slow_wheels,contacts(flat,slow,0),{nose_manual=.5}).nose_manual_active==false,
+            "at 1.2 m/s on both wheels it does not start")
+        check(Stage.new():preview(h,body,wheels,samples,{nose_manual=.5,brake=1}).nose_manual_active==false,"nor with B held")
+    end)
+    case(function() -- A held nose manual: the rear lifts at once, holds where the stick puts it, coasts, and comes down again.
+        for _,speed in ipairs({2,4,7}) do
+            for _,row in ipairs({{m=.01,shift=-.215},{m=.5,shift=-.166},{m=1,shift=-.116},speed==4 and {m=.5,shift=-.166,pedal=true} or nil}) do
+                local what=string.format("m=%.2f at %d m/s%s",row.m,speed,row.pedal and " with A held" or "")
+                local hold=NOSE_HOLD[row.m]
+                local ride,rows=nose({m=row.m,speed=speed,hold=180,after=60,pedal_before=row.pedal and 1 or nil,
+                    during=row.pedal and function() return {pedal=1} end or nil})
+                local lifted,engaged,front,low,high,peak,shift,target,pedalled=nil,true,0,math.huge,-math.huge,-math.huge,0,0,false
+                local first,last,down,after,ended,again=nil,nil,nil,0,nil,false
+                for _,r in rows do
+                    if r.hold then
+                        if not lifted and r.rear>.02 then lifted=r.t*h end
+                        peak=math.max(peak,r.nd)
+                        if r.out.nose_manual_active and r.out.pedaling then pedalled=true end
+                        if r.t*h>=.25 then
+                            engaged=engaged and r.out.nose_manual_active==true and r.out.manual_active==false
+                            front=math.max(front,r.front)
+                        end
+                        if r.t*h>=1.5 and r.t*h<=3 then
+                            low,high=math.min(low,r.nd),math.max(high,r.nd)
+                            shift=math.max(shift,math.abs(r.out.manual_shift-row.shift))
+                            target=math.max(target,math.abs(r.out.manual_target_offset-(.23-.1*row.m)))
+                        end
+                        if r.t==60 then first=r.speed end
+                        if r.t==180 then last=r.speed end
+                    elseif r.released then
+                        if not down and r.rear<=.02 then down=(r.t-180)*h end
+                        if down then after=math.max(after,r.rear) end
+                        if not ended and not r.out.nose_manual_active then ended=r.t-180 end
+                        if ended and r.out.nose_manual_active then again=true end
+                    end
+                end
+                check(ride.refused==0,what..": every step is sent: "..ride.refused)
+                check(lifted and lifted<=.25,what..": the rear is up within .25 s: "..tostring(lifted))
+                check(engaged,what..": in the nose manual, not the manual, from .25 s")
+                check(front<=.005,what..": the front tyre stays on the ground: "..front)
+                check(math.abs(low-hold)<=.6 and math.abs(high-hold)<=.6 and peak<=hold+.5,
+                    string.format("%s: holds %.1f to %.1f degrees, at most %.1f",what,low,high,peak))
+                check(shift<=.01 and target<1e-6,string.format("%s: the shift within %.4f of %.3f, the target its offset",what,shift,row.shift))
+                check(last-first<=0 and last-first>=-.6,string.format("%s: it coasts, %.2f m/s from 1 s to 3 s",what,last-first))
+                check(not pedalled,what..": the rider does not pedal in it")
+                check(down and down<=.5 and after<=.03,string.format("%s: let go, the rear is down in %s s and stays within %.3f",what,tostring(down),after))
+                check(ended and ended*h<=1 and not again,what..": and the nose manual is over by 1 s: "..tostring(ended))
+            end
+        end
+    end)
+    case(function() -- The throw lifts the rear: one movement, gone after a second, and the weight shift alone after it.
+        local first,reached,later=0,nil,math.huge
+        local ride,rows=nose({m=.5,speed=4,hold=120,after=0})
+        for _,r in rows do
+            if r.t*h<=.1 then first=math.min(first,r.out.manual_couple) end
+            if not reached and math.abs(r.nd-NOSE_HOLD[.5])<=1.5 then reached=r.t*h end
+            if r.t*h>=1 then later=math.min(later,r.out.manual_couple) end
+        end
+        check(ride.refused==0 and first<=-790,"the rider throws the front down to lift the rear: "..first)
+        check(reached and reached<=1.1,"and the bike is within 1.5 degrees of its hold by 1.1 s: "..tostring(reached))
+        check(later>=-(W*.26)-1,"from 1 s the rider holds it with no more than the weight shift: "..later)
+        -- The same pitched body every step, 12 degrees nose down with the rear up, so nothing but the throw can lift it.
+        local flat=Ground.plane(0,0)
+        local body,wheels=place(flat,4)
+        local a=math.rad(12)
+        body.orientation={math.sin(a/2),0,0,math.cos(a/2)}
+        body.center_of_mass={0,R-M.turn(body.orientation,M.sub(G.front_axle,G.com))[2]-.005,0}
+        local stage,thrown,late=Stage.new(),0,0
+        for step=1,90 do
+            local out,candidate=stage:preview(h,body,wheels,contacts(flat,body,0),{nose_manual=.01,nose_manual_held=true})
+            check(out.valid and out.nose_manual_active,"the nose manual is on at step "..step..": "..tostring(out.issue))
+            stage:_adopt(candidate);wheels=out.wheels
+            if -out.manual_couple>W*.26 then thrown+=1;if step>62 then late+=1 end end
+        end
+        check(thrown>=55 and thrown<=61 and late==0,"a second of throw, then the weight shift alone: "..thrown.." "..late)
+    end)
+    case(function() -- The stick slammed between the ends of the band and the middle does not throw the bike over the bars.
+        for _,speed in ipairs({2,4,7}) do
+            for _,pattern in ipairs({{.01,1},{1,0},{0,1,.01,1,0}}) do
+                local engaged,worst=false,-math.huge
+                local ride,rows=nose({m=1,speed=speed,hold=240,after=0,during=function(t) return {nose=pattern[math.floor(t*h/.25)%#pattern+1]} end})
+                for _,r in rows do
+                    if r.hold then worst=math.max(worst,r.nd);engaged=engaged or r.out.nose_manual_active end
+                end
+                local what=string.format("at %d m/s through %s",speed,table.concat(pattern,","))
+                check(ride.refused==0 and engaged and not fell(rows),what..": in the nose manual and no fall")
+                check(worst<=31,string.format("%s: at most %.1f degrees",what,worst))
+            end
+        end
+    end)
+    case(function() -- On a street grade a nose manual holds its angle to the surface, uphill and down, and up a hill it slows to a walk.
+        for _,row in ipairs({{grade=-.13,speed=3},{grade=-.13,speed=5},{grade=-.08,speed=3},{grade=-.08,speed=5},
+            {grade=.08,speed=5},{grade=.13,speed=5},{grade=.08,speed=3,ends={2,2.8}},{grade=.13,speed=3,ends={1.3,1.9}}}) do
+            local ground=Ground.plane(0,row.grade)
+            local ride,rows=nose({m=.5,speed=row.speed,ground=ground,hold=180,after=0})
+            local low,high,ended=math.huge,-math.huge,nil
+            for _,r in rows do
+                if r.hold and r.t*h>=1.2 and r.t*h<=2 then low,high=math.min(low,r.nd),math.max(high,r.nd) end
+                if r.hold and r.t>30 and not ended and not r.out.nose_manual_active then ended=r.t*h end
+            end
+            local what=string.format("a grade of %.2f at %d m/s",row.grade,row.speed)
+            check(ride.refused==0,what..": every step is sent")
+            if row.ends then
+                check(ended and ended>=row.ends[1] and ended<=row.ends[2],what..": the nose manual ends at a walk at "..tostring(ended))
+            else
+                check(not ended and math.abs(low-NOSE_HOLD[.5])<=.7 and math.abs(high-NOSE_HOLD[.5])<=.7,
+                    string.format("%s: holds %.1f to %.1f degrees to the surface, still held at 2 s: %s",what,low,high,tostring(ended)))
+            end
+        end
+        -- Slowed to a walk up 13% with the stick held, it does not start again; with A held the rider pedals on up.
+        for _,pedal in ipairs({0,1}) do
+            local ended,again,pedalled,later=nil,false,false,false
+            local ride,rows=nose({m=.5,speed=3,ground=Ground.plane(0,.13),hold=360,after=0,during=function() return {pedal=pedal} end})
+            for _,r in rows do
+                if r.hold then
+                    if r.t>30 and not ended and not r.out.nose_manual_active then ended=r.t*h end
+                    if ended and r.out.nose_manual_active then again=true end
+                    if r.out.nose_manual_active and r.out.pedaling then pedalled=true end
+                    if ended and r.out.pedaling then later=true end
+                end
+            end
+            local what="up 13% from 3 m/s with pedal "..pedal
+            check(ride.refused==0 and ended and ended>=1.3 and ended<=1.9,what..": it ends at a walk at "..tostring(ended))
+            check(not again,what..": and does not start again with the stick held")
+            check(not pedalled and (pedal==0 or later),what..": the rider pedals only once the rear is down")
+        end
+        -- A and the stick held from a stop: the bike pedals to the start speed, lifts once, and coasts down to a walk.
+        local lifts,up,lift_speed,down_speed,pedalled=0,false,nil,nil,false
+        local ride=run({steps=720,controls=function() return {pedal=1,nose=.5} end,each=function(step,body,out,wheels,samples)
+            local speed=math.sqrt(body.linear_velocity[1]^2+body.linear_velocity[3]^2)
+            local rear=gap(samples[2])
+            if rear>.05 and not up then up=true;lifts+=1;lift_speed=lift_speed or speed
+            elseif rear<=.005 and up then up=false;down_speed=down_speed or speed end
+            if down_speed and out.pedaling then pedalled=true end
+        end})
+        check(ride.refused==0 and lifts==1,"from a stop the rear lifts once in 12 s: "..lifts)
+        check(lift_speed and lift_speed>=1.45 and lift_speed<=1.6,"at the start speed: "..tostring(lift_speed))
+        check(down_speed and down_speed>=.95 and down_speed<=1.1,"and comes down at a walk: "..tostring(down_speed))
+        check(pedalled,"after which the rider pedals on")
+    end)
+    case(function() -- B in a nose manual puts the rear down and keeps it down; B held first, the stick lifts nothing.
+        for _,speed in ipairs({2,4,7}) do
+            for _,m in ipairs({.01,1}) do
+                local what=string.format("m=%.2f at %d m/s",m,speed)
+                local pressed,down,worst,relift=nil,nil,-math.huge,false
+                local ride,rows=nose({m=m,speed=speed,hold=240,after=0,during=function(t) return {brake=t>=90 and 1 or 0} end})
+                for _,r in rows do
+                    if r.hold and r.t>=90 then
+                        if r.t==90 then pressed=r.nd end
+                        worst=math.max(worst,r.nd)
+                        if not down and r.rear<=.02 then down=(r.t-90)*h end
+                        if down and r.rear>.02 then relift=true end
+                    end
+                end
+                check(ride.refused==0 and down and down<=.5,what..": B puts the rear down in "..tostring(down).." s")
+                check(worst<=pressed+.1,string.format("%s: tipping no further, at most %.2f from %.2f",what,worst,pressed))
+                check(not relift,what..": and it stays down while B is held")
+                local rose,engaged=0,false
+                local _,first=nose({m=m,speed=speed,hold=120,after=0,during=function() return {brake=1} end})
+                for _,r in first do if r.hold then rose=math.max(rose,r.rear);engaged=engaged or r.out.nose_manual_active end end
+                check(rose<=.005 and not engaged,string.format("%s: with B held first the rear stays down, %.4f",what,rose))
+            end
+        end
+    end)
+    case(function() -- Too far over the bars: placed past the balance, the rider pulls it back as far as 51 degrees, not from 52.
+        for _,deg in ipairs({44,48,50,51,52,54,56}) do
+            local _,rows=nose({m=1,speed=4,pitch=-deg,before=0,hold=150,after=0})
+            if deg<=51 then
+                check(not fell(rows) and math.abs(rows[150].nd-30.2)<=.5,string.format("placed at %d, the held stick brings it back to %.1f",deg,rows[150].nd))
+            else check(fell(rows),"placed at "..deg..", it goes over the bars") end
+        end
+        -- Let go after one step, the rear comes down from 50 degrees, and from 52 nothing holds it.
+        for _,deg in ipairs({50,52,54}) do
+            local _,rows=nose({m=1,speed=4,pitch=-deg,before=0,hold=150,after=0,during=function(t) return {nose=t==1 and 1 or 0,nose_held=false} end})
+            if deg==50 then check(not fell(rows) and rows[150].rear<=.02,"let go at 50 degrees the rear comes down: "..rows[150].rear)
+            else check(fell(rows),"let go at "..deg..", it goes over the bars") end
+        end
+    end)
+    case(function() -- Steering a nose manual swings the rear round the front wheel, the way the bars turn the bike on two.
+        local rates={}
+        for _,speed in ipairs({2.5,4,7}) do
+            local two,two_count=0,0
+            run({steps=315,speed=speed,controls=function(step) return {steer=step>90 and step<=270 and 1 or 0} end,each=function(step,body)
+                if step>150 and step<=270 then two+=body.angular_velocity[2];two_count+=1 end
+            end})
+            two/=two_count
+            for _,steer in ipairs({1,-1,.3}) do
+                local what=string.format("steer %.1f at %.1f m/s",steer,speed)
+                local yaw,count,most,engaged,low,high,bars,slip=0,0,0,true,math.huge,-math.huge,0,0
+                local ride,rows=nose({m=.5,speed=speed,hold=300,after=0,during=function(t) return {steer=t>75 and t<=255 and steer or 0} end})
+                for _,r in rows do
+                    if r.hold and r.t*h>=.25 then engaged=engaged and r.out.nose_manual_active==true end
+                    if r.hold and r.t>75 and r.t<=255 then bars=math.max(bars,math.abs(r.out.front_steer_angle)) end
+                    if r.hold and r.t>135 and r.t<=255 then
+                        yaw+=r.body.angular_velocity[2];count+=1;most=math.max(most,math.abs(r.body.angular_velocity[2]))
+                        low,high=math.min(low,r.nd),math.max(high,r.nd)
+                        -- The heading against the travel, both along the ground: the rear swung out round the front.
+                        local f,v=M.turn(M.normalized(r.body.orientation),{0,0,1}),r.body.linear_velocity
+                        local cross=(f[1]*v[3]-f[3]*v[1])/(math.sqrt(f[1]^2+f[3]^2)*math.sqrt(v[1]^2+v[3]^2))
+                        slip=math.max(slip,math.abs(math.deg(math.asin(math.clamp(cross,-1,1)))))
+                    end
+                end
+                yaw/=count
+                rates[speed..":"..steer]=yaw
+                check(ride.refused==0 and engaged,what..": in the nose manual throughout")
+                check(most<=1.15*math.abs(yaw),string.format("%s: a steady carve, at most %.3f against %.3f",what,most,yaw))
+                check(math.abs(low-26.9)<=.6 and math.abs(high-26.9)<=.6,string.format("%s: holds %.1f to %.1f degrees",what,low,high))
+                check(bars<=.06,string.format("%s: the bars turn no more than %.3f",what,bars))
+                check(slip<=2,string.format("%s: once carving, the bike points along its travel within %.1f degrees",what,slip))
+                if steer==1 then
+                    local band=({[2.5]={-.6,-.5},[4]={-.65,-.55},[7]={-.5,-.4}})[speed]
+                    check(yaw>=band[1] and yaw<=band[2] and yaw*two>0,string.format("%s: carves at %.3f rad/s, the way steering turns at %.3f",what,yaw,two))
+                end
+            end
+            local full=rates[speed..":1"]
+            check(math.abs(rates[speed..":-1"]+full)<=.01,string.format("at %.1f m/s the other way mirrors it: %.3f against %.3f",speed,rates[speed..":-1"],full))
+            local part=rates[speed..":0.3"]/full
+            check(part>=.25 and part<=.35,string.format("at %.1f m/s a third of the stick carves %.2f as fast",speed,part))
+        end
+    end)
+    case(function() -- Dropped front first with the stick held, the bike lands into the nose manual; with it let go, onto both wheels.
+        for _,deg in ipairs({8,18,28,36}) do
+            for _,m in ipairs({0,.5,1}) do
+                local what=string.format("dropped at %d degrees with m=%.1f",deg,m)
+                local _,rows=nose({m=m,speed=4,pitch=-deg,lift=.3,before=0,hold=150,after=0,during=function() return {nose=m,nose_held=m>0} end})
+                local touched,engaged,most,down,ever=nil,0,-math.huge,nil,false
+                for _,r in rows do
+                    if not touched and r.front<=.02 then touched=r.t end
+                    ever=ever or r.out.nose_manual_active
+                    if touched then
+                        most=math.max(most,r.lnd)
+                        if r.out.nose_manual_active then engaged+=1 end
+                        if not down and r.rear<=.02 then down=(r.t-touched)*h end
+                    end
+                end
+                if m>0 then
+                    check(touched and engaged>=128,what..": in the nose manual on "..engaged.." steps after the touch")
+                    check(most<=math.max(deg,NOSE_HOLD[m])+.5,string.format("%s: at most %.1f degrees",what,most))
+                else
+                    check(not ever and down and down<=.45,what..": no nose manual, and the rear is down in "..tostring(down).." s")
+                end
+            end
+        end
+    end)
+    case(function() -- R3 from a nose manual: a full hop that lands front first and goes back into the nose manual.
+        for _,speed in ipairs({3,4,7}) do
+            for _,m in ipairs({.01,1}) do
+                local what=string.format("m=%.2f at %d m/s",m,speed)
+                -- As input sends it: the pop step sends no nose manual, and the stick still holds one.
+                local ride,rows=nose({m=m,speed=speed,hold=200,after=0,during=function(t)
+                    if t==90 then return {hop=true,nose=0,nose_held=true} end
+                    return {}
+                end})
+                local air,landed,first,landing,worst,back=0,nil,nil,nil,-math.huge,nil
+                for _,r in rows do
+                    if r.hold and r.t>90 then
+                        local front,rear=r.front<=.02,r.rear<=.02
+                        if not landed then
+                            if not front and not rear then air+=1
+                            elseif air>0 then landed=r.t;first=front and (rear and "both" or "front") or "rear";landing=r.lnd end
+                        else
+                            worst=math.max(worst,r.lnd)
+                            if not back and r.out.nose_manual_active then back=(r.t-landed)*h end
+                        end
+                    end
+                end
+                check(ride.refused==0 and air*h>=.85 and air*h<=1.05,what..": a full hop, "..air*h.." s in the air")
+                check(landed and first~="rear" and landing<=10,string.format("%s: lands %s first at %.1f degrees",what,tostring(first),landing or 0/0))
+                check(worst<=NOSE_HOLD[m]+.5,string.format("%s: at most %.1f degrees after",what,worst))
+                check(back and back<=.1,what..": and is in the nose manual again in "..tostring(back).." s")
+            end
+        end
+    end)
+    case(function() -- The car stop's push in a held nose manual stops the bike without tipping it over the bars.
+        -- Ride's stop pushes back along the travel through the centre of mass, at most 5400 N, at the stop's deceleration.
+        for _,speed in ipairs({2,4,7}) do
+            for _,m in ipairs({.01,1}) do
+                for _,decel in ipairs({10,25,45}) do
+                    local what=string.format("m=%.2f at %d m/s stopped at %d m/s^2",m,speed,decel)
+                    local from=15+72
+                    local ride,rows=nose({m=m,speed=speed,hold=72+90,after=1,push=function(step,body)
+                        if step<from then return nil end
+                        local v=body.linear_velocity
+                        local flat=math.sqrt(v[1]^2+v[3]^2)
+                        if flat<.05 then return nil end
+                        local f=math.min(5400,body.mass*decel)
+                        return {-v[1]/flat*f,0,-v[3]/flat*f}
+                    end})
+                    local held,worst,ended,down=rows[from].lnd,-math.huge,nil,nil
+                    check(rows[from].out.nose_manual_active==true and rows[from].rear>.1,what..": held in the nose manual when the push starts")
+                    for step=from,from+90 do
+                        local r=rows[step]
+                        worst=math.max(worst,r.lnd)
+                        if not ended and not r.out.nose_manual_active then ended=(step-from)*h end
+                        if not down and r.rear<=.005 then down=(step-from)*h end
+                    end
+                    check(ride.refused==0 and not fell(rows) and worst<=held+.5,string.format("%s: no further over than %.1f from %.1f",what,worst,held))
+                    check(ended and ended<=1 and down and down<=1,what..": the nose manual ends with the rear down: "..tostring(ended).." "..tostring(down))
+                end
+            end
         end
     end)
     return {cases=cases,assertions=n,native_authority=false,constructed=true}

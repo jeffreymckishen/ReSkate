@@ -744,6 +744,18 @@ function T.run()
         w.set_pad(-.53)
         return steps(w,pose,count)
     end
+    -- A nose manual's pose: pitched this far nose down on its front wheel, and riding it with the stick part way forward.
+    local function nose_down(degrees,speed)
+        local rotation=pitch_of(math.rad(degrees))
+        local front=M.turn(rotation,M.sub(Geometry.front_axle,Geometry.com))
+        local axle=Geometry.front_axle[3]-Geometry.com[3]
+        return {position={0,R-front[2],axle-front[3]},rotation=rotation,velocity={0,0,speed or 0}}
+    end
+    local function in_nose_manual(w,pose,count)
+        check(steps(w,pose,3)==nil,"riding before the nose manual")
+        w.set_pad(.53)
+        return steps(w,pose,count)
+    end
     case(function() -- The right stick part way back lifts the front, through Mapping, the stage and the packet.
         local w=harness(flat)
         local pose=level();pose.velocity={0,0,4}
@@ -971,6 +983,21 @@ function T.run()
         local over=harness(flat)
         local at=in_manual(over,wheelie(70,4),40)
         check(at==18-3,"70 degrees from the surface ends after its .3 s: "..tostring(at))
+    end)
+    case(function() -- A held nose manual is not a fall; a bike gone over the bars still is.
+        local w=harness(flat)
+        check(steps(w,nose_down(31,4),3)==nil,"riding before the nose manual")
+        w.set_pad(.53)
+        local engaged
+        for i=1,120 do
+            local out=w.step(nose_down(31,4))
+            check(not out.stop_requested,"31 degrees on the front wheel rides on at step "..i..": "..tostring(out.issue))
+            if not engaged and w.model and w.model.nose_manual_active==true then engaged=i end
+        end
+        check(engaged and engaged<=8,"the stick puts the bike in the nose manual from step "..tostring(engaged))
+        local over=harness(flat)
+        local at=in_nose_manual(over,nose_down(70,4),40)
+        check(at==18-3,"70 degrees over the front ends after its .3 s, as over the back does: "..tostring(at))
     end)
     -- Where a drawn wheel's tyre touches down, the lowest point of its disc, against where the body's does.
     local function touch(m)

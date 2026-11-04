@@ -127,7 +127,8 @@ function Controller:preview(h,body,wheels,samples,controls)
     if issue then return invalid(issue) end
     -- The raw pad and Mapping's action record stay unchanged. All force
     -- channels are neutral except each stage's finite, bounded authored inputs:
-    -- the nose manual, air inputs and tricks stay neutral in every stage.
+    -- air inputs and tricks stay neutral in every stage, and the driving stages
+    -- pass the nose manual with the manual.
     local selected=Forces.controls()
     if STAGE=="pedal" or STAGE=="ride" or hop_stage then
         local pedal=controls and controls.pedal
@@ -136,12 +137,17 @@ function Controller:preview(h,body,wheels,samples,controls)
         selected.pedal=pedal
     end
     if STAGE=="ride" or STAGE=="hop_ride" then
-        -- Both driving stages pass steer, brake and the manual. Only hop_ride
-        -- also selects the hop policy below. Mapping sends the manual only
-        -- while a wheel is on the ground; the kernel engages it only on the
-        -- rear wheel.
+        -- Both driving stages pass steer, brake and both manuals. Only hop_ride
+        -- also selects the hop policy below. Mapping sends the manuals only
+        -- while a wheel is on the ground; the kernel engages the manual only
+        -- on the rear wheel and the nose manual only on the front.
         local steer,brake,manual=controls and controls.steer,controls and controls.brake,controls and controls.manual
         local held=controls and controls.manual_held
+        local nose,nose_held=controls and controls.nose_manual,controls and controls.nose_manual_held
+        if nose==nil then nose=0 end
+        if nose_held==nil then nose_held=false end
+        if not M.finite(nose) or nose<0 or nose>1 or type(nose_held)~="boolean" then return invalid("invalid_manual") end
+        selected.nose_manual,selected.nose_manual_held=nose,nose_held
         if steer==nil then steer=0 end
         if brake==nil then brake=0 end
         if manual==nil then manual=0 end

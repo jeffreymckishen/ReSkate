@@ -260,7 +260,7 @@ function Tests.run()
             else check(zero==5 and first and math.abs(first-band)<.001,"a manual .10 s after landing: "..zero.." "..tostring(first)) end
         end
     end
-    do -- The forward band writes the nose manual, which the stage does not pass yet.
+    do -- The forward band writes the nose manual, and the stage passes it as the nose manual.
         local d=driver()
         local c
         for _=1,20 do c=d.step({right_y=.53}) end
@@ -269,7 +269,8 @@ function Tests.run()
         local level=World.place(flat,{speed=4})
         local samples=World.contacts(flat,level,tuning.gravity)
         local model=Stage.new():preview(h,level,Forces.proposed_wheels(),samples,c)
-        check(model.valid and model.manual_active==false,"and it lifts nothing")
+        check(model.valid and model.manual_active==false,"and it lifts no front")
+        check(model.nose_manual_active==true,"but the rear, in the nose manual: "..tostring(model.nose_manual_active))
     end
     -- The manual a raw right_y holds, after the .12 dead zone, over the band from .22 to .72.
     local function level(y) return math.min(1,((math.abs(y)-.12)/.88-.22)/.5) end

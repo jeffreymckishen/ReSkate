@@ -1207,15 +1207,21 @@ int build(const fs::path& root, const fs::path& parts, const fs::path& output, c
 }
 
 // --check-own-names: whether a pack has names of its own and keeps nothing of the template's.
-// Each check prints PASS or FAIL with what failed; the exit code is 0 only when all pass.
+// Each check prints PASS or FAIL with what failed, or that it is not checked here (C11 needs two
+// builds); the exit code is 0 only when none fails.
 class Checks {
 public:
     void fail(const std::string& check, std::string what) { failures_[check].push_back(std::move(what)); seen_.insert(check); }
     void pass(const std::string& check) { seen_.insert(check); }
     void note(const std::string& check, std::string what) { notes_[check].push_back(std::move(what)); seen_.insert(check); }
+    // A check this mode cannot run: it is named, neither passed nor failed.
+    void skip(const std::string& check, std::string why) { skipped_[check] = std::move(why); }
     int report() const {
         std::vector<std::string> failed;
         for (const auto& check : order_) {
+            if (const auto skipped = skipped_.find(check); skipped != skipped_.end() && !seen_.contains(check)) {
+                std::cout << check << " not checked here: " << skipped->second << '\n'; continue;
+            }
             if (!seen_.contains(check)) continue;
             const auto at = failures_.find(check);
             std::cout << check << ' ' << (at == failures_.end() ? "PASS" : "FAIL (" + std::to_string(at->second.size()) + ")") << '\n';
@@ -1232,6 +1238,7 @@ public:
 private:
     std::vector<std::string> order_{"C1","C2","C3","C4","C5","C6","C7","C8","C9","C10","C11"};
     std::map<std::string, std::vector<std::string>> failures_, notes_;
+    std::map<std::string, std::string> skipped_;
     std::set<std::string> seen_;
 };
 
@@ -1379,6 +1386,12 @@ int check_own_names(const fs::path& pack_root, const fs::path& template_root, co
         }
         for (const auto& [where, hit] : hits)
             checks.fail("C1", where.first + ": " + where.second + (hit.first > 1 ? " (" + std::to_string(hit.first) + " times, first" : " (") + " at " + std::to_string(hit.second) + ")");
+        // The TOC stores a chunk's GUID byte-reversed (toc.cpp), where the search above cannot see
+        // it: its chunks are compared as read.
+        std::set<fb::Guid> drone_chunks;
+        for (const auto i : drone.chunks) drone_chunks.insert(tpl.bundle.chunks[i].guid);
+        for (const auto& chunk : pack.toc.chunks)
+            if (drone_chunks.contains(chunk.guid)) checks.fail("C1", "toc: chunk " + chunk.guid.string());
         checks.note("C1", std::to_string(needles.size()) + " identities of the template; " + std::to_string(searched) + " payloads searched, " +
             std::to_string(skipped) + " left out as the game's own bytes, plus the manifest, TOC and pack files");
         checks.pass("C1");
@@ -1689,9 +1702,16 @@ int check_own_names(const fs::path& pack_root, const fs::path& template_root, co
         if (meshes.size() != bike_parts) checks.fail("C9", std::to_string(meshes.size()) + " meshes, the bike has " + std::to_string(bike_parts));
         if (ebx_stock != stock.bundle.manifest.ebx.size() || resources_stock != stock.bundle.manifest.resources.size() || chunks_stock != stock.bundle.manifest.chunks.size())
             checks.fail("C9", "the game's entries are not all in the pack");
-        std::size_t toc_added{};
-        for (const auto& chunk : pack.toc.chunks) toc_added += !stock.chunks.contains(chunk.guid);
-        if (toc_added != pack.toc.chunks.size() || toc_added != chunks_added) checks.fail("C9", "TOC chunks " + std::to_string(pack.toc.chunks.size()) + " are not the added chunks");
+        // The TOC lists exactly the added chunks, once each.
+        std::set<fb::Guid> toc_chunks, added_chunks;
+        for (const auto& chunk : pack.toc.chunks) toc_chunks.insert(chunk.guid);
+        for (const auto& chunk : b.chunks) if (!stock.chunks.contains(chunk.guid)) added_chunks.insert(chunk.guid);
+        for (const auto& chunk : toc_chunks)
+            if (!added_chunks.contains(chunk)) checks.fail("C9", "TOC chunk " + chunk.string() + " is not one the pack adds");
+        for (const auto& chunk : added_chunks)
+            if (!toc_chunks.contains(chunk)) checks.fail("C9", "added chunk " + chunk.string() + " is not in the TOC");
+        if (pack.toc.chunks.size() != toc_chunks.size() || std::ranges::any_of(pack.toc.chunks, [](const auto& chunk) { return chunk.removed; }))
+            checks.fail("C9", "the TOC lists " + std::to_string(pack.toc.chunks.size()) + " chunks for " + std::to_string(toc_chunks.size()) + " GUIDs, or removes one");
         checks.pass("C9");
     }
 
@@ -1732,7 +1752,7 @@ int check_own_names(const fs::path& pack_root, const fs::path& template_root, co
             std::to_string(stock.rids.size()) + " resources, " + std::to_string(stock.chunks.size()) + " bundle and " + std::to_string(stock.toc_chunks.size()) + " TOC chunks)");
         checks.pass("C10");
     }
-    checks.note("C11", "determinism is two builds giving the same sha256 for every file; build_bike_pack.py's .files.json compares them");
+    checks.skip("C11", "determinism needs two builds: compare their .files.json, or build with --expect bike/pack-files.json");
     return checks.report();
 }
 

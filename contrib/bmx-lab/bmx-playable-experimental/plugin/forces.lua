@@ -595,7 +595,11 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     -- turn no further than the contact's own path, nose_d ahead of the centre of mass.
     if nose_carving then
         out.manual_carve_rate=-steer*math.min(t.nose_carve_rate*math.clamp(math.abs(speed)/2,0,1),t.nose_carve_lateral/math.max(math.abs(speed),.1))
-        out.turning_lean_angle=math.atan(-manual_speed*M.dot(measured.angular_velocity,up)/M.length(t.gravity))
+        -- The lean follows that yaw only between none and the carve the bars ask for. Past it, a yaw a bump gave
+        -- asked for more lean, the leaned front tyre turned the bike harder, and at 5 to 7.6 m/s it spun round.
+        local lean_yaw=M.dot(measured.angular_velocity,up)
+        lean_yaw=out.manual_carve_rate>=0 and math.clamp(lean_yaw,0,out.manual_carve_rate) or math.clamp(lean_yaw,out.manual_carve_rate,0)
+        out.turning_lean_angle=math.atan(-manual_speed*lean_yaw/M.length(t.gravity))
         if balance_frame and M.dot(body_up,up)>.2 then
             local most=math.atan(math.abs(out.manual_carve_rate)*math.max(nose_d,0)/math.max(math.abs(speed),.5))
             local turn=heading(out.front_steer_angle)
@@ -743,7 +747,11 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
                 assist=M.sub(assist,M.mul(up,M.dot(assist,up)))
                 assist=M.add(assist,M.mul(forward,M.dot(assist,forward)*(t.nose_roll_gain-1)))
                 out.nose_yaw_couple=math.clamp(-lever*yaw_rate+t.nose_yaw_damping*(out.manual_carve_rate-yaw_rate),-t.nose_yaw_torque,t.nose_yaw_torque)
-                assist=M.add(assist,M.mul(up,out.nose_yaw_couple))
+                -- The body pitched on its front wheel does not turn about the axis it is twisted about: the twist
+                -- about up rolled it too, the roll spring's answer yawed it further, and past the twist's limit that
+                -- ran away. So the twist is the torque that gives the yaw it would have given, about up alone.
+                local spin=M.dot(up,M.tensor(measured,M.mul(up,out.nose_yaw_couple),true))
+                assist=M.add(assist,M.tensor(measured,M.mul(up,spin),false))
             end
             if carving then
                 local yaw_rate=M.dot(measured.angular_velocity,up)

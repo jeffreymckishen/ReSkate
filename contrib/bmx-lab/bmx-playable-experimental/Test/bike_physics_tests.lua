@@ -1244,6 +1244,32 @@ function T.run()
             end
         end
     end)
+    case(function() -- Carving on its front wheel into a small bump at pedalling speed, the bike keeps carving and stays up.
+        -- With the lean following whatever yaw the bump gave and the twist rolling the pitched body, all three spun
+        -- round at 3 to 3.8 rad/s, 89 degrees off their travel, and the two downhill fell. On both wheels the same rides
+        -- reach .8 to 1.5 rad/s and 5 to 6 degrees.
+        local FRONT=G.front_axle[3]-G.com[3]
+        for _,row in ipairs({{grade=0,speed=7.6,steer=1,m=.5},{grade=-.13,speed=4,steer=.5,m=.01},{grade=-.08,speed=6,steer=.5,m=.01}}) do
+            local what=string.format("a 5 cm bump from %.1f m/s down %d%%, steer %.1f, m=%.2f",row.speed,math.floor(-row.grade*100+.5),row.steer,row.m)
+            -- The front tyre meets the bump about 3.2 s into the ride, carving by then.
+            local at=FRONT+row.speed*3.2
+            local plane,bump=Ground.plane(0,row.grade),Ground.bump(at,.05,.4)
+            local ground={height=function(x,z) return plane.height(x,z)+bump.height(x,z) end,
+                grad=function(x,z) local px,pz=plane.grad(x,z);local bx,bz=bump.grad(x,z);return px+bx,pz+bz end}
+            local ride,rows=nose({m=row.m,speed=row.speed,ground=ground,hold=330,after=0,during=function(t) return {steer=t>60 and row.steer or 0} end})
+            local met,carving,yaw,slip=nil,false,0,0
+            for _,r in rows do
+                if not met and r.body.center_of_mass[3]+FRONT>=at then met=r.speed;carving=r.out.nose_manual_active==true end
+                yaw=math.max(yaw,math.abs(r.body.angular_velocity[2]))
+                local f,v=M.turn(M.normalized(r.body.orientation),{0,0,1}),r.body.linear_velocity
+                local fl,vl=math.sqrt(f[1]^2+f[3]^2),math.sqrt(v[1]^2+v[3]^2)
+                if vl>=.5 and fl>1e-6 then slip=math.max(slip,math.abs(math.deg(math.asin(math.clamp((f[1]*v[3]-f[3]*v[1])/(fl*vl),-1,1))))) end
+            end
+            check(ride.refused==0 and met~=nil and met>=5 and carving,string.format("%s: met at %.2f m/s in the nose manual",what,met or -1))
+            check(not fell(rows),what..": no fall")
+            check(yaw<=1.2 and slip<=8,string.format("%s: no spin, at most %.2f rad/s and %.1f degrees off its travel",what,yaw,slip))
+        end
+    end)
     case(function() -- Dropped front first with the stick held, the bike lands into the nose manual; with it let go, onto both wheels.
         for _,deg in ipairs({8,18,28,36}) do
             for _,m in ipairs({0,.5,1}) do

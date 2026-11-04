@@ -584,6 +584,16 @@ DroneTemplate read_drone_template(const Pack& tpl) {
 
 struct Built { std::size_t ebx{}, resources{}, chunks{}; };
 
+// A streamed texture's bundle chunk is the resident end of the chain its TOC chunk lists, in the
+// same bytes (as Studio writes one, and as the merge narrows one). Every other payload has bytes
+// of its own.
+bool end_of_toc_chunk(const fb::BundleFileInfo& file, const fb::Guid& chunk, const std::vector<fb::TocChunk>& toc) {
+    return std::ranges::any_of(toc, [&](const auto& item) {
+        return item.guid == chunk && !item.removed && item.location == file.location && file.offset > item.offset &&
+            std::uint64_t{file.offset} + file.size == std::uint64_t{item.offset} + item.size;
+    });
+}
+
 int build(const fs::path& root, const fs::path& parts, const fs::path& output, const fs::path& game,
           const std::optional<fs::path>& textures, const KeepNames& keep) {
     require(root != output && !fs::exists(output), "Output must be a new separate directory");
@@ -803,6 +813,9 @@ int build(const fs::path& root, const fs::path& parts, const fs::path& output, c
         require(std::get<ebx::ResourceReference>(field(*document.instances[0].object, "Resource").value.data).id == resource.resourceId,
             "Compiled texture binding resource differs from its header");
         Bytes pixels, encoded;
+        // What the TOC lists: the stored chain, of which `encoded` (what the bundle lists) is the
+        // tail from `tail_at`. Only a donor's streamed chain has a tail of its own.
+        Bytes chain; std::uint32_t tail_at{};
         std::optional<TextureInput> input;
         // No supplied model (the six-part reference path): colour and normal keep the donor's
         // pixels, header, mip chain and chunk record whole, under the bike's names.
@@ -840,10 +853,21 @@ int build(const fs::path& root, const fs::path& parts, const fs::path& output, c
             put(header,116,static_cast<std::uint32_t>(input->pixels.size()));
             texture_dimensions(document, *input);
         } else {
-            // Stored as the donor stored them, so its compressed mip ends stay true.
+            // Stored as the donor stored them, so its compressed mip ends stay true. A streamed
+            // donor (frame_2_normal: first mip 1) lists its whole chain in the TOC and, in the
+            // bundle, only the resident mips, the end of the same bytes; both are kept so.
+            const auto& listed = tpl.file(fb::AssetKind::chunk, donor.chunk);
+            const auto toc_chunk = std::ranges::find_if(tpl.toc.chunks, [&](const auto& item) { return item.guid == donor.chunk_guid; });
+            require(toc_chunk != tpl.toc.chunks.end() && !toc_chunk->removed && toc_chunk->location == listed.location &&
+                listed.offset >= toc_chunk->offset && std::uint64_t{listed.offset} + listed.size == std::uint64_t{toc_chunk->offset} + toc_chunk->size,
+                "Donor texture's bundle chunk is not the end of its TOC chunk");
+            chain = tpl.archives->read(tpl.root, toc_chunk->location, toc_chunk->offset, toc_chunk->size);
+            tail_at = listed.offset - toc_chunk->offset;
+            require(fb::decode_cas(chain, {game}).size() == original.chunk_size, "Donor texture's TOC chunk is not its whole mip chain");
             pixels = tpl.payload(fb::AssetKind::chunk, donor.chunk);
-            encoded = tpl.stored(tpl.file(fb::AssetKind::chunk, donor.chunk));
+            encoded.assign(chain.begin()+tail_at, chain.end());
         }
+        if (chain.empty()) chain = encoded;
         std::copy(own.chunk.bytes.begin(), own.chunk.bytes.end(), header.begin()+40);
         put(header,120,owner_hash(own.name));
         const auto checked = fb::read_texture_header(header, resource.resourceMeta);
@@ -866,10 +890,12 @@ int build(const fs::path& root, const fs::path& parts, const fs::path& output, c
             chunk.sha1 = sha(pixels); chunk.originalSize = pixels.size();
             chunk.logicalOffset = 0; chunk.logicalSize = static_cast<std::uint32_t>(pixels.size());
         }
-        const auto placement = append_stored(encoded, sha(pixels), true);
+        const auto whole = append_stored(chain, tail_at ? sha(fb::decode_cas(chain, {game})) : sha(pixels), true);
+        const fb::BundleFileInfo placement{whole.location, whole.offset + tail_at, whole.size - tail_at};
+        if (tail_at) written_payloads.push_back({placement, sha(pixels), true});
         require(fb::decode_cas(encoded, {game}) == pixels, "Texture chunk CAS round trip failed");
         bundle.chunks.push_back(chunk); cf.push_back(placement);
-        toc.chunks.push_back({own.chunk, placement.location, placement.offset, placement.size, false});
+        toc.chunks.push_back({own.chunk, whole.location, whole.offset, whole.size, false});
         // Its record, the donor's with the bike's name hash; a chain the builder wrote is
         // resident from mip 0.
         auto row = template_rows[donor.chunk];
@@ -1150,7 +1176,12 @@ int build(const fs::path& root, const fs::path& parts, const fs::path& output, c
     // Every byte of the archive is one payload the pack names.
     {
         std::set<std::pair<std::uint32_t, std::uint32_t>> ranges;
-        for (const auto& file : files) if (file.location.patch) ranges.emplace(file.offset, file.size);
+        const auto chunks_at = 1 + ef.size() + rf.size();
+        for (std::size_t i = 0; i < files.size(); ++i) {
+            if (!files[i].location.patch) continue;
+            if (i >= chunks_at && end_of_toc_chunk(files[i], bundle.chunks[i-chunks_at].guid, toc.chunks)) continue;
+            ranges.emplace(files[i].offset, files[i].size);
+        }
         for (const auto& chunk : toc.chunks) if (chunk.location.patch) ranges.emplace(chunk.offset, chunk.size);
         std::uint64_t next{};
         for (const auto& [offset, size] : ranges) { require(offset == next, "Pack archive has bytes no payload names"); next += size; }
@@ -1353,7 +1384,7 @@ int check_own_names(const fs::path& pack_root, const fs::path& template_root, co
         checks.pass("C1");
     }
 
-    // C2. Texture chunks: read as compressed blocks, and not the game's.
+    // C2. Texture chunks: read as compressed blocks, not the game's, and whole in the TOC.
     {
         std::size_t textures{};
         for (const auto& payload : payloads) {
@@ -1364,6 +1395,12 @@ int check_own_names(const fs::path& pack_root, const fs::path& template_root, co
             if (stock.chunks.contains(header.chunk) || stock.toc_chunks.contains(header.chunk))
                 checks.fail("C2", payload.label + ": chunk " + header.chunk.string() + " is the game's");
             if (!pack.find_chunk(header.chunk)) checks.fail("C2", payload.label + ": chunk " + header.chunk.string() + " is not in the pack");
+            // The TOC lists the whole chain, also of a texture whose bundle holds only its end.
+            const auto listed = std::ranges::find_if(pack.toc.chunks, [&](const auto& item) { return item.guid == header.chunk && !item.removed; });
+            if (listed == pack.toc.chunks.end() || !listed->location.patch) { checks.fail("C2", payload.label + ": chunk " + header.chunk.string() + " is not in the pack's TOC"); continue; }
+            const auto chain = fb::decode_cas(pack.archives->read(pack.root, listed->location, listed->offset, listed->size), {game}).size();
+            if (chain != header.chunk_size)
+                checks.fail("C2", payload.label + ": its TOC chunk holds " + std::to_string(chain) + " bytes, its header's chain " + std::to_string(header.chunk_size));
         }
         const auto unforced = guid("texture/mask/chunk");
         checks.note("C2", std::to_string(textures) + " texture headers; self-test: the unforced mask GUID " + unforced.string() +
@@ -1587,10 +1624,19 @@ int check_own_names(const fs::path& pack_root, const fs::path& template_root, co
         checks.pass("C7");
     }
 
-    // C8. Every byte of the pack's archives belongs to exactly one payload it names.
+    // C8. Every byte of the pack's archives belongs to exactly one payload it names, but for a
+    // streamed texture's bundle chunk, which is the end of its own TOC chunk.
     {
         std::map<fb::CasIdentifier, std::set<std::pair<std::uint32_t, std::uint32_t>>> ranges;
-        for (const auto& file : pack.region.files) if (file.location.patch) ranges[file.location].emplace(file.offset, file.size);
+        std::size_t ends{};
+        const auto chunks_at = pack.first(fb::AssetKind::chunk);
+        for (std::size_t i = 0; i < pack.region.files.size(); ++i) {
+            const auto& file = pack.region.files[i];
+            if (!file.location.patch) continue;
+            if (i >= chunks_at && end_of_toc_chunk(file, b.chunks[i-chunks_at].guid, pack.toc.chunks)) { ++ends; continue; }
+            ranges[file.location].emplace(file.offset, file.size);
+        }
+        if (ends) checks.note("C8", std::to_string(ends) + " bundle chunk(s) the end of their TOC chunk's bytes");
         for (const auto& chunk : pack.toc.chunks) if (chunk.location.patch && !chunk.removed) ranges[chunk.location].emplace(chunk.offset, chunk.size);
         for (const auto& [location, list] : ranges) {
             const auto path = pack_root / "Win32" / pack.archives->directory(location.installChunk) / vfs::archive_file(location.archive);

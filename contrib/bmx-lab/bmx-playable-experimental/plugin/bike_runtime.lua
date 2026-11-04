@@ -218,6 +218,22 @@ local function new_runtime(services,options,two_cycle)
         if not ok and why~="pending" then next_preparation=false end
         return ok,why
     end
+    -- A terrain retry is a new explicit Mount press, so it arms its own 60 s, as the press that began the cycle did.
+    -- The step-off already finished under the old time; only the mount still to come (its equipment request and
+    -- acquisition) uses the new one. ready() binds the on-foot ACK by equipment attempt number, not by time.
+    function object:renew_second_admission(admitted_at_ms,renewed_at_ms)
+        if not two_cycle or running or pending or T.unloaded or T.startup_closed or mounts_burned<1
+            or not next_preparation or not finite(next_admitted_at) or admitted_at_ms~=next_admitted_at or not api then
+            return false,"No second preparation to renew"
+        end
+        local now=api.clock()
+        if not finite(renewed_at_ms) or renewed_at_ms%1~=0 or renewed_at_ms<next_admitted_at
+            or not now or renewed_at_ms>now or now-renewed_at_ms>=60000 then
+            return false,"Renewed Mount time is not current"
+        end
+        next_admitted_at=renewed_at_ms
+        return true
+    end
     function object:second_preflight_ready(admitted_at_ms)
         if not two_cycle or not qualification_only or running or pending or T.unloaded or T.startup_closed
             or mounts_burned<1 or not next_preparation or not session_owner or not core or not api

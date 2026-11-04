@@ -741,6 +741,19 @@ function Entry.new(R,Runtime,Survey,options)
         if phase=="preflight_refused" then
             if unloaded or ticking or cancelled or not namespace_clear then return false,"Preflight retry unavailable." end
             local version=generation
+            -- In a later cycle this press is a new Mount intent with its own 60 s: finding a flat spot can take a
+            -- rider longer than the press that began the cycle allowed. The proof below then reads the new time.
+            if attempts_used>=2 and two_cycle then
+                local pressed=clock()
+                if not pressed or generation~=version or cancelled or unloaded then return false,detail end
+                pressed=math.floor(pressed)
+                local renewed=call(owner.renew_second_admission,owner,second_admitted_at,pressed)
+                if generation~=version or cancelled or unloaded then return false,detail end
+                if not renewed[1] or renewed[2]~=true then
+                    fail(text(renewed[3],"Terrain retry could not renew its Mount time."));return false,detail
+                end
+                second_admitted_at=pressed
+            end
             local clear=preflight_clear()
             if generation~=version or cancelled or unloaded then return false,detail end
             if not clear then fail("Preflight owner or storage proof lost; no retry.");return false,detail end
@@ -752,7 +765,7 @@ function Entry.new(R,Runtime,Survey,options)
             if attempts_used>=2 and (not second_admitted_at or now<second_admitted_at or now-second_admitted_at>=60000) then
                 fail("Original second Mount admission deadline expired; no terrain retry.");return false,detail
             end
-            -- Keep the reserved attempt and its original second-intent deadline.
+            -- Keep the reserved attempt; the deadline is this press's (above).
             -- Only a NEW survey/preparation is allowed; no old-owner Y repeats.
             generation+=1;prep_at=now;prep_last=nil;prep_calls=0;survey=nil
             second_terrain_pending=attempts_used>=2

@@ -114,6 +114,15 @@ function Tests.run()
             return false,"pending"
         end
         function owner:playable_grade_policy()return options.playable and Survey.PLAYABLE_GRADE_POLICY or nil end
+        -- As the runtime does: a later press than the current one, no later than now, within its own 60 s.
+        function owner:renew_second_admission(admitted_at_ms,renewed_at_ms)
+            f.renewals=(f.renewals or 0)+1
+            if f.on_renew then return f.on_renew(admitted_at_ms,renewed_at_ms) end
+            if admitted_at_ms~=f.second_admitted_at or renewed_at_ms<admitted_at_ms or renewed_at_ms>f.now
+                or f.now-renewed_at_ms>=60000 then return false,"No second preparation to renew" end
+            f.second_admitted_at=renewed_at_ms
+            return true
+        end
         function owner:second_preflight_ready(admitted_at_ms)
             f.preflight_proofs=(f.preflight_proofs or 0)+1
             if f.on_preflight_proof then return f.on_preflight_proof(admitted_at_ms) end
@@ -493,10 +502,12 @@ function Tests.run()
     end)
     case("second terrain retry keeps intent and step-off then repeats full survey",function()
         local f=fixture({two=true,playable=true});second_terrain(f)
-        local admitted=f.second_admitted_at;local probes,prepares=f.probes,f.prepares
+        local probes,prepares=f.probes,f.prepares
         local held=true;f.on_pad=function(p) p.buttons.lb=held;p.buttons.a=held;return p end
         f.rough=false;f.position=vector.create(4,.5,0)
+        local admitted=f.now
         check(f.entry:mount(),"explicit terrain retry accepted on existing second intent")
+        check(f.renewals==1 and f.second_admitted_at==admitted,"the retry press is the intent's new Mount time")
         f.tick(45)
         check(f.probes==probes and f.prepares==prepares and f.mounts==1 and f.stepoffs==1,
             "held retry chord delays all preparation and never repeats Y")
@@ -504,7 +515,7 @@ function Tests.run()
         check(f.probes==probes and f.mounts==1,"less than600ms neutral cannot start a new survey")
         f.await_mount()
         check(f.mounts==2 and f.stepoffs==1 and f.new_calls==1 and f.second_admitted_at==admitted,
-            "one fresh owner request after the same intent, no replacement manager or step-off")
+            "one fresh owner request after the retry press, no replacement manager or step-off")
         local counts=Survey.survey_counts()
         check(counts.floor==180 and counts.obstacle==1080 and counts.obstacle_ticks==35
             and counts.probes==1295 and Survey.SURVEY_RAYS_PER_TICK==32,
@@ -538,17 +549,26 @@ function Tests.run()
             end
         end
     end)
-    case("second terrain retry never resets original60second deadline",function()
-        local f=fixture({two=true,playable=true});second_terrain(f)
-        local probes,prepares=f.probes,f.prepares
-        f.now=f.second_admitted_at+60000
-        check(not f.entry:mount() and f.entry:status().phase=="blocked","expired original intent refuses explicit retry")
-        check(f.mounts==1 and f.stepoffs==1 and f.probes==probes and f.prepares==prepares,"expiry admits no native or survey work")
+    case("each terrain retry press arms its own 60 seconds, and nothing else does",function()
+        -- reuse6 in game: the third press came 74 s after the step-off and blocked the rest of the launch.
+        local f=fixture({two=true,playable=true});second_terrain(f);f.rough=false
+        local original=f.second_admitted_at
+        f.now=original+74000
+        check(f.entry:mount(),"a retry long after the step-off's press is still a retry")
+        check(f.second_admitted_at==original+74000 and f.entry:status().phase=="preparing","the press renews the Mount time")
+        f.await_mount()
+        check(f.mounts==2 and f.stepoffs==1 and f.new_calls==1,"the retry mounts with no second step-off or manager")
         local g=fixture({two=true,playable=true});second_terrain(g);g.rough=false
-        local original=g.second_admitted_at;check(g.entry:mount(),"one pending terrain retry")
-        g.on_pad=function(p)p.buttons.a=true;return p end;g.now=original+60000;g.tick()
-        check(g.entry:status().phase=="blocked" and g.second_admitted_at==original and g.mounts==1 and g.stepoffs==1,
+        g.now=g.second_admitted_at+30000
+        local pressed=g.now;check(g.entry:mount(),"one pending terrain retry")
+        g.on_pad=function(p)p.buttons.a=true;return p end;g.now=pressed+60000;g.tick()
+        check(g.entry:status().phase=="blocked" and g.second_admitted_at==pressed and g.mounts==1 and g.stepoffs==1,
             "held controls cannot turn retry time into a fresh arm window")
+        local h=fixture({two=true,playable=true});second_terrain(h)
+        local probes,prepares=h.probes,h.prepares
+        h.on_renew=function()return false,"constructed renewal refusal" end
+        check(not h.entry:mount() and h.entry:status().phase=="blocked","a refused renewal is no retry")
+        check(h.mounts==1 and h.stepoffs==1 and h.probes==probes and h.prepares==prepares,"refusal admits no native or survey work")
     end)
     case("eight terrain refusals of one Mount intent never allocate or evict",function()
         local f=fixture({two=true,playable=true});second_terrain(f)

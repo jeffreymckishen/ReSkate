@@ -71,6 +71,9 @@ function Entry.new(R,Runtime,Survey,options)
     local return_used,return_seen,return_open=0,nil,false
     local notice,notice_until,last_clock=nil,0,nil
     local mount_charged,last_stop,logged_phase,logged_line=false,nil,nil,nil
+    -- What this Mount's stop has told the rider, so a stop is told once and not every tick it stays latched. Each
+    -- accepted Mount clears it: the same refusal twice in a row is two refusals, and each is told.
+    local stop_told=nil
     local function trace(line) call(R.log,"[BMX] "..line) end
     -- Shown without reading the clock: fail, which reports a bad clock, comes here too.
     local function announce(message)
@@ -88,7 +91,10 @@ function Entry.new(R,Runtime,Survey,options)
     local attempt_limit=two_cycle and 8 or 1
     -- Whether the SDK reports an origin: nil until a create has made a body.
     local body_reuse=nil
-    local function mount_left() return attempt_limit==nil or attempts_used<attempt_limit end
+    -- Mounts whose create the SDK refused for a retry: it made no body and reserved nothing, so they spend none of
+    -- the cap. attempts_used still counts them, since it also says which cycle comes next. One a Mount at most.
+    local unspent,mount_refunded=0,false
+    local function mount_left() return attempt_limit==nil or attempts_used-unspent<attempt_limit end
     local fallen,recover_pending,recover_wait_context=nil,false,nil
     local stopped,cancel_sent,cancelled,unloaded,ticking=false,false,false,false,false
     local generation,latest,known=0,nil,false
@@ -766,7 +772,7 @@ function Entry.new(R,Runtime,Survey,options)
             or used and (not two_cycle or phase~="skateboard") then return false,"Consumed, busy or retained attempt; not available." end
         if attempts_used>=1 and state()~=100 then return tell("Get on your skateboard, then hold LB and press A.") end
         if attempts_used==0 and state()~=504 then return tell("Step off your skateboard with Y, then hold LB and press A.") end
-        attempts_used+=1;used=true;generation+=1
+        attempts_used+=1;used=true;generation+=1;stop_told=nil;mount_refunded=false
         terrain_refusals={}
         mount_charged=attempts_used>=2
         local version=generation
@@ -942,9 +948,10 @@ function Entry.new(R,Runtime,Survey,options)
                     -- A refused create is not a fall, even on the remount after one: the board comes back, and a
                     -- retry refusal waits for the rider's Mount rather than asking again by itself.
                     fallen=fall_cause(latest) or not refusal() and fallen or nil
+                    if two_cycle and refusal()=="retry" and not mount_refunded then mount_refunded=true;unspent+=1 end
                     local refused=not fallen and (no_body() or refusal()=="retry" and NOT_READY) or nil
                     local why=fallen or refused or text(latest.stop_reason,"Ride stopped")
-                    if why~=last_stop then last_stop=why;announce(refused or "Ride ended: "..why) end
+                    if why~=stop_told then stop_told,last_stop=why,why;announce(refused or "Ride ended: "..why) end
                     if fallen then phase,detail="fallen","Bike stopped after a fall: "..fallen
                         ..(mount_left() and ". Recover can return and mount again."
                             or ". No mounts are left; Return remains available.")

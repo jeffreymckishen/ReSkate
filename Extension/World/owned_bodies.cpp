@@ -862,9 +862,13 @@ std::string create(std::uint64_t owner, const Definition& definition, Handle& ou
             // Preparation is generic and process-lifetime: no owner, definition,
             // position or allocation request survives this refused call.
             service.initialization_requested = true;
+            // This and the capture or clock refusal below share one fixed code. Nothing is
+            // reserved or allocated yet, so a plugin may wait and ask again, and it should
+            // compare a code rather than a sentence whose wording can change.
             return "body_preallocation_unavailable";
         }
-        Anchor anchor; Epoch epoch;
+        Anchor anchor;
+        Epoch epoch;
         if (!capture(anchor) || !clock(anchor, epoch)) return "body_preallocation_unavailable";
         if (anchor.world != service.world || anchor.state != service.state || anchor.context != service.context) {
             for (auto& s : service.slots) if (s.attempted && !s.retained) retire(s, false);
@@ -1540,6 +1544,10 @@ std::string submit(std::uint64_t owner, const Handle& handle, const Command& com
         Locked lock(service.lock); auto* s = lookup(owner, handle);
         if (!s || !s->active || s->retained || s->quarantined || s->release_requested || !fresh(*s)) return "body owner or generation changed";
         Epoch current{};
+        // Fixed codes, so a plugin can tell a clock it should wait for from an epoch it
+        // should read again without matching sentences. An epoch older than the latest
+        // sample (a later read or receipt published a newer one) would also fail the
+        // mailbox check below; naming it here gives it the same code as any stale epoch.
         if (!command_clock(*s, current)) return "body_clock_unavailable";
         if (current != s->latest.epoch || command.epoch != current) return "body_epoch_expired";
         if (service.command_sequence == std::numeric_limits<std::uint64_t>::max() ||

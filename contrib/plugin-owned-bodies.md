@@ -35,8 +35,8 @@ fixed: the capsules have no category of their own and collide with the world onl
 supply masks.
 
 `create` returns opaque userdata or `nil, why`. The first call in a session may only request the
-producer hook and return `waiting for a fresh qualified 60 Hz physics step` before any allocation;
-a later explicit `create` can then use the observed clock. Allocation itself is never retried.
+producer hook and return `body_preallocation_unavailable` before any allocation; a later explicit
+`create` can then use the observed clock. Allocation itself is never retried.
 
 `create` also takes an options table, whose only field is `reuse` (a boolean); any other field,
 or a value other than a table or `nil`, is an error. With options it returns `body, nil, origin`
@@ -68,6 +68,7 @@ and `impulse` vectors (zero when left out) and, for a nonzero one-shot impulse, 
 for `force + impulse / h` together: safety limits, not tuning. Each body has one pending inbox and
 a ring of four receipts. Publishing reserves a ring slot before any native setter; a pending
 inbox is never replaced, and a full ring refuses without spending the caller's serial or impulse.
+Two of `submit`'s refusals are fixed codes; see [refusal codes](#refusal-codes).
 
 A command computed from sample epoch **N** targets only native step **N+1**, with the same step
 length and time `sample.time + h`. A step still at N waits; a missed N+1 or 100 ms of wall time
@@ -117,7 +118,9 @@ cleanly can come back under a new handle for the same VM; see below.
 `create(definition, {reuse = true})` needs `"world.physics.reuse"` as well as `"world.physics"`.
 It first looks among the bodies this VM instance parked itself, never another plugin's or another
 VM's, so a plugin reloaded since cannot reach them. A body qualifies when it was parked cleanly
-in the same world generation it was active in, was never quarantined or failed by a setter, and
+in the same world generation it was active in (any tick on which the world is not ready, such as
+a level load or the game leaving its playable state, starts a new generation, and every body parked
+before it stays parked, still counted against the process's eight, and is never re-activated), was never quarantined or failed by a setter, and
 has exactly the requested capsules, mass and inertia, compared bit for bit; position and rotation
 may differ. Before writing anything, the service reads the body to prove it is still as `release`
 left it: allocated in its generation, keyframed, configured, with no pending force, velocity or
@@ -139,6 +142,22 @@ failed, and that body is barred from re-activation for good). Two refusals are f
 A VM may ask to reuse once per tick; a second request that tick returns `nil, "asked to reuse a
 native body more than once in one tick"` without reaching the game. Plain `create` never reuses,
 so it is how a plugin asks for a new allocation.
+
+### Refusal codes
+
+Five refusals are fixed codes rather than sentences, so a plugin can compare `why` with them and
+decide whether to try again: the three below and reuse's two (see
+[re-activating a parked body](#re-activating-a-parked-body)). The other refusals of the calls on this page are sentences meant for
+logs. `probe_batch` has its own codes in `batch.reason`; see [ray batches](plugin-body-query.md).
+
+| Code | From | Meaning |
+| --- | --- | --- |
+| `body_preallocation_unavailable` | `create` | The producer setup is still pending, or the local skater, world or 60 Hz step clock cannot be captured now. No slot was reserved and nothing was allocated, so a later `create` may succeed. |
+| `body_clock_unavailable` | `submit` | The body's step clock cannot be qualified now: no step in the last 250 ms, the latest step did not publish or was another skater's or world's, the step is not 1/60 s, or the clock was being written at that moment. |
+| `body_epoch_expired` | `submit` | The clock is qualified but has moved past the latest sample, or a later `read` or `receipt` published a newer sample than the epoch passed in. Read again and compute from the new sample. |
+
+Neither `submit` refusal assigns a sequence, reserves the inbox or changes a receipt. With a
+current epoch, an invalid, repeated or blocked command keeps the mailbox's own refusal.
 
 ## Native boundary
 
@@ -185,8 +204,12 @@ covers the Lua binding against a constructed game: opaque handles and epochs, bo
 receipts, acknowledgement order, release on close, reload, the reuse options, owner and quota, and
 the permission and server refusals.
 
-None of that runs the game, and this code has not been run in the game. Creation, measured reads,
-commands produced on the next step, torque, several compounds, a whole session of control, and the
-cleanup of an active body during unload, a world change or a partial failure are checked only
-against constructed worlds and values. So is re-activation: whether the game treats a body that
-was dynamic, parked and made dynamic again exactly like a new one is unproven.
+None of that runs the game. Creation, measured reads, commands produced on the next step, torque,
+several compounds, a whole session of control, and the cleanup of an active body during unload, a
+world change or a partial failure are checked only against constructed worlds and values.
+Re-activation has been run in the game by one mod, a bike
+that creates one compound with `reuse` on each mount and releases it on each return: in five
+launches, every create made while its body was parked got that body back (5 of 5, no refusal), and
+the bike rode on it, fell and was returned again. In a sixth, twelve Mount and Return cycles made one
+allocation and eleven re-activations of the same body, with no refusal. Whether the game treats a
+body that was dynamic, parked and made dynamic again exactly like a new one has not been measured.

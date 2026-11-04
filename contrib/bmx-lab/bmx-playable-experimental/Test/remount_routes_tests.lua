@@ -29,20 +29,22 @@ local function reusing_sdk(w,...)
     local n,definition,options=select("#",...),...
     assert(n==2 and type(definition)=="table" and type(options)=="table" and options.reuse==true,
         "Spawn asks the SDK to reuse its parked bike")
-    if #w.creates==0 then return newproxy(),nil,"allocated","none_parked" end
+    if w.body==nil then return newproxy(),nil,"allocated","none_parked" end
     return newproxy(),nil,"reused"
 end
 -- An older SDK ignores the option and returns the body alone.
 local function older_sdk() return newproxy() end
 local function refusing_sdk(why) return function() return nil,why end end
--- A reusing SDK that refuses only the create numbered `at`, with `why` (body_reuse_pending by default): a parked bike
--- still settling, or an SDK not ready yet.
-local function refusing_once(at,why)
+-- A reusing SDK that refuses the creates numbered `first` through `last`, with `why` (body_reuse_pending by default):
+-- a parked bike still settling, or an SDK not ready yet.
+local function refusing_from(first,last,why)
     return function(w,...)
-        if #w.creates+1==at then return nil,why or "body_reuse_pending" end
+        local at=#w.creates+1
+        if at>=first and at<=last then return nil,why or "body_reuse_pending" end
         return reusing_sdk(w,...)
     end
 end
+local function refusing_once(at,why) return refusing_from(at,at,why) end
 -- Ticks until the refused create has been cleaned up and the Entry has settled on or off the board.
 local function until_refusal_settled(w)
     for _=1,4000 do
@@ -55,6 +57,12 @@ end
 local function told(lines,message)
     for _,line in ipairs(lines) do if line=="[BMX] "..message then return true end end
     return false
+end
+-- How many times the Entry told the rider that.
+local function times_told(lines,message)
+    local n=0
+    for _,line in ipairs(lines) do if line=="[BMX] "..message then n+=1 end end
+    return n
 end
 -- Every create asked for reuse with the definition alone beside it.
 local function asked_reuse(w)
@@ -353,6 +361,41 @@ function T.run()
         check(s.phase=="skateboard" and #w.creates==2 and told(lines,"The bike was not ready: mount again."),
             "the refused Mount ends on the board and says so: "..tostring(s.phase).." "..tostring(s.detail))
         check(player_remounts(w) and #w.creates==3 and w.manager:status().spawn.origin=="reused","Mount 3 rides the parked bike")
+    end)
+    case(function() -- Two Mounts in a row before the parked bike has settled: the rider is told each time.
+        local lines={}
+        local w=start({create=refusing_from(2,3),log=function(line) lines[#lines+1]=line end});measured(w,0)
+        check(w.entry:return_to_skateboard(),"Return accepted")
+        for _=1,3000 do w.tick();if w.entry:status().phase=="skateboard" then break end end
+        for mount=2,3 do
+            if mount>2 then w.tick(70) end
+            local mounted,why=w.entry:mount()
+            check(mounted,"Mount "..mount.." accepted: "..tostring(why))
+            until_refusal_settled(w)
+            local s=w.entry:status()
+            check(s.phase=="skateboard" and #w.creates==mount,"Mount "..mount.." ends on the board: "..tostring(s.phase).." "..tostring(s.detail))
+            check(times_told(lines,"The bike was not ready: mount again.")==mount-1,"Mount "..mount.."'s refusal is told: "
+                ..times_told(lines,"The bike was not ready: mount again.").." times")
+        end
+        check(player_remounts(w) and #w.creates==4 and w.manager:status().spawn.origin=="reused","Mount 4 rides the parked bike")
+    end)
+    case(function() -- The SDK not ready for nine Mounts before the first bike: none of them is a mount used.
+        local lines={}
+        local w=Chain.new({create=refusing_from(1,9,"body_preallocation_unavailable"),log=function(line) lines[#lines+1]=line end})
+        for mount=1,9 do
+            if mount>1 then w.tick(70) end
+            local mounted,why=w.entry:mount()
+            check(mounted,"Mount "..mount.." accepted: "..tostring(why))
+            until_refusal_settled(w)
+            local s=w.entry:status()
+            check(s.phase=="skateboard" and w.stock==100 and #w.creates==mount,
+                "Mount "..mount.." is refused and ends on the board: "..tostring(s.phase).." "..tostring(s.detail))
+        end
+        local s=w.entry:status()
+        check(s.attempt_limit==8 and s.body_reuse==nil,"with no body made yet the defensive cap of eight still stands")
+        check(times_told(lines,"The bike was not ready: mount again.")==9,"each refusal is told")
+        check(player_remounts(w) and #w.creates==10 and w.manager:status().spawn.origin=="allocated","the tenth Mount rides the first bike")
+        check(w.entry:status().attempt_limit==nil and w.entry:status().body_reuse==true,"and that body's origin lifts the cap")
     end)
     case(function() -- The automatic remount after a fall refused the same way: back on the board once, and Mount rides.
         local w=start({create=refusing_once(2)})

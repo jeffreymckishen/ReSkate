@@ -4,8 +4,8 @@
   "flat_file_count": 89,
   "quota_file_count": 90,
   "expected_processes": 47,
-  "expected_cases": 432,
-  "expected_assertions": 39845,
+  "expected_cases": 434,
+  "expected_assertions": 39875,
   "source_admission": "UNCHANGED_FALSE",
   "files": [
     {
@@ -137,8 +137,8 @@
     {
       "source": "plugin/bmx_playable_entry.lua",
       "destination": "bmx_playable_entry.lua",
-      "bytes": 69517,
-      "sha256": "A2B846A972D621A60E3782FEBBFA1662168678A78BD797AB0DBE9807B10665D3"
+      "bytes": 70202,
+      "sha256": "F6B7F008F2AE45F12D138A92726B2CB9D4A804C43DDCC2088A1A813F0D6EEE33"
     },
     {
       "source": "plugin/ride_r1_record.lua",
@@ -534,8 +534,8 @@
     {
       "source": "Test/remount_routes_tests.lua",
       "destination": "remount_routes_tests.lua",
-      "bytes": 22195,
-      "sha256": "FE6EE0C386EEA8D13B413C31EAA704951E33C909BB7AE8DFC3CB022FF92F739B"
+      "bytes": 24953,
+      "sha256": "4C4B50734425D261D6335CB3BD8119EAE430282D861C0F5F4380C61964D21CE6"
     },
     {
       "source": "Test/bike_physics_tests.lua",
@@ -583,8 +583,8 @@
     },
     {
       "source": "plugin/bmx_playable_entry.lua",
-      "bytes": 69517,
-      "sha256": "A2B846A972D621A60E3782FEBBFA1662168678A78BD797AB0DBE9807B10665D3"
+      "bytes": 70202,
+      "sha256": "F6B7F008F2AE45F12D138A92726B2CB9D4A804C43DDCC2088A1A813F0D6EEE33"
     },
     {
       "source": "plugin/board_drop.lua",
@@ -1076,8 +1076,8 @@
       "suite": "remount_routes_tests",
       "invoked": "remount_routes_tests",
       "context": "flat",
-      "expected_cases": 23,
-      "expected_assertions": 124
+      "expected_cases": 25,
+      "expected_assertions": 154
     },
     {
       "suite": "bike_physics_tests",

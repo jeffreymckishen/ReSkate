@@ -5,7 +5,8 @@ are all Luau on ReSkate's general plugin APIs.
 
 The bike comes with it. The mod folder holds the plugin and the bike's own native pack (`layout.toc`,
 `.reskate-studio-patch`, `BMX-NATIVE.txt` and `Win32`), so there is nothing else to install. It needs a ReSkate build
-with the session follow API. The bike is "BMX (Free)" by Ermakov, CC BY 4.0: see `CREDITS.md`.
+with the session follow API and body reuse (`world.physics.reuse`): an older one refuses to load it. The bike is
+"BMX (Free)" by Ermakov, CC BY 4.0: see `CREDITS.md`.
 
 An older separate `BMX_Prototype` pack is no longer needed. Remove it from `Mods`, or turn it off: both add the same
 bike, and whichever is higher in the mod list supplies it, so an old copy can stand in for this mod's bike. The mod
@@ -77,8 +78,9 @@ offline the game does not keep it, so set it again each launch.
 
 ## What to expect
 
-- Getting back on reuses the bike from the last ride, so mounts are not limited. Changing level or reloading the mod
-  needs a new one, and a game launch can make eight, shared with other mods: past that, restart the game.
+- Getting back on reuses the bike from the last ride, so mounts are not limited. Reloading the mod needs a new one,
+  and a game launch can make eight, shared with other mods: past that, restart the game. After changing level,
+  restart the game to ride again.
 - Pausing, opening Insert or leaving the game ends the ride. The rider goes back to the skateboard on their own once
   the menu is closed and the controls are released.
 - Top speed is about 7.7 m/s on the flat. The rider stops pedalling there and coasts down to about 7.2 m/s before

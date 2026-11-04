@@ -313,6 +313,7 @@ function Tests.run()
     reported.owner:stop("constructed reuse cleanup")
     -- A refusal that leaves no body and nothing to clean up is clean; any other leaves the body unknown.
     for why,class in pairs({body_preallocation_unavailable="retry",body_reuse_pending="retry",
+        body_slots_exhausted="restart",body_allocation_prohibited="change_level",
         ["the eight retained body slots are exhausted; native destruction is unproven"]="restart",
         ["a previous partial allocation in this world prohibits another native allocation"]="change_level",
         ["partial native body creation retained in quarantine; allocation retry prohibited"]="change_level",

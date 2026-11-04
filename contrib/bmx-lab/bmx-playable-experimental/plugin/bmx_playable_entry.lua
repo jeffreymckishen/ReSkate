@@ -83,7 +83,8 @@ function Entry.new(R,Runtime,Survey,options)
     -- The SDK has eight native body slots a game launch, shared by every plugin; input leases are cleared at their
     -- acknowledgement and cost nothing. An SDK that cannot reuse a parked body spends a slot on every mount, so the
     -- cap stays at eight. Spawn asks to re-activate this VM's parked bike instead, and the first create that says where
-    -- its body came from (Spawn's origin) lifts the cap: the SDK's own refusal then says when no body is left.
+    -- its body came from (Spawn's origin) lifts the cap: the SDK's own refusal then says when no body is left. The
+    -- cap is a defensive check: a ReSkate without world.physics.reuse refuses the manifest, so never loads the mod.
     local attempt_limit=two_cycle and 8 or 1
     -- Whether the SDK reports an origin: nil until a create has made a body.
     local body_reuse=nil
@@ -110,12 +111,16 @@ function Entry.new(R,Runtime,Survey,options)
             and s.startup.core_ready==false and s.startup.backend_ready==false
     end
     -- What to tell the rider when the SDK made no body and left nothing to clean up (bike_spawn.lua create_refusal).
+    -- A level change does not help the "change_level" refusals here: rides do not carry on past one in this launch.
     local NO_BODY={restart="No bike is left this launch: restart the game to ride again.",
-        change_level="The bike can't be made here: change level or restart the game."}
-    local function no_body()
+        change_level="The bike can't be made here: restart the game to ride again."}
+    -- A retry refusal is told only as the ride stops: the chain stays clean, so the next Mount asks again.
+    local NOT_READY="The bike was not ready: mount again."
+    local function refusal()
         local b=known and plain(latest) and latest.spawn
-        return plain(b) and NO_BODY[b.creation_refusal] or nil
+        return plain(b) and b.creation_refusal or nil
     end
+    local function no_body() local class=refusal();return class and NO_BODY[class] or nil end
     local function preflight_clear()
         if attempts_used>=2 and two_cycle then
             if not used or mount_issued or return_pending or stock_attempted or second_prepare_pending
@@ -934,8 +939,10 @@ function Entry.new(R,Runtime,Survey,options)
                 if latest.phase=="following" and latest.stop_latched~=true then
                     fallen=nil;phase,detail="riding","One-session bike active. Return or Cancel remains available."
                 elseif latest.stop_latched==true or latest.phase=="done" then
-                    fallen=fall_cause(latest) or fallen
-                    local refused=not fallen and no_body() or nil
+                    -- A refused create is not a fall, even on the remount after one: the board comes back, and a
+                    -- retry refusal waits for the rider's Mount rather than asking again by itself.
+                    fallen=fall_cause(latest) or not refusal() and fallen or nil
+                    local refused=not fallen and (no_body() or refusal()=="retry" and NOT_READY) or nil
                     local why=fallen or refused or text(latest.stop_reason,"Ride stopped")
                     if why~=last_stop then last_stop=why;announce(refused or "Ride ended: "..why) end
                     if fallen then phase,detail="fallen","Bike stopped after a fall: "..fallen

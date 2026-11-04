@@ -1244,6 +1244,31 @@ function T.run()
             end
         end
     end)
+    case(function() -- Carving on its front wheel at full lock over an 8 cm bump downhill, the bike does not spin round.
+        -- Off the bump the bike is in the air for a moment and the nose manual begins again as it lands. The bars were
+        -- brought back to the front wheel's path from there at twice the stick's rate, as on the way in, and were left past
+        -- it for several steps: yaw 2.2 rad/s at 4 m/s, and at 5 m/s the bike spun round, 89 degrees off its travel. Once
+        -- on that path they now keep to it for the rest of the nose manual.
+        local FRONT=G.front_axle[3]-G.com[3]
+        for _,row in ipairs({{grade=-.08,speed=4,m=.01},{grade=-.08,speed=5,m=.5}}) do
+            local what=string.format("an 8 cm bump from %.1f m/s down %d%% at full lock, m=%.2f",row.speed,math.floor(-row.grade*100+.5),row.m)
+            local at=FRONT+row.speed*3.2
+            local plane,bump=Ground.plane(0,row.grade),Ground.bump(at,.08,.4)
+            local ground={height=function(x,z) return plane.height(x,z)+bump.height(x,z) end,
+                grad=function(x,z) local px,pz=plane.grad(x,z);local bx,bz=bump.grad(x,z);return px+bx,pz+bz end}
+            local ride,rows=nose({m=row.m,speed=row.speed,ground=ground,hold=330,after=0,during=function(t) return {steer=t>60 and 1 or 0} end})
+            local met,carving,yaw,slip=nil,false,0,0
+            for _,r in rows do
+                if not met and r.body.center_of_mass[3]+FRONT>=at then met=r.speed;carving=r.out.nose_manual_active==true end
+                yaw=math.max(yaw,math.abs(r.body.angular_velocity[2]))
+                local f,v=M.turn(M.normalized(r.body.orientation),{0,0,1}),r.body.linear_velocity
+                local fl,vl=math.sqrt(f[1]^2+f[3]^2),math.sqrt(v[1]^2+v[3]^2)
+                if vl>=.5 and fl>1e-6 then slip=math.max(slip,math.abs(math.deg(math.asin(math.clamp((f[1]*v[3]-f[3]*v[1])/(fl*vl),-1,1))))) end
+            end
+            check(ride.refused==0 and met~=nil and carving,string.format("%s: met at %.2f m/s in the nose manual",what,met or -1))
+            check(not fell(rows) and yaw<=2 and slip<=30,string.format("%s: no spin, at most %.2f rad/s and %.1f degrees off its travel",what,yaw,slip))
+        end
+    end)
     case(function() -- Carving on its front wheel into a small bump at pedalling speed, the bike keeps carving and stays up.
         -- With the lean following whatever yaw the bump gave and the twist rolling the pitched body, all three spun
         -- round at 3 to 3.8 rad/s, 89 degrees off their travel, and the two downhill fell. On both wheels the same rides

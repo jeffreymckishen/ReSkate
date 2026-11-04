@@ -1143,6 +1143,31 @@ function T.run()
             check(deepest<=.03,string.format("%s: the front tyre goes at most %.3f m into the car",what,deepest))
         end
     end)
+    case(function() -- From a rear manual straight into a nose manual, the drawn hips swing forward no faster than in either alone.
+        -- The body moves here. Eased a sixth of the way a step from the rear manual's shift to the nose manual's, the
+        -- hips moved .095 m in one frame and stopped dead as the shift crossed to forward. Composed as Core does, a
+        -- rear manual alone moves them at most .055 m and a nose manual .030.
+        for _,row in ipairs({{-.53,3},{-.53,4},{-.72,3},{-.72,4}}) do
+            local back,speed=row[1],row[2]
+            local what=string.format("stick %.2f then .53 at %.1f m/s",back,speed)
+            local w=harness(flat)
+            local b=World.place(World.terrain.flat(),{speed=speed})
+            local reared,nosed,last,worst=false,false,nil,0
+            for step=1,160 do
+                if step==4 then w.set_pad(back) elseif step==64 then w.set_pad(.53) end
+                local out
+                out,b=w.ride_step(b)
+                check(not out.stop_requested,what..": the ride goes on: "..tostring(out.issue))
+                if step<64 then reared=reared or w.model.manual_active==true else nosed=nosed or (w.model.nose_manual_active==true and w.model.manual_active~=true) end
+                local a=out.presentation_pose
+                local hip=a.rider_shift~=nil and MP.manual_rider(a.rider_shift,a.rider_standing,a.rider_nose).hip_offset or {0,0,0}
+                if last and step>64 then worst=math.max(worst,M.length(M.sub(hip,last))) end
+                last=hip
+            end
+            check(reared and nosed,what..": a rear manual, then a nose manual")
+            check(worst<=.06,string.format("%s: the drawn hips move at most %.3f m in a step",what,worst))
+        end
+    end)
     case(function() -- Going over the bars from a nose manual, the stick is let go: the stage gets no held stick while the crash runs.
         local w=harness(flat)
         local pose=nose_down(28,7.5)

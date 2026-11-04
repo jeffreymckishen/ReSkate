@@ -327,7 +327,11 @@ local function presentation(previous,model,wheels,h,samples,geometry,orientation
         if not M.finite(model.manual_shift) then return nil end
         local target=math.clamp(model.manual_shift,on_nose and -RIDER_SHIFT_NOSE or -RIDER_SHIFT_FORWARD,RIDER_SHIFT_BACK)
         if (shift or 0)>=0 then nose=on_nose and 1 or 0 elseif on_nose then nose=math.min(1,nose+stand) end
-        shift=(shift or 0)+(target-(shift or 0))*math.min(1,h/RIDER_SHIFT_SECONDS)
+        local ease=(target-(shift or 0))*math.min(1,h/RIDER_SHIFT_SECONDS)
+        -- Into a nose manual with a rear manual's back shift still drawn, the shift comes forward no faster than a
+        -- rear manual's comes back: eased a sixth of the gap a step, the hips moved .095 m in one frame.
+        if on_nose and (shift or 0)>0 then ease=math.max(ease,-RIDER_SHIFT_BACK*h/RIDER_SHIFT_SECONDS) end
+        shift=(shift or 0)+ease
         standing=math.min(1,standing+stand)
     elseif shift~=nil then
         shift-=shift*math.min(1,h/RIDER_SHIFT_SECONDS)

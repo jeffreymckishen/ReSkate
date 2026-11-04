@@ -87,6 +87,8 @@ offline the game does not keep it, so set it again each launch.
   bump of about 12 cm often throws it over the bars below about 3 m/s and can still do it at 5 m/s, and so can a
   pothole or dip of 6 to 10 cm met at 2.5 to 3 m/s. Held low, with the stick a little forward, it rides a 12 cm bump
   at a jog, and on two wheels or in a manual the same kerb face just stops the bike.
+  Carved at full lock, a bump of about 8 cm met at 4 to 6.5 m/s can swing the back of the bike right round, and now
+  and then throws it over; carved at full lock down a steep hill, a 5 cm bump met faster than about 7.5 m/s can too.
   The rider is drawn hips up over the bars, which shows less of the weight shift than the physics uses.
 - Riding into a parked car stops the bike at the bumper, in a nose manual too: the back wheel comes down with the
   front tyre at the bumper. Faster than about 4 m/s it is a crash, over the bars.

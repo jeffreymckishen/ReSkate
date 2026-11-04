@@ -4,8 +4,8 @@
   "flat_file_count": 89,
   "quota_file_count": 90,
   "expected_processes": 47,
-  "expected_cases": 412,
-  "expected_assertions": 30708,
+  "expected_cases": 415,
+  "expected_assertions": 32976,
   "source_admission": "UNCHANGED_FALSE",
   "files": [
     {
@@ -179,8 +179,8 @@
     {
       "source": "plugin/bike_runtime_core.lua",
       "destination": "bike_runtime_core.lua",
-      "bytes": 142268,
-      "sha256": "324D8383128FF1EA7E0B74609BA0228A9A621881B0B9AD74A83792A6B5B82EAA"
+      "bytes": 142373,
+      "sha256": "7D5BA3AA256B8D9BB3AC968C7C9094864C6362939964CA68B2EB40422B87CD43"
     },
     {
       "source": "plugin/force_math.lua",
@@ -227,14 +227,14 @@
     {
       "source": "plugin/ride_runtime.lua",
       "destination": "ride_runtime.lua",
-      "bytes": 126515,
-      "sha256": "32420B3A9863666AA785D8BDD798D20241564FE80B0F947D5ED6D4A43529D162",
+      "bytes": 128128,
+      "sha256": "9D6958F16D45749241C6D9D02480EE425C877F7EA6747B4068989FF7C8E2A6C1",
       "test_transform": {
         "kind": "inert_raw_ride_fixture",
         "before": "local ACTIVATION_QUALIFIED = true",
         "after": "local ACTIVATION_QUALIFIED = false",
-        "bytes": 126516,
-        "sha256": "3A4BB5CC0B94DCD27E2E5D6B53C9583B60F24AC3186EC9498CFEC7249CD35326"
+        "bytes": 128129,
+        "sha256": "4E33EC29B28CA1116315A6B10AAD236627B39C784CA88D2BBBB969583F3104DA"
       }
     },
     {
@@ -252,8 +252,8 @@
     {
       "source": "plugin/mounted_pose.lua",
       "destination": "mounted_pose.lua",
-      "bytes": 72083,
-      "sha256": "978374AB64568E03F5D949002F9DCA7BC7474B710AD4EE04D2EBD52C1B8DCADB"
+      "bytes": 72989,
+      "sha256": "2C6DBA565CE9C1D03AD3E6A707C7C09A6DD7D778835571B42C41B194561EDDFA"
     },
     {
       "source": "plugin/board_drop.lua",
@@ -390,20 +390,20 @@
     {
       "source": "plugin/ride_runtime.lua",
       "destination": "ride_runtime_qualified_fixture.lua",
-      "bytes": 126515,
-      "sha256": "32420B3A9863666AA785D8BDD798D20241564FE80B0F947D5ED6D4A43529D162"
+      "bytes": 128128,
+      "sha256": "9D6958F16D45749241C6D9D02480EE425C877F7EA6747B4068989FF7C8E2A6C1"
     },
     {
       "source": "Test/barspin_rider_pose_integration_tests.lua",
       "destination": "barspin_rider_pose_integration_tests.lua",
-      "bytes": 21668,
-      "sha256": "3DE28F3269B39BDF09C38B7C9344F80CD24C82384CBFF49C9A66F1512E3956D4"
+      "bytes": 22168,
+      "sha256": "845EF9246FEF1313FC72AD79233143208E3487845DB351695D15C985FDA3F9D0"
     },
     {
       "source": "Test/core_session_renewable_fixture.lua",
       "destination": "core_session_renewable_fixture.lua",
-      "bytes": 142298,
-      "sha256": "9DE6C87FE3CF75AE1CEEFCB8336548F23113310F7E162618B9C5A71074E27742"
+      "bytes": 142403,
+      "sha256": "2B8AAA69EB9687D1B23670494D7FCBB12A02163579EA4F59D967A301ACD609AA"
     },
     {
       "source": "Test/tailwhip_integration_tests.lua",
@@ -474,8 +474,8 @@
     {
       "source": "Test/mounted_pose_fit_continuity_tests.lua",
       "destination": "mounted_pose_fit_continuity_tests.lua",
-      "bytes": 13286,
-      "sha256": "449105E0F7917262AC1FEE615EA773C96A0343772CF743796E26183ADA214114"
+      "bytes": 18339,
+      "sha256": "C0CBC88E0B5BDABECC5EF3C36F9C4FDD2558F628E08A7C55B1134AF54A4EBA6C"
     },
     {
       "source": "Test/steered_hub_geometry_tests.lua",
@@ -546,8 +546,8 @@
     {
       "source": "Test/ride_fall_tests.lua",
       "destination": "ride_fall_tests.lua",
-      "bytes": 80078,
-      "sha256": "503A031D7D6DC427820528ABC7FDB4F095876900AFC126C58C99AEE8D4CBB74E"
+      "bytes": 94390,
+      "sha256": "E87F59348D0767A4F2F769A7AE123243E4F9D77085A03AD06002CBF4FBDA796F"
     }
   ],
   "runtime_files": [
@@ -563,8 +563,8 @@
     },
     {
       "source": "plugin/bike_runtime_core.lua",
-      "bytes": 142268,
-      "sha256": "324D8383128FF1EA7E0B74609BA0228A9A621881B0B9AD74A83792A6B5B82EAA"
+      "bytes": 142373,
+      "sha256": "7D5BA3AA256B8D9BB3AC968C7C9094864C6362939964CA68B2EB40422B87CD43"
     },
     {
       "source": "plugin/bike_runtime.lua",
@@ -668,8 +668,8 @@
     },
     {
       "source": "plugin/mounted_pose.lua",
-      "bytes": 72083,
-      "sha256": "978374AB64568E03F5D949002F9DCA7BC7474B710AD4EE04D2EBD52C1B8DCADB"
+      "bytes": 72989,
+      "sha256": "2C6DBA565CE9C1D03AD3E6A707C7C09A6DD7D778835571B42C41B194561EDDFA"
     },
     {
       "source": "plugin/pump.lua",
@@ -693,8 +693,8 @@
     },
     {
       "source": "plugin/ride_runtime.lua",
-      "bytes": 126515,
-      "sha256": "32420B3A9863666AA785D8BDD798D20241564FE80B0F947D5ED6D4A43529D162"
+      "bytes": 128128,
+      "sha256": "9D6958F16D45749241C6D9D02480EE425C877F7EA6747B4068989FF7C8E2A6C1"
     },
     {
       "source": "plugin/tire.lua",
@@ -703,8 +703,8 @@
     },
     {
       "source": "README.md",
-      "bytes": 5683,
-      "sha256": "4C724BE0C9DCAE1F91B5C725FFB31D780FEABB5A0BF853618BFF617CA1D5D1D8"
+      "bytes": 7296,
+      "sha256": "3B168F9320C43B11B8783EF8798A5E8FA52A971AF6477EDC8D11077FD3EC653E"
     },
     {
       "source": "reskate-plugin.json",
@@ -752,8 +752,8 @@
     {
       "source": "plugin/bike_runtime_core.lua",
       "fixture": "Test/core_session_renewable_fixture.lua",
-      "source_sha256": "324D8383128FF1EA7E0B74609BA0228A9A621881B0B9AD74A83792A6B5B82EAA",
-      "fixture_sha256": "9DE6C87FE3CF75AE1CEEFCB8336548F23113310F7E162618B9C5A71074E27742",
+      "source_sha256": "7D5BA3AA256B8D9BB3AC968C7C9094864C6362939964CA68B2EB40422B87CD43",
+      "fixture_sha256": "2B8AAA69EB9687D1B23670494D7FCBB12A02163579EA4F59D967A301ACD609AA",
       "prefix": "return function(require)\n",
       "suffix": "\nend\n"
     }
@@ -951,7 +951,7 @@
       "invoked": "barspin_rider_pose_integration_tests",
       "context": "flat",
       "expected_cases": 1,
-      "expected_assertions": 79
+      "expected_assertions": 81
     },
     {
       "suite": "tailwhip_integration_tests",
@@ -1013,8 +1013,8 @@
       "suite": "mounted_pose_fit_continuity_tests",
       "context": "flat",
       "invoked": "mounted_pose_fit_continuity_tests",
-      "expected_cases": 4,
-      "expected_assertions": 214
+      "expected_cases": 5,
+      "expected_assertions": 1957
     },
     {
       "suite": "steered_hub_geometry_tests",
@@ -1090,8 +1090,8 @@
       "suite": "ride_fall_tests",
       "invoked": "ride_fall_tests",
       "context": "flat",
-      "expected_cases": 62,
-      "expected_assertions": 9454
+      "expected_cases": 64,
+      "expected_assertions": 9977
     }
   ]
 }

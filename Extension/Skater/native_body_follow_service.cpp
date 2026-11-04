@@ -99,6 +99,9 @@ struct Service {
     body_follow_native::ParkFence park_fence;
     owned_bodies::RetainedParkReceipt park_receipt;
     owned_bodies::BodyReleaseHold release_hold;
+    // Issued with the hold and kept past it, until this receipt's acknowledgement:
+    // the park observation, stop and seal still name the body by its handle.
+    owned_bodies::BodyDependency dependency;
     owned_body::Handle body;
     Forwarded final;
     std::atomic<std::uint64_t> returned_revision{};
@@ -210,6 +213,12 @@ bool abandoned_release_handed_off(const Service& s) noexcept {
 void acknowledge_locked(Service& s) noexcept {
     // Both ACK callers have already proved a terminal SDK receipt. This resets
     // only that receipt; native pose state, World slots and generations remain.
+    // First the dependency pin, so World may re-activate the parked body: this
+    // receipt no longer names it. The blocking World lock under this lock is the
+    // order release() already takes; World never takes this lock. A refusal keeps
+    // the pin set, and then that body is simply never re-activated.
+    if (s.dependency.available()) (void)owned_bodies::end_body_dependency(s.dependency);
+    s.dependency = {};
     s.owner.store(0, std::memory_order_release);
     s.sequence.store(0, std::memory_order_release);
     s.binding = {}; s.attachment = {}; s.park_fence = {}; s.park_receipt = {};
@@ -323,7 +332,7 @@ bool reserve(std::uint64_t owner, const owned_body::Handle& body,
     s.edge.store(0, std::memory_order_release);
     s.owner.store(owner, std::memory_order_release);
     s.sequence.store(sequence, std::memory_order_release);
-    if (!quiet() || !owned_bodies::acquire_release_hold(owner, actual, s.release_hold)) {
+    if (!quiet() || !owned_bodies::acquire_release_hold(owner, actual, s.release_hold, s.dependency)) {
         reason = actor_control_native::Reason::motion_owned;
         stop_locked(s, reason, StopOrigin::reserve_hold); return false;
     }

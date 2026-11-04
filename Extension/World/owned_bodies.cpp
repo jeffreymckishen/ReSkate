@@ -97,8 +97,13 @@ struct Slot {
     std::uint64_t active_world{}, parked_world{}, parked_serial{};
     AllocationProgress allocation{};
     std::uint64_t release_hold{};
+    // A retaining service's BodyDependency: while it is set the body is not re-activated,
+    // because that service may still look this slot up by the body's old handle.
+    std::uint64_t dependency{};
     bool release_requested{};
-    std::uint64_t parked_ms{}; // immutable successful retained park; never slot reuse
+    // The wall time of this handle's clean retained park, fixed until the park ends. Only a
+    // re-activation ends it, under a new handle, so a park receipt never names a reused body.
+    std::uint64_t parked_ms{};
     Sample latest{};
     Mailbox mailbox{};
 };
@@ -622,11 +627,11 @@ bool create_native(Slot& s) noexcept {
 // or none when it can. Only the caller's own slots are ever looked at, so a miss says nothing
 // about another owner's bodies; a slot that is not one of the caller's parked bodies is none_parked.
 ReuseMiss reuse_candidate(const Slot& s, std::uint64_t owner, const Definition& request, const Anchor& fresh) noexcept {
-    if (!s.attempted || s.owner != owner || !s.retained || s.active) return ReuseMiss::none_parked;
+    if (!s.attempted || s.owner != owner || !s.retained || s.active || s.release_hold) return ReuseMiss::none_parked;
     if (s.active_world != service.world_generation || (s.parked_world && s.parked_world != service.world_generation) ||
         s.anchor.world != fresh.world || s.anchor.state != fresh.state || s.anchor.context != fresh.context || s.body.world != fresh.world)
         return ReuseMiss::world_changed;
-    if (s.quarantined || s.creation_failed || s.reuse_barred || s.parked_world != service.world_generation ||
+    if (s.quarantined || s.creation_failed || s.reuse_barred || !s.parked_ms || s.parked_world != service.world_generation ||
         !s.allocation.body_confirmed || s.allocation.shapes_attempted != s.allocation.shapes_confirmed || s.made != s.definition.count)
         return ReuseMiss::quarantined;
     if (!same_shape(s.definition, request) || s.made != request.count) return ReuseMiss::definition_differs;
@@ -706,6 +711,10 @@ bool reactivate(Slot& s, const Definition& request, const Anchor& fresh) noexcep
     s.retained = s.quarantined = false;
     s.parked_world = s.parked_serial = 0;
     s.active_world = service.world_generation;
+    // The new handle's own release state: a held release of the old handle is finished
+    // (no hold or dependency is left), and its park time belongs to the old handle.
+    s.release_requested = false;
+    s.parked_ms = 0;
     return true;
 }
 } // namespace
@@ -876,6 +885,9 @@ std::string create(std::uint64_t owner, const Definition& definition, Handle& ou
                     if (reuse_rank(why) > reuse_rank(miss)) miss = why;
                     continue;
                 }
+                // A retaining service has not acknowledged its receipt, so it may still name this
+                // body by its old handle. Waiting costs nothing; another allocation would cost a slot.
+                if (s.dependency) { pending = true; continue; }
                 // Two native steps, so the keyframed park has been through a whole step before
                 // its state is read.
                 if (epoch.serial < s.parked_serial + 2) { pending = true; continue; }
@@ -892,6 +904,7 @@ std::string create(std::uint64_t owner, const Definition& definition, Handle& ou
                     retire(s, anchor_current(s.anchor));
                     s.quarantined = s.reuse_barred = s.creation_failed = true;
                     s.parked_world = s.parked_serial = 0;
+                    s.parked_ms = 0;
                     return "body_reactivation_failed";
                 }
                 out = s.handle;
@@ -1088,9 +1101,9 @@ bool try_borrow_source(std::uint64_t owner, const MeasuredSource& source, Source
     return false;
 }
 
-bool acquire_release_hold(std::uint64_t owner, const MeasuredSource& source, BodyReleaseHold& out) noexcept {
+bool acquire_release_hold(std::uint64_t owner, const MeasuredSource& source, BodyReleaseHold& out, BodyDependency& dependency) noexcept {
     LastError error;
-    if (out.available() || !owner || owner != source.owner_ || !eligible() ||
+    if (out.available() || dependency.available() || !owner || owner != source.owner_ || !eligible() ||
         !TryAcquireSRWLockExclusive(&service.lock)) return false;
     struct Unlock { ~Unlock() { ReleaseSRWLockExclusive(&service.lock); } } unlock;
     auto* s = lookup(owner, source.handle_);
@@ -1119,8 +1132,20 @@ bool acquire_release_hold(std::uint64_t owner, const MeasuredSource& source, Bod
     value.world_generation_ = service.world_generation; value.handle_ = s->handle;
     value.base_ = service.base; value.world_ = s->anchor.world; value.state_ = s->anchor.state;
     value.body_index_ = s->body.index; value.body_generation_ = s->body.generation;
-    s->release_hold = value.id_;
+    s->release_hold = s->dependency = value.id_;
     out = value;
+    dependency.owner_ = owner; dependency.id_ = value.id_; dependency.handle_ = s->handle;
+    return true;
+}
+bool end_body_dependency(BodyDependency& dependency) noexcept {
+    LastError error;
+    if (!dependency.owner_ || !dependency.id_ || GetCurrentThreadId() != service.thread) return false;
+    // Blocking, as release() is: a busy lock must not leave the pin behind for good.
+    Locked lock(service.lock);
+    auto* s = lookup(dependency.owner_, dependency.handle_);
+    if (!s || s->dependency != dependency.id_) return false;
+    s->dependency = 0;
+    dependency = {};
     return true;
 }
 bool release_requested(std::uint64_t owner, const BodyReleaseHold& hold, bool& out) noexcept {

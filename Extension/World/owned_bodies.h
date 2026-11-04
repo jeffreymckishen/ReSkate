@@ -26,8 +26,9 @@ std::string create(std::uint64_t owner, const owned_body::Definition&, owned_bod
 // reuse_own_parked first looks among this owner's own parked bodies for one that may come back,
 // proves it unchanged without writing, and re-activates it under a new handle; otherwise it
 // allocates as above. "body_reuse_pending" refuses with nothing reserved or written while such a
-// body has been parked for fewer than two native steps. "body_reactivation_failed" means native
-// writes were made and failed: the body is quarantined and this world allows no more allocation.
+// body has been parked for fewer than two native steps, or while a retaining service that held it
+// has not yet ended its BodyDependency. "body_reactivation_failed" means native writes were made
+// and failed: the body is quarantined and this world allows no more allocation.
 // report says which happened; it means nothing when create refuses.
 std::string create(std::uint64_t owner, const owned_body::Definition&, owned_body::Handle&, bool reuse_own_parked,
     owned_body::CreateReport& report) noexcept;
@@ -89,6 +90,7 @@ class SourceBorrow;
 class RetirementBasis;
 class RetainedParkReceipt;
 class BodyReleaseHold;
+class BodyDependency;
 class MeasuredSource;
 // What World can say about a sample a plugin presents as proof for a retaining
 // service's renewal. current: the slot still holds the measured allocation, the
@@ -128,7 +130,7 @@ private:
     friend bool capture_source(std::uint64_t, const owned_body::Handle&, MeasuredSource&) noexcept;
     friend bool try_measure_source(std::uint64_t, const MeasuredSource&, MeasuredSource&) noexcept;
     friend RenewalProof check_renewal_proof(std::uint64_t, const MeasuredSource&, const owned_body::Epoch&, std::uint64_t&) noexcept;
-    friend bool acquire_release_hold(std::uint64_t, const MeasuredSource&, BodyReleaseHold&) noexcept;
+    friend bool acquire_release_hold(std::uint64_t, const MeasuredSource&, BodyReleaseHold&, BodyDependency&) noexcept;
     friend bool capture_retirement_basis(std::uint64_t, const MeasuredSource&, RetirementBasis&) noexcept;
     friend bool try_borrow_source(std::uint64_t, const MeasuredSource&, SourceBorrow&) noexcept;
     std::uint64_t owner_{}, world_generation_{}, clock_observed_ms_{}, captured_ms_{};
@@ -183,7 +185,7 @@ class BodyReleaseHold {
 public:
     bool available() const noexcept { return id_ != 0; }
 private:
-    friend bool acquire_release_hold(std::uint64_t, const MeasuredSource&, BodyReleaseHold&) noexcept;
+    friend bool acquire_release_hold(std::uint64_t, const MeasuredSource&, BodyReleaseHold&, BodyDependency&) noexcept;
     friend bool release_requested(std::uint64_t, const BodyReleaseHold&, bool&) noexcept;
     friend bool request_held_release(std::uint64_t, const BodyReleaseHold&) noexcept;
     friend bool release_body_hold(std::uint64_t, BodyReleaseHold&) noexcept;
@@ -192,10 +194,32 @@ private:
     std::uintptr_t base_{}, world_{}, state_{};
     std::uint32_t body_index_{}, body_generation_{};
 };
+// Internal SDK pin from a retaining service's hold to its receipt acknowledgement.
+// The service still reads World by the body's handle after the hold is dropped
+// and the body parked: it observes the park, completes its stop and seals the
+// parked commands. Until it ends this pin, create(reuse_own_parked) refuses with
+// "body_reuse_pending" instead of re-activating the body under a new handle.
+// It grants nothing else: no hold, release, lookup, Lua value or native write.
+class BodyDependency {
+public:
+    bool available() const noexcept { return id_ != 0; }
+private:
+    friend bool acquire_release_hold(std::uint64_t, const MeasuredSource&, BodyReleaseHold&, BodyDependency&) noexcept;
+    friend bool end_body_dependency(BodyDependency&) noexcept;
+    std::uint64_t owner_{}, id_{};
+    owned_body::Handle handle_{};
+};
 // Client only, Try exclusive World lock. Requires the exact current measured
 // sample and allocation; acquire before publishing a dependent native writer.
-// At most one such retaining service may hold this body. Output must be empty.
-bool acquire_release_hold(std::uint64_t owner, const MeasuredSource&, BodyReleaseHold&) noexcept;
+// At most one such retaining service may hold this body. Both outputs must be
+// empty. The hold and the dependency pin are issued together; dropping the hold
+// (release_body_hold) leaves the pin for end_body_dependency.
+bool acquire_release_hold(std::uint64_t owner, const MeasuredSource&, BodyReleaseHold&, BodyDependency&) noexcept;
+// Client thread only; a blocking exclusive World lock, as release() takes. Ends
+// the exact pin when the retaining service has acknowledged its receipt and will
+// not name the body again. A mismatch, another thread or a reused handle leaves
+// the pin set, so that body is never re-activated; it is never a wrong release.
+bool end_body_dependency(BodyDependency&) noexcept;
 // A false return means unavailable/unknown, not that release was not requested.
 // Does not recapture native state, call a follow service or renew any lease.
 bool release_requested(std::uint64_t owner, const BodyReleaseHold&, bool& out) noexcept;

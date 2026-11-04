@@ -458,3 +458,95 @@ void park_angular_xyz_zero_keeps_closing_identity_clock_and_age() {
         check(fired,"finite W-only regression did not reach the selected closing fence");
     }
 }
+
+// Re-activating a body a retaining service held (create with reuse_own_parked over the actual
+// Service, with body_reuse_source_fixture.inc's recording setters). The service keeps naming the
+// body by its old handle after it drops the hold and the body parks: it observes the park,
+// completes its stop and seals the parked commands. So the hold also issues a dependency pin, and
+// the body comes back only after the service ends it at its receipt's acknowledgement.
+void held_body_waits_for_its_dependency_before_reuse() {
+    ReuseFixture f;
+    test_clock::now=10010;service.tick_at=test_clock::now;f.step();
+    const auto source=f.source();
+    auto& s=f.slot();
+    BodyReleaseHold hold;BodyDependency pin;
+    check(acquire_release_hold(owner,source,hold,pin) && hold.available() && pin.available() &&
+        s.release_hold && s.dependency==s.release_hold,"the hold did not issue its dependency pin");
+    // Only the exact current pin ends, and only once.
+    auto stale=pin;
+    check(end_body_dependency(pin) && !pin.available() && !s.dependency && s.release_hold,"the exact pin did not end alone");
+    check(!end_body_dependency(pin),"an empty token ended a pin");
+    check(release_body_hold(owner,hold) && !s.release_hold,"the first hold did not drop");
+    auto occupied=stale;
+    check(!acquire_release_hold(owner,source,hold,occupied) && !hold.available() && !s.release_hold && !s.dependency,
+        "a hold was issued into an occupied dependency token");
+    check(acquire_release_hold(owner,source,hold,pin) && s.dependency && s.dependency==s.release_hold,
+        "a second hold did not issue a new pin");
+    check(!end_body_dependency(stale) && s.dependency==s.release_hold,"an earlier pin's id ended the current pin");
+    bool other_thread{};
+    std::thread([&] { other_thread=end_body_dependency(pin); }).join();
+    check(!other_thread && pin.available() && s.dependency==s.release_hold,"a pin ended off the client thread");
+    s.owner=owner+1;
+    const bool foreign=end_body_dependency(pin);
+    s.owner=owner;
+    check(!foreign && pin.available() && s.dependency==s.release_hold,"a pin ended on a slot its owner does not hold");
+    // The Follow's cleanup order: release is deferred while held, then the hold drops and the
+    // body parks. The pin outlives both.
+    RetirementBasis basis;
+    check(capture_retirement_basis(owner,source,basis),"retirement basis capture failed");
+    check(release(owner,f.handle)=="body release deferred while native dependent work remains" && s.active && !s.retained &&
+        s.release_requested,"a held body was not kept active");
+    check(release_body_hold(owner,hold) && !s.release_hold && s.dependency,"dropping the hold ended the pin");
+    check(release(owner,f.handle).empty() && s.retained && !s.active && !s.quarantined && s.parked_ms &&
+        s.parked_world==service.world_generation && s.release_requested && s.dependency,"the body did not park cleanly with its pin");
+    test_clock::now=10020;service.tick_at=test_clock::now;f.step();
+    RetainedParkReceipt parked;
+    check(observe_retained_park(owner,basis,parked) && matches_retained_park(owner,basis,parked),"the park was not observed");
+    f.step();
+    reuse_native.calls.clear();
+    const auto generation=service.generation;
+    Handle out{5,5};CreateReport report;
+    check(f.reuse(out,report)=="body_reuse_pending" && out==Handle{} && reuse_native.calls.empty() && no_slot_beyond(1) &&
+        service.generation==generation && s.handle==f.handle && !s.reuse_barred && s.dependency,
+        "a pinned body was not refused cleanly as pending");
+    check(matches_retained_park(owner,basis,parked),"a pending reuse changed the parked body's history");
+    check(end_body_dependency(pin) && !pin.available() && !s.dependency,"the acknowledged pin did not end");
+    check(f.reuse(out,report).empty() && report.origin==Origin::reused && report.miss==ReuseMiss::none && out.slot==0 &&
+        out.generation>f.handle.generation,"the unpinned body did not come back");
+    check_calls(reactivation_writes,"re-activating a once-held body wrote differently");
+    check(s.active && !s.retained && !s.release_requested && !s.parked_ms && !s.release_hold && !s.dependency,
+        "re-activation kept the old handle's release state");
+    // The reason for the pin: the old park history no longer describes this slot.
+    check(!matches_retained_park(owner,basis,parked),"the old park history still matches the re-activated body");
+    Sample sample;
+    check(read(owner,out,sample).empty() && sample.epoch.body==out.generation,"the re-activated body does not read");
+    MeasuredSource again;
+    check(capture_source(owner,out,again),"the re-activated body cannot be measured for a new Follow");
+}
+
+// A body held active across a new world generation (the world came back at the same addresses)
+// parks once released, but not as a candidate: it was activated in an earlier generation. A
+// world reconcile does not end its pin either.
+void a_body_held_across_a_world_generation_is_not_reused() {
+    ReuseFixture f;
+    const auto source=f.source();
+    auto& s=f.slot();
+    BodyReleaseHold hold;BodyDependency pin;
+    check(acquire_release_hold(owner,source,hold,pin),"the hold was refused");
+    const auto generation=service.world_generation;
+    tick(f.base,f.client,false);
+    check(s.active && !s.retained && s.release_requested && s.dependency,"a not-ready tick parked a held body or ended its pin");
+    tick(f.base,f.client,true);
+    check(service.world_generation==generation+1 && s.active && !s.retained && s.dependency && s.active_world==generation,
+        "the held body did not stay active, pinned, into a new world generation");
+    check(release_body_hold(owner,hold) && !s.release_hold,"the hold did not drop");
+    reuse_native.calls.clear();
+    check(release(owner,f.handle).empty() && s.retained && !s.active && !s.quarantined && s.parked_ms && !s.parked_world &&
+        s.dependency,"the held body did not park cleanly outside any reusable generation");
+    check(end_body_dependency(pin) && !s.dependency,"the pin did not end");
+    f.step();f.step();
+    reuse_native.calls.clear();
+    Handle out;CreateReport report;
+    check(f.reuse(out,report).empty() && report.origin==Origin::allocated && report.miss==ReuseMiss::world_changed && out.slot==1 &&
+        !reuse_touched_seeded() && s.retained && !s.active,"a body held across a world generation was re-activated");
+}

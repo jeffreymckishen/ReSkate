@@ -133,7 +133,7 @@ failed, and that body is barred from re-activation for good). Two refusals are f
 
 | Code | Meaning |
 | --- | --- |
-| `body_reuse_pending` | A body that would qualify was parked fewer than two native steps ago. Nothing was reserved, written or allocated; ask again on a later tick. |
+| `body_reuse_pending` | A body that would qualify was parked fewer than two native steps ago, or a skater Follow that held it has not had its receipt acknowledged yet. Nothing was reserved, written or allocated; ask again on a later tick. |
 | `body_reactivation_failed` | A write while re-activating did not hold. The body stays retained in quarantine, no handle is returned, and that world allows no more allocation, as after a partial creation. |
 
 A VM may ask to reuse once per tick; a second request that tick returns `nil, "asked to reuse a

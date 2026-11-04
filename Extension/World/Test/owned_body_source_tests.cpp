@@ -1532,8 +1532,8 @@ void motion_record_arrives_during_client_poll() {
 }
 
 #include "body_prepare_source_fixture.inc"
-#include "owned_body_cleanup_source_fixture.inc"
 #include "body_reuse_source_fixture.inc"
+#include "owned_body_cleanup_source_fixture.inc"
 
 template<class F> void run(const char* name, F function, unsigned expected_links=0) {
     function();
@@ -1603,6 +1603,8 @@ int main() {
         run("a_failed_setter_bars_reuse_after_a_clean_park", a_failed_setter_bars_reuse_after_a_clean_park);
         run("a_body_parked_too_recently_is_pending_not_allocated", a_body_parked_too_recently_is_pending_not_allocated);
         run("reactivation_writes_hold_the_service_lock", reactivation_writes_hold_the_service_lock);
+        run("held_body_waits_for_its_dependency_before_reuse",held_body_waits_for_its_dependency_before_reuse);
+        run("a_body_held_across_a_world_generation_is_not_reused",a_body_held_across_a_world_generation_is_not_reused);
         std::cout << cases << " actual-Service cases, " << checks << " checks passed; native mutations "
                   << test_facts::mutations.load() << '\n';
         return 0;

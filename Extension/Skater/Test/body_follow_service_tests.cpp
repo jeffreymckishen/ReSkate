@@ -57,6 +57,11 @@ struct Leaves {
     dingosdk::body_follow_native::Attachment prepared_attachment{};
     std::array<float, 16> original_value{};
     std::uint64_t hold_id{}, requested_hold{};
+    // Dependency pins issued with a hold, and the ones the Service ended, in order.
+    unsigned dependency_ends{};
+    std::uint64_t issued_dependency{}, ended_dependency{};
+    std::uint64_t ended_dependency_owner{};
+    dingosdk::owned_body::Handle ended_dependency_body{};
     dingosdk::owned_bodies::RenewalProof proof_result{dingosdk::owned_bodies::RenewalProof::current};
     std::uint64_t proof_current_serial{}; // zero reports the proof's own serial as the current step
     dingosdk::owned_body::Epoch last_proof{};
@@ -117,11 +122,24 @@ RenewalProof check_renewal_proof(std::uint64_t owner, const MeasuredSource& iden
     current_serial = leaf.proof_current_serial ? leaf.proof_current_serial : proof.serial;
     return RenewalProof::current;
 }
-bool acquire_release_hold(std::uint64_t owner, const MeasuredSource& source, BodyReleaseHold& out) noexcept {
+bool acquire_release_hold(std::uint64_t owner, const MeasuredSource& source, BodyReleaseHold& out,
+    BodyDependency& dependency) noexcept {
     auto& leaf = service_test::leaf;
     ++leaf.holds;
-    if (out.available() || !owner || owner != source.owner_ || leaf.hold_refusal) return false;
+    if (out.available() || dependency.available() || !owner || owner != source.owner_ || leaf.hold_refusal) return false;
     out.owner_ = owner; out.id_ = ++leaf.hold_id; out.handle_ = source.handle_;
+    dependency.owner_ = owner; dependency.id_ = leaf.issued_dependency = out.id_; dependency.handle_ = source.handle_;
+    return true;
+}
+// Records which pin the Service ended. World's own rules are in owned_body_source_tests.cpp.
+bool end_body_dependency(BodyDependency& dependency) noexcept {
+    auto& leaf = service_test::leaf;
+    ++leaf.dependency_ends;
+    leaf.ended_dependency = dependency.id_;
+    leaf.ended_dependency_owner = dependency.owner_;
+    leaf.ended_dependency_body = dependency.handle_;
+    if (!dependency.id_) return false;
+    dependency = {};
     return true;
 }
 bool release_requested(std::uint64_t owner, const BodyReleaseHold& hold, bool& out) noexcept {
@@ -1410,6 +1428,60 @@ void session_renewable_guard_stops() {
         check(acknowledge_completed(owner, handle), "session cleanup still requires and permits the ordinary ACK");
     }
 }
+// Each acknowledgement ends the receipt's dependency pin exactly once, with the
+// token reserve took with its hold: completed, abandoned and the orphan path the
+// tick takes after release_all. Nothing before the acknowledgement ends it, and a
+// reserve whose hold was refused took no pin and ends none.
+void dependency_ack() {
+    reset("dependency_ack");
+    const auto ended_once = [](const char* why) {
+        check(leaf.dependency_ends == 1 && leaf.ended_dependency == leaf.issued_dependency && leaf.issued_dependency &&
+            leaf.ended_dependency_owner == owner && leaf.ended_dependency_body == body && !service().dependency.available(), why);
+    };
+    // Completed: the pin outlives the stop, the hold's release and the park.
+    auto handle = follow_one(false);
+    check(service().dependency.available() && leaf.issued_dependency == leaf.hold_id && !leaf.dependency_ends,
+        "reserve took the pin with its hold, and has not ended it");
+    check(stop(owner, handle), "stop the Follow");
+    tick(clear_guard());
+    check(read_one(handle).phase == Phase::completed && leaf.hold_releases == 1 && leaf.body_releases == 1 && leaf.parks == 1,
+        "cleanup dropped the hold, released and parked the body");
+    check(!leaf.dependency_ends && service().dependency.available(), "an unacknowledged Follow keeps its pin");
+    tick(clear_guard());
+    check(!leaf.dependency_ends, "another tick does not end an unacknowledged pin");
+    check(acknowledge_completed(owner, handle), "the completed receipt is acknowledged");
+    ended_once("the completed ACK ended the reserve's pin once");
+    check(!acknowledge_completed(owner, handle) && leaf.dependency_ends == 1, "a second ACK ends nothing");
+    // Abandoned: a reserve that was never published.
+    leaf.dependency_ends = 0; leaf.ended_dependency = 0;
+    handle = reserve_one(false);
+    check(service().dependency.available() && !leaf.dependency_ends, "the abandoned reserve took its pin");
+    check(stop(owner, handle), "stop the reserve");
+    tick(clear_guard());
+    check(read_one(handle).phase == Phase::abandoned && !leaf.dependency_ends, "abandonment alone ends no pin");
+    check(acknowledge_abandoned(owner, handle), "the abandoned receipt is acknowledged");
+    ended_once("the abandoned ACK ended the reserve's pin once");
+    // Orphan: the plugin closed, and the tick acknowledges for it.
+    leaf.dependency_ends = 0; leaf.ended_dependency = 0;
+    handle = follow_one(false);
+    release_all(owner);
+    check(!leaf.dependency_ends && service().dependency.available(), "release_all alone ends no pin");
+    tick(clear_guard());
+    check(!service().occupied, "the tick acknowledged the orphaned Follow");
+    ended_once("the orphan ACK ended the reserve's pin once");
+    // A reserve whose hold was refused took no pin, and its ACK ends none.
+    leaf.dependency_ends = 0; leaf.ended_dependency = 0;
+    const auto issued = leaf.issued_dependency;
+    leaf.hold_refusal = true;
+    tick(clear_guard());
+    Reason reason{};
+    check(!try_reserve(false, handle, reason) && handle.sequence && reason == Reason::motion_owned &&
+        !service().dependency.available() && leaf.issued_dependency == issued, "a refused hold issued no pin");
+    leaf.hold_refusal = false;
+    tick(clear_guard());
+    check(read_one(handle).phase == Phase::abandoned && acknowledge_abandoned(owner, handle), "abandoned and acknowledged");
+    check(!leaf.dependency_ends, "an ACK without a pin called World for none");
+}
 struct Scenario { const char* name; void (*run)(); };
 constexpr Scenario scenarios[] = {
     {"fixed_unchanged", fixed_unchanged}, {"renew_deadline", renew_deadline}, {"renew_windows", renew_windows},
@@ -1423,6 +1495,7 @@ constexpr Scenario scenarios[] = {
     {"lead_attachment", lead_attachment}, {"lead_dispatch", lead_dispatch}, {"lead_fallback", lead_fallback},
     {"session_renewable_continuation", session_renewable_continuation},
     {"session_renewable_guard_stops", session_renewable_guard_stops},
+    {"dependency_ack", dependency_ack},
 };
 } // namespace dingosdk::body_follow_service::test
 

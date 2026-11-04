@@ -1786,6 +1786,30 @@ function T.run()
         check(worst.torso>=.3,string.format("and the torso %.3f",worst.torso))
         check(worst.ground>=.2,string.format("no part of the rider goes near the road: %.3f",worst.ground))
     end)
+    case(function() -- loop2 in game: the VM stopped at 64 MB after four rides, every Ride of the launch kept.
+        -- Luau's weak keys are not ephemerons, and a Ride's api leads back to the Core that holds the Ride.
+        -- A full collection has run once a table nothing holds is gone, made in its own call (a register of the running
+        -- function stays marked until it is reused).
+        local function collected()
+            local sentinel=setmetatable({},{__mode="v"})
+            local function plant() sentinel[1]={} end
+            plant()
+            local ring={}
+            for i=1,4000000 do ring[i%64+1]={i,i,i,i};if sentinel[1]==nil then return true end end
+            return false
+        end
+        local probe=setmetatable({},{__mode="v"})
+        local function make()
+            local api={}
+            local ride=Ride.new(api,{mapping=Mapping.new(),contact=Contact},{})
+            api.owner=ride
+            check(ride:status().phase=="stopped","a Ride on a stand-in api stops at once")
+            probe[1]=ride
+        end
+        make()
+        check(collected() and collected(),"the collector ran twice")
+        check(probe[1]==nil,"a Ride nothing holds is collected, though its api leads back to it")
+    end)
     return {cases=cases,assertions=n,native_authority=false,constructed=true}
 end
 return T

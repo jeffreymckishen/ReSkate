@@ -4,7 +4,13 @@ local Identity = require("./lease_identity")
 local Source = {}
 Source.__index = Source
 Source.__metatable = "locked"
-local states = setmetatable({}, {__mode = "k"})
+-- Each instance's private state, in a holder the instance keeps through its own metatable. Luau's weak keys are not
+-- ephemerons: a weak-key table still marks its values, and a state reaches its own instance (its api leads back to the
+-- Core that holds this Source), so with weak keys alone every Source ever made stayed, each with the whole Core of its
+-- cycle (in the game loop2 stopped at 64 MB after its fourth ride). Weak both ways, the table keeps
+-- nothing, and a state lives exactly as long as its instance.
+local states = setmetatable({}, {__mode = "kv"})
+local HOLDER = {}
 local MAX_SAFE = 9007199254740991
 local methods = {"lease", "lease_read", "lease_renew", "lease_state", "lease_release", "lease_acknowledge",
     "lease_capture", "lease_capture_state", "lease_release_capture", "lease_acknowledge_capture"}
@@ -302,9 +308,10 @@ function Source.new(input_api, options)
     -- Construction and require are inert, even when a native API is unavailable.
     -- Luau refuses freeze on an already protected metatable. Keep this new
     -- metatable private until the instance is frozen, then protect both.
-    local instance_metatable = {__index=Source}
+    local holder = {s={api=input_api, options=option_values(options), phase="idle", reason="not armed", generation=0}}
+    local instance_metatable = {__index=Source, [HOLDER]=holder}
     local object = setmetatable({}, instance_metatable)
-    states[object] = {api=input_api, options=option_values(options), phase="idle", reason="not armed", generation=0}
+    states[object] = holder
     table.freeze(object)
     instance_metatable.__metatable = "locked"
     table.freeze(instance_metatable)
@@ -312,7 +319,7 @@ function Source.new(input_api, options)
 end
 
 function Source:arm(user, now_ms)
-    local s = states[self]
+    local s = states[self].s
     if s.busy then return false, "source operation in progress" end
     if s.phase ~= "idle" and s.phase ~= "complete" then return false, "source session unresolved" end
     if s.handle or s.request_uncertain then return false, "source cleanup unresolved" end
@@ -323,17 +330,17 @@ function Source:arm(user, now_ms)
     if not clock(s, now_ms) then return false, "invalid or regressed caller clock" end
     local replacement = {api=s.api, options=s.options, phase="armed", reason="waiting for acquisition gate",
         generation=s.generation + 1, user=user, arm_at=now_ms, last_now=now_ms}
-    states[self] = replacement
+    states[self].s = replacement
     return true
 end
 
 function Source:status()
     -- A cached status is diagnostic, not another guard-bearing native step.
-    return frame(states[self], false, false)
+    return frame(states[self].s, false, false)
 end
 
 function Source:stop(reason)
-    local s = states[self]
+    local s = states[self].s
     local busy = s.busy
     s.busy = true
     stop(s, reason)
@@ -353,9 +360,9 @@ end
 -- made: Core uses that for checks that publish nothing, and reads afresh
 -- before it publishes a force.
 function Source:authorize(selected, from_step)
-    local s = states[self]
+    local s = states[self].s
     local function current()
-        return states[self] == s and s.authorization_frame == selected and s.input_ok == true
+        return states[self].s == s and s.authorization_frame == selected and s.input_ok == true
             and s.phase == "capturing" and s.capture_admitted == true and s.capture_seen == true
             and s.handle ~= nil and selected.lease_handle == s.handle
             and selected.generation == s.generation and selected.input_ok == true
@@ -507,7 +514,7 @@ local function advance(s, now_ms, gates)
 end
 
 function Source:step(now_ms, gates)
-    local s = states[self]
+    local s = states[self].s
     if s.busy then return frame(s, false, false) end
     s.busy = true
     s.authorization_frame = nil

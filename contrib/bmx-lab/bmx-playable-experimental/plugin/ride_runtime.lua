@@ -11,7 +11,11 @@ local TrickAdapter = require("./trick_adapter")
 local ModScore = require("./score_runtime")
 local MeasuredLanding = require("./measured_landing")
 local Ride, Object = {}, {}
-local states = setmetatable({}, {__mode="k"})
+-- Each Ride's state, which the Ride keeps through its own metatable (HOLDER). Luau's weak keys are not ephemerons:
+-- the table would still mark a state, and a state reaches its own Ride (its api leads back to the Core that holds it),
+-- so with weak keys alone every Ride of the launch stayed, with its Core. Weak both ways, the table keeps nothing.
+local states = setmetatable({}, {__mode="kv"})
+local HOLDER = {}
 local MAX_SAFE = 9007199254740991
 local MAX_PENDING = 3
 -- The rider tripwire's cadence in measured epochs: every second one.
@@ -2127,7 +2131,7 @@ function Ride.new(force_api,models,options)
         if valid then s.phase,s.issue="observing","waiting for exact Core samples"
         else stop(s,"restricted force capability or private binding unavailable") end
     end
-    states[object]=s
+    states[object]=s;meta[HOLDER]=s
     table.freeze(object);meta.__metatable="locked";table.freeze(meta)
     return object
 end

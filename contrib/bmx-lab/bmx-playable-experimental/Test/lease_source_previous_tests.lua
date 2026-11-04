@@ -471,6 +471,35 @@ function Tests.run()
         ok,why=f.source:authorize(later)
         check(ok==false and why=="fresh selected input unavailable","afresh, the revoked lease refuses at its first read: "..tostring(why))
     end
+    do
+        cases += 1
+        -- loop2 in game: the VM stopped at 64 MB after four rides. Luau's weak keys are not ephemerons, and a Core's
+        -- services lead back to the Core that holds its Source, so every Source of the launch stayed, with its Core.
+        -- A full collection has run once a table nothing holds is gone. It is made in its own call: a register of the
+        -- running function stays marked until it is reused.
+        local function collected()
+            local sentinel = setmetatable({}, {__mode = "v"})
+            local function plant() sentinel[1] = {} end
+            plant()
+            local ring = {}
+            for i = 1, 4000000 do
+                ring[i % 64 + 1] = {i, i, i, i}
+                if sentinel[1] == nil then return true end
+            end
+            return false
+        end
+        local probe = setmetatable({}, {__mode = "v"})
+        local function make()
+            local api = {}
+            local source = Source.new(api)
+            api.owner = source
+            check(source:arm(2, 1000) == false, "a Source on a stand-in api arms nothing")
+            probe[1] = source
+        end
+        make()
+        check(collected() and collected(), "the collector ran twice")
+        check(probe[1] == nil, "a Source nothing holds is collected, though its api leads back to it")
+    end
     return {cases=cases,assertions=assertions,constructed=true,native_authority=false,gameplay=false}
 end
 return Tests

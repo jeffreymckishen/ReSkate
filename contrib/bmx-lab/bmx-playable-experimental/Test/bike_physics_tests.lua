@@ -106,7 +106,8 @@ end
 local function tilt_of(body)
     return math.deg(math.acos(math.clamp(M.turn(M.normalized(body.orientation),{0,1,0})[2],-1,1)))
 end
--- ride.steps, and ride.controls(step,body) -> {pedal,steer,brake,hop,manual,nose,nose_held}. ride.pitch starts the
+-- ride.steps, and ride.controls(step,body,folded,forecast) -> {pedal,steer,brake,hop,manual,nose,nose_held}, from the
+-- measured body and the forecast body and wheel rays the stage previews with. ride.pitch starts the
 -- bike that many degrees nose up on its rear wheel, or nose down on its front wheel when it is negative, and ride.lift
 -- raises it that far. ride.push(step,body,command) may return a force sent with the command, as Ride's car stop adds
 -- one. Returns the peaks, and calls ride.each(step,body,out,wheels,samples) with the wheel rays this step's command
@@ -135,7 +136,7 @@ local function run(ride)
             folded,forecast=InFlight.fold(h,gravity,inflight,body,samples)
             assert(folded,"the forecast stays bounded")
         end
-        local want=ride.controls and ride.controls(step,body) or {}
+        local want=ride.controls and ride.controls(step,body,folded,forecast) or {}
         local input={pedal=want.pedal or 0,steer=want.steer or 0,brake=want.brake or 0}
         if want.hop then hop_id+=1;input.hop_event_id=hop_id;input.hop_strength=1 end
         if want.manual or want.nose then
@@ -912,16 +913,16 @@ function T.run()
     local NOSE_HOLD={[.01]=23.05,[.5]=26.6,[1]=30.1}
     local function level_pitch(body) return math.deg(math.asin(math.clamp(M.turn(M.normalized(body.orientation),{0,0,1})[2],-1,1))) end
     -- o.m held forward from step o.before+1 for o.hold steps, then let go for o.after steps, as manual(o) does; o.during
-    -- and o.release may also set nose and nose_held. A row a step adds the nose-down pitch to the surface (nd) and to
-    -- level (lnd), the speed along the ground and the tilt from world up.
+    -- (t,body,folded,forecast) and o.release(t) may also set nose and nose_held. A row a step adds the nose-down pitch
+    -- to the surface (nd) and to level (lnd), the speed along the ground and the tilt from world up.
     local function nose(o)
         local before,hold=o.before or 15,o.hold or 120
         local rows={}
         local ride=run({steps=before+hold+(o.after or 60),speed=o.speed or 4,ground=o.ground,pitch=o.pitch,lift=o.lift,push=o.push,
-            controls=function(step,body)
+            controls=function(step,body,folded,forecast)
                 if step<=before then return {pedal=o.pedal_before} end
                 if step<=before+hold then
-                    local c=o.during and o.during(step-before,body) or {}
+                    local c=o.during and o.during(step-before,body,folded,forecast) or {}
                     if c.nose==nil then c.nose=o.m end
                     return c
                 end
@@ -947,7 +948,7 @@ function T.run()
         local t=Forces.tuning()
         local defaults={nose_hold_forward=.26,nose_hold_back=.20,nose_low=.23,nose_high=.13,nose_carve_rate=.6,
             nose_carve_lateral=2.5,nose_yaw_damping=300,nose_yaw_torque=300,nose_roll_gain=1.6,
-            nose_catch_torque=800,nose_catch_rate=.6,nose_catch_span=.5,nose_catch_seconds=.4}
+            nose_catch_torque=800,nose_catch_rate=.6,nose_catch_span=.5,nose_catch_seconds=.4,nose_air_seconds=.5}
         for name,value in defaults do check(t[name]==value,"the nose manual's "..name.." is "..tostring(t[name])) end
         local flat=Ground.plane(0,0)
         local body,wheels=place(flat,4)
@@ -958,7 +959,7 @@ function T.run()
         check(valid(nil),"the defaults are valid")
         for _,bad in ipairs({{nose_hold_forward=.31},{nose_hold_back=.31},{nose_high=.23},{nose_low=.27},{nose_carve_rate=5},
             {nose_carve_lateral=11},{nose_yaw_torque=1201},{nose_roll_gain=.9},{nose_roll_gain=3.1},
-            {nose_catch_torque=1201},{nose_catch_span=0},{nose_catch_seconds=1.1}}) do
+            {nose_catch_torque=1201},{nose_catch_span=0},{nose_catch_seconds=1.1},{nose_air_seconds=1.1}}) do
             local name,value=next(bad)
             check(not valid(bad),"a step is refused on "..name.."="..value)
         end
@@ -1328,6 +1329,60 @@ function T.run()
             end
             check(ride.refused==0 and not fell(rows) and peak<=47,string.format("%s: no fall, at most %.1f degrees from world up",what,peak))
             check(most<=25,string.format("%s: the catch pulls past the static limit on %d steps of a lift",what,most))
+        end
+    end)
+    case(function() -- Thrown off the front by a bump or a kerb's top with the stick held, the rider holds the bike's angle in the air.
+        -- With no hold in the air every one of these went over the bars once the front left the ground.
+        local most_air=Forces.tuning().air_pitch_torque
+        for _,row in ipairs({
+            {what="an 8 cm bump .4 m long",shape=function(at) return Ground.bump(at,.08,.4) end,length=.4,speed=4,m=.3},
+            {what="an 8 cm bump .4 m long",shape=function(at) return Ground.bump(at,.08,.4) end,length=.4,speed=4,m=1},
+            {what="a 12 cm bump .4 m long",shape=function(at) return Ground.bump(at,.12,.4) end,length=.4,speed=2.5,m=.3},
+            {what="a 12 cm bump .6 m long",shape=function(at) return Ground.bump(at,.12,.6) end,length=.6,speed=4,m=1},
+            {what="a 12 cm bump .6 m long",shape=function(at) return Ground.bump(at,.12,.6) end,length=.6,speed=7,m=1},
+            {what="a 25 degree kicker onto a 30 cm deck",shape=function(at) return Ground.kicker(at,math.rad(25),.3,.3) end,length=2,speed=7,m=1,down=true},
+            {what="a 15 cm kerb ramp over .5 m",shape=function(at) return Ground.rise(at,.15,.5) end,length=.5,speed=7,m=1},
+        }) do
+            local what=string.format("%s at %.1f m/s, m=%.1f",row.what,row.speed,row.m)
+            local at,hold=met(row)
+            local _,rows=nose({m=row.m,speed=row.speed,ground=row.shape(at),hold=hold,after=0})
+            local held,most,late,supported=false,0,0,nil
+            for _,r in rows do
+                if r.out.balance_support_mask~=0 then supported=r.t end
+                -- A refused step sends nothing, so it holds nothing either.
+                local air=r.out.valid and r.out.nose_air_couple or 0
+                if air~=0 then
+                    held=true;most=math.max(most,type(air)=="number" and math.abs(air) or math.huge)
+                    -- At most nose_air_seconds after the last step the kernel had the front on the ground.
+                    if (r.t-supported)*h>.5+h+1e-6 then late+=1 end
+                end
+            end
+            check(not fell(rows),what..": no fall")
+            check(held and most<=most_air,string.format("%s: the rider holds it in the air, at most %.0f N*m",what,most))
+            check(late==0,what..": for no more than half a second: "..late.." steps later")
+            if row.down then check(rows[#rows].rear<=.02 and not rows[#rows].out.nose_manual_active,what..": and lands with the rear down") end
+        end
+        -- The hold is the held stick's: let go as the kernel first sees the bike in the air, there is none.
+        local row={shape=function(at) return Ground.bump(at,.08,.4) end,length=.4,speed=4}
+        local at,hold=met(row)
+        local flying,held=false,false
+        local _,rows=nose({m=1,speed=4,ground=row.shape(at),hold=hold,after=0,during=function(t,body,folded,forecast)
+            flying=flying or not Forces.eligible_support(folded,forecast[1],.005,.10) and not Forces.eligible_support(folded,forecast[2],.005,.10)
+            return flying and {nose_held=false} or {}
+        end})
+        for _,r in rows do held=held or r.out.valid and r.out.nose_air_couple~=0 end
+        check(flying and not held,"with the stick let go in the air the rider holds nothing")
+        -- A hop pops the bike off the front: no hold over R3's flight.
+        for _,speed in ipairs({3,4,7}) do
+            for _,m in ipairs({.01,1}) do
+                local hopped=false
+                local _,flight=nose({m=m,speed=speed,hold=200,after=0,during=function(t)
+                    if t==90 then return {hop=true,nose=0,nose_held=true} end
+                    return {}
+                end})
+                for _,r in flight do hopped=hopped or r.out.valid and r.out.nose_air_couple~=0 end
+                check(not hopped,string.format("R3 at %d m/s, m=%.2f: no hold in the hop's flight",speed,m))
+            end
         end
     end)
     return {cases=cases,assertions=n,native_authority=false,constructed=true}

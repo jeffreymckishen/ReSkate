@@ -113,6 +113,10 @@ local defaults={gravity={0,-9.8,0},wheelbase=1.203956057050485*scale,steer_limit
     -- nose_catch_torque, all of it nose_catch_span faster, for at most nose_catch_seconds of pulling past
     -- nose_hold_back a lift. Without it a 12 cm bump or a 10 cm kerb ramp met at 1.6 to 2.5 m/s threw the bike over.
     nose_catch_torque=800,nose_catch_rate=.6,nose_catch_span=.5,nose_catch_seconds=.4,
+    -- Thrown off the front by a bump or a kerb's top with the stick still held, the rider holds the bike's angle with
+    -- the air pitch's authority for at most nose_air_seconds. Without it an 8 cm bump at 4 m/s, a 12 cm one at 2.5
+    -- to 7 m/s, a 25 degree kicker and a 15 cm kerb ramp at 7 m/s threw the bike over the bars.
+    nose_air_seconds=.5,
     -- On its front wheel the bike carves round it: at most nose_carve_rate (reached from 2 m/s), and no more
     -- sideways than nose_carve_lateral, on the rider's twist (nose_yaw_damping, at most nose_yaw_torque), with the
     -- spring's roll part taken nose_roll_gain times.
@@ -139,7 +143,7 @@ local function result(issue)
         air_damping_torque={0,0,0},air_rotation_reserved=false,neutral_air_damping_active=false,pedaling=false,
         landing_approach_mask=0,compliant_normal_mask=0,landing_recovery_mask=0,approach_normal_impulse={0,0},approach_normal_force={0,0},
         manual_active=false,manual_couple=0,manual_offset=0,manual_target_offset=0,manual_carve_rate=0,manual_shift=0,
-        nose_manual_active=false,nose_manual_offset=0,nose_yaw_couple=0}
+        nose_manual_active=false,nose_manual_offset=0,nose_yaw_couple=0,nose_air_couple=0}
 end
 local function tuning_valid(t)
     if not M.vec(t.gravity,100) or M.length(t.gravity)<.1 then return false end
@@ -158,7 +162,8 @@ local function tuning_valid(t)
         "manual_hold_back","manual_hold_forward","manual_pull","manual_pull_ramp","manual_pull_seconds","manual_risen_slack","manual_face_offset","manual_rate","manual_gain",
         "manual_damping","manual_min_speed","manual_start_speed","manual_carve_rate","manual_carve_damping","manual_carve_torque",
         "nose_hold_forward","nose_hold_back","nose_low","nose_high","nose_carve_rate","nose_carve_lateral","nose_yaw_damping",
-        "nose_yaw_torque","nose_roll_gain","nose_catch_torque","nose_catch_rate","nose_catch_span","nose_catch_seconds"} do if not M.finite(t[name]) or t[name]<0 or t[name]>1e6 then return false end end
+        "nose_yaw_torque","nose_roll_gain","nose_catch_torque","nose_catch_rate","nose_catch_span","nose_catch_seconds",
+        "nose_air_seconds"} do if not M.finite(t[name]) or t[name]<0 or t[name]>1e6 then return false end end
     if not M.finite(t.manual_low) or not M.finite(t.manual_high) then return false end
     if type(t.friction)~="table" then return false end
     for _,key in {"longitudinal_friction","lateral_friction"} do local x=t.friction[key] if not M.finite(x) or x<0 or x>10 then return false end end
@@ -168,7 +173,7 @@ local function tuning_valid(t)
     if t.nose_hold_forward>.3 or t.nose_hold_back>.3 or t.nose_high>=t.nose_low or t.nose_low>t.nose_hold_forward or
         t.nose_carve_rate>4 or t.nose_carve_lateral>10 or t.nose_yaw_torque>t.balance_torque_limit or
         t.nose_roll_gain<1 or t.nose_roll_gain>3 or t.nose_catch_torque>t.balance_torque_limit or t.nose_catch_span<=0 or
-        t.nose_catch_seconds>1 then return false end
+        t.nose_catch_seconds>1 or t.nose_air_seconds>1 then return false end
     return t.brake_lateral_cut<=1 and t.rear_brake_load_share<=1 and t.steer_limit<=1 and t.lean_limit<=.8 and t.hop_delta_speed<=4.5 and t.contact_gap<=.05 and
         t.maximum_penetration<=.15 and t.recovery_fraction<=1 and t.recovery_speed_limit<=1 and t.pedal_fade_start<t.pedal_cutoff and
         t.pedal_cutoff<=50 and t.pedal_resume_speed<t.pedal_top_speed and t.pedal_top_speed<=t.pedal_cutoff and t.curvature_rate_limit<=10 and t.curvature_step_limit<=.35 and t.curvature_min_speed<=5 and t.neutral_air_damping_rate<=10
@@ -237,7 +242,7 @@ end
 -- is kept the same way.
 function Controller:reset() self.last_hop_event=0 self.normals={{},{}} self.landing_impact={false,false} self.travel_direction=0 self.air={} self.steering={} self.pump=Pump.new() self.pump:reset() self.pedal_latch=F.pedal_state() self.brake_share=0 self.brake_squeeze=0 self.manual_engaged=false self.manual_throw_seconds=0 self.manual_risen=false self.manual_slowed=false self.manual_ground=nil
     self.nose_engaged=false self.nose_throw_seconds=0 self.nose_risen=false self.nose_slowed=false self.nose_ground=nil
-    self.nose_catch_spent=0 end
+    self.nose_catch_spent=0 self.nose_air_clock=-1 self.nose_air_target=0 end
 function Controller:invalidate_continuity()
     -- A missed command breaks one-step derivative and state-machine history.
     -- Accepted hop consumption and authored tuning remain authoritative. The
@@ -273,6 +278,8 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     local prior_nose_slowed=self.nose_slowed==true
     local prior_nose_ground=M.unit(self.nose_ground)
     local prior_nose_catch=M.finite(self.nose_catch_spent) and math.max(0,self.nose_catch_spent) or 0
+    local prior_nose_air=M.finite(self.nose_air_clock) and self.nose_air_clock or -1
+    local prior_nose_air_target=M.finite(self.nose_air_target) and self.nose_air_target or 0
     self.normals={{},{}} self.landing_impact={false,false} self.travel_direction=0 self.air={} self.steering={} self.pump:reset()
     if not M.finite(h) or math.abs(h-F.native_seconds)>1e-8 then out.issue="unsupported_step" return out end
     if not tuning_valid(t) or not M.valid_body(measured) or not M.vec(measured.linear_velocity,50) or not M.vec(measured.angular_velocity,40) or
@@ -545,6 +552,7 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     local nose_law=nose_engaged and (nose_wanted or nose_d<0 and not popping)
     local nose_throw=brake_wanted<=0 and (rear_support or prior_nose_throw<t.manual_pull_seconds)
     local nose_catch_left,nose_catching=prior_nose_catch<t.nose_catch_seconds,false
+    local nose_air_aim=nil
     -- The throw is the rider's for manual_pull_seconds below the hold, and not while braking.
     local throw=brake_wanted<=0 and (front_support or prior_throw<t.manual_pull_seconds)
     -- This is a body-local joint angle, so its accepted history remains valid
@@ -712,6 +720,8 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
                 couple=math.clamp(couple,-back_cap,down_cap)
                 assist=M.add(assist,M.mul(lateral,couple))
                 out.manual_target_offset=target
+                -- The angle to the ground the lift started from that the law aims at, for the air hold.
+                nose_air_aim=math.asin(math.clamp(-M.dot(body_forward,nose_ground),-1,1))+delta
                 if not rear_support and math.min(nose_d,nose_level)<=target+t.manual_risen_slack then nose_risen=true end
             end
             if nose_carving then
@@ -737,7 +747,16 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
             end
             out.balance_torque=assist
         end
-    elseif c.enabled then assist=M.add(M.mul(world_up,-math.clamp(c.air_yaw,-1,1)*t.air_yaw_torque),M.mul(body_left,pitch*t.air_pitch_torque)) out.air_control_torque=assist end
+    elseif c.enabled then assist=M.add(M.mul(world_up,-math.clamp(c.air_yaw,-1,1)*t.air_yaw_torque),M.mul(body_left,pitch*t.air_pitch_torque)) out.air_control_torque=assist
+        -- Thrown off the front by a bump or a kerb's top from a nose manual, the stick still held and no hop
+        -- popping, the rider holds the angle the law last aimed at against the ground the lift started from.
+        if prior_nose_air>=0 and prior_nose_air<t.nose_air_seconds and c.nose_manual_held and prior_nose_ground and c.hop_event_id<=self.last_hop_event then
+            local now=math.asin(math.clamp(-M.dot(body_forward,prior_nose_ground),-1,1))
+            local want=math.clamp(t.manual_gain*(prior_nose_air_target-now),-t.manual_rate,t.manual_rate)
+            out.nose_air_couple=math.clamp(t.manual_damping*(want-M.dot(measured.angular_velocity,body_left)),-t.air_pitch_torque,t.air_pitch_torque)
+            assist=M.add(assist,M.mul(body_left,out.nose_air_couple)) out.air_control_torque=assist
+        end
+    end
     local intent=c.rotation_reserved or c.manual~=0 or c.nose_manual~=0 or c.steer~=0 or c.air_yaw~=0 or c.brake>0
     local launch=c.rotation_reserved or c.manual~=0 or c.nose_manual~=0 or c.brake>0
     local neutral=reservation(air,c.recovery_step_verified,c.enabled,false,intent,launch)
@@ -818,6 +837,11 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     self.nose_throw_seconds=nose_engaged and not rear_support and nose_d>t.nose_hold_forward and prior_nose_throw+h or 0
     self.nose_risen=nose_risen self.nose_ground=nose_ground
     self.nose_catch_spent=nose_engaged and not rear_support and prior_nose_catch+(nose_catching and h or 0) or 0
+    -- The air hold's clock: 0 on a step on the front with the rear up, counting in the air after one, off otherwise.
+    if out.hop_applied then self.nose_air_clock,self.nose_air_target=-1,0
+    elseif nose_engaged and not rear_support then self.nose_air_clock,self.nose_air_target=0,nose_air_aim or prior_nose_air_target
+    elseif support_mask==0 and prior_nose_air>=0 then self.nose_air_clock,self.nose_air_target,self.nose_ground=prior_nose_air+h,prior_nose_air_target,prior_nose_ground
+    else self.nose_air_clock,self.nose_air_target=-1,0 end
     self.pump=pump self.pedal_latch=next_latch out.valid=true out.issue="none" return out
 end
 function Controller:_recovery_mask(h,body,samples,c,baseline)
@@ -856,6 +880,7 @@ function Controller:_adopt(other)
     self.manual_ground=other.manual_ground
     self.nose_engaged=other.nose_engaged self.nose_throw_seconds=other.nose_throw_seconds self.nose_risen=other.nose_risen
     self.nose_slowed=other.nose_slowed self.nose_ground=other.nose_ground self.nose_catch_spent=other.nose_catch_spent
+    self.nose_air_clock=other.nose_air_clock self.nose_air_target=other.nose_air_target
 end
 function Controller:step(h,body,wheels,samples,controls,speculative)
     local c=F.controls(controls) local baseline_controller=self:clone()

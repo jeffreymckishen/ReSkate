@@ -17,7 +17,7 @@ function T.run()
     end
     check(f.core_count==1 and f.archives==1 and f.stock_requests==1,"proof reads never allocate/archive or repeat Y")
     check(f.manager:request_mount(0),"actual facade issues private successor then fresh admission")
-    check(f.marker_limit==8 and f.marker_session==2,"actual second admission marker carries the eight-mount scope")
+    check(f.marker_limit=="entry" and f.marker_session==2,"actual second admission marker leaves the mount limit to the Entry")
     check(f.marker_arm==admitted and f.marker_admitted==admitted,"actual facade startup and Core arm preserve the original second intent time")
     check(not f.manager:second_preflight_ready(admitted),"second native request closes terrain proof permanently")
     for _=1,80 do f.manager:step(16)end

@@ -194,7 +194,7 @@ function Tests.run()
         local f=fixture();f.refuse()
         for n=2,8 do check(f.entry:mount(),"explicit bounded retry");local s=f.await();check(s.terrain_refusal_count==n,"all refusals retained")end
         local s=f.entry:status()
-        check(s.phase=="blocked" and not f.entry:mount() and #s.terrain_refusals==8,"eighth refusal sticky; no eviction")
+        check(s.phase=="blocked" and not f.entry:mount() and #s.terrain_refusals==8,"eighth refusal of one intent is final; no eviction")
         check(s.terrain_refusals[1].index==1 and f.news==1 and f.mounts==0,"first failure and owner preserved")
     end)
     case("17 second-cycle or previously used owner cannot regain terrain retry",function()

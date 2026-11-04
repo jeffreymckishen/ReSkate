@@ -768,9 +768,9 @@ snapshot=function()
         lease_renew_last=T.lease_renew_last,lease_renew_off=T.lease_renew_off==true,
         renewals_this_tick=T.renewals_tick or 0,
         one_attempt_per_vm=session==nil,experimental_session=session and session.index or nil,
-        experimental_attempt_limit=session and 8 or nil,native_retirement_known=native_retirement_known,session_retired=session and T.session_retired==true or nil,retained_body_slot_limit=8,
-        limit_scope=T.lease_renewable and "Eight retained native body slots may already be exhausted; not a retry budget. Core renews its one Follow and requests no body reuse."
-            or "Eight retained native body slots may already be exhausted; not a retry budget. Core requests no Follow renewal or body reuse.",
+        experimental_attempt_limit=session and "entry" or nil,native_retirement_known=native_retirement_known,session_retired=session and T.session_retired==true or nil,retained_body_slot_limit=8,
+        limit_scope=T.lease_renewable and "Eight retained native body slots a launch, shared by every plugin, may already be exhausted. Spawn asks to re-activate this VM's parked body instead of spending one. Core renews its one Follow."
+            or "Eight retained native body slots a launch, shared by every plugin, may already be exhausted. Spawn asks to re-activate this VM's parked body instead of spending one. Core requests no Follow renewal.",
         source_freshness_scope=T.lease_renewable and "Selected-input lease renewal. The Follow lease moves later only by an accepted Follow renewal; a copied lease report can only shorten it."
             or "Selected-input lease renewal only. The Follow lease is the reserve seed, which a copied lease report can only shorten.",
         phase=T.phase,detail=T.detail,selected_slot=T.slot,wall_ms=T.now,arm_ms=T.arm_at,
@@ -1060,7 +1060,7 @@ local function removal_allowed()
     end
     local b=status_of(spawn)
     return b and not b.creation_unknown and not b.cleanup_unknown and not b.body
-        and (b.creation_attempts==0 or T.spawn_release_accepted==true or T.preallocation_refused==true)
+        and (b.creation_attempts==0 or T.spawn_release_accepted==true or T.creation_refused==true)
 end
 local function remove_once(id)
     if T.remove_attempted[id] then return end
@@ -1117,7 +1117,7 @@ for _,method in ipairs(input_methods) do
         return table.unpack(r,2,r.n)
     end
 end
-local Identity,G,RideRuntime,ride_models
+local Identity,G,RideRuntime,ride_models,create_refusal
 local spawn_api={input=R.input,skater=R.skater,world={physics={}},entities={}}
 for _,method in ipairs({"create","read","release"}) do
     local name=method
@@ -1126,9 +1126,9 @@ for _,method in ipairs({"create","read","release"}) do
         if name~="release" and T.stop_latched then return nil,"bike lifecycle cancelled before spawn body operation" end
         if name=="release" and T.transferred then return false,"spawn no longer owns body release" end
         local r=call(label,lookup(path),...)
-        if name=="create" and r[1] and r.n==3 and r[2]==nil
-            and r[3]=="body_preallocation_unavailable" then
-            T.preallocation_refused=true
+        -- Spawn's own list of refusals that leave no body and nothing to release (bike_spawn.lua create_refusal).
+        if name=="create" and r[1] and r.n==3 and r[2]==nil and create_refusal and create_refusal(r[3]) then
+            T.creation_refused=true
         end
         if name=="release" then
             T.spawn_release_accepted=yes(r)
@@ -1782,6 +1782,7 @@ function object:prepare_backend()
         end
     end
     spawn_api.time={now=function() return T.now end} -- Existing guarded clock cache; no new SDK call.
+    create_refusal=BikeSpawn.create_refusal
     spawn=BikeSpawn.new(spawn_api,{session_renewable=session_renewable})
     T.spawn_instances=(T.spawn_instances or 0)+1
     return true

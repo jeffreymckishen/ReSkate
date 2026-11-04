@@ -72,7 +72,9 @@ reskate.menu.page("BMX",function(ui)
     ui:note("A pedals, B brakes, the left stick steers, clicking the right stick hops.")
     ui:note("F8 or LB + RB + R3 goes back to the skateboard. A ride that ends any other way goes back on its own, and a fall gets you back on the bike.")
     ui:note("Back on the skateboard, hold LB, then press A to ride again, standing still with the controls released. Pausing or opening Insert ends the ride.")
-    ui:note("Each game launch allows "..tostring(s.attempt_limit).." mounts; restart the game for more. Mounting and going back to the skateboard can be changed in Binds.")
+    -- Only a ReSkate that cannot reuse the parked bike limits the mounts of a launch.
+    if s.body_reuse==false then ui:note("This ReSkate allows "..tostring(s.attempt_limit).." mounts a game launch; restart the game for more.") end
+    ui:note("Mounting and going back to the skateboard can be changed in Binds.")
     if ui:button("bmx_play_mount","Mount bike") then bike:mount() end
     if ui:button("bmx_play_return","Return to skateboard") then bike:return_to_skateboard() end
     if s.fall_reason then ui:warn("Fallen: "..s.fall_reason) end
@@ -80,7 +82,7 @@ reskate.menu.page("BMX",function(ui)
     if s.phase=="blocked" or s.phase=="stopped" then ui:note(s.lifecycle_detail) end
     ui:info("State",s.phase)
     ui:note(s.detail)
-    ui:info("Mounts used",tostring(s.attempts_used).." of "..tostring(s.attempt_limit))
+    ui:info("Mounts used",tostring(s.attempts_used)..(s.body_reuse==false and " of "..tostring(s.attempt_limit) or ""))
 end)
 reskate.on("unload",function() unloaded=true;score_lines=nil;bike:unload() end)
 

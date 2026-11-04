@@ -133,7 +133,14 @@ local function spawn_fixture(grade,options)
         return "ready"
     end
     function api.entities.remove() f.removes+=1 end
-    function api.world.physics.create(definition) f.creates+=1;f.definition=definition;f.body=newproxy();return f.body end
+    function api.world.physics.create(...)
+        f.creates+=1;f.create_args=table.pack(...);f.definition=...
+        if options.create then
+            local out=table.pack(options.create(...))
+            f.body=out[1];return table.unpack(out,1,out.n)
+        end
+        f.body=newproxy();return f.body
+    end
     function api.world.physics.read(body)
         assert(body==f.body)
         return {epoch=newproxy(),serial="1",time=1/60,seconds=1/60,mass=G.mass,position=f.definition.position,
@@ -293,6 +300,33 @@ function Tests.run()
     check(refused.phase=="closed" and old.creates==0,"an off-hub wheel is refused before any allocation")
     check(refused.detail:find("not centred on its hub",1,true) and refused.detail:find("BMX_Prototype",1,true)
         and refused.detail:find("reskate/bmx/rear_wheel",1,true),"the refusal names the wheel and the old pack")
+    -- Spawn asks the SDK to re-activate its parked bike, and keeps where the body came from.
+    local asked=spawn_fixture(nil)
+    check(asked.drive().phase=="spawned" and asked.create_args.n==2 and asked.create_args[1]==asked.definition
+        and type(asked.create_args[2])=="table" and asked.create_args[2].reuse==true,"create gets the definition and {reuse=true}")
+    check(asked.owner:status().origin==nil and asked.owner:status().reuse_miss==nil,"a body alone reports no origin")
+    asked.owner:stop("constructed reuse cleanup")
+    local reported=spawn_fixture(nil,{create=function() return newproxy(),nil,"allocated","definition_differs" end})
+    local made=reported.drive()
+    check(made.phase=="spawned" and made.origin=="allocated" and made.reuse_miss=="definition_differs",
+        "the SDK's origin and why it did not reuse are kept")
+    reported.owner:stop("constructed reuse cleanup")
+    -- A refusal that leaves no body and nothing to clean up is clean; any other leaves the body unknown.
+    for why,class in pairs({body_preallocation_unavailable="retry",body_reuse_pending="retry",
+        ["the eight retained body slots are exhausted; native destruction is unproven"]="restart",
+        ["a previous partial allocation in this world prohibits another native allocation"]="change_level",
+        ["partial native body creation retained in quarantine; allocation retry prohibited"]="change_level",
+        ["partial native body creation retained and parked; allocation retry prohibited"]="change_level",
+        body_reactivation_failed="change_level",["native body creation failed closed"]=false}) do
+        local g=spawn_fixture(nil,{create=function() return nil,why end})
+        local s=g.drive()
+        if class then
+            check(s.phase=="closed" and s.creation_unknown==false and s.creation_refusal==class and not s.cleanup_unknown
+                and g.releases==0 and g.removes==8,"a clean refusal removes the visuals and owes nothing: "..why)
+        else
+            check(s.phase=="cleanup_unknown" and s.creation_unknown==true and s.creation_refusal==nil,"an unknown refusal stays unknown")
+        end
+    end
     return {cases=1,assertions=assertions,constructed=true,native_qualified=false}
 end
 return table.freeze(Tests)

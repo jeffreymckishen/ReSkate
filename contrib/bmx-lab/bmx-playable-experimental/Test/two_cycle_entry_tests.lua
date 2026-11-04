@@ -187,7 +187,7 @@ function Tests.run()
         check(f.entry:return_to_skateboard(),"second explicit Return accepted")
         f.latest=cleaned();f.stock=100;f.tick()
         check(f.entry:status().phase=="skateboard" and f.entry:mount(),"third intent begins the next cycle")
-        check(f.entry:status().attempts_used==3,"a third mount spends one more of the eight")
+        check(f.entry:status().attempts_used==3 and f.entry:status().attempt_limit==8,"a third mount; the cap stays until a create reports reuse")
         check(f.new_calls==1 and f.mounts==2,"fixed manager; the third mount follows its own step-off")
     end)
     case("second Mount chord cannot race the strict equipment baseline",function()
@@ -550,7 +550,7 @@ function Tests.run()
         check(g.entry:status().phase=="blocked" and g.second_admitted_at==original and g.mounts==1 and g.stepoffs==1,
             "held controls cannot turn retry time into a fresh arm window")
     end)
-    case("shared eight terrain refusals never allocate or evict",function()
+    case("eight terrain refusals of one Mount intent never allocate or evict",function()
         local f=fixture({two=true,playable=true});second_terrain(f)
         for count=2,8 do
             check(f.entry:mount(),"explicit bounded terrain retry")
@@ -560,8 +560,31 @@ function Tests.run()
         end
         local s=f.entry:status()
         check(s.phase=="blocked" and #s.terrain_refusals==8 and s.terrain_refusals[1].index==1,
-            "eighth refusal is sticky without dropping the first")
-        check(not f.entry:mount(),"no ninth terrain attempt")
+            "eighth refusal of one intent is final without dropping the first")
+        check(not f.entry:mount(),"no ninth terrain attempt in that intent")
+    end)
+    case("terrain refusals of separate Mount intents do not add up",function()
+        local f=fixture({two=true,playable=true});first_return(f)
+        f.on_preflight_proof=function(at) return at==f.second_admitted_at and f.stock==504,2 end
+        -- Each later intent steps off, then refuses `refusals` times before clear ground mounts: nine in the launch.
+        for intent,refusals in ipairs({5,4}) do
+            f.rough=true;check(f.entry:mount(),"intent "..(intent+1).." accepted")
+            local stepoffs=f.stepoffs or 0
+            for _=1,80 do f.tick();if f.stepoffs and f.stepoffs>stepoffs then break end end
+            check(f.stepoffs==stepoffs+1,"intent "..(intent+1).." steps off once")
+            f.latest=cleaned();f.stock=504;f.on_ready504=function()return true,2 end;f.tick()
+            for count=1,refusals do
+                local s=await_terrain(f)
+                check(s.phase=="preflight_refused" and s.terrain_refusal_count==count,
+                    "refusal "..count.." of intent "..(intent+1).." is a retry: "..tostring(s.detail))
+                if count<refusals then check(f.entry:mount(),"terrain retry") end
+            end
+            f.rough=false;check(f.entry:mount(),"retry on clear ground")
+            f.await_mount();f.tick()
+            check(f.mounts==intent+1 and f.entry:status().phase=="riding","intent "..(intent+1).." mounts")
+            check(f.entry:return_to_skateboard(),"Return");f.latest=cleaned();f.stock=100;f.tick()
+            check(f.entry:status().phase=="skateboard","back on the board")
+        end
     end)
     case("second obstacle or native refusal never gains terrain retry",function()
         local f=fixture({two=true,playable=true});first_return(f)

@@ -77,8 +77,8 @@ offline the game does not keep it, so set it again each launch.
 
 ## What to expect
 
-- Each game launch allows eight mounts. ReSkate keeps the bodies and input leases of a mount for the whole launch,
-  so a ninth needs a restart.
+- Getting back on reuses the bike from the last ride, so mounts are not limited. Changing level or reloading the mod
+  needs a new one, and a game launch can make eight, shared with other mods: past that, restart the game.
 - Pausing, opening Insert or leaving the game ends the ride. The rider goes back to the skateboard on their own once
   the menu is closed and the controls are released.
 - Top speed is about 7.7 m/s on the flat. The rider stops pedalling there and coasts down to about 7.2 m/s before
@@ -89,8 +89,8 @@ offline the game does not keep it, so set it again each launch.
   your speed: a hop that falls short still strikes it.
 - A stopped bike holds on a street grade, so hold A for a moment to start down a gentle hill. Ramps steeper than about 15% roll back.
 - A crash (the bike going over, a hit at speed, or the rider being knocked off) gets back on the bike after a few
-  seconds, which spends a mount. On the last mount of a launch it goes back to the skateboard instead. Banks and
-  quarter pipes do not count as going over. If there is no room to get back on, move and mount again.
+  seconds. Banks and quarter pipes do not count as going over. If there is no room to get back on, move and mount
+  again.
 - A slower bump into something just stops the bike, and it has no reverse. If it is stuck, go back to the skateboard.
 - A nose manual rides over small bumps and kerb ramps. With the stick past about half way, a steep kerb face or a
   bump of about 12 cm often throws it over the bars below about 3 m/s and can still do it at 5 m/s, and so can a

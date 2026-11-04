@@ -16,6 +16,7 @@
     "world.physics",
     "world.physics.follow",
     "world.physics.follow.renew",
+    "world.physics.reuse",
     "world.entities",
     "world.raycast",
     "board"

@@ -311,18 +311,24 @@ local function presentation(previous,model,wheels,h,samples,geometry,orientation
     -- and back at a steady rate, taking RIDER_SHIFT_SECONDS, and goes with the shift once it is back at 0. A standing
     -- rider turns and lifts with all of a bike drawn on a kerb and a seated one with its seat, so on a bike drawn
     -- pitched 8.6 degrees the rider stood up or sat down in one tick turned its hips 7.6 to 8.3 degrees in it.
-    -- In a nose manual the shift is forward, and rider_nose goes from 0 to 1 at the standing's rate: it puts the hips
-    -- up over the bars rather than toward them (MP.manual_rider). Out of it the nose is left where it was, so the hips
-    -- come straight down as the shift eases out instead of swinging forward toward the bars first.
+    -- In a nose manual the shift is forward, and rider_nose, 0 to 1, puts the hips up over the bars rather than
+    -- toward them (MP.manual_rider). It moves nothing while no forward shift is drawn, so with none it is set at
+    -- once: 1 in a nose manual, 0 in a rear manual. With a forward shift drawn it only ever moves the hips away from
+    -- the bars: into a nose manual it eases up at the standing's rate, and in a rear manual it holds until the shift
+    -- is back. Eased in from ordinary riding, the shift came in first and the hips went up to 8 cm toward the bars
+    -- over the first five steps: with the cranks stopped at the worst phase the knees came to 2.5 cm off them,
+    -- against 10 cm in ordinary riding. Eased out into a rear manual, the nose manual's shift swung them to 6 cm.
+    -- Out of both the nose is left where it was, so the hips come straight down as the shift eases out instead of
+    -- swinging forward toward the bars first.
     local shift,standing,nose=previous.rider_shift,previous.rider_standing or 0,previous.rider_nose or 0
     local stand=h/RIDER_SHIFT_SECONDS
     local on_nose=model.nose_manual_active==true and model.manual_active~=true
     if model.manual_active==true or on_nose then
         if not M.finite(model.manual_shift) then return nil end
         local target=math.clamp(model.manual_shift,on_nose and -RIDER_SHIFT_NOSE or -RIDER_SHIFT_FORWARD,RIDER_SHIFT_BACK)
+        if (shift or 0)>=0 then nose=on_nose and 1 or 0 elseif on_nose then nose=math.min(1,nose+stand) end
         shift=(shift or 0)+(target-(shift or 0))*math.min(1,h/RIDER_SHIFT_SECONDS)
         standing=math.min(1,standing+stand)
-        nose=on_nose and math.min(1,nose+stand) or math.max(0,nose-stand)
     elseif shift~=nil then
         shift-=shift*math.min(1,h/RIDER_SHIFT_SECONDS)
         standing=math.max(0,standing-stand)

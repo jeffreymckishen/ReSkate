@@ -1429,6 +1429,129 @@ function T.run()
         end
         check(lifts[1]=="0.050" and lifts[2]=="0.100" and lifts[3]=="0.140","it comes up 5 cm a step: "..table.concat(lifts," "))
     end)
+    case(function() -- Into a nose manual from riding, held, let go, or turned into a manual, the knees stay off the bars at any crank phase.
+        local Q,C=MP.math,MP.CONTACTS
+        local bar_radius=.055*Geometry.scale
+        local function sub(a,b) return {a[1]-b[1],a[2]-b[2],a[3]-b[3]} end
+        local function dot(a,b) return a[1]*b[1]+a[2]*b[2]+a[3]*b[3] end
+        local function distance(a,b) local d=sub(a,b) return math.sqrt(dot(d,d)) end
+        -- The least distance from segment p1-q1 to segment p2-q2.
+        local function segment(p1,q1,p2,q2)
+            local d1,d2,r=sub(q1,p1),sub(q2,p2),sub(p1,p2)
+            local a,e,f=dot(d1,d1),dot(d2,d2),dot(d2,r)
+            local s,t
+            if a<=1e-12 then s=0;t=math.clamp(f/e,0,1)
+            else
+                local c,b=dot(d1,r),dot(d1,d2)
+                local den=a*e-b*b
+                s=den~=0 and math.clamp((b*f-c*e)/den,0,1) or 0
+                t=(b*s+f)/e
+                if t<0 then t=0;s=math.clamp(-c/a,0,1) elseif t>1 then t=1;s=math.clamp((b-c)/a,0,1) end
+            end
+            return distance({p1[1]+d1[1]*s,p1[2]+d1[2]*s,p1[3]+d1[3]*s},{p2[1]+d2[1]*t,p2[2]+d2[2]*t,p2[3]+d2[3]*t})
+        end
+        -- The rider as Core composes it (bike_runtime_core pose_step: the body one read behind, the drawn articulation,
+        -- MP.manual_rider), at each of 24 phases the cranks may have stopped at, against the bars drawn with it. The
+        -- worst of each is kept: the knees, thighs and shins to the bar line less its radius, the torso to it, the
+        -- lowest joint over the flat road, and how far a palm or an ankle misses its grip or pedal.
+        local worst={legs=math.huge,torso=math.huge,ground=math.huge,miss=0,refused=0,clamped=0,poses=0}
+        local function sweep(w,shown,label)
+            local body=w.samples[w.serial-1]
+            local rider=nil
+            if shown.rider_shift~=nil then
+                local why
+                rider,why=MP.manual_rider(shown.rider_shift,shown.rider_standing,shown.rider_nose)
+                if not rider then worst.refused+=1;worst.why=worst.why or label..": "..tostring(why) end
+            end
+            for phase=0,23 do
+                local out,why=MP.compose({bike={center_of_mass={body.position.x,body.position.y,body.position.z},rotation=body.rotation},
+                    articulation={steer=shown.steer or 0,crank_phase=phase/24*2*math.pi,movement_bike_pitch=shown.movement_bike_pitch or 0,
+                        movement_bike_lift=shown.movement_bike_lift,movement_bike_shift=shown.movement_bike_shift},rider=rider})
+                worst.poses+=1
+                if not out or not MP.validate_pose(out.pose) then
+                    worst.refused+=1;worst.why=worst.why or label..": "..tostring(why)
+                    continue
+                end
+                local left,right=out.targets.grips[1],out.targets.grips[2]
+                for i,name in ipairs({"left_arm","right_arm"}) do
+                    local p=out.planned[name]
+                    local palm=Q.turn(p.tip_rotation,{C.palm_reach,0,(i==1 and 1 or -1)*(C.grip_radius+C.palm_gap)})
+                    worst.miss=math.max(worst.miss,distance({p.tip[1]+palm[1],p.tip[2]+palm[2],p.tip[3]+palm[3]},out.targets.grips[i]))
+                    if out.diagnostics.limbs[name].clamped then worst.clamped+=1 end
+                    worst.ground=math.min(worst.ground,p.root[2],p.middle[2],p.tip[2])
+                end
+                for i,name in ipairs({"left_leg","right_leg"}) do
+                    local p=out.planned[name]
+                    worst.miss=math.max(worst.miss,distance(p.tip,out.targets.ankles[i]))
+                    if out.diagnostics.limbs[name].clamped then worst.clamped+=1 end
+                    local legs=math.min(segment(p.middle,p.middle,right,left),segment(p.root,p.middle,right,left),
+                        segment(p.middle,p.tip,right,left))-bar_radius
+                    if legs<worst.legs then worst.legs,worst.at=legs,string.format("%s, cranks at %d/24",label,phase) end
+                    worst.ground=math.min(worst.ground,p.root[2],p.middle[2],p.tip[2])
+                end
+                local l,r=out.planned.left_arm.root,out.planned.right_arm.root
+                worst.torso=math.min(worst.torso,segment(out.targets.hips,{(l[1]+r[1])/2,(l[2]+r[2])/2,(l[3]+r[3])/2},right,left)-bar_radius)
+            end
+        end
+        -- Riding level at 4 m/s into the nose manual, the bike pitched down onto its front wheel a degree and a half a
+        -- step to 28, held there, then let go and set back down on both wheels.
+        local w=harness(flat)
+        w.prompt=true
+        local ridden=level();ridden.velocity={0,0,4}
+        check(steps(w,ridden,3)==nil,"riding before the nose manual")
+        local cranks=w.step(ridden).presentation_pose.crank_phase
+        local plan={}
+        for i=1,20 do plan[#plan+1]={.53,28*i/20,"lifting"} end
+        for _=1,30 do plan[#plan+1]={.53,28,"held"} end
+        for i=1,20 do plan[#plan+1]={0,28*(20-i)/20,"dropping"} end
+        for _=1,40 do plan[#plan+1]={0,0,"riding after"} end
+        local first,drawn=nil,0
+        for i,leg in ipairs(plan) do
+            w.set_pad(leg[1])
+            local out=w.step(nose_down(leg[2],4))
+            check(not out.stop_requested,leg[3]..": the nose manual rides on: "..tostring(out.issue))
+            local shown=out.presentation_pose
+            check(shown.crank_phase==cranks,leg[3]..": the cranks stay where they stopped")
+            if shown.rider_shift~=nil then
+                drawn+=1
+                if not first then
+                    first=i
+                    check(w.model.nose_manual_active==true and shown.rider_shift<0 and shown.rider_nose==1,
+                        "drawn forward from its first step, the hips are already up over the bars: "..tostring(shown.rider_nose))
+                end
+            end
+            sweep(w,shown,string.format("%s, step %d",leg[3],i))
+        end
+        check(first~=nil and first<=8 and drawn>=50 and w.step(ridden).presentation_pose.rider_shift==nil,
+            "the nose manual is drawn from step "..tostring(first).." for "..drawn.." steps and gone after")
+        -- From a nose manual held level into a manual: the forward shift eases back with the hips kept up over the bars.
+        local into=harness(flat)
+        into.prompt=true
+        check(in_nose_manual(into,ridden,30)==nil and into.model.nose_manual_active==true,"a nose manual held level")
+        into.set_pad(-.53)
+        local held,manual=0,false
+        for i=1,40 do
+            local out=into.step(ridden)
+            check(not out.stop_requested,"into a manual: "..tostring(out.issue))
+            local shown=out.presentation_pose
+            manual=manual or into.model.manual_active==true
+            if shown.rider_shift~=nil and shown.rider_shift<0 and into.model.manual_active==true then
+                held+=1
+                check(shown.rider_nose==1,"step "..i..": in the manual the hips stay up while the shift is still forward: "..tostring(shown.rider_nose))
+            end
+            sweep(into,shown,string.format("into a manual, step %d",i))
+        end
+        check(manual and held>=1,"the manual comes in with the shift still forward, for "..held.." steps")
+        check(worst.refused==0 and worst.poses==24*150,"every rider composes and keeps the joint contract: "..tostring(worst.why))
+        check(worst.clamped==0 and worst.miss<=1e-4,string.format("the hands hold their grips and the feet their pedals: %d clamped, %.6f off",
+            worst.clamped,worst.miss))
+        -- Measured: the legs .101 off the bars at worst, ordinary riding's own before the nose manual; the torso .41 and
+        -- the lowest joint .22 over the road. With the nose eased in behind the shift, the lift's step 8 drew the knees
+        -- .025 off the bars with the cranks at 4/24.
+        check(worst.legs>=.09,string.format("the knees, thighs and shins stay %.3f off the bars (%s)",worst.legs,tostring(worst.at)))
+        check(worst.torso>=.3,string.format("and the torso %.3f",worst.torso))
+        check(worst.ground>=.2,string.format("no part of the rider goes near the road: %.3f",worst.ground))
+    end)
     return {cases=cases,assertions=n,native_authority=false,constructed=true}
 end
 return T

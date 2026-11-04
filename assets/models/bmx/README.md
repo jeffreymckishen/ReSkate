@@ -1,14 +1,44 @@
 # Private native BMX geometry
 
 "User-supplied" in the prototype credits describes the source model provided for
-development. It is not an end-user setup instruction. The running game loads the
-converted native pack from `Mods/BMX_Prototype`; it does not load the source FBX
-or require a `Downloads/bmx-free` folder.
+development. It is not an end-user setup instruction. The game never loads the source
+FBX or needs a `Downloads/bmx-free` folder.
 
-The current local pack is not yet part of the standard ReSkate release packaging.
-The release requirement is to include a distributable bike pack and its attribution
-with BMX, then verify installation on a clean machine without the source model or
-conversion tools. Players should only need to install the mod.
+The bike now comes with the BMX mod (`contrib/bmx-lab/bmx-playable-experimental`): the mod
+carries the lightened model as its own data in `bike/`, and the native pack is built from
+that data and the player's own game when the mod is packaged. A separate
+`Mods/BMX_Prototype` pack is no longer needed. See "The bike in the BMX mod" below; the
+sections after it describe the earlier private packs.
+
+## The bike in the BMX mod
+
+"BMX (Free)" by Ermakov (CC BY 4.0) has 185 mesh objects in 3 materials and 206,424
+triangles. The mod draws it as 8 native parts (frame, fork, rear wheel, front wheel, cranks,
+handlebars, two pedals), lightened to 49,405 triangles, with a 2048 by 1024 atlas instead
+of 4096 by 2048. The credits are in the mod's `CREDITS.md` and the pack's `BMX-NATIVE.txt`.
+
+- `lighten_free_model.py` reads the FBX (`fbx_binary.py`), groups its objects into parts
+  (`free_model_parts.json`), and lightens each object with `mesh_decimate.py`: a quadric
+  edge collapse that only keeps the model's own corners, keeps each object's exact bounds,
+  keeps the shafts, axles and pedal pins whole and the pedal tops flat, and holds each
+  object to a surface error goal (0.5 mm; 0.4 mm on the grips, 0.7 mm on the spokes, 1 mm
+  on the tyres). The grip tape's hidden overlapping layers are dropped. It writes
+  `bike-geometry.npz`, `albedo.png` and `bike-data.json`, deterministically: `--expect`
+  checks a rerun gives the committed files (about 10 minutes on 7 processes).
+- `validate_lightened_bike.py` checks that data: the triangle budget and per-part counts;
+  the axles, bottom bracket, pedals and wheelbase exactly where `bike_geometry.lua` has them;
+  the grips, pedal tops and steerer within 0.5 mm and 0.5 degrees of the source model's own
+  surfaces; every part's bounds unchanged; the wheels and cranks centred on their hubs to
+  0.1 mm; and, with `--fbx`, that every corner is one of the source's and every object's
+  error is within its goal.
+- `build_bike_pack.py` builds the native pack from that data, the supported game (read
+  only) and the FPV drone template from upstream's history, with
+  `dingosdk_bmx_native_pack_builder`, `prepare_free_native_parts.py`'s mesh writer and
+  `prepare_free_native_textures.py`. It writes only what a mod folder needs and checks the
+  result against `bike/pack-files.json`.
+
+The pack is not committed because parts of it are built from the game's own files; see the
+mod's `bike/README.md`.
 
 The current bike uses the supplied `bmx-free` model as eight native Frostbite object
 blueprints: frame, fork, rear wheel, front wheel, cranks, handlebars and two pedals.
@@ -69,6 +99,8 @@ Tools in this directory:
 - `build_reference_geometry.py`: assemble OBJ references into the private geometry binary.
 - `prepare_native_parts.py`: prepare native triangle, mesh resource and geometry files.
 - `preview_reference.py`: render an offline geometry preview, not a game screenshot.
+- `lighten_free_model.py`, `validate_lightened_bike.py` and `build_bike_pack.py`: the BMX mod's
+  bike, described above.
 
 ## Supplied replacement model
 

@@ -1,0 +1,22 @@
+{
+ ".reskate-studio-patch": {
+  "bytes": 109,
+  "sha256": "7251fea422094e6868c47471d14dd268819dc084e04e0778c48d2451242b591d"
+ },
+ "layout.toc": {
+  "bytes": 14663,
+  "sha256": "ca1a8c1a8f0d58be15fd82787231783d071b744f77e9cb84e6abcc5201bc22f0"
+ },
+ "BMX-NATIVE.txt": {
+  "bytes": 1256,
+  "sha256": "12b183e30181a32e84c6ace02b36e495546578393129497aaa06bca0dbf75c8b"
+ },
+ "Win32/configurations/layout/initialinstallpackage/cas_01.cas": {
+  "bytes": 13835587,
+  "sha256": "c12c4eb0fcbe3cbf82ccd99a9fa91c958ca0d9bb1460f7a1c37574a3aaa1a71c"
+ },
+ "Win32/levels/game/dingolevel_root/dingolevel_root.toc": {
+  "bytes": 422552,
+  "sha256": "a8298229d81708532d94fc43ce098714bceb5427402166a4af310c48ca0166a0"
+ }
+}

@@ -7,3 +7,9 @@
 /Test/README.md text eol=lf
 .gitattributes -text
 /Test/two_cycle_tests.json -text
+# The bike's own data keeps its exact bytes: bike-data.json and pack-files.json record hashes.
+/bike/*.npz binary
+/bike/*.png binary
+/bike/*.json -text
+/bike/README.md -text
+/CREDITS.md -text

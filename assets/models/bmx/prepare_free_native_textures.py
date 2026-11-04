@@ -76,8 +76,10 @@ def prepare(atlas, output):
     if output.exists():
         raise ValueError('Output must be a NEW separate directory')
     image = Image.open(atlas/'albedo.png').convert('RGBA')
-    if image.size != (4096, 2048) or image.getchannel('A').getextrema() != (255, 255):
-        raise ValueError('Expected opaque two-tile 4096x2048 colour atlas')
+    # The mod's own bike data carries the atlas at 2048x1024 (lighten_free_model.py); the UVs are normalized,
+    # so either size of the same two-tile layout fits the same parts.
+    if image.size not in ((4096, 2048), (2048, 1024)) or image.getchannel('A').getextrema() != (255, 255):
+        raise ValueError('Expected opaque two-tile 4096x2048 or 2048x1024 colour atlas')
     output.mkdir(parents=True)
     colour = write_texture(output, 'albedo', image.convert('RGB'), 'DXT1', 55, True)
     normal = write_texture(output, 'normal', Image.new('RGB', (4, 4), (128, 128, 255)), 'BC5', 63, False)

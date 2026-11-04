@@ -58,6 +58,8 @@ struct Leaves {
     std::array<float, 16> original_value{};
     std::uint64_t hold_id{}, requested_hold{};
     // Dependency pins issued with a hold, and the ones the Service ended, in order.
+    // dependency_refusal makes World refuse the end and leave the token as it was.
+    bool dependency_refusal{};
     unsigned dependency_ends{};
     std::uint64_t issued_dependency{}, ended_dependency{};
     std::uint64_t ended_dependency_owner{};
@@ -138,7 +140,7 @@ bool end_body_dependency(BodyDependency& dependency) noexcept {
     leaf.ended_dependency = dependency.id_;
     leaf.ended_dependency_owner = dependency.owner_;
     leaf.ended_dependency_body = dependency.handle_;
-    if (!dependency.id_) return false;
+    if (!dependency.id_ || leaf.dependency_refusal) return false;
     dependency = {};
     return true;
 }
@@ -1431,7 +1433,9 @@ void session_renewable_guard_stops() {
 // Each acknowledgement ends the receipt's dependency pin exactly once, with the
 // token reserve took with its hold: completed, abandoned and the orphan path the
 // tick takes after release_all. Nothing before the acknowledgement ends it, and a
-// reserve whose hold was refused took no pin and ends none.
+// reserve whose hold was refused took no pin and ends none. When World refuses
+// the end, the acknowledgement still drops the Service's token, so the next
+// reserve can take a fresh pin.
 void dependency_ack() {
     reset("dependency_ack");
     const auto ended_once = [](const char* why) {
@@ -1481,6 +1485,25 @@ void dependency_ack() {
     tick(clear_guard());
     check(read_one(handle).phase == Phase::abandoned && acknowledge_abandoned(owner, handle), "abandoned and acknowledged");
     check(!leaf.dependency_ends, "an ACK without a pin called World for none");
+    // World refuses the end: it keeps its pin, so that body is simply never
+    // re-activated. The receipt is still freed and the Service drops its token;
+    // a token left set would refuse every later hold, so no Follow could start.
+    handle = follow_one(false);
+    const auto refused = leaf.issued_dependency;
+    check(refused && refused != issued && service().dependency.available(), "the Follow took a new pin");
+    check(stop(owner, handle), "stop the Follow");
+    leaf.dependency_refusal = true;
+    complete_and_acknowledge(handle);
+    check(leaf.dependency_ends == 1 && leaf.ended_dependency == refused && !service().occupied &&
+        !service().dependency.available(), "a refused end still frees the receipt and drops the Service's token");
+    leaf.dependency_refusal = false;
+    handle = follow_one(false);
+    check(service().dependency.available() && leaf.issued_dependency == leaf.hold_id && leaf.issued_dependency != refused,
+        "after a refused end, the next reserve takes a fresh pin");
+    check(stop(owner, handle), "stop the next Follow");
+    leaf.dependency_ends = 0; leaf.ended_dependency = 0;
+    complete_and_acknowledge(handle);
+    ended_once("the fresh pin ends at its own ACK");
 }
 struct Scenario { const char* name; void (*run)(); };
 constexpr Scenario scenarios[] = {

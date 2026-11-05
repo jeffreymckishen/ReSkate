@@ -114,11 +114,14 @@ offline the game does not keep it, so set it again each launch.
 - B in a corner keeps the corner. The bike stands up a little as the brake comes on and the turn opens for a moment,
   by about a fifth on the flat and up to a third down a steep street, then tightens as the bike slows, rather than
   running wide.
-- Weaving does not make speed. Throwing the bike from lean to lean is paid from its speed, so a coast weaving from
-  side to side slows faster than a straight one: a little for small throws of the stick, much faster at full lock.
-  Coasting 20 s from 7.5 m/s, a straight line ends at about 4 m/s, a small quick weave at about 3.7 and full lock
-  flipped every second at about 2.4. A knock from the side never pushes the bike on. Pedalling through a weave still
-  stops at top speed.
+- On two wheels or in a manual, weaving does not make speed. Throwing the bike from lean to lean is paid from its
+  speed, so a coast weaving from side to side slows faster than a straight one: a little for small throws of the
+  stick, much faster at full lock. Coasting 20 s from 7.5 m/s, a straight line ends at about 4 m/s, a small quick
+  weave at about 3.7 and full lock flipped every second at about 2.4. A nose manual keeps its own balance, and there a
+  weave still gains a little: the stick at half flipped every 0.75 s for 5 s ends up to 0.07 m/s faster than a
+  straight nose manual from 3 to 5 m/s. Rolling straight, a knock from the side never pushes the bike on. In a corner
+  or a weave a knock can give back some of the speed the lean already took, at most about 0.01 m/s in a held corner
+  and about 0.02 m/s by the end of a weave. Pedalling through a weave still stops at top speed.
 - Pedalling has a rider's power, not a motor's. Up a ramp steeper than about 15% the bike slows with A held, the
   steeper the slower, while the city's hills still climb at close to full speed.
 - Riding into a kerb costs some speed as each tyre strikes it, more for a taller one. Hop clear of its top to keep

@@ -15,7 +15,7 @@ local MAXIMUM_CAMBER=.8
 local BALANCE_WORK_FADE_LOW,BALANCE_WORK_FADE_SPAN,BALANCE_WORK_SHARE=.5,1,.25
 -- What the couple's work gave the lean is given back as speed only as far as it was taken from the speed, and only
 -- while the lean it went into is still moving: what is owed is held under BALANCE_CREDIT_ROLL times the roll's
--- kinetic energy about the tyres.
+-- inertia about the tyres times its rate squared, which is twice its kinetic energy (8 times it at 4).
 local BALANCE_CREDIT_ROLL=4
 local steering_axis={0,.9601196050643921,-.2795896530151367} -- the source float coefficients
 -- Hop-only authored landing policy. The compliance arithmetic comes from our
@@ -945,11 +945,13 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
             -- charged from the speed. A lean something else gave the bike, a knock from the side, owes nothing, and its
             -- catch is the rider's to soak up. Given back in full, a knock of 2.5 rad/s about the roll axis rolling
             -- straight at 1.2 m/s sent the bike on .23 m/s faster than it was going, at 1.6 m/s .23 and at 3 m/s .12;
-            -- owed, it gains nothing. A lean that has stopped moving owes nothing either: without that a weave's credit
+            -- owed, it gains nothing. In a held corner or a weave a knock can still be paid from what the rider's lean is
+            -- owed: at most .006 m/s over the speed at the knock in a corner held at steer .5 from .8 to 7 m/s, and .023
+            -- m/s by the end of a weave against the same weave unknocked. A lean that has stopped moving owes nothing either: without that a weave's credit
             -- was kept, and a knock three seconds after 6 s of weaving at 6 m/s still sent the bike on .08 m/s faster.
-            -- The roll's own kinetic energy (.5 times) is too tight: a coast from 7.5 m/s weaving full lock every second
-            -- ended at 1.41 m/s against 2.37 owed in full. 2 times ended a weave of .7 every .6 s from 6 m/s at 1.87, 4
-            -- and 8 times both at 1.93 (2.24 owed in full), so at 4 the cap only bites as the lean stops.
+            -- The roll's own kinetic energy (a factor of .5 here) is too tight: a coast from 7.5 m/s weaving full lock
+            -- every second ended at 1.41 m/s against 2.37 owed in full. A factor of 2 ended a weave of .7 every .6 s from
+            -- 6 m/s at 1.87, 4 and 8 both at 1.93 (2.24 owed in full), so at 4 the cap only bites as the lean stops.
             local share=BALANCE_WORK_SHARE*math.abs(along)
             local rate=M.dot(measured.angular_velocity,forward)
             local owed=math.min(prior_credit,BALANCE_CREDIT_ROLL*inertia*rate*rate)

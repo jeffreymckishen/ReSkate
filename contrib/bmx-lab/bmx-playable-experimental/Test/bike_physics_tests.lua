@@ -293,20 +293,42 @@ function T.run()
         check(not Forces.eligible_support(body,sample(-.02,.5),.005,.10),"rising faster than recovery is a real lift")
         check(not Forces.eligible_support(body,sample(0,.1),.005,.10),"with nothing to recover from, the old limit stands")
     end)
-    case(function() -- A brake in a corner does not swap the ends, flat or down a street grade.
+    case(function() -- A brake in a corner does not swap the ends, flat or down a street grade, and keeps the corner.
+        -- The rear tyre is where braking and cornering meet, and it keeps some grip in hand, so the rear does not slide
+        -- out. With no brake_lateral_cut the full-lock rows took all of it (1.00), and at 9 and 11 m/s down 10% the rear
+        -- swung round, 72 and 91 degrees. At .25 the most is .90, at 9 m/s down 10% once it has slowed to 4.5 m/s.
         for _,row in ipairs({{speed=6,stick=1,grade=0},{speed=7.4,stick=.5,grade=0},{speed=6,stick=1,grade=.05},{speed=7.4,stick=1,grade=.05},
-            {speed=7.4,stick=.5,grade=.1},{speed=9,stick=1,grade=.1}}) do
-            local locked,rear_load=0,0
+            {speed=7.4,stick=.5,grade=.1},{speed=9,stick=1,grade=.1},{speed=11,stick=1,grade=.1}}) do
+            local locked,rear_load,rear_grip=0,0,0
             local peak=run({steps=300,speed=row.speed,ground=Ground.plane(0,-row.grade),controls=function(step)
                 return {steer=-row.stick,brake=step>90 and 1 or 0}
             end,each=function(step,body,out,wheels)
                 local speed=M.length(body.linear_velocity)
                 if step>90 and speed>1.5 and math.abs(wheels[2].angular_speed)*R<.2*speed then locked+=1 end
                 if step>91 then check(math.abs(out.brake_impulse[2])<=.6*rear_load*R*h+1e-6,"the rear brake eases to what the tyre can hold") end
+                if step>91 and out.valid and out.normal_impulse[2]>1e-6 then
+                    rear_grip=math.max(rear_grip,math.sqrt(out.longitudinal_impulse[2]^2+out.lateral_impulse[2]^2)/out.normal_impulse[2])
+                end
                 rear_load=out.normal_load[2]
             end})
             check(peak.slip<12,string.format("%.1f m/s, stick %.1f, grade %.2f: peak slip %.1f",row.speed,row.stick,row.grade,peak.slip))
             check(locked==0,"the rear wheel keeps turning")
+            check(rear_grip<=.95,string.format("%.1f m/s, stick %.1f, grade %.2f: the rear tyre uses at most %.2f of its grip",row.speed,row.stick,row.grade,rear_grip))
+        end
+        -- Braked at full lock on the flat the bike holds its line. It stands up a little as the brake comes on and the
+        -- corner opens for a moment, then tightens as the speed falls. At brake_lateral_cut .6 the corner from 7.4 m/s
+        -- opened from 9.0 m to 21.4 m a quarter of a second into B and was still 14.4 m half a second in (1.60 times):
+        -- braking for a turn ran the bike wide into what it was turning away from, as g11 did in game (9.9 m to 16 m).
+        for _,speed in ipairs({6,7.4}) do
+            local before,widest,later
+            run({steps=120,speed=speed,controls=function(step) return {steer=-1,brake=step>90 and 1 or 0} end,each=function(step,body)
+                local r=math.sqrt(body.linear_velocity[1]^2+body.linear_velocity[3]^2)/math.max(1e-6,math.abs(body.angular_velocity[2]))
+                if step==88 then before=r end
+                if step>90 then widest=math.max(widest or 0,r) end
+                if step==120 then later=r end
+            end})
+            check(later<=1.1*before,string.format("from %.1f m/s, half a second into B the corner is %.2f m against %.2f",speed,later,before))
+            check(widest<=1.3*before,string.format("from %.1f m/s, it opens to at most %.2f m against %.2f",speed,widest,before))
         end
         local stop=run({steps=210,speed=7.4,controls=function() return {brake=1} end})
         check(M.length(stop.body.linear_velocity)<.5,"a straight stop from top speed takes under 3.5 s")
@@ -321,6 +343,93 @@ function T.run()
             if step>60 and step%10==0 and math.abs(out.brake_impulse[2])>.1 then braked+=1 end
         end})
         check(braked==6,"a hitch leaves the rear brake on: "..braked)
+    end)
+    case(function() -- At a walk the bars turn far enough to turn round in a street, and from 3 m/s steering is as it was.
+        local t=Forces.tuning()
+        local flat=Ground.plane(0,0)
+        local function speed_of(body) return math.sqrt(body.linear_velocity[1]^2+body.linear_velocity[3]^2) end
+        -- The lock the kernel asks for at full stick, on a bike placed rolling straight on the flat.
+        local function lock_at(speed,tuning)
+            local body,wheels=place(flat,speed)
+            local out=Forces.new(tuning):preview(h,body,wheels,contacts(flat,body,0),Forces.controls({steer=1}))
+            return out.valid and -out.requested_front_steer_angle or nil,out.issue
+        end
+        for _,speed in ipairs({3,3.5,4.5,5.5,7.4,9}) do
+            local lock=lock_at(speed)
+            check(lock and math.abs(lock-t.steer_limit/(1+speed/t.steer_speed_scale))<1e-9,
+                string.format("at %.1f m/s the lock is as it was: %s",speed,tostring(lock)))
+        end
+        for _,speed in ipairs({0,.5,1}) do
+            local lock=lock_at(speed)
+            check(lock and math.abs(lock-t.walk_lock)<1e-9,string.format("at %.1f m/s the bars turn to the walk's lock: %s",speed,tostring(lock)))
+        end
+        -- From a walk to 4 m/s the lock only narrows, with no step, and its slope has no corner where the walk's
+        -- widening starts or ends: a rider slowing through 3 m/s with the stick held does not feel the bars change law.
+        local last,last_slope,steepest,bend=nil,nil,0,0
+        for i=0,400 do
+            local lock=lock_at(i*.01)
+            if last then
+                check(lock<=last+1e-12,string.format("the lock narrows with speed: %.4f after %.4f at %.2f m/s",lock,last,i*.01))
+                local slope=(lock-last)/.01
+                steepest=math.max(steepest,-slope)
+                if last_slope then bend=math.max(bend,math.abs(slope-last_slope)) end
+                last_slope=slope
+            end
+            last=lock
+        end
+        check(steepest<.25,string.format("at most %.3f rad less lock per m/s",steepest))
+        check(bend<.01,string.format("and its slope changes by at most %.4f rad per m/s between 1 cm/s steps",bend))
+        -- Held at a walking pace at full lock: the circle, the drawn bars (the kernel's angle is what Ride draws), the
+        -- slew and the lean. With the old lock alone these circles were 2.64 and 2.79 m.
+        for _,row in ipairs({{speed=1,low=1.45,high=1.75},{speed=1.5,low=1.55,high=1.8}}) do
+            local radius,count,bars,step_most,tilt,previous=0,0,0,0,0,nil
+            local ride=run({steps=420,speed=row.speed,controls=function(step,body)
+                return {steer=step>30 and -1 or 0,pedal=speed_of(body)<row.speed and 1 or 0}
+            end,each=function(step,body,out)
+                if not out.valid then return end
+                if step>360 then radius+=speed_of(body)/math.max(1e-6,math.abs(body.angular_velocity[2]));count+=1 end
+                bars=math.max(bars,math.abs(out.front_steer_angle))
+                if previous then step_most=math.max(step_most,math.abs(out.front_steer_angle-previous)) end
+                previous=out.front_steer_angle
+                if step>30 then tilt=math.max(tilt,tilt_of(body)) end
+            end})
+            radius/=count
+            check(ride.refused==0,"a walking turn is sent every step")
+            check(radius>=row.low and radius<=row.high,string.format("at %.1f m/s full lock turns at %.2f m",row.speed,radius))
+            check(bars<=t.walk_lock+1e-9 and bars>=t.walk_lock-.04,string.format("and the bars are at %.3f rad",bars))
+            check(step_most<=5*t.steer_limit*h+1e-12,
+                string.format("the bars still turn no further in a step than before: %.4f rad",step_most))
+            check(tilt<10,string.format("leaned at most %.1f degrees",tilt))
+        end
+        -- Turning round from a walk takes a circle about 3.3 m across, where it took 5.3 m.
+        for _,speed in ipairs({1,1.3}) do
+            local x0,across,round
+            run({steps=600,speed=speed,controls=function(step,body)
+                return {steer=step>30 and -1 or 0,pedal=speed_of(body)<speed and 1 or 0}
+            end,each=function(step,body)
+                if step==30 then x0=body.center_of_mass[1] end
+                if step>30 and not round then
+                    across=math.max(across or 0,math.abs(body.center_of_mass[1]-x0))
+                    if M.turn(M.normalized(body.orientation),{0,0,1})[3]< -.99 then round=step end
+                end
+            end})
+            check(round~=nil and across<=3.5,string.format("from %.1f m/s the bike turns round %.2f m across",speed,across))
+        end
+        -- Rocking the stick at a walk, and coasting a full-lock circle down to a stop, neither wobbles nor tips it.
+        for _,rock in ipairs({{speed=1.2,every=30},{speed=1.5,every=40},{speed=2,every=40}}) do
+            local peak=run({steps=900,speed=rock.speed,controls=function(step,body)
+                return {steer=math.floor(step/rock.every)%2==0 and 1 or -1,pedal=speed_of(body)<rock.speed and 1 or 0}
+            end})
+            check(peak.tilt<12 and peak.refused==0,string.format("rocked at %.1f m/s peaks at %.1f degrees",rock.speed,peak.tilt))
+        end
+        local coast=run({steps=900,speed=1.5,controls=function(step) return {steer=step>30 and -1 or 0} end})
+        check(coast.tilt<8 and coast.refused==0 and tilt_of(coast.body)<2 and speed_of(coast.body)<.1,
+            string.format("a full-lock coast from 1.5 m/s stops upright: peak %.1f, end %.1f degrees at %.2f m/s",coast.tilt,tilt_of(coast.body),speed_of(coast.body)))
+        -- The walk's lock stays inside the bars the drawn rider takes (mounted_pose's .9 rad), and its speeds in order.
+        for _,bad in ipairs({{walk_lock=.85},{walk_lock_end_speed=1},{walk_lock_full_speed=3.5},{walk_lock_end_speed=6}}) do
+            local lock,issue=lock_at(1,bad)
+            check(lock==nil and issue=="invalid_sample","a walk lock outside its bounds is refused")
+        end
     end)
     case(function() -- A stopped bike holds on a street grade, and a stall on a ramp still rolls back.
         for _,grade in ipairs({-.14,-.1,-.05,-.02,.02,.05,.1,.14}) do
@@ -376,7 +485,8 @@ function T.run()
     end)
     case(function() -- Ordinary riding with no manual sends exactly what it did before the manual was added.
         -- The digest was taken on the kernel before the manual law went in: every force and torque of a 900 step ride
-        -- with pedal, steering, brake and two hops, and where the bike ends.
+        -- with pedal, steering, brake and two hops, and where the bike ends. It was taken again when the walk's wider
+        -- lock and brake_lateral_cut .25 went in, which this ride meets: it starts at 2 m/s and brakes while it steers.
         local hash=2166136261
         local function mix(x)
             local text=string.format("%.17g",x)
@@ -393,7 +503,7 @@ function T.run()
         end})
         for i=1,3 do mix(ride.body.center_of_mass[i]) end
         check(sent==900 and ride.refused==0,"every step of the ordinary ride is sent: "..sent)
-        check(hash==0x24483bca,string.format("ordinary riding is unchanged: digest %08x",hash))
+        check(hash==0x7f978aa9,string.format("ordinary riding is unchanged: digest %08x",hash))
     end)
     -- Manuals. The pitch is the body's own, nose up positive, from the surface under the bike when one is given.
     local function pitch_of(body,ground)

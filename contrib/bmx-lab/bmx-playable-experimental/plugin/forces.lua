@@ -29,6 +29,17 @@ local function floor_softness(h,body,contact,basis,fraction)
     return fraction/(stiffness*h*h)
 end
 local defaults={gravity={0,-9.8,0},wheelbase=1.203956057050485*scale,steer_limit=.4,steer_speed_scale=8,
+    -- The bars turn at most steer_limit/(1+speed/steer_speed_scale). At a walk they turn up to walk_lock (32 degrees)
+    -- instead, up to walk_lock_full_speed, and from there go back to that lock along a smooth step, all of the way by
+    -- walk_lock_end_speed. That lock alone stopped the bars at 20 degrees at 1 m/s, so a full-lock circle was 5.3 m
+    -- across: in game d9 turned no tighter than 2.7 m at 1.1 m/s, and the fixture 2.64 m at 1 m/s. A rider on a 20 inch
+    -- bike turns round in a street at a walk. With walk_lock the fixture turns at 1.6 m from .6 to 1.2 m/s and 1.7 m
+    -- at 1.5 m/s, and from 3 m/s nothing changes. The bars still slew at the rate that lock gives, so they take about
+    -- .4 s from the middle to the walk's full lock. The drawn rider sets how far: from about 25 degrees the near wrist
+    -- is at its bend limit (mounted_pose max_wrist_bend) and the hand turns short of its grip, by 11 degrees at
+    -- walk_lock, 17 at 36 and 33 at 46, the palm still on the grip. The knee joints stay 12 cm from the bars' own mesh
+    -- here, against 14 at the old full lock (23 degrees).
+    walk_lock=.56,walk_lock_full_speed=1,walk_lock_end_speed=3,
     pedal_torque=75,front_brake_torque=60,rear_brake_torque=45,friction={longitudinal_friction=1,lateral_friction=1},
     balance_stiffness=1600,balance_damping=360,balance_torque_limit=1200,lean_limit=.52,
     air_yaw_torque=200,air_pitch_torque=160,neutral_air_damping_rate=2.75,hop_delta_speed=4.5,
@@ -49,8 +60,14 @@ local defaults={gravity={0,-9.8,0},wheelbase=1.203956057050485*scale,steer_limit
     -- Half the width of a 2.4 inch tyre: a leaned wheel rolls on its shoulder, this far inside its hub's plane.
     tyre_section_radius=.03,
     -- Braking uses grip the corner wanted. Under a full brake the cornering limit gives up this share, and the
-    -- rider eases the rear brake to this share of what the rear tyre can hold, as they would by feel.
-    brake_lateral_cut=.6,rear_brake_load_share=.6,
+    -- rider eases the rear brake to this share of what the rear tyre can hold, as they would by feel. The rear tyre
+    -- is where the two meet: under a full brake it gives .6 of its grip to the brake, which leaves .8 for the corner.
+    -- With no cut, a full-lock corner took all of that (the fixture's rear tyre at 1.00 of its grip), and at 9 to 11
+    -- m/s down a 10% grade the rear swung round, 72 to 91 degrees. At .25 the rear tyre peaks at .76 to .90 of its
+    -- grip, the most at 9 m/s down 10% once slowed to 4.5 m/s. At .6 the bike stood up and ran wide: at full lock from
+    -- 7.4 m/s the corner opened from 9 m to 21 m a quarter of a second into B and was still 14 m half a second in (in
+    -- game g11, 9.9 m to 16 m). At .25 it opens to 11 m for a moment, and is 7.5 m half a second in as the speed falls.
+    brake_lateral_cut=.25,rear_brake_load_share=.6,
     -- A manual: the bike on its back wheel, held there by the rider's weight. A pitch couple on the one rigid body
     -- stands for the rider moving the whole centre of mass by couple/weight, so it is held to what a rider can
     -- shift: this far back (arms straight, hips behind the saddle) and this far forward (chest to the bars). The
@@ -166,6 +183,7 @@ local function tuning_valid(t)
         "recovery_fraction","recovery_speed_limit","pedal_fade_start","pedal_cutoff","pedal_top_speed","pedal_resume_speed","rider_power",
         "curvature_rate_limit","curvature_step_limit","curvature_min_speed","neutral_air_damping_rate",
         "rolling_resistance","air_drag","tyre_section_radius","brake_lateral_cut","rear_brake_load_share",
+        "walk_lock","walk_lock_full_speed","walk_lock_end_speed",
         "manual_hold_back","manual_hold_forward","manual_pull","manual_pull_ramp","manual_pull_seconds","manual_risen_slack","manual_face_offset","manual_rate","manual_gain",
         "manual_damping","manual_min_speed","manual_start_speed","manual_carve_rate","manual_carve_damping","manual_carve_torque",
         "nose_hold_forward","nose_hold_back","nose_low","nose_high","nose_carve_rate","nose_carve_lateral","nose_yaw_damping",
@@ -181,6 +199,8 @@ local function tuning_valid(t)
         t.nose_carve_rate>4 or t.nose_carve_lateral>10 or t.nose_yaw_torque>t.balance_torque_limit or
         t.nose_roll_gain<1 or t.nose_roll_gain>3 or t.nose_catch_torque>t.balance_torque_limit or t.nose_catch_span<=0 or
         t.nose_catch_seconds>1 or t.nose_air_seconds>1 or t.nose_brake_fade<=0 or t.nose_brake_fade>.3 then return false end
+    -- The drawn rider takes bars to .9 rad (mounted_pose's articulation limit), so the walk's lock stays inside it.
+    if t.walk_lock>.8 or t.walk_lock_end_speed<=t.walk_lock_full_speed or t.walk_lock_end_speed>5 then return false end
     return t.brake_lateral_cut<=1 and t.rear_brake_load_share<=1 and t.steer_limit<=1 and t.lean_limit<=.8 and t.hop_delta_speed<=4.5 and t.contact_gap<=.05 and
         t.maximum_penetration<=.15 and t.recovery_fraction<=1 and t.recovery_speed_limit<=1 and t.pedal_fade_start<t.pedal_cutoff and
         t.pedal_cutoff<=50 and t.pedal_resume_speed<t.pedal_top_speed and t.pedal_top_speed<=t.pedal_cutoff and t.curvature_rate_limit<=10 and t.curvature_step_limit<=.35 and t.curvature_min_speed<=5 and t.neutral_air_damping_rate<=10
@@ -460,7 +480,11 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
         end end
         if count>0 then out.desired_support_angular_velocity=M.mul(transport,1/count) end
     end
-    out.requested_front_steer_angle=-steer*t.steer_limit/(1+math.abs(speed)/t.steer_speed_scale) out.front_steer_angle=out.requested_front_steer_angle
+    -- The bars' lock, which a walk widens to walk_lock and never narrows (see the tuning).
+    local lock=t.steer_limit/(1+math.abs(speed)/t.steer_speed_scale)
+    local stroll=math.clamp((t.walk_lock_end_speed-math.abs(speed))/(t.walk_lock_end_speed-t.walk_lock_full_speed),0,1)
+    lock+=math.max(0,t.walk_lock-lock)*stroll*stroll*(3-2*stroll)
+    out.requested_front_steer_angle=-steer*lock out.front_steer_angle=out.requested_front_steer_angle
     local axis=M.unit(M.turn(q,steering_axis)) if not axis then return out end
     local up=support_mask~=0 and M.unit(support_sum) or nil
     local forward=up and M.unit(M.sub(body_forward,M.mul(up,M.dot(body_forward,up)))) or nil
@@ -566,6 +590,8 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     -- This is a body-local joint angle, so its accepted history remains valid
     -- when support disappears. Slew the same joint through loss/reacquisition;
     -- support, balance and raw air-trick intent keep their independent gates.
+    -- The slew keeps the rate of the lock before a walk widens it: at that lock's rate the joint never moves further in
+    -- a step than it did.
     local steer_gain=t.steer_limit/(1+math.abs(speed)/t.steer_speed_scale) local steer_u=math.clamp(math.abs(speed)/30,0,1)
     local rate_delta=(5-3*steer_u*steer_u*(3-2*steer_u))*steer_gain*h
     if c.enabled and prior_steering.valid then

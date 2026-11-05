@@ -42,8 +42,8 @@ end
 -- bike_visual draws the whole bike pitched about the steering pivot, positive nose down, and then lifted along
 -- its own up and shifted along its own forward. How far that raises the front hub and the rear one, in the bike's
 -- frame, or nil for a geometry without its hubs and pivot; the shift moves neither up. The neutral front hub stands
--- for a steered one: steering moves it at most 1.8 cm along the bike, at full lock, which changes its rise by under
--- 5 mm at the steepest pitch Ride draws.
+-- for a steered one: at the walk's full lock (forces.lua walk_lock, .56 rad) steering moves it 2.2 cm, 2.1 of them
+-- across the bike and 6 mm along it, which changes its rise by under 4 mm at up to .6 rad of drawn pitch.
 -- Given a tilt, in radians from the bike's up toward its forward, the rise is measured along that direction instead,
 -- and the shift moves the hubs along it too: the ground's normal under a bike on its rear wheel in a manual stands
 -- 20 to 36 degrees from the bike's up. Without one the rise is the bike's-up rise, exactly as before.

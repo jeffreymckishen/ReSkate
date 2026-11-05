@@ -93,6 +93,11 @@ offline the game does not keep it, so set it again each launch.
   that is sooner. They never turn the wheel. Pedalling again starts them from there.
 - Into a manual or a nose manual the rider stands up on the pedals and the hips move to where the physics puts the
   weight over about half a second, and they move back and sit down the same way after it, without a jump.
+- At a walk the bars turn up to about 32 degrees, so the bike turns round inside about 3.3 m, where it used to take
+  5.3 m. They come back to the old lock by 3 m/s, and from there steering is as before. With the bars that far round
+  the rider's near hand is drawn turned a little short of its grip, its wrist at the end of its bend.
+- B in a corner keeps the corner. The bike stands up a little as the brake comes on and the turn opens for a moment,
+  then tightens as the bike slows, rather than running wide.
 - Pedalling has a rider's power, not a motor's. Up a ramp steeper than about 15% the bike slows with A held, the
   steeper the slower, while the city's hills still climb at close to full speed.
 - Riding into a kerb costs some speed as each tyre strikes it, more for a taller one. Hop clear of its top to keep

@@ -93,7 +93,9 @@ function Tests.run()
     local still=MP.compose({bike=level,articulation={crank_phase=.4,steer=.05},rider=MP.manual_rider(0)})
     local ordinary=MP.compose({bike=level,articulation={crank_phase=.4,steer=.05}})
     check(same(still.pose,ordinary.pose) and same(still.targets,ordinary.targets),"a shift of 0 poses the ordinary rider exactly")
-    -- A steady manual composes once and is mapped after, as ordinary riding is.
+    -- A steady manual composes once and is mapped after, as ordinary riding is. Ride holds a steady manual's
+    -- shift still (ride_runtime RIDER_SHIFT_HOLD), so what reaches the poser moves by less than the millimetre
+    -- the shift is taken to.
     local api={skater={pose=function(pose,weight)
         if weight==MP.PROBE_WEIGHT then error("place has a position, a rotation or both",0) end
         return true
@@ -101,12 +103,52 @@ function Tests.run()
     local poser=MP.new(api)
     check(poser:mount(0).ok,"the poser mounts on a constructed skater.pose")
     for tick=1,120 do
-        local shift=.16+.002*math.sin(tick/7)
+        local shift=.16+.0004*math.sin(tick/7)
         local r=poser:tick(tick/60,{bike=pitched(20),articulation={crank_phase=.4,steer=0},rider=MP.manual_rider(shift)})
         check(r.ok and r.sent,"a manual's pose is sent: "..tostring(r.reason))
     end
     local hits,misses=poser.memo_hits or 0,poser.memo_misses or 0
     check(hits+misses==120 and hits>=108,"a steady manual is mapped from its memo on 90% of its ticks: "..hits.." hits, "..misses.." misses")
+
+    -- The shift is taken to the millimetre, so a shift easing in or out moves the hips a millimetre or so at a
+    -- time: taken to the centimetre, it moved them 12 mm in one step.
+    local fine=MP.manual_rider(.1234,1)
+    check(math.abs(fine.hip_offset[3]+1.2*.123)<1e-12 and math.abs(fine.hip_offset[2]+.5*.123)<1e-12,
+        "the shift is taken to the millimetre: "..fine.hip_offset[3])
+    local apart=0
+    for i=0,299 do
+        local a,b=MP.manual_rider(i/1000,1),MP.manual_rider((i+1)/1000,1)
+        apart=math.max(apart,distance(a.hip_offset,b.hip_offset))
+    end
+    check(apart<=.0014,"a millimetre more shift moves the hips at most 1.4 mm: "..apart)
+    -- Back, the rider is kept up off the saddle as far as the shift needs, however far Ride has sat them down,
+    -- so the saddle's back edge never holds the hips: held by it, a rider sitting down out of a manual faster
+    -- than the shift came back was pulled 43 to 67 mm forward in one step.
+    local held,worst_step=0,0
+    for _,degrees in ipairs({10,20,30}) do
+        for _,standing in ipairs({0,.25,.5,.75,1}) do
+            local last=nil
+            for i=0,300,5 do
+                local rider=MP.manual_rider(i/1000,standing)
+                check(rider.standing>=standing,"the standing is never less than Ride's")
+                local out=MP.compose({bike=pitched(degrees),articulation={crank_phase=.4,steer=0},rider=rider})
+                if out.diagnostics.saddle_limited then held+=1 end
+                local z=out.diagnostics.hip_seat[3]
+                if last then worst_step=math.max(worst_step,math.abs(z-last)) end
+                last=z
+            end
+        end
+    end
+    check(held==0,"no back shift is held at the saddle's back edge: "..held)
+    check(worst_step<=.0075,"5 mm more shift moves the hips at most 7.5 mm along the seat: "..worst_step)
+    -- Sitting down from all the way up at a .2 m shift, the hips move a little at a time, not in one step.
+    local sat_step,last=0,nil
+    for i=0,100 do
+        local out=MP.compose({bike=pitched(20),articulation={crank_phase=.4,steer=0},rider=MP.manual_rider(.2,1-i/100)})
+        if last then sat_step=math.max(sat_step,distance(out.targets.hips,last)) end
+        last=out.targets.hips
+    end
+    check(sat_step<=.005,"sitting down by a hundredth moves the hips at most 5 mm: "..sat_step)
 
     -- A manual's standing rider on a bike Ride draws up off a kerb: pitched about the steering pivot, lifted and
     -- shifted. Standing, the rider is composed in the drawn bike's frame, hands on the grips and feet on the pedals.
@@ -219,6 +261,20 @@ function Tests.run()
     local half=MP.manual_rider(-.2,1,.5)
     check(math.abs(half.hip_offset[2]-.04)<1e-12 and math.abs(half.hip_offset[3]-.12)<1e-12,"half way, half of each")
     check(same(MP.manual_rider(.16,1,1),MP.manual_rider(.16,1,0)),"a back shift takes no part of the nose")
+    -- Over the bars, Ride's rider_over: none, or none given, is up over them; all the way over, the hips go
+    -- forward .8 and up .6 of the shift; with no nose, or a back shift, it takes no part.
+    check(same(up,MP.manual_rider(-.2,1,1,nil)) and same(up,MP.manual_rider(-.2,1,1,0)),"no over is hips up over the bars")
+    for _,bad in ipairs({-.1,1.1,0/0,"x"}) do
+        local r,why=MP.manual_rider(-.2,1,1,bad)
+        check(r==nil and why=="the rider's over is 0 to 1","an over outside 0 to 1 is refused: "..tostring(bad).." "..tostring(why))
+    end
+    local over=MP.manual_rider(-.2,1,1,1)
+    check(over.hip_offset[1]==0 and math.abs(over.hip_offset[2]-.12)<1e-12 and math.abs(over.hip_offset[3]-.16)<1e-12
+        and math.abs(over.lean-(MP.STANCE.lean+.16))<1e-12 and over.standing==1,"all the way over the bars the hips go forward .8 and up .6 of the shift")
+    local part=MP.manual_rider(-.2,1,1,.5)
+    check(math.abs(part.hip_offset[2]-.10)<1e-12 and math.abs(part.hip_offset[3]-.08)<1e-12,"half way over, half way between")
+    check(same(MP.manual_rider(-.2,1,0,1),MP.manual_rider(-.2,1)) and same(MP.manual_rider(.16,1,1,1),MP.manual_rider(.16,1)),
+        "with no nose, or a back shift, over takes no part")
     -- Each forward shift on the bike pitched nose down as far as it holds it (the weight's offset behind the front
     -- contact is .8196 cos(pitch + 51 degrees), scaled bike), at 24 crank phases: the hands on the grips, the feet on
     -- the pedals, no limb out of reach, and the knees, thighs and shins at least 9 cm off the bar line (grip to grip,
@@ -274,6 +330,56 @@ function Tests.run()
     check(palm_miss<=1e-4 and ankle_miss<=1e-4,string.format("the hands hold their grips and the feet their pedals: %.6f %.6f",palm_miss,ankle_miss))
     check(legs>=.09,string.format("the knees, thighs and shins stay %.3f off the bars at every hold and crank phase",legs))
     check(torso>=.3,string.format("and the torso %.3f",torso))
+    -- All the way over the bars, as Ride draws a held nose manual once the cranks are level (either level, bike
+    -- geometry's pedals): at every hold the hips travel along the ground as far as the physics moves the weight,
+    -- to 1.2 cm where the physics holds the bike 20 to 36 degrees down (forces.lua nose_low .23 at 23, nose_high
+    -- .13 at 30), rising with the weight as it goes over (1.6 cm at 30 degrees, 6.7 at 21), with the hands on the
+    -- grips, the feet on the pedals, the knees, thighs and shins 7.5 cm off the bars (measured 7.9 at the .30 m
+    -- hold, 8.5 or more to .25) and the torso 30 cm. Drawn up over the bars instead, they did not go forward at all.
+    local level=math.atan2(G.pedals[1][2]-G.bottom_bracket[2],G.pedals[1][3]-G.bottom_bracket[3])
+    local along,height,over_legs,over_torso,over_miss,over_at=0,0,math.huge,math.huge,0,nil
+    for _,f in ipairs({.04,.06,.10,.12,.13,.15,.18,.20,.22,.23,.25,.27,.30}) do
+        local degrees=math.deg(math.acos(f/.8196))-51
+        local a=math.rad(degrees)
+        local bike={root={0,.3,0},rotation={math.sin(a/2),0,0,math.cos(a/2)}}
+        local function bike_local(p) return Q.turn(Q.conjugate(bike.rotation),sub(p,bike.root)) end
+        for _,phase in ipairs({level,level+math.pi}) do
+            local articulation={crank_phase=phase,steer=0}
+            local out,why=MP.compose({bike=bike,articulation=articulation,rider=MP.manual_rider(-f,1,1,1)})
+            check(out~=nil and MP.validate_pose(out.pose),"a rider over the bars composes and keeps the joint contract: "..tostring(why))
+            local still=MP.compose({bike=bike,articulation=articulation})
+            if degrees>=20 and degrees<=36 then
+                along=math.max(along,math.abs(out.targets.hips[3]-still.targets.hips[3]-f))
+                height=math.max(height,math.abs(out.targets.hips[2]-still.targets.hips[2]))
+            end
+            for i,name in ipairs({"left_arm","right_arm"}) do
+                local side=i==1 and 1 or -1
+                local planned=out.planned[name]
+                local palm=add(planned.tip,Q.turn(planned.tip_rotation,{C.palm_reach,0,side*(C.grip_radius+C.palm_gap)}))
+                over_miss=math.max(over_miss,distance(palm,out.targets.grips[i]))
+                check(not out.diagnostics.limbs[name].clamped,"over the bars the "..name.." reaches its grip")
+            end
+            for i,name in ipairs({"left_leg","right_leg"}) do
+                local p=out.planned[name]
+                over_miss=math.max(over_miss,distance(p.tip,out.targets.ankles[i]))
+                check(not out.diagnostics.limbs[name].clamped,"over the bars the "..name.." reaches its pedal")
+                local hip,knee,ankle=bike_local(p.root),bike_local(p.middle),bike_local(p.tip)
+                local clear=math.min(segment(knee,knee,G.right_grip,G.left_grip)-bar_radius,
+                    segment(hip,knee,G.right_grip,G.left_grip)-bar_radius,segment(knee,ankle,G.right_grip,G.left_grip)-bar_radius)
+                if clear<over_legs then over_legs,over_at=clear,string.format("%.2f m at %.1f degrees, crank %.3f",f,degrees,phase) end
+            end
+            local shoulders=bike_local({(out.planned.left_arm.root[1]+out.planned.right_arm.root[1])/2,
+                (out.planned.left_arm.root[2]+out.planned.right_arm.root[2])/2,(out.planned.left_arm.root[3]+out.planned.right_arm.root[3])/2})
+            over_torso=math.min(over_torso,segment(bike_local(out.targets.hips),shoulders,G.right_grip,G.left_grip)-bar_radius)
+        end
+    end
+    check(along<=.012,string.format("over the bars the hips travel along the ground to %.4f of the physics' shift",along))
+    check(height<=.07,string.format("rising at most %.4f",height))
+    check(over_miss<=1e-4,string.format("over the bars the hands hold their grips and the feet their pedals: %.6f",over_miss))
+    check(over_legs>=.075,string.format("over the bars at level cranks the knees, thighs and shins stay %.3f off the bars (%s)",over_legs,tostring(over_at)))
+    check(over_torso>=.3,string.format("and the torso %.3f",over_torso))
+    print(string.format("MEASURE over the bars: along the ground to %.4f of the shift, height to %.4f, knees %.3f, torso %.3f",
+        along,height,over_legs,over_torso))
     return {cases=5,assertions=assertions}
 end
 return table.freeze(Tests)

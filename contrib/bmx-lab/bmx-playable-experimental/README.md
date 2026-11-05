@@ -88,6 +88,11 @@ offline the game does not keep it, so set it again each launch.
   released. Then hold LB and press A to ride again.
 - Top speed is about 7.7 m/s on the flat. The rider stops pedalling there and coasts down to about 7.2 m/s before
   pedalling again. A hill can take the bike much faster than that, and a coast slows by itself.
+- Whenever the rider stops pedalling, coasting, at top speed or in a manual, the cranks come round to level, feet
+  at 3 and 9 o'clock, within about half a second: back, as a rider backpedals, or forward with the back wheel when
+  that is sooner. They never turn the wheel. Pedalling again starts them from there.
+- Into a manual or a nose manual the rider stands up on the pedals and the hips move to where the physics puts the
+  weight over about half a second, and they move back and sit down the same way after it, without a jump.
 - Pedalling has a rider's power, not a motor's. Up a ramp steeper than about 15% the bike slows with A held, the
   steeper the slower, while the city's hills still climb at close to full speed.
 - Riding into a kerb costs some speed as each tyre strikes it, more for a taller one. Hop clear of its top to keep
@@ -111,7 +116,9 @@ offline the game does not keep it, so set it again each launch.
   at a jog, and on two wheels or in a manual the same kerb face just stops the bike.
   Carved at full lock, a bump of about 8 cm met at 4 to 6.5 m/s can swing the back of the bike right round, and now
   and then throws it over; carved at full lock down a steep hill, a 5 cm bump met faster than about 7.5 m/s can too.
-  The rider is drawn hips up over the bars, which shows less of the weight shift than the physics uses.
+  The rider is drawn with the hips forward over the bars as far as the physics shifts the weight, once the cranks
+  have come level. Until then, with a pedal high in front, the hips go up over the bars instead, so the knees clear
+  them.
 - Riding into a parked car stops the bike at the bumper, in a nose manual too: the back wheel comes down with the
   front tyre at the bumper. Faster than about 4 m/s it is a crash, over the bars.
 - Mounting refuses ground steeper than 12 degrees and anywhere without room for the bike.

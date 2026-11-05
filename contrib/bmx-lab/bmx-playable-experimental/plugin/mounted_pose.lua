@@ -455,31 +455,49 @@ local function rider_of(r, o)
     return {crouch = crouch, lean = lean, hip_offset = hip, standing = standing}
 end
 
+-- How far the resting hips stand in front of the default saddle's back edge, along the bike: the most a
+-- back shift moves them before a rider has to be up off the saddle for them to go on back.
+local REST_BEFORE_SADDLE = MP.STANCE.hip_z - assert(geometry_of(nil)).saddle.rear
 -- The rider in a manual, from Ride's rider_shift: how far the physics moves the centre of mass, back
 -- positive, in metres (the pitch couple over the weight). Back, the hips go behind the saddle and
 -- down, arms straight and the chest up; forward, the hips come toward the bars and the chest down
 -- over them. Standing, so the saddle does not hold the hips: as far as standing says, 0 to 1, which
--- Ride eases in and out with the manual (rider_standing), and all the way without one. The shift is
--- taken to the centimetre, so a steady manual composes once and is then mapped (compose_memo).
--- nose, 0 to 1 (Ride's rider_nose, nil for 0), is how far the rider is in a nose manual. Forward on the
--- front wheel the hips go up over the bars rather than toward them, and the chest still goes down:
--- drawn toward them, the knees met the bars at the worst crank phase, 6 mm into them with the bike
--- pitched as a .10 m shift holds it. Up over them, every crank phase keeps the knees, thighs and shins
--- at least 10 cm off the bars at every hold from .06 to .30 m. A back shift takes no part of it.
-function MP.manual_rider(shift, standing, nose)
+-- Ride eases in and out with the manual (rider_standing), and all the way without one; and never less
+-- than the back shift needs to clear the saddle's back edge by a centimetre (compose stops the hips
+-- STANDING_REACH times standing behind it). With Ride's standing alone, a rider sitting down out of a
+-- manual faster than the shift came back was pulled forward onto the saddle in one step: 43 to 67 mm.
+-- The shift is taken to the millimetre: Ride holds a steady manual's shift still, so it composes once
+-- and is then mapped (compose_memo), and a moving one moves the hips in steps of a millimetre or so
+-- rather than the centimetre's 12 mm stairs.
+-- nose, 0 to 1 (Ride's rider_nose, nil for 0), is how far the rider is in a nose manual, and over, 0
+-- to 1 (Ride's rider_over, nil for 0), how far forward over the bars rather than up over them. All the
+-- way over, the hips go forward .8 and up .6 of the shift on the bike, so on a bike pitched 20 to 36
+-- degrees on its front wheel they travel along the ground within 1.2 cm of the shift the physics
+-- holds it with (forces.lua nose_low, nose_high), rising 1.6 cm at 30 degrees and 6.7 at 21 as the
+-- weight goes over, and the chest goes down. Up over them (over 0), the hips go up .4 of the shift and
+-- not forward. With level cranks the knees, thighs and shins keep 8.5 cm or more off the bars all the
+-- way over at every hold from .04 to .25 m, 7.9 at .30; with a pedal high in front they met them,
+-- where up over the bars every crank phase kept them 10 cm off. So Ride takes the hips over only as
+-- the cranks come level. A back shift takes no part of either.
+function MP.manual_rider(shift, standing, nose, over)
     if not finite(shift) then return nil, "the rider's shift is not a finite distance" end
     if standing == nil then standing = 1 end
     if not finite(standing) or standing < 0 or standing > 1 then return nil, "the rider's standing is 0 to 1" end
     if nose == nil then nose = 0 end
     if not finite(nose) or nose < 0 or nose > 1 then return nil, "the rider's nose is 0 to 1" end
-    local s = math.floor(clamp(shift, -.3, .3) * 100 + .5) / 100
+    if over == nil then over = 0 end
+    if not finite(over) or over < 0 or over > 1 then return nil, "the rider's over is 0 to 1" end
+    local s = math.floor(clamp(shift, -.3, .3) * 1000 + .5) / 1000
     local back, forward = math.max(s, 0), math.max(-s, 0)
-    local n = math.floor(nose * 100 + .5) / 100
+    standing = math.max(standing, clamp((1.2 * back - REST_BEFORE_SADDLE + .01) / STANDING_REACH, 0, 1))
+    local n = math.floor(nose * 1000 + .5) / 1000
+    local lean = MP.STANCE.lean - .6 * back + .8 * forward
     if n == 0 then
-        return {hip_offset = {0, -.5 * back, -1.2 * s}, lean = MP.STANCE.lean - .6 * back + .8 * forward, standing = standing}
+        return {hip_offset = {0, -.5 * back, -1.2 * s}, lean = lean, standing = standing}
     end
-    return {hip_offset = {0, -.5 * back + .4 * forward * n, -1.2 * back + 1.2 * forward * (1 - n)},
-        lean = MP.STANCE.lean - .6 * back + .8 * forward, standing = standing}
+    local o = math.floor(over * 1000 + .5) / 1000
+    return {hip_offset = {0, -.5 * back + forward * n * (.4 + .2 * o), -1.2 * back + forward * (1.2 * (1 - n) + .8 * n * o)},
+        lean = lean, standing = standing}
 end
 
 local function bike_of(bike, g)

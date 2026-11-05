@@ -18,8 +18,6 @@ __pycache__/
 *.pcapng
 *.pdml
 *.mitm
-analysis/raw/**/*.ebx
-analysis/raw/**/*.res
 
 # Optional developer utilities stay local. CMake is self-contained.
 /tools/
@@ -37,8 +35,7 @@ analysis/raw/**/*.res
 
 # build tests for the bmx reverse engineering project
 standalone/bmx-movement/*.zip
-# The plugins are kept on this machine, out of the repository (dingosdk_plugin_tests runs them
-# from here when they are present).
+# Plugin mods are kept on this machine, out of the repository.
 /contrib/plugins/
 
 # vtf's linux development configuration

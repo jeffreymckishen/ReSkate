@@ -9,6 +9,7 @@
 #include "Engine/Game/Build/20260929/skater_state.h"
 #include "Extension/Trainer/trainer_jump.h"
 #include "Extension/UI/Overlay/overlay.h"
+#include "Engine/Core/Platform/performance_counter.h"
 #include <Windows.h>
 #include <algorithm>
 #include <array>
@@ -59,11 +60,6 @@ Control& control() {
         return created;
     }();
     return *value;
-}
-std::int64_t qpc_now() noexcept {
-    LARGE_INTEGER value{};
-    QueryPerformanceCounter(&value);
-    return value.QuadPart;
 }
 double seconds(std::int64_t ticks) noexcept {
     static const double frequency = [] {

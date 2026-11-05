@@ -95,9 +95,8 @@ bool inspect_bmx_switch_admission_owner(std::uintptr_t client,std::uintptr_t ent
 // Every physics step of that skater, whether or not No Bail protects it: No Bail's hook on the
 // skeleton response runs once per step, right after the step's body contacts, and hands it on after
 // its own filtering, so a wipeout it filtered never happened. `seconds` is the step's simulated time.
-// One observer, nullptr for none; it runs on the physics thread.
+// Listeners (add_no_bail_step_listener below) run on the physics thread.
 using NoBailStepObserver = void (*)(const NoBailSkater& skater, float seconds, bool wipeout) noexcept;
-void set_no_bail_step_observer(NoBailStepObserver observer) noexcept;
 // Revert Boost: the local skater's turn over each flight, measured in the physics selector (every
 // physics step) rather than the ~9 Hz client tick, so the start and the end of the turn are not lost.
 // Publish the selector and the skater's transform address from the client tick; it expires if ticks stop.
@@ -251,9 +250,8 @@ struct DarkPopLast {
     unsigned freeze_writes{}, freeze_held{}, freeze_lost{};
 };
 DarkPopLast dark_pop_last() noexcept;
-// Further listeners on the same steps (skater_events.h, launches.h), independent of the observer
-// above so none displaces another. Same thread and timing. Adding one already there, or removing one that is not, does nothing;
-// false when all slots are taken.
+// Listeners on those steps (skater_events.h, launches.h), a slot each so none displaces another.
+// Adding one already there does nothing; false when all slots are taken.
 inline constexpr std::size_t no_bail_step_listener_slots = 4;
 bool add_no_bail_step_listener(NoBailStepObserver listener) noexcept;
 // Any thread: the watched local skater bails at its next physics step, as from a slam of
@@ -266,7 +264,6 @@ bool add_no_bail_step_listener(NoBailStepObserver listener) noexcept;
 bool try_no_bail_request_wipeout(float magnitude) noexcept;
 // Compatibility caller that intentionally discards the publication result.
 void no_bail_request_wipeout(float magnitude) noexcept;
-void remove_no_bail_step_listener(NoBailStepObserver listener) noexcept;
 
 // Diagnostic ordering seam. Existing step observers/listeners remain pre-original.
 // `before_original` is AFTER those listeners; `original_returned` proves only that

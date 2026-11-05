@@ -128,7 +128,6 @@ struct Protection {
     SRWLOCK lock = SRWLOCK_INIT;
     Lease lease;
     Actions actions; // protected by lock, including legacy request arbitration
-    std::atomic<NoBailStepObserver> step_observer{};
     std::atomic<NoBailSkeletonObserver> skeleton_observer{};
     std::atomic<NoBailNativeObserver> native_observer{};
     std::atomic<std::uint64_t> skeleton_observation_sequence{};
@@ -2813,9 +2812,8 @@ void skeleton_response(std::uintptr_t rig, float seconds, bool wipeout) {
     // The state post-update can raise another request after the selector ran.
     // Filter at this consumer, then let native constraints and recovery run.
     if (optional_allowed && filter_requests(rig, &Owner::rig)) wipeout = false;
-    const auto observer = protection().step_observer.load(std::memory_order_acquire);
     std::array<NoBailStepObserver, no_bail_step_listener_slots> listeners{};
-    bool any = observer != nullptr;
+    bool any = false;
     for (std::size_t i = 0; i < listeners.size(); ++i) {
         listeners[i] = protection().listeners[i].load(std::memory_order_acquire);
         any = any || listeners[i];
@@ -2826,7 +2824,6 @@ void skeleton_response(std::uintptr_t rig, float seconds, bool wipeout) {
         NoBailSkater skater;
         if (published_skater(rig, skater)) {
             if (clock_enabled) feed_claim_clock(skater, seconds);
-            if (observer) observer(skater, seconds, wipeout);
             for (const auto listener : listeners)
                 if (listener) listener(skater, seconds, wipeout);
         }
@@ -3266,9 +3263,6 @@ bool try_no_bail_skater(std::uintptr_t rig,NoBailSkater& skater,std::uintptr_t& 
     LastError error;skater={};observed_client=0;
     return published_skater(rig,skater,true,&observed_client);
 }
-void set_no_bail_step_observer(NoBailStepObserver observer) noexcept {
-    protection().step_observer.store(observer, std::memory_order_release);
-}
 void dark_pop_update(bool enabled, std::uintptr_t board, bool unpatch, bool hold, bool one_press,
     unsigned route_stay, unsigned route_guard, bool keep_speed, bool catch_dismount, bool feet, bool adaptive, bool catch_timeout, float pop_strength, bool hold_landing, bool dark_exit, bool full_flight, bool hold_flight, unsigned stay_physical, bool early_physics, bool reaim, bool hide_dpad) noexcept {
     LastError error;
@@ -3478,13 +3472,6 @@ bool add_no_bail_step_listener(NoBailStepObserver listener) noexcept {
         if (slot.compare_exchange_strong(empty, listener, std::memory_order_acq_rel)) return true;
     }
     return false;
-}
-void remove_no_bail_step_listener(NoBailStepObserver listener) noexcept {
-    if (!listener) return;
-    for (auto& slot : protection().listeners) {
-        auto expected = listener;
-        slot.compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel);
-    }
 }
 void watch_physics_state(std::uintptr_t client, std::uintptr_t entity) noexcept {
     auto& w = state_watch();

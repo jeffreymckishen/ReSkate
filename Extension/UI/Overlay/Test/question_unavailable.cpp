@@ -83,10 +83,8 @@ HookStatus WINAPI hook_disable(void*) { unavailable("hook_disable"); }
 HookStatus WINAPI hook_remove(void*) { unavailable("hook_remove"); }
 HookStatus WINAPI hook_queue_enable(void*) { unavailable("hook_queue_enable"); }
 HookStatus WINAPI hook_apply_queued() { unavailable("hook_apply_queued"); }
-HookStatus WINAPI hook_shutdown() { unavailable("hook_shutdown"); }
 const char* WINAPI hook_status_string(HookStatus) { unavailable("hook_status_string"); }
 HookFailure hook_last_failure() noexcept { unavailable("hook_last_failure"); }
-HookStatistics hook_statistics() { unavailable("hook_statistics"); }
 HookBatch::HookBatch() noexcept { unavailable("HookBatch"); }
 HookBatch::~HookBatch() { destructor_failure("~HookBatch"); }
 }

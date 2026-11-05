@@ -48,13 +48,6 @@ int hit_owner_equal(lua_State* L) {
     lua_pushboolean(L, a.owner == b.owner && a.world == b.world && a.serial == b.serial && a.slot == b.slot);
     return 1;
 }
-int fail(lua_State* L, const std::string& why) { lua_pushnil(L); lua_pushlstring(L, why.data(), why.size()); return 2; }
-int result(lua_State* L, const std::string& why) {
-    lua_pushboolean(L, why.empty());
-    if (why.empty()) return 1;
-    lua_pushlstring(L, why.data(), why.size());
-    return 2;
-}
 void fields(lua_State* L, int at, std::initializer_list<const char*> names) {
     luaL_checktype(L, at, LUA_TTABLE);
     at = lua_absindex(L, at);
@@ -140,8 +133,7 @@ void push_sample(lua_State* L, const BodyValue& b, const Sample& sample) {
     lua_setfield(L, -2, "inertia");
     lua_pushnumber(L, sample.mass);
     lua_setfield(L, -2, "mass");
-    lua_createtable(L, 4, 0);
-    for (int i = 0; i < 4; ++i) { lua_pushnumber(L, sample.rotation[static_cast<std::size_t>(i)]); lua_rawseti(L, -2, i + 1); }
+    push_quaternion(L, sample.rotation);
     lua_setfield(L, -2, "rotation");
 }
 const char* sync_status(body_sync_probe::Status status) noexcept {
@@ -488,7 +480,7 @@ struct PhysicsApi {
             need(L, p, "world.physics.follow.renew", "reskate.world.physics renewable follow");
         if (attachment.lifetime == body_follow_api::Lifetime::session_renewable)
             need(L, p, "world.physics.follow.session", "reskate.world.physics session follow");
-        if (p.follow_reserves_ >= body_follow_api::reserve_limit) return fail(L, "asked to reserve follow more than once in one tick");
+        if (p.follow_reserves_ >= body_follow_api::reserve_limit) return failed(L, "asked to reserve follow more than once in one tick");
         ++p.follow_reserves_;
         // Allocate before native admission. There is deliberately no __gc:
         // dropping userdata cannot release or acknowledge a native claim.
@@ -502,7 +494,7 @@ struct PhysicsApi {
             reason == body_follow_api::Reason::none ? "follow reserve was refused" : reason_name;
         if (!value->handle.sequence) {
             lua_pop(L, 1);
-            return fail(L, accepted ? "follow reserve did not return owned authority" : why);
+            return failed(L, accepted ? "follow reserve did not return owned authority" : why);
         }
         // A nonzero refused reservation still owns cleanup duty. Returning nil
         // here would hide it. The second result must be checked before publish.
@@ -520,16 +512,16 @@ struct PhysicsApi {
     }
     static int read_follow(lua_State* L) {
         auto& p = follow_plugin(L); const auto value = follow(L, p);
-        if (p.follow_reads_ >= body_follow_api::read_limit) return fail(L, "asked to read follow more than 8 times in one tick");
+        if (p.follow_reads_ >= body_follow_api::read_limit) return failed(L, "asked to read follow more than 8 times in one tick");
         ++p.follow_reads_;
         body_follow_api::Receipt receipt;
         switch (p.services_.game().body_follow_read_status(p.instance(), value.handle, receipt)) {
         case body_follow_api::ReadStatus::ok: break;
         // A missed Try on the Service lock, apart from a foreign or reset receipt.
-        case body_follow_api::ReadStatus::busy: return fail(L, "follow receipt busy");
-        default: return fail(L, "follow receipt unavailable");
+        case body_follow_api::ReadStatus::busy: return failed(L, "follow receipt busy");
+        default: return failed(L, "follow receipt unavailable");
         }
-        if (!follow_receipt(receipt, value.handle)) return fail(L, "follow receipt returned invalid observations");
+        if (!follow_receipt(receipt, value.handle)) return failed(L, "follow receipt returned invalid observations");
         push_follow_receipt(L, receipt); return 1;
     }
     static Plugin& renew_plugin(lua_State* L) {
@@ -571,15 +563,15 @@ struct PhysicsApi {
         if (value.lifetime == body_follow_api::Lifetime::session_renewable)
             need(L, p, "world.physics.follow.session", "reskate.world.physics session follow");
         if (p.follow_lease_reads_ >= body_follow_api::lease_read_limit)
-            return fail(L, "asked to read follow lease more than 8 times in one tick");
+            return failed(L, "asked to read follow lease more than 8 times in one tick");
         ++p.follow_lease_reads_;
         body_follow_api::LeaseReceipt lease;
         switch (p.services_.game().body_follow_read_lease(p.instance(), value.handle, lease)) {
         case body_follow_api::ReadStatus::ok: break;
-        case body_follow_api::ReadStatus::busy: return fail(L, "follow lease busy");
-        default: return fail(L, "follow lease unavailable");
+        case body_follow_api::ReadStatus::busy: return failed(L, "follow lease busy");
+        default: return failed(L, "follow lease unavailable");
         }
-        if (!follow_lease(lease, value)) return fail(L, "follow lease returned invalid observations");
+        if (!follow_lease(lease, value)) return failed(L, "follow lease returned invalid observations");
         push_follow_lease(L, lease); return 1;
     }
     static int stop_follow(lua_State* L) {
@@ -625,15 +617,15 @@ struct PhysicsApi {
         // The plugin names no slot, generation or native identity.
         if (reuse) {
             need(L, p, "world.physics.reuse", "reskate.world.physics.create reuse");
-            if (p.body_reuses_ >= 1) return fail(L, "asked to reuse a native body more than once in one tick");
+            if (p.body_reuses_ >= 1) return failed(L, "asked to reuse a native body more than once in one tick");
             ++p.body_reuses_;
         }
         Handle h;
         CreateReport report;
         const auto why = options ? p.services_.game().body_create_reusing(p.instance(), d, h, reuse, report) :
             p.services_.game().body_create(p.instance(), d, h);
-        if (!why.empty()) return fail(L, why);
-        if (!h.generation || h.slot >= retained_capacity) return fail(L, "native body did not return an owned generation");
+        if (!why.empty()) return failed(L, why);
+        if (!h.generation || h.slot >= retained_capacity) return failed(L, "native body did not return an owned generation");
         opaque(L, BodyValue{p.instance(), h}, handle_type);
         if (!options) return 1;
         // body, nil, origin[, miss], as submit returns true, nil, sequence. Nothing was reused
@@ -648,7 +640,7 @@ struct PhysicsApi {
     static int read(lua_State* L) {
         auto& p = plugin(L); const auto b = body(L, p, 1); Sample sample;
         const auto why = p.services_.game().body_read(p.instance(), b.handle, sample);
-        if (!why.empty()) return fail(L, why);
+        if (!why.empty()) return failed(L, why);
         push_sample(L, b, sample); return 1;
     }
     static Plugin& sync_plugin(lua_State* L) {
@@ -660,14 +652,14 @@ struct PhysicsApi {
         auto& p = sync_plugin(L);
         if (lua_gettop(L) != 1) luaL_error(L, "begin_sync_probe takes one owned body");
         const auto b = body(L, p, 1);
-        if (p.sync_probe_starts_ >= 1) return fail(L, "asked to begin a synchronizer probe more than once in one tick");
+        if (p.sync_probe_starts_ >= 1) return failed(L, "asked to begin a synchronizer probe more than once in one tick");
         ++p.sync_probe_starts_;
         // Allocate before admission so a Lua allocation failure leaves no orphan probe.
         auto* probe = new (lua_newuserdata(L, sizeof(SyncProbeValue))) SyncProbeValue{p.instance(), b.handle, 0};
         luaL_getmetatable(L, sync_probe_type); lua_setmetatable(L, -2);
         const auto why = p.services_.game().body_begin_sync_probe(p.instance(), b.handle, probe->sequence);
-        if (!why.empty()) { lua_pop(L, 1); return fail(L, why); }
-        if (!probe->sequence) { lua_pop(L, 1); return fail(L, "synchronizer probe did not return owned authority"); }
+        if (!why.empty()) { lua_pop(L, 1); return failed(L, why); }
+        if (!probe->sequence) { lua_pop(L, 1); return failed(L, "synchronizer probe did not return owned authority"); }
         return 1;
     }
     static int poll_sync_probe(lua_State* L) {
@@ -675,12 +667,12 @@ struct PhysicsApi {
         if (lua_gettop(L) != 1) luaL_error(L, "poll_sync_probe takes one opaque probe");
         const auto probe = *static_cast<const SyncProbeValue*>(luaL_checkudata(L, 1, sync_probe_type));
         if (probe.owner != p.instance()) luaL_error(L, "synchronizer probe belongs to another plugin instance");
-        if (p.sync_probe_polls_ >= 8) return fail(L, "asked to poll synchronizer probes more than 8 times in one tick");
+        if (p.sync_probe_polls_ >= 8) return failed(L, "asked to poll synchronizer probes more than 8 times in one tick");
         ++p.sync_probe_polls_;
         body_sync_probe::Result out;
         const auto why = p.services_.game().body_poll_sync_probe(p.instance(), probe.handle, probe.sequence, out);
-        if (!why.empty()) return fail(L, why);
-        if (!sync_result(out)) return fail(L, "synchronizer probe returned invalid observations");
+        if (!why.empty()) return failed(L, why);
+        if (!sync_result(out)) return failed(L, "synchronizer probe returned invalid observations");
         lua_createtable(L, 0, 9);
         lua_pushstring(L, sync_status(out.status)); lua_setfield(L, -2, "status");
         lua_pushboolean(L, out.status != body_sync_probe::Status::pending); lua_setfield(L, -2, "terminal");
@@ -724,15 +716,15 @@ struct PhysicsApi {
     static int begin_motion_refresh_probe(lua_State* L) {
         auto& p = sync_plugin(L);
         if (lua_gettop(L) != 0) luaL_error(L, "begin_motion_refresh_probe takes no arguments");
-        if (p.sync_probe_starts_ >= 1) return fail(L, "asked to begin passive probes more than once in one tick");
+        if (p.sync_probe_starts_ >= 1) return failed(L, "asked to begin passive probes more than once in one tick");
         ++p.sync_probe_starts_;
         // Allocate before backend admission; a failed Lua allocation cannot
         // leave an admitted request without its only owning opaque handle.
         auto* probe = new (lua_newuserdata(L, sizeof(MotionRefreshProbeValue))) MotionRefreshProbeValue{p.instance(), 0};
         luaL_getmetatable(L, motion_refresh_probe_type); lua_setmetatable(L, -2);
         const auto why = p.services_.game().begin_motion_refresh_probe(p.instance(), probe->sequence);
-        if (!why.empty()) { lua_pop(L, 1); return fail(L, why); }
-        if (!probe->sequence) { lua_pop(L, 1); return fail(L, "motion refresh probe did not return an owned request"); }
+        if (!why.empty()) { lua_pop(L, 1); return failed(L, why); }
+        if (!probe->sequence) { lua_pop(L, 1); return failed(L, "motion refresh probe did not return an owned request"); }
         return 1;
     }
     static int poll_motion_refresh_probe(lua_State* L) {
@@ -740,12 +732,12 @@ struct PhysicsApi {
         if (lua_gettop(L) != 1) luaL_error(L, "poll_motion_refresh_probe takes one opaque probe");
         const auto probe = *static_cast<const MotionRefreshProbeValue*>(luaL_checkudata(L, 1, motion_refresh_probe_type));
         if (probe.owner != p.instance()) luaL_error(L, "motion refresh probe belongs to another plugin instance");
-        if (p.sync_probe_polls_ >= 8) return fail(L, "asked to poll passive probes more than 8 times in one tick");
+        if (p.sync_probe_polls_ >= 8) return failed(L, "asked to poll passive probes more than 8 times in one tick");
         ++p.sync_probe_polls_;
         motion_refresh_probe::Result out;
         const auto why = p.services_.game().poll_motion_refresh_probe(p.instance(), probe.sequence, out);
-        if (!why.empty()) return fail(L, why);
-        if (!motion_refresh_result(out)) return fail(L, "motion refresh probe returned invalid observations");
+        if (!why.empty()) return failed(L, why);
+        if (!motion_refresh_result(out)) return failed(L, "motion refresh probe returned invalid observations");
         push_motion_refresh_result(L, out); return 1;
     }
     static int submit(lua_State* L) {
@@ -881,7 +873,7 @@ struct PhysicsApi {
                     (out.rays[i].normal_available && out.rays[i].surface_velocity_available));
             if (!valid) { out.available = false; out.failure = body_query::Failure::backend; }
         }
-        if (p.body_query_sequence_ == std::numeric_limits<std::uint64_t>::max()) return fail(L, "ray batch identity sequence exhausted");
+        if (p.body_query_sequence_ == std::numeric_limits<std::uint64_t>::max()) return failed(L, "ray batch identity sequence exhausted");
         const auto batch = ++p.body_query_sequence_;
         lua_createtable(L, 0, 5);
         lua_pushstring(L, out.available ? "available" : "unavailable"); lua_setfield(L, -2, "status");
@@ -933,12 +925,12 @@ struct PhysicsApi {
         auto& p = plugin(L); const auto b = body(L, p, 1); Receipt receipt;
         const auto selected = lua_isnoneornil(L, 2) ? std::uint64_t{} : sequence(L, 2);
         const auto why = p.services_.game().body_receipt(p.instance(), b.handle, selected, receipt);
-        if (!why.empty()) return fail(L, why);
+        if (!why.empty()) return failed(L, why);
         const char* cleanup = name(receipt.cleanup_disposition);
         if (!cleanup || (receipt.cleanup_disposition == CleanupDisposition::parked_without_successor &&
             (receipt.outcome != Outcome::applied || receipt.successor_available || !receipt.retained ||
                 receipt.quarantined || !receipt.force_attempted || !receipt.torque_attempted)))
-            return fail(L, "body receipt cleanup disposition is invalid");
+            return failed(L, "body receipt cleanup disposition is invalid");
         lua_createtable(L, 0, 10);
         lua_pushstring(L, cleanup); lua_setfield(L, -2, "cleanup_disposition");
         lua_pushstring(L, name(receipt.outcome)); lua_setfield(L, -2, "outcome");

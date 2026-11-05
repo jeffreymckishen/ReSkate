@@ -1,6 +1,7 @@
 #include "trainer_jump.h"
 #include "Engine/Core/Hooks/hooks.h"
 #include "Engine/Core/Log/logging.h"
+#include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/launches.h"
 #include "Engine/Game/Multiplayer/session_tools.h"
 #include "Extension/Skater/client_source_spawn.h"
@@ -24,13 +25,11 @@ namespace {
 //    (state 103) of about 0.20 s; an ollie crouches for 0.08 s and launches elsewhere;
 //  - a boneless calls it from 0x47691f8 while the foot is planted (state 602);
 //  - a flat-ground ollie calls it from 0x4824f7f (Engine/Game/Build/20260929/launches.h).
-constexpr std::uintptr_t set_trajectory = 0x4752aa0, no_comply_call = 0x482f646, boneless_call = 0x47691f8, ollie_call = 0x4824f7f;
-constexpr std::array<unsigned char, 32> set_trajectory_prefix{0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x80, 0xb9, 0x88, 0xbb, 0x00,
-                                                              0x00, 0x00, 0x48, 0x8b, 0xd9, 0x0f, 0x85, 0xf6, 0x00, 0x00, 0x00,
-                                                              0xc5, 0xfc, 0x28, 0x05, 0x62, 0x7d, 0xe8, 0x01, 0xc5, 0xfc};
+// The no comply's call is launches.h's grind_pop_call, which pops out of grinds go through too.
+namespace launches = addr::launches;
+constexpr std::uintptr_t set_trajectory = launches::set_trajectory, no_comply_call = launches::grind_pop_call,
+                         boneless_call = launches::boneless_call, ollie_call = launches::ollie_call;
 // An ollie (riding or out of a manual) launches from 0x4824f7f (ollie_call) with the state 103 after 100.
-constexpr std::array<unsigned char, 5> ollie_call_bytes{0xe8, 0x1c, 0xdb, 0xf2, 0xff};
-constexpr std::array<unsigned char, 5> no_comply_call_bytes{0xe8, 0x55, 0x34, 0xf2, 0xff}, boneless_call_bytes{0xe8, 0xa3, 0x98, 0xfe, 0xff};
 constexpr std::uint32_t crouch_state = 103, pop_state = 200, plant_state = 602;
 constexpr float no_comply_crouch = 0.12f; // seconds: between an ollie's crouch and a no comply's
 constexpr std::size_t velocity_y = 0x84 / sizeof(float);
@@ -59,7 +58,6 @@ struct Hooked {
     std::array<float, 256> flight_parameters{};
     bool flight_kept{};
     std::atomic<float> raise_to{};
-    std::atomic<int> raised{}; // 1 done, -1 failed; taken by the trainer
     bool attempted{}, ready{};
     // The pop out of a grind: the sideways multiplier, the travel on the grind, and the newest pop as the game made it.
     std::atomic<float> grind_side{1}, travel_x{}, travel_z{};
@@ -116,14 +114,9 @@ void raise_step() noexcept {
     if (!(up > 0)) return;
     const auto original = h.original.load(std::memory_order_acquire);
     const auto object = h.flight_object.load(std::memory_order_relaxed);
-    if (!original || !object || !h.flight_kept || GetTickCount64() - h.flight_tick.load(std::memory_order_relaxed) > 400) {
-        h.raised.store(-1, std::memory_order_release);
-        return;
-    }
+    if (!original || !object || !h.flight_kept || GetTickCount64() - h.flight_tick.load(std::memory_order_relaxed) > 400) return;
     h.flight_parameters[velocity_y] = up;
-    const bool done = call_guarded(original, object, h.flight_parameters.data());
-    if (done) h.flight_up.store(up, std::memory_order_relaxed);
-    h.raised.store(done ? 1 : -1, std::memory_order_release);
+    if (call_guarded(original, object, h.flight_parameters.data())) h.flight_up.store(up, std::memory_order_relaxed);
 }
 void set_trajectory_hook(std::uintptr_t trajectory, float *parameters) {
     auto &h = hooked();
@@ -233,9 +226,9 @@ bool known_bytes(std::uintptr_t at, const unsigned char *bytes, std::size_t size
 }
 bool known_code(std::uintptr_t base) {
     __try {
-        return std::memcmp(reinterpret_cast<const void *>(base + set_trajectory), set_trajectory_prefix.data(), set_trajectory_prefix.size()) == 0 &&
-               std::memcmp(reinterpret_cast<const void *>(base + no_comply_call), no_comply_call_bytes.data(), no_comply_call_bytes.size()) == 0 &&
-               std::memcmp(reinterpret_cast<const void *>(base + boneless_call), boneless_call_bytes.data(), boneless_call_bytes.size()) == 0;
+        return std::memcmp(reinterpret_cast<const void *>(base + set_trajectory), launches::set_trajectory_prefix.data(), launches::set_trajectory_prefix.size()) == 0 &&
+               std::memcmp(reinterpret_cast<const void *>(base + no_comply_call), launches::grind_pop_call_prefix.data(), launches::grind_pop_call_prefix.size()) == 0 &&
+               std::memcmp(reinterpret_cast<const void *>(base + boneless_call), launches::boneless_call_prefix.data(), launches::boneless_call_prefix.size()) == 0;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
@@ -255,7 +248,7 @@ bool start_trick_heights(std::uintptr_t base) noexcept {
             return false;
         }
         h.base.store(base, std::memory_order_release);
-        h.ollie_known = known_bytes(base + ollie_call, ollie_call_bytes.data(), ollie_call_bytes.size());
+        h.ollie_known = known_bytes(base + ollie_call, launches::ollie_call_prefix.data(), launches::ollie_call_prefix.size());
         auto *target = reinterpret_cast<void *>(base + set_trajectory);
         void *original{};
         if (hook_prepare(target, reinterpret_cast<void *>(&set_trajectory_hook), &original) != HookOk) return false;
@@ -275,8 +268,7 @@ bool start_trick_heights(std::uintptr_t base) noexcept {
 // (mov dword ptr [rbx + 0x934], -9.8). Measured (2026-10-12): at -4.9 a drop on foot fell at 4.4 m/s2. The trainer changes
 // that number, after checking the instruction is the known one, and puts it back at x 1.
 namespace {
-constexpr std::uintptr_t foot_gravity = 0x4834a95; // the instruction's number; the instruction starts 6 bytes before
-constexpr std::array<unsigned char, 6> foot_gravity_bytes{0xc7, 0x83, 0x34, 0x09, 0x00, 0x00};
+constexpr std::uintptr_t foot_gravity = addr::launches::foot_gravity; // the instruction's number; the instruction starts 6 bytes before
 constexpr float foot_gravity_stock = -9.8f;
 std::atomic<int> gravity_known{}; // 0 not looked, 1 the instruction is the known one, -1 it is not
 std::atomic<float> gravity_now{1};
@@ -356,7 +348,8 @@ bool set_foot_gravity(float factor) noexcept {
     int known = gravity_known.load(std::memory_order_relaxed);
     if (known == 0) {
         float value{};
-        known = known_bytes(base + foot_gravity - foot_gravity_bytes.size(), foot_gravity_bytes.data(), foot_gravity_bytes.size()) &&
+        known = known_bytes(base + foot_gravity - launches::foot_gravity_prefix.size(), launches::foot_gravity_prefix.data(),
+                            launches::foot_gravity_prefix.size()) &&
                 read_constant(base + foot_gravity, value) && value == foot_gravity_stock ? 1 : -1;
         gravity_known.store(known, std::memory_order_relaxed);
         if (known < 0)
@@ -368,12 +361,11 @@ bool set_foot_gravity(float factor) noexcept {
     gravity_now.store(factor, std::memory_order_relaxed);
     return true;
 }
-float foot_gravity_in_force() noexcept { return gravity_now.load(std::memory_order_relaxed); }
 // The speed limit on foot. The game cuts a walking skater's speed along the ground to one number of its own (10 m/s),
 // read by that code alone (FollowGround, 0x48318a0); the walkable slope angles 60, 55 and 75 follow it, which is how it
 // is recognised. Measured (2026-10-13): sprint speed 13 ran at 10.0 m/s with the game's own limit.
 namespace {
-constexpr std::uintptr_t foot_speed_cap = 0x65e8238;
+constexpr std::uintptr_t foot_speed_cap = addr::launches::foot_speed_cap;
 constexpr float foot_speed_cap_stock = 10.0f;
 std::atomic<int> cap_known{};
 std::atomic<float> cap_now{foot_speed_cap_stock};
@@ -425,7 +417,6 @@ bool raise_flight(float up, float &was, float &time) noexcept {
     h.raise_to.store(up, std::memory_order_release);
     return true;
 }
-int take_flight_raise() noexcept { return hooked().raised.exchange(0, std::memory_order_acq_rel); }
 void set_flip_launch(std::uint32_t trick, float up) noexcept {
     const float wanted = std::isfinite(up) && up > 0 ? up : 0.0f;
     actor_control::IdleCall writer;
@@ -511,7 +502,7 @@ bool follow_duties_idle() noexcept {
     for (const auto& floor : h->flip_launch)
         if (floor.load(std::memory_order_acquire) != 0.0f) return false;
     const auto modifier = h->modifier.load(std::memory_order_acquire);
-    if (modifier && !launches::trajectory_modifier_idle(modifier)) return false;
+    if (modifier && !::dingosdk::launches::trajectory_modifier_idle(modifier)) return false;
     ConstantLock lock(false);
     if (!lock.held || gravity_known.load(std::memory_order_acquire) < 0 ||
         cap_known.load(std::memory_order_acquire) < 0 ||
@@ -521,7 +512,7 @@ bool follow_duties_idle() noexcept {
         cap_now.load(std::memory_order_acquire) != foot_speed_cap_stock) return false;
     const auto base = h->base.load(std::memory_order_acquire);
     float gravity{}, cap[4]{};
-    return base && known_bytes(base + foot_gravity - foot_gravity_bytes.size(), foot_gravity_bytes.data(), foot_gravity_bytes.size()) &&
+    return base && known_bytes(base + foot_gravity - launches::foot_gravity_prefix.size(), launches::foot_gravity_prefix.data(), launches::foot_gravity_prefix.size()) &&
         read_constant(base + foot_gravity, gravity) && gravity == foot_gravity_stock &&
         read_constant(base + foot_speed_cap, cap[0]) && cap[0] == foot_speed_cap_stock &&
         read_constant(base + foot_speed_cap + 4, cap[1]) && cap[1] == 60.0f &&

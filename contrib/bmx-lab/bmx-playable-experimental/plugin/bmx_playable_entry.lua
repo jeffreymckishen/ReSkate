@@ -650,7 +650,12 @@ function Entry.new(R,Runtime,Survey,options)
         -- Mid fall or mid air the rider is down; on the board or on foot only while the game still has them ragdolled
         -- or in the air. A rider standing with a control held is not down: the line below tells them to let go, and
         -- that time counts toward RETURN_LIMIT_MS.
+        local was_down=return_down
         return_down=observed==nil or down
+        -- Logged once per spell down, so a trial can tell a crash's wait from an ordinary Return passing through.
+        if return_down and not was_down then
+            trace("Return waits for the rider: "..(observed==nil and "neither on the board nor on foot" or "ragdolled or in the air")..".")
+        end
         if observed==nil then return end
         if observed==100 then
             if return_plan and (not stock_attempted or return_position.observed~=true) then return_plan,return_position=nil,nil end

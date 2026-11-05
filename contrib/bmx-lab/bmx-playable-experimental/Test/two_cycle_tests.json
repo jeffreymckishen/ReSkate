@@ -137,8 +137,8 @@
     {
       "source": "plugin/bmx_playable_entry.lua",
       "destination": "bmx_playable_entry.lua",
-      "bytes": 83702,
-      "sha256": "06D7EBF95A741E3330D7200F221D140886ABC84078A8DA9866A9E08ECFB6C3DB"
+      "bytes": 84049,
+      "sha256": "DE2F6BCB57DEF45049C5D2077893E39AA916F6C5D8C58B3FD7D8D0DFB10808C6"
     },
     {
       "source": "plugin/ride_r1_record.lua",
@@ -583,8 +583,8 @@
     },
     {
       "source": "plugin/bmx_playable_entry.lua",
-      "bytes": 83702,
-      "sha256": "06D7EBF95A741E3330D7200F221D140886ABC84078A8DA9866A9E08ECFB6C3DB"
+      "bytes": 84049,
+      "sha256": "DE2F6BCB57DEF45049C5D2077893E39AA916F6C5D8C58B3FD7D8D0DFB10808C6"
     },
     {
       "source": "plugin/board_drop.lua",

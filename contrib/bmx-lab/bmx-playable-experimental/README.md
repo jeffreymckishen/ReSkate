@@ -107,7 +107,8 @@ offline the game does not keep it, so set it again each launch.
   5.3 m. They come back to the old lock by 3 m/s, and from there steering is as before. With the bars that far round
   the rider's near hand is drawn turned a little short of its grip, its wrist at the end of its bend.
 - B in a corner keeps the corner. The bike stands up a little as the brake comes on and the turn opens for a moment,
-  then tightens as the bike slows, rather than running wide.
+  by about a fifth on the flat and up to a third down a steep street, then tightens as the bike slows, rather than
+  running wide.
 - Weaving does not make speed. Throwing the bike from lean to lean is paid from its speed, so a coast weaving from
   side to side slows a little faster than a straight one, and pedalling through a weave still stops at top speed.
 - Pedalling has a rider's power, not a motor's. Up a ramp steeper than about 15% the bike slows with A held, the

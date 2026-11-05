@@ -79,13 +79,16 @@ local defaults={gravity={0,-9.8,0},wheelbase=1.203956057050485*scale,steer_limit
     tyre_section_radius=.03,
     -- Braking uses grip the corner wanted. Under a full brake the cornering limit gives up this share, and the
     -- rider eases the rear brake to this share of what the rear tyre can hold, as they would by feel. The rear tyre
-    -- is where the two meet: under a full brake it gives .6 of its grip to the brake, which leaves .8 for the corner.
-    -- With no cut, a full-lock corner took all of that (the fixture's rear tyre at 1.00 of its grip), and at 9 to 11
-    -- m/s down a 10% grade the rear swung round, 72 to 91 degrees. At .25 the rear tyre peaks at .76 to .90 of its
-    -- grip, the most at 9 m/s down 10% once slowed to 4.5 m/s. At .6 the bike stood up and ran wide: at full lock from
-    -- 7.4 m/s the corner opened from 9 m to 21 m a quarter of a second into B and was still 14 m half a second in (in
-    -- game g11, 9.9 m to 16 m). At .25 it opens to 11 m for a moment, and is 7.5 m half a second in as the speed falls.
-    brake_lateral_cut=.25,rear_brake_load_share=.6,
+    -- is where the two meet: under a full brake it gives .6 of its grip to the brake, which leaves .8 for the corner,
+    -- so the cut is .2. With no cut, a full-lock corner took all of that (the fixture's rear tyre at 1.00 of its grip),
+    -- and at 9 to 11 m/s down a 10% grade the rear swung round, 72 to 91 degrees. At .2 the rear tyre peaks at .80 to
+    -- .93 of its grip, the most at 9 m/s down 10%. At .6 the bike stood up and ran wide: at full lock from 7.4 m/s the
+    -- corner opened from 9 m to 21 m a quarter of a second into B and was still 14 m half a second in (in game g11,
+    -- 9.9 m to 16 m). The bike still stands up a little as B comes on: the path's radius opens to at most 1.22 times
+    -- what it was on the flat and 1.30 down a 10% grade, for a moment, and is under it half a second in as the speed
+    -- falls. At .25 that was 1.36 and 1.44 (the rear tyre at .90 at most); at .18, 1.17 and 1.25 at .94; at .15 the
+    -- rear tyre reached .96.
+    brake_lateral_cut=.2,rear_brake_load_share=.6,
     -- A manual: the bike on its back wheel, held there by the rider's weight. A pitch couple on the one rigid body
     -- stands for the rider moving the whole centre of mass by couple/weight, so it is held to what a rider can
     -- shift: this far back (arms straight, hips behind the saddle) and this far forward (chest to the bars). The
@@ -639,6 +642,22 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     if carving then
         out.manual_carve_rate=-steer*t.manual_carve_rate*math.clamp(math.abs(speed)/2,0,1)
         out.turning_lean_angle=math.atan(-speed*out.manual_carve_rate/M.length(t.gravity))
+        -- The lifted front steers nothing, so the bars turn no further than the path the carve takes the front hub
+        -- along, a wheelbase ahead of the rear contact, as a nose manual's keep to its own; the rider turns them there
+        -- at no more than twice the stick's rate. Left at the stick's lock, a full-lock manual drew them .55 rad round
+        -- at 1.6 m/s, .52 at 2 and .44 at 2.5, where the bike's own yaw takes the front along .20 to .22 rad: now .25.
+        if balance_frame and M.dot(body_up,up)>.2 then
+            local most=math.atan(math.abs(out.manual_carve_rate)*t.wheelbase/math.max(math.abs(speed),.5))
+            local turn=heading(out.front_steer_angle)
+            if turn and math.abs(turn)>most then
+                local low,high=0,1
+                for _=1,40 do local middle=(low+high)*.5 local trial=heading(out.front_steer_angle*middle) if trial==nil then return out end
+                    if math.abs(trial)<=most then low=middle else high=middle end end
+                local limited=out.front_steer_angle*low
+                if prior_steering.valid then limited=math.clamp(limited,prior_steering.angle-2*rate_delta,prior_steering.angle+2*rate_delta) end
+                out.front_steer_angle=limited out.steering_limited=true
+            end
+        end
     end
     -- On its front wheel the rider swings the rear round it. The lean follows the yaw the bike has, and the bars
     -- turn no further than the contact's own path, nose_d ahead of the centre of mass.

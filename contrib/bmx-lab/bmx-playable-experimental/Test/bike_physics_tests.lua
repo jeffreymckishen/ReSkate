@@ -459,7 +459,7 @@ function T.run()
     case(function() -- A brake in a corner does not swap the ends, flat or down a street grade, and keeps the corner.
         -- The rear tyre is where braking and cornering meet, and it keeps some grip in hand, so the rear does not slide
         -- out. With no brake_lateral_cut the full-lock rows took all of it (1.00), and at 9 and 11 m/s down 10% the rear
-        -- swung round, 72 and 91 degrees. At .25 the most is .90, at 9 m/s down 10% once it has slowed to 4.5 m/s.
+        -- swung round, 72 and 91 degrees. At .2 the most is .93, at 9 m/s down 10%.
         for _,row in ipairs({{speed=6,stick=1,grade=0},{speed=7.4,stick=.5,grade=0},{speed=6,stick=1,grade=.05},{speed=7.4,stick=1,grade=.05},
             {speed=7.4,stick=.5,grade=.1},{speed=9,stick=1,grade=.1},{speed=11,stick=1,grade=.1}}) do
             local locked,rear_load,rear_grip=0,0,0
@@ -478,21 +478,35 @@ function T.run()
             check(locked==0,"the rear wheel keeps turning")
             check(rear_grip<=.95,string.format("%.1f m/s, stick %.1f, grade %.2f: the rear tyre uses at most %.2f of its grip",row.speed,row.stick,row.grade,rear_grip))
         end
-        -- Braked at full lock on the flat the bike holds its line. It stands up a little as the brake comes on and the
-        -- corner opens for a moment, then tightens as the speed falls. At brake_lateral_cut .6 the corner from 7.4 m/s
-        -- opened from 9.0 m to 21.4 m a quarter of a second into B and was still 14.4 m half a second in (1.60 times):
-        -- braking for a turn ran the bike wide into what it was turning away from, as g11 did in game (9.9 m to 16 m).
-        for _,speed in ipairs({6,7.4}) do
-            local before,widest,later
-            run({steps=120,speed=speed,controls=function(step) return {steer=-1,brake=step>90 and 1 or 0} end,each=function(step,body)
-                local r=math.sqrt(body.linear_velocity[1]^2+body.linear_velocity[3]^2)/math.max(1e-6,math.abs(body.angular_velocity[2]))
-                if step==88 then before=r end
-                if step>90 then widest=math.max(widest or 0,r) end
-                if step==120 then later=r end
-            end})
-            check(later<=1.1*before,string.format("from %.1f m/s, half a second into B the corner is %.2f m against %.2f",speed,later,before))
-            check(widest<=1.3*before,string.format("from %.1f m/s, it opens to at most %.2f m against %.2f",speed,widest,before))
+        -- Braked in a corner the bike holds its line. It stands up a little as the brake comes on and the corner opens
+        -- for a moment, then tightens as the speed falls. The corner is the path's: its radius from how fast the
+        -- direction of travel turns. At brake_lateral_cut .6 the corner from 7.4 m/s opened from 9.0 m to 21.4 m a
+        -- quarter of a second into B and was still 14.4 m half a second in (1.60 times): braking for a turn ran the bike
+        -- wide into what it was turning away from, as g11 did in game (9.9 m to 16 m). At .25 it opened to 1.36 times on
+        -- the flat and 1.44 down a 10% grade; at .2, 1.22 and 1.30.
+        local opened={}
+        for _,row in ipairs({{6,1,0,1.25},{7.4,1,0,1.25},{7.4,.5,0,1.25},{6,1,.05,1.25},{7.4,1,.05,1.27},{7.4,.5,.1,1.32},
+            {9,1,.1,1.32},{11,1,.1,1.32}}) do
+            local speed,stick,grade,most=row[1],row[2],row[3],row[4]
+            local what=string.format("from %.1f m/s, stick %.1f, grade %.2f",speed,stick,grade)
+            local before,widest,later,was
+            run({steps=120,speed=speed,ground=Ground.plane(0,-grade),controls=function(step) return {steer=-stick,brake=step>90 and 1 or 0} end,
+                each=function(step,body)
+                    local heading=math.atan2(body.linear_velocity[1],body.linear_velocity[3])
+                    if was then
+                        local turned=math.atan2(math.sin(heading-was),math.cos(heading-was))
+                        local r=math.sqrt(body.linear_velocity[1]^2+body.linear_velocity[3]^2)/math.max(1e-6,math.abs(turned/h))
+                        if step==88 then before=r end
+                        if step>90 then widest=math.max(widest or 0,r) end
+                        if step==120 then later=r end
+                    end
+                    was=heading
+                end})
+            check(later<=1.05*before,string.format("%s: half a second into B the corner is %.2f m against %.2f",what,later,before))
+            check(widest<=most*before,string.format("%s: it opens to at most %.2f m against %.2f, %.2f times",what,widest,before,widest/before))
+            opened[#opened+1]=string.format("%.2f",widest/before)
         end
+        print("MEASURE B in a corner: the path opens to "..table.concat(opened," ").." times for a moment")
         local stop=run({steps=210,speed=7.4,controls=function() return {brake=1} end})
         check(M.length(stop.body.linear_velocity)<.5,"a straight stop from top speed takes under 3.5 s")
         local first,squeezed
@@ -652,7 +666,7 @@ function T.run()
         -- lock and brake_lateral_cut .25 went in, which this ride meets: it starts at 2 m/s and brakes while it steers,
         -- and again when the full hop came down from 1 m to .61 m (hop_delta_speed 4.5 to 3.55), which changes both
         -- hops and all that follows them, and again when the balance couple's work on the lean came to be paid
-        -- from the speed, which this ride's weave does on two wheels.
+        -- from the speed, which this ride's weave does on two wheels, and again when brake_lateral_cut came to .2.
         local hash=2166136261
         local function mix(x)
             local text=string.format("%.17g",x)
@@ -669,7 +683,7 @@ function T.run()
         end})
         for i=1,3 do mix(ride.body.center_of_mass[i]) end
         check(sent==900 and ride.refused==0,"every step of the ordinary ride is sent: "..sent)
-        check(hash==0xe0e292b9,string.format("ordinary riding is unchanged: digest %08x",hash))
+        check(hash==0xd1031528,string.format("ordinary riding is unchanged: digest %08x",hash))
     end)
     -- Manuals. The pitch is the body's own, nose up positive, from the surface under the bike when one is given.
     local function pitch_of(body,ground)
@@ -918,6 +932,29 @@ function T.run()
         local two,two_lean=yawed(nil)
         check(rate*two>0 and math.abs(rate)>=.3 and math.abs(rate)<=.6,string.format("it carves at %.2f rad/s, the way steering turns at %.2f",rate,two))
         check(lean*two_lean>0,string.format("leaning into the carve as into a turn: %.3f and %.3f",lean,two_lean))
+    end)
+    case(function() -- In a manual the bars are drawn along the carve's path, not at the stick's lock: the lifted front steers nothing.
+        local wb,most_seen,least_seen=Forces.tuning().wheelbase,0,math.huge
+        for _,row in ipairs({{1.6,1},{2,1},{2.5,1},{2,.5},{4,1},{6,-1}}) do
+            local speed,steer=row[1],row[2]
+            local what=string.format("steer %.1f at %.1f m/s",steer,speed)
+            local carved=0
+            run({steps=165,speed=speed,controls=function(step) return {manual=step>15 and .5 or nil,steer=step>60 and steer or 0} end,
+                each=function(step,body,out)
+                    if step>120 and out.manual_active==true then
+                        local v=math.sqrt(body.linear_velocity[1]^2+body.linear_velocity[3]^2)
+                        local path=math.atan(math.abs(out.manual_carve_rate)*wb/math.max(v,.5))
+                        local share=math.abs(out.front_steer_angle)/path
+                        -- The bars' steer angle, which gives a little less heading than itself on the raked and leaned fork.
+                        check(share<=1.15 and share>=.8,string.format("%s, step %d: the bars %.3f rad, the carve's path %.3f",what,step,out.front_steer_angle,path))
+                        check(out.front_steer_angle*steer<0,what..": turned the way the stick carves")
+                        most_seen,least_seen=math.max(most_seen,share),math.min(least_seen,share)
+                        carved+=1
+                    end
+                end})
+            check(carved==45,what..": a manual carving through the steps measured: "..carved)
+        end
+        print(string.format("MEASURE manual bars: %.2f to %.2f of the carve's path",least_seen,most_seen))
     end)
     case(function() -- A hop from a manual pops off the back wheel and lands near level; holding the manual after landing lifts it again.
         local hop_step,air,landed,landing,lifted

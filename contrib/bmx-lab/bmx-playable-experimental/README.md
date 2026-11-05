@@ -43,7 +43,8 @@ while the bike gets ready, the HUD says to step off or stand still, and the next
   It stays down while B is held. Tap B to save a manual going over backwards.
 - To hop out of a manual, pull the right stick all the way back and flick it forward, as for any hop. The front
   stays up while the stick is held back. Clicking the right stick hops at once. Either way the rider pushes the
-  bars forward as the bike pops, and it lands near level.
+  bars forward as the bike pops, and a full hop lands near level. A smaller flick out of a high manual has less
+  time to come level and lands nose up, more so the smaller it is.
 - Hold the stick part way back as the bike lands and it lands into a manual.
 - Thrown back past about 45 degrees, by a bump or a landing too steep, the bike goes over backwards and it is a
   crash. The stick alone never takes it that far.
@@ -66,8 +67,9 @@ while the bike gets ready, the HUD says to step off or stand still, and the next
   left or right, LB or RB and left or right for a one hander, LT and RT together and left or right for a tailwhip,
   LT or RT and left or right for a one footer. Let the stick come back to the middle before the next one, and finish
   it before landing. A full hop has room for one trick started within about a third of a second of the hop: a
-  barspin or a tailwhip takes about 0.4 s with the catch, and a one hander or one footer can be held over for about
-  0.3 s and still come back before the wheels touch.
+  barspin or a tailwhip takes about 0.4 s with the catch, and the stick has to be back in the middle within about a
+  third of a second of starting it, or the bike lands mid-turn. A one hander or one footer can be held over for
+  about 0.3 s and still come back before the wheels touch; held longer, the wheels touch with the hand or foot off.
 - F8, or hold LB + RB and click R3, goes back to the skateboard.
 - From the skateboard, hold LB, then press A to ride again. Stand still and let go while the rider steps off.
 

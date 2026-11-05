@@ -115,13 +115,49 @@ local ROLL_STOP_RATE = 14
 -- the presentation pose reads it.
 local CRANK_RATIO = 25 / 9
 local TAU = 2 * math.pi
+-- A rider who stops pedalling sets the cranks level, feet at 3 and 9 o'clock, as one coasts, hops and manuals, rather
+-- than leaving them wherever the last stroke stopped: in six trials (mn5, mn8, mn10, nb2, rr2, photo3) the cranks sat
+-- 8 to 84 degrees off level through 26 coasts of half a second or more, a median of 38, and 84 through an 8 s manual.
+-- After CRANK_SETTLE_DELAY of not pedalling, so a quick tap of A does not swing them back and forth, they go to the
+-- level nearer in time at no more than CRANK_SETTLE_RATE (rad/s, a quarter turn in about a fifth of a second, under
+-- the 10.5 rad/s of pedalling at top speed), gaining and losing that speed at CRANK_SETTLE_ACCEL, and stay there.
+-- Back is a free backpedal. Forward they go no faster than the rear wheel turns them through the gearing, so the
+-- freewheel never drives the wheel and nothing the physics does is drawn otherwise; a stopped wheel lets them only back.
+-- From any phase they are within 5 degrees of level in at most .57 s, at any speed: the most is a standstill's, where
+-- they can only go back; ride_fall_tests measures .53 s letting go at 24 phases at 0 to 8 m/s.
+local CRANK_SETTLE_DELAY, CRANK_SETTLE_RATE, CRANK_SETTLE_ACCEL = .1, 7, 60
 -- The most the rider shifts the weight in a manual, forward and back (forces.lua manual_hold_forward and
--- manual_hold_back), and how long the drawn shift takes to follow the physics'.
-local RIDER_SHIFT_FORWARD, RIDER_SHIFT_BACK, RIDER_SHIFT_SECONDS = .15, .20, .1
--- The most the rider is drawn shifted forward in a nose manual: MP.manual_rider's own limit. The hips-up pose draws
--- only part of the shift, so all of it the pose can take is drawn. A held nose manual asks .23 at most (forces.lua
--- nose_low), so only the throw that lifts the rear reaches it.
+-- manual_hold_back).
+local RIDER_SHIFT_FORWARD, RIDER_SHIFT_BACK = .15, .20
+-- The most the rider is drawn shifted forward in a nose manual: MP.manual_rider's own limit. A held nose manual asks
+-- .23 at most (forces.lua nose_low), so only the throw that lifts the rear reaches it.
 local RIDER_SHIFT_NOSE = .30
+-- The drawn shift follows the physics' as a critically damped spring of RIDER_SHIFT_OMEGA rad/s, moving no faster
+-- than RIDER_SHIFT_RATE (m/s) and gaining or losing speed no faster than RIDER_SHIFT_ACCEL (m/s2), so the hips start
+-- and stop at rest. MP.manual_rider moves the hips 1.3 times a back shift, so they move at most 13 mm a step. Eased a
+-- tenth of a second first order, the hips moved fastest on the first step: 36 to 39 mm into every manual in mn8,
+-- mn10 and photo3, and 54 to 67 mm a step coming out. A full .2 m shift is 95% drawn in .40 s and at rest in .63.
+-- What it follows is the physics' shift held to the centimetre, moved on only once the physics' is RIDER_SHIFT_HOLD
+-- from it, so a held manual's drawn shift comes to rest and the rider is mapped from the pose memo (MP.manual_rider
+-- keeps the millimetre; to the centimetre, a moving shift drew the hips in 12 mm stairs with still steps between).
+local RIDER_SHIFT_OMEGA, RIDER_SHIFT_RATE, RIDER_SHIFT_ACCEL, RIDER_SHIFT_HOLD = 20, .6, 15, .0075
+-- The rider stands up on the pedals for a manual and sits back down after it the same way, standing following 0 or 1
+-- as a spring of RIDER_STAND_OMEGA, at most RIDER_STAND_RATE a second and RIDER_STAND_ACCEL a second squared. On a
+-- bike drawn pitched 8.6 degrees on a kerb a standing rider turns with all of the drawn bike, so that bounds the turn:
+-- .23 degrees a tick at most there (ride_fall_tests), and the hips 12.8 mm. Up from sitting takes half a second.
+-- MP.manual_rider stands the rider at least as far as a back shift needs to clear the saddle.
+local RIDER_STAND_OMEGA, RIDER_STAND_RATE, RIDER_STAND_ACCEL = 25, 4, 40
+-- rider_nose, 0 to 1, follows as a spring of RIDER_NOSE_OMEGA, at most RIDER_NOSE_RATE a second.
+local RIDER_NOSE_OMEGA, RIDER_NOSE_RATE, RIDER_NOSE_ACCEL = 12, 1.5, 10
+-- rider_over is how far the hips go forward over the bars in a nose manual (MP.manual_rider) rather than up: all the
+-- way only with the cranks within NOSE_OVER_OPEN of level, none from NOSE_OVER_CLOSED. Over the bars at level cranks
+-- the knees, thighs and shins keep 8.5 cm or more off the bars at every hold to .25 m (7.9 at .30), 5 cm at 10
+-- degrees off, and 5 cm or more on the gate's line between; all the way over at a pedal high in front they met them,
+-- while hips up kept 10 cm at every phase. The cranks only move toward the level they go to in a manual, so the gate
+-- only opens, unless a stopped wheel sends them back to the other level. Up to over the bars moves the hips .825 of the shift, so over follows (RIDER_OVER_OMEGA) no faster than
+-- moves them RIDER_OVER_HIPS (m/s), 6 mm a step, and never faster than RIDER_OVER_RATE a second.
+local RIDER_OVER_OMEGA, RIDER_OVER_RATE, RIDER_OVER_ACCEL, RIDER_OVER_HIPS = 20, 4, 40, .36
+local NOSE_OVER_OPEN, NOSE_OVER_CLOSED = math.rad(10), math.rad(25)
 
 local function copy(value)
     if type(value) ~= "table" then return value end
@@ -236,27 +272,100 @@ local function rise_tilt(n,orientation)
     if not M.vec(seen) or seen[2]*seen[2]+seen[3]*seen[3]<1e-6 then return 0 end
     return math.clamp(math.atan2(seen[3],seen[2]),-LIFT_TILT,LIFT_TILT)
 end
+-- x following target as a critically damped spring of omega rad/s, its speed v held to rate and its change of speed
+-- to accel a second, one step of h on: the new x and v. Within tolerance of the target, and slow, it comes to rest
+-- on it exactly, so a held pose stays the same to the bit and is mapped from the pose memo.
+local function follow(x,v,target,h,omega,rate,accel,tolerance)
+    local a=math.clamp(omega*omega*(target-x)-2*omega*v,-accel,accel)
+    v=math.clamp(v+a*h,-rate,rate)
+    x+=v*h
+    if math.abs(target-x)<=tolerance and math.abs(v)<=2*omega*tolerance then return target,0 end
+    return x,v
+end
+-- The crank phase with the left foot forward and both cranks level, from the geometry the bike is drawn with: the
+-- left spindle about the bottom bracket in (y, z), as bike_visual turns the cranks about +X by crank_phase (a point
+-- at angle a from +Z toward +Y is drawn at a - crank_phase). -0.908 rad for bike_geometry; adding pi puts the right
+-- foot forward. nil for a geometry without its pedals.
+local function crank_level(geometry)
+    if type(geometry)~="table" or type(geometry.pedals)~="table" then return nil end
+    local p,b=geometry.pedals[1],geometry.bottom_bracket
+    if not M.vec(p,10) or not M.vec(b,10) then return nil end
+    return math.atan2(p[2]-b[2],p[3]-b[3])
+end
+-- The drawn cranks one step on, and how they are moving, for the next step: turned by the rear wheel through the
+-- gearing while the rider pedals, otherwise set level (CRANK_SETTLE_DELAY). The level is chosen as they start to
+-- move, from the rear wheel then: the one reached sooner, forward at the freewheel's pace or back at
+-- CRANK_SETTLE_RATE. Chosen the step the pedalling stopped, from the wheel of the pedalling, a rider who let go and
+-- slowed at once to 1 m/s took .75 s to come level going forward. A forward move whose wheel slows or stops under
+-- it, a brake on the rear, goes back to the other level instead once that is much the sooner. motion is nil while pedalling, else
+-- {coast = seconds not pedalling, target = the chosen level, nil until they move, rate = rad/s}. Pedalling again
+-- starts from wherever the cranks are drawn, so nothing jumps.
+local function cranks(phase,pedaling,wheel_rate,h,level,motion)
+    if pedaling then return wrap(phase+wheel_rate*h/CRANK_RATIO),nil end
+    if not level then return phase,nil end
+    local free=math.max(0,wheel_rate)/CRANK_RATIO
+    local forward_most=math.min(CRANK_SETTLE_RATE,free)
+    local coast,target,rate=(motion and motion.coast or 0)+h,motion and motion.target,motion and motion.rate or 0
+    if coast>=CRANK_SETTLE_DELAY-1e-9 then
+        if target==nil then
+            local ahead=(level-phase)%math.pi
+            local behind=math.pi-ahead
+            local sooner=ahead<1e-9 or forward_most>1e-6 and ahead/forward_most<=behind/CRANK_SETTLE_RATE
+            target=wrap(phase+(sooner and ahead or -behind))
+        end
+        local gap=wrap(target-phase)
+        -- Forward, a wheel slowing under them can make the level behind the sooner after all: past twice as long and a
+        -- tenth of a second more, they go back to it, once, so a wheel's wobble does not swing them about. Sent back
+        -- only once the rear had all but stopped, a bike stopped under them with its rear creeping at .27 rad/s
+        -- would have taken 8 s over the last 43 degrees forward.
+        if gap>0 and (forward_most<1e-6 or gap/forward_most>2*(math.pi-gap)/CRANK_SETTLE_RATE+.1) then
+            target=wrap(target-math.pi);gap=wrap(target-phase)
+        end
+        local most=gap>0 and forward_most or CRANK_SETTLE_RATE
+        local want=(gap>0 and 1 or -1)*math.min(most,math.sqrt(2*CRANK_SETTLE_ACCEL*math.abs(gap)))
+        rate=math.clamp(rate+math.clamp(want-rate,-CRANK_SETTLE_ACCEL*h,CRANK_SETTLE_ACCEL*h),-CRANK_SETTLE_RATE,forward_most)
+        local step=rate*h
+        if math.abs(gap)<1e-4 or (gap>0 and step>=gap) or (gap<0 and step<=gap) then phase,rate=target,0
+        else phase=wrap(phase+step) end
+    end
+    return phase,{coast=coast,target=target,rate=rate}
+end
+-- How far the drawn cranks are from the level they are going to, or from the nearer one until they move: the gate
+-- on a nose manual's hips over the bars. The chosen level is never nearer than the other, and the cranks only come
+-- toward it, so the gate only opens as they come level (a stopped wheel turning them back closes it again).
+local function crank_off_level(phase,level,motion)
+    if not level then return 0 end
+    if motion and motion.target then return math.abs(wrap(motion.target-phase)) end
+    local off=(phase-level)%math.pi
+    return math.min(off,math.pi-off)
+end
+local NO_MOTION=table.freeze({})
 -- The presentation pose after an accepted step: the front steer angle the
 -- kernel commanded, each wheel turned by its accepted angular speed over the
 -- step, and the cranks turned by the rear wheel through CRANK_RATIO only while
--- the kernel's pedal latch says the rider pedals (forces.lua pedal_cadence),
--- so a coast or a held pedal at top speed leaves them still. These are
+-- the kernel's pedal latch says the rider pedals (forces.lua pedal_cadence);
+-- a coast or a held pedal at top speed sets them level (cranks). These are
 -- accepted Lua predictions drawn on the measured body, never native wheel
 -- state. ForceStage's zero stage commands nothing and reports no steer or
 -- cadence: the bars and cranks hold. One new table a step, which status
 -- shares; nil for a model that reports either malformed. orientation is the
 -- measured body's and up is world up, for the direction a wheel is drawn up.
 -- ground is the direction the ground was followed to last step, nil at first;
--- the second result is this step's, for the next.
-local function presentation(previous,model,wheels,h,samples,geometry,orientation,up,ground)
+-- the second result is this step's, for the next. motion is how the drawn
+-- cranks and rider were moving after the last accepted step, nil at first, and
+-- the third result is this step's: Ride keeps it beside the pose, so the pose
+-- keeps ordinary riding's eight fields.
+local function presentation(previous,model,wheels,h,samples,geometry,orientation,up,ground,motion)
+    motion=motion or NO_MOTION
     local steer,pedaling=model.front_steer_angle,model.pedaling
     if steer==nil then steer=previous.steer
     elseif not M.finite(steer) or math.abs(steer)>1 then return nil end
-    if pedaling==nil then pedaling=false elseif type(pedaling)~="boolean" then return nil end
+    local level=crank_level(geometry)
+    if pedaling==nil then pedaling=false;level=nil elseif type(pedaling)~="boolean" then return nil end
     local rear=wheels[2].angular_speed*h
+    local crank_phase,crank_motion=cranks(previous.crank_phase,pedaling,wheels[2].angular_speed,h,level,motion.cranks)
     local pose={steer=steer,front_wheel_phase=wrap(previous.front_wheel_phase+wheels[1].angular_speed*h),
-        rear_wheel_phase=wrap(previous.rear_wheel_phase+rear),
-        crank_phase=pedaling and wrap(previous.crank_phase+rear/CRANK_RATIO) or previous.crank_phase,
+        rear_wheel_phase=wrap(previous.rear_wheel_phase+rear),crank_phase=crank_phase,
         barspin=previous.barspin,tailwhip=previous.tailwhip,movement_bike_pitch=0,movement_bike_roll=0}
     -- A refused candidate holds the same accepted hand releases as its angle.
     -- Omitted zero releases keep ordinary riding's eight-field pose unchanged.
@@ -316,44 +425,56 @@ local function presentation(previous,model,wheels,h,samples,geometry,orientation
             pose.movement_bike_normal=normal
         end
     end
-    -- In a manual the rider's hips go where the physics holds the weight: the kernel's pitch couple over
-    -- the weight, eased over RIDER_SHIFT_SECONDS so the pose does not jump on a step's change. Out of it
-    -- the shift eases back and the field goes once it is under half a centimetre.
-    -- The rider stands up on the pedals for a manual and sits back down after it: rider_standing goes from 0 to 1
-    -- and back at a steady rate, taking RIDER_SHIFT_SECONDS, and goes with the shift once it is back at 0. A standing
-    -- rider turns and lifts with all of a bike drawn on a kerb and a seated one with its seat, so on a bike drawn
-    -- pitched 8.6 degrees the rider stood up or sat down in one tick turned its hips 7.6 to 8.3 degrees in it.
-    -- In a nose manual the shift is forward, and rider_nose, 0 to 1, puts the hips up over the bars rather than
-    -- toward them (MP.manual_rider). It moves nothing while no forward shift is drawn, so with none it is set at
-    -- once: 1 in a nose manual, 0 in a rear manual. With a forward shift drawn it only ever moves the hips away from
-    -- the bars: into a nose manual it eases up at the standing's rate, and in a rear manual it holds until the shift
-    -- is back. Eased in from ordinary riding, the shift came in first and the hips went up to 8 cm toward the bars
-    -- over the first five steps: with the cranks stopped at the worst phase the knees came to 2.5 cm off them,
-    -- against 10 cm in ordinary riding. Eased out into a rear manual, the nose manual's shift swung them to 6 cm.
-    -- Out of both the nose is left where it was, so the hips come straight down as the shift eases out instead of
-    -- swinging forward toward the bars first.
-    local shift,standing,nose=previous.rider_shift,previous.rider_standing or 0,previous.rider_nose or 0
-    local stand=h/RIDER_SHIFT_SECONDS
+    -- In a manual the rider's hips go where the physics holds the weight: the kernel's pitch couple over the weight,
+    -- held to the centimetre and followed (RIDER_SHIFT_OMEGA), so the hips start and stop at rest rather than jump on
+    -- a step's change. Out of it the shift follows back to none, and the fields go once it is there and the rider is
+    -- sat down.
+    -- The rider stands up on the pedals for a manual and sits back down after it: rider_standing follows 1 in one
+    -- and 0 out of it (RIDER_STAND_OMEGA), and goes with the shift. A standing rider turns and lifts with all of a
+    -- bike drawn on a kerb and a seated one with its seat, so on a bike drawn pitched 8.6 degrees the rider stood up
+    -- or sat down in one tick turned its hips 7.6 to 8.3 degrees in it.
+    -- In a nose manual the shift is forward, and rider_nose, 0 to 1, takes the hips from the manual's line toward
+    -- the bars to the nose manual's own pose (MP.manual_rider). It moves nothing while no forward shift is drawn, so
+    -- with none it is set at once: 1 in a nose manual, 0 in a rear manual. With a forward shift drawn, into a nose
+    -- manual it follows up to 1, and in a rear manual it holds until the shift is back. Out of both the nose is left
+    -- where it was, so the hips come straight back as the shift eases out instead of swinging toward the bars first.
+    -- rider_over takes the nose manual's hips from up over the bars to forward over them, as far as the cranks are
+    -- level (NOSE_OVER_OPEN): set at once with no forward shift drawn, followed with one, and held out of it.
+    local shift,standing,nose,over=previous.rider_shift,previous.rider_standing or 0,previous.rider_nose or 0,previous.rider_over or 0
+    local was=motion.rider or NO_MOTION
+    local shift_rate,stand_rate,nose_rate,over_rate,held=was.shift_rate or 0,was.stand_rate or 0,was.nose_rate or 0,
+        was.over_rate or 0,was.held
     local on_nose=model.nose_manual_active==true and model.manual_active~=true
-    if model.manual_active==true or on_nose then
+    local active=model.manual_active==true or on_nose
+    local target=0
+    if active then
         if not M.finite(model.manual_shift) then return nil end
-        local target=math.clamp(model.manual_shift,on_nose and -RIDER_SHIFT_NOSE or -RIDER_SHIFT_FORWARD,RIDER_SHIFT_BACK)
-        if (shift or 0)>=0 then nose=on_nose and 1 or 0 elseif on_nose then nose=math.min(1,nose+stand) end
-        local ease=(target-(shift or 0))*math.min(1,h/RIDER_SHIFT_SECONDS)
-        -- Into a nose manual with a rear manual's back shift still drawn, the shift comes forward no faster than a
-        -- rear manual's comes back: eased a sixth of the gap a step, the hips moved .095 m in one frame.
-        if on_nose and (shift or 0)>0 then ease=math.max(ease,-RIDER_SHIFT_BACK*h/RIDER_SHIFT_SECONDS) end
-        shift=(shift or 0)+ease
-        standing=math.min(1,standing+stand)
-    elseif shift~=nil then
-        shift-=shift*math.min(1,h/RIDER_SHIFT_SECONDS)
-        standing=math.max(0,standing-stand)
-        if math.abs(shift)<.005 and standing==0 then shift=nil end
+        local wanted=math.clamp(model.manual_shift,on_nose and -RIDER_SHIFT_NOSE or -RIDER_SHIFT_FORWARD,RIDER_SHIFT_BACK)
+        if held==nil or math.abs(wanted-held)>=RIDER_SHIFT_HOLD then held=math.floor(wanted*100+.5)/100 end
+        target=held
+        local gate=math.clamp((NOSE_OVER_CLOSED-crank_off_level(crank_phase,level,crank_motion))/(NOSE_OVER_CLOSED-NOSE_OVER_OPEN),0,1)
+        if (shift or 0)>=0 then
+            nose,nose_rate=on_nose and 1 or 0,0
+            over,over_rate=on_nose and gate or 0,0
+        elseif on_nose then
+            nose,nose_rate=follow(nose,nose_rate,1,h,RIDER_NOSE_OMEGA,RIDER_NOSE_RATE,RIDER_NOSE_ACCEL,.005)
+            local most=math.min(RIDER_OVER_RATE,RIDER_OVER_HIPS/(.825*math.max(-shift,.01)))
+            over,over_rate=follow(over,over_rate,gate,h,RIDER_OVER_OMEGA,most,RIDER_OVER_ACCEL,.005)
+        else nose_rate,over_rate=0,0 end
+    else held,nose_rate,over_rate=nil,0,0 end
+    if active or shift~=nil then
+        shift,shift_rate=follow(shift or 0,shift_rate,target,h,RIDER_SHIFT_OMEGA,RIDER_SHIFT_RATE,RIDER_SHIFT_ACCEL,5e-4)
+        standing,stand_rate=follow(standing,stand_rate,active and 1 or 0,h,RIDER_STAND_OMEGA,RIDER_STAND_RATE,RIDER_STAND_ACCEL,.005)
+        if standing<=0 or standing>=1 then standing,stand_rate=math.clamp(standing,0,1),0 end
+        nose,over=math.clamp(nose,0,1),math.clamp(over,0,1)
+        if not active and shift==0 and standing==0 then shift=nil end
     end
     pose.rider_shift=shift
     pose.rider_standing=shift~=nil and standing or nil
     pose.rider_nose=shift~=nil and nose>0 and nose or nil
-    return pose,followed
+    pose.rider_over=shift~=nil and nose>0 and over>0 and over or nil
+    local rider=shift~=nil and {shift_rate=shift_rate,stand_rate=stand_rate,nose_rate=nose_rate,over_rate=over_rate,held=held} or nil
+    return pose,followed,(crank_motion or rider) and {cranks=crank_motion,rider=rider} or nil
 end
 -- The measured tilt of the body's up axis from world up, in degrees, and its
 -- roll rate about its own forward axis, in rad/s; nil when either is unknown.
@@ -1957,8 +2078,8 @@ local function observe(s,source_frame,raw,context)
     s.refused_steps=0
     local wheels=wheel_copy(model.wheels,s.wheels)
     if not wheels then stop(s,"bounded wheel model unavailable");return end
-    local pose,ground=presentation(s.pose,model,wheels,sample.seconds,contact.samples,s.geometry,body.orientation,
-        M.unit(M.mul(s.force.tuning.gravity,-1)),s.drawn_ground)
+    local pose,ground,motion=presentation(s.pose,model,wheels,sample.seconds,contact.samples,s.geometry,body.orientation,
+        M.unit(M.mul(s.force.tuning.gravity,-1)),s.drawn_ground,s.drawn_motion)
     if not pose then stop(s,"bounded presentation model unavailable");return end
     local p={serial=sample.serial,time=sample.time,seconds=sample.seconds,submitted_at=s.now,
         hop_id=model.hop_applied and model.hop_event_id or nil,wheels=wheels,
@@ -2026,7 +2147,7 @@ local function observe(s,source_frame,raw,context)
         s.nose_manual_active=model.nose_manual_active==true
         -- The pose follows the accepted prediction, with the wheels it adopts;
         -- model_history names that step.
-        s.pose=freeze(pose);s.drawn_ground=ground
+        s.pose=freeze(pose);s.drawn_ground=ground;s.drawn_motion=motion
         s.model_history=freeze({kind="predictive_accepted",serial=p.serial,sequence=sequence,
             reason="exact_force_admission",native_wheel_state_known=false})
         if s.hop_policy=="grounded_once" then

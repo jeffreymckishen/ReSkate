@@ -4,8 +4,8 @@
   "flat_file_count": 89,
   "quota_file_count": 90,
   "expected_processes": 47,
-  "expected_cases": 473,
-  "expected_assertions": 42313,
+  "expected_cases": 475,
+  "expected_assertions": 43017,
   "source_admission": "UNCHANGED_FALSE",
   "files": [
     {
@@ -191,8 +191,8 @@
     {
       "source": "plugin/bike_geometry.lua",
       "destination": "bike_geometry.lua",
-      "bytes": 8251,
-      "sha256": "40A5D10BDF49FB54333D14F5A89DE816EF23D88489CB21B5AAEC7AA9A69A7253"
+      "bytes": 8315,
+      "sha256": "850E6F525E53AC2D10DA454F8C977133EAFEABC1964B8099C572624517005BBE"
     },
     {
       "source": "Test/two_cycle_facade_fixture.lua",
@@ -282,8 +282,8 @@
     {
       "source": "plugin/forces.lua",
       "destination": "forces.lua",
-      "bytes": 81331,
-      "sha256": "307C844D76179AE98F3C436B603E5415E2BEE960A55A4DAA49C231EEE8F46B52"
+      "bytes": 83997,
+      "sha256": "7AF7DC3FBA8D9A5714069A534B70A84BADDF3410EBA63E50D927E47C0698A9F1"
     },
     {
       "source": "plugin/ride_inflight.lua",
@@ -474,8 +474,8 @@
     {
       "source": "Test/mounted_pose_fit_continuity_tests.lua",
       "destination": "mounted_pose_fit_continuity_tests.lua",
-      "bytes": 18339,
-      "sha256": "C0CBC88E0B5BDABECC5EF3C36F9C4FDD2558F628E08A7C55B1134AF54A4EBA6C"
+      "bytes": 20759,
+      "sha256": "10BC59794E9510A806A2A83A0B26307BC86D29D8422AACAE332E0B9B3368E0B0"
     },
     {
       "source": "Test/steered_hub_geometry_tests.lua",
@@ -540,8 +540,8 @@
     {
       "source": "Test/bike_physics_tests.lua",
       "destination": "bike_physics_tests.lua",
-      "bytes": 104201,
-      "sha256": "8B9A1F67AFC42A19472AAD7E0F35C0590658F7650622F06FE797819ADABFEDA2"
+      "bytes": 112573,
+      "sha256": "413793C8550E305B17429F8574B56959E3201350C910D9C028DD137A76F1F545"
     },
     {
       "source": "Test/ride_fall_tests.lua",
@@ -558,8 +558,8 @@
     },
     {
       "source": "plugin/bike_geometry.lua",
-      "bytes": 8251,
-      "sha256": "40A5D10BDF49FB54333D14F5A89DE816EF23D88489CB21B5AAEC7AA9A69A7253"
+      "bytes": 8315,
+      "sha256": "850E6F525E53AC2D10DA454F8C977133EAFEABC1964B8099C572624517005BBE"
     },
     {
       "source": "plugin/bike_runtime_core.lua",
@@ -638,8 +638,8 @@
     },
     {
       "source": "plugin/forces.lua",
-      "bytes": 81331,
-      "sha256": "307C844D76179AE98F3C436B603E5415E2BEE960A55A4DAA49C231EEE8F46B52"
+      "bytes": 83997,
+      "sha256": "7AF7DC3FBA8D9A5714069A534B70A84BADDF3410EBA63E50D927E47C0698A9F1"
     },
     {
       "source": "plugin/frame_identity.lua",
@@ -703,8 +703,8 @@
     },
     {
       "source": "README.md",
-      "bytes": 10540,
-      "sha256": "E504D6A1DCE4C15411FD91B0A6FB36385818902B82646B9A419689126B1F6DF2"
+      "bytes": 11053,
+      "sha256": "6E8B05439A93FBAF028AD9DBC493C005E8058F5854D8AC2C942274BBF8BDF4DC"
     },
     {
       "source": "reskate-plugin.json",
@@ -1013,8 +1013,8 @@
       "suite": "mounted_pose_fit_continuity_tests",
       "context": "flat",
       "invoked": "mounted_pose_fit_continuity_tests",
-      "expected_cases": 5,
-      "expected_assertions": 1957
+      "expected_cases": 6,
+      "expected_assertions": 2008
     },
     {
       "suite": "steered_hub_geometry_tests",
@@ -1083,8 +1083,8 @@
       "suite": "bike_physics_tests",
       "invoked": "bike_physics_tests",
       "context": "flat",
-      "expected_cases": 49,
-      "expected_assertions": 3883
+      "expected_cases": 50,
+      "expected_assertions": 4536
     },
     {
       "suite": "ride_fall_tests",

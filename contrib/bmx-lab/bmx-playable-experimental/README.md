@@ -88,6 +88,11 @@ offline the game does not keep it, so set it again each launch.
   released. Then hold LB and press A to ride again.
 - Top speed is about 7.7 m/s on the flat. The rider stops pedalling there and coasts down to about 7.2 m/s before
   pedalling again. A hill can take the bike much faster than that, and a coast slows by itself.
+- At a walk the bars turn up to about 32 degrees, so the bike turns round inside about 3.3 m, where it used to take
+  5.3 m. They come back to the old lock by 3 m/s, and from there steering is as before. With the bars that far round
+  the rider's near hand is drawn turned a little short of its grip, its wrist at the end of its bend.
+- B in a corner keeps the corner. The bike stands up a little as the brake comes on and the turn opens for a moment,
+  then tightens as the bike slows, rather than running wide.
 - Pedalling has a rider's power, not a motor's. Up a ramp steeper than about 15% the bike slows with A held, the
   steeper the slower, while the city's hills still climb at close to full speed.
 - Riding into a kerb costs some speed as each tyre strikes it, more for a taller one. Hop clear of its top to keep

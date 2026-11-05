@@ -274,6 +274,39 @@ function Tests.run()
     check(palm_miss<=1e-4 and ankle_miss<=1e-4,string.format("the hands hold their grips and the feet their pedals: %.6f %.6f",palm_miss,ankle_miss))
     check(legs>=.09,string.format("the knees, thighs and shins stay %.3f off the bars at every hold and crank phase",legs))
     check(torso>=.3,string.format("and the torso %.3f",torso))
-    return {cases=5,assertions=assertions}
+
+    -- The bars at the walk's full lock (forces.lua walk_lock, 32 degrees), either way, seated on a level bike at 24
+    -- crank phases: both hands hold their grips with no arm stretched, the near hand, whose wrist is at its bend limit
+    -- there, turns no more than 15 degrees short of its grip, and the knees, thighs and shins keep 5 cm off the bar line
+    -- (7.4 cm at the old full lock, .4 rad). Against the bike's own mesh the knee joint is 12 cm from the bars there.
+    local walk=require("./forces").tuning().walk_lock
+    local level={root={0,.3,0},rotation={0,0,0,1}}
+    local function level_local(p) return sub(p,level.root) end
+    local short,reach_miss,bar_legs,clamped=0,0,math.huge,false
+    for _,steer in ipairs({walk,-walk}) do
+        for phase=0,23 do
+            local out,why=MP.compose({bike=level,articulation={crank_phase=phase/24*2*math.pi,steer=steer}})
+            check(out~=nil,"the rider composes with the bars at the walk's lock: "..tostring(why))
+            local grips={level_local(out.targets.grips[1]),level_local(out.targets.grips[2])}
+            for i,name in ipairs({"left_arm","right_arm"}) do
+                local side=i==1 and 1 or -1
+                local planned=out.planned[name]
+                local palm=add(planned.tip,Q.turn(planned.tip_rotation,{C.palm_reach,0,side*(C.grip_radius+C.palm_gap)}))
+                reach_miss=math.max(reach_miss,distance(palm,out.targets.grips[i]))
+                clamped=clamped or out.diagnostics.limbs[name].clamped
+                local a,b=planned.tip_rotation,out.targets.hands[i]
+                short=math.max(short,math.deg(2*math.acos(math.min(1,math.abs(a[1]*b[1]+a[2]*b[2]+a[3]*b[3]+a[4]*b[4])))))
+            end
+            for _,name in ipairs({"left_leg","right_leg"}) do
+                local p=out.planned[name]
+                local hip,knee,ankle=level_local(p.root),level_local(p.middle),level_local(p.tip)
+                bar_legs=math.min(bar_legs,segment(hip,knee,grips[1],grips[2])-bar_radius,segment(knee,ankle,grips[1],grips[2])-bar_radius)
+            end
+        end
+    end
+    check(not clamped and reach_miss<=1e-4,string.format("at the walk's lock both hands hold their grips: %.6f",reach_miss))
+    check(short<=15,string.format("the near hand turns %.1f degrees short of its grip",short))
+    check(bar_legs>=.05,string.format("the knees, thighs and shins stay %.3f off the bars",bar_legs))
+    return {cases=6,assertions=assertions}
 end
 return table.freeze(Tests)

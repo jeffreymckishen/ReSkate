@@ -95,8 +95,9 @@ offline the game does not keep it, so set it again each launch.
 - A stopped bike holds on a street grade, so hold A for a moment to start down a gentle hill. Ramps steeper than about 15% roll back.
 - A crash (the bike going over, a hit at speed, or the rider being knocked off, as by a car) gets back on the bike
   after a few seconds: the HUD says "The rider came off. Getting back on the bike." While the game keeps the rider
-  down the HUD says "Waiting for the rider to get up.", and the mod waits for that, up to three minutes. Once the
-  rider is up, let go of the controls: the switch to the skateboard waits for that. If the rider is left standing on
+  down the HUD says "Press A to get up.": the game leaves a crashed rider lying until a button is pressed, and the
+  mod waits for that, up to three minutes. Once the rider is up, let go of the controls: the switch to the skateboard
+  waits for that. If the rider is left standing on
   foot as they are put back on the bike, the HUD says "Press Y for your skateboard, then let go of the controls."
   Banks and quarter pipes do not count as going over. If there is no room to get back on, move and mount again.
 - If something does not finish, the HUD says what to do next, usually "That didn't finish. Get on your skateboard,

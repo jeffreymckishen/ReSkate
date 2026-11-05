@@ -445,7 +445,7 @@ function T.run()
         check(s.last_stop=="rider was knocked down","the stop says the rider was knocked down: "..tostring(s.last_stop))
         check(rode and s.attempts_used==2,"and the rider gets back on the bike once they stand: "..tostring(s.phase).." "..tostring(s.detail))
         check(stood and w.pulses[1] and w.pulses[1].at>=stood,"no Y while the rider was down")
-        check(shown["Waiting for the rider to get up."],"while down the HUD says so")
+        check(shown["Press A to get up."],"while down the HUD says so")
     end)
     case(function() -- A crash that keeps the rider down for over a minute, as beside the SUV in loop3 (2026-11-04).
         for _,down in ipairs({{stock=504,name="on foot, ragdolled"},{stock=300,name="fallen"}}) do
@@ -461,7 +461,7 @@ function T.run()
             local s=w.entry:status()
             check(rode and s.attempts_used==2,down.name.." 65 s, the rider still gets back on the bike: "..tostring(s.phase).." "..tostring(s.detail))
             check(stood and w.pulses[1] and w.pulses[1].at>=stood,down.name..": no Y while the rider was down")
-            check(shown["Waiting for the rider to get up."] and not shown["That didn't finish. Get on your skateboard, then hold LB and press A."],
+            check(shown["Press A to get up."] and not shown["That didn't finish. Get on your skateboard, then hold LB and press A."],
                 down.name..": the HUD said why it waited, and never that it gave up")
         end
     end)
@@ -491,7 +491,7 @@ function T.run()
         end
         return first,last
     end
-    local WAITING,LET_GO="Waiting for the rider to get up.","Going back to the skateboard: let go of the controls."
+    local WAITING,LET_GO="Press A to get up.","Going back to the skateboard: let go of the controls."
     case(function() -- Down 10 s after a crash, then standing with the stick held: told to let go, and the 45 s run.
         -- Until 2026-11-04 the last refusal from while the rider was down kept 'Waiting for the rider to get up.' up
         -- and the 45 s stopped, so this Return sat for 3 minutes with the HUD hiding what would unblock it.

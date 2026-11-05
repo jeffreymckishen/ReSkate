@@ -1152,13 +1152,15 @@ function Entry.new(R,Runtime,Survey,options)
             if now and now<notice_until then return notice end
             notice=nil
         end
-        -- Letting go of the controls cannot help a rider the game has not stood up yet; say what is happening instead.
-        if phase=="returning" and return_down then return "Waiting for the rider to get up." end
+        -- Letting go of the controls cannot help a rider the game has not stood up yet. The game leaves a crashed rider
+        -- lying until a button is pressed: in crash1 (2026-11-04) the rider was still down after four minutes with the
+        -- controller at rest, and in getup1 one A tap stood them up and the Return went on. So the line says to press A.
+        if phase=="returning" and return_down then return "Press A to get up." end
         -- A remount after a crash whose step-off reads the rider off the board waits for them (second_quiet). One the
         -- game still has down is waited for. One standing on foot gets back on the board only with a Y, which is said
         -- once the standing reads have lasted 1 s, so that a single odd read does not ask a rider on the board for Y.
         if phase=="stepping_off" and second_recovering and second_off_board then
-            if not second_off_standing then return "Waiting for the rider to get up." end
+            if not second_off_standing then return "Press A to get up." end
             local now=clock()
             if now and second_off_since and now-second_off_since>=1000 then
                 return "Press Y for your skateboard, then let go of the controls."

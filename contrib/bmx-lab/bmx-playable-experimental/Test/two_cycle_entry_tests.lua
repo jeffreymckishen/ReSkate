@@ -840,7 +840,7 @@ function Tests.run()
         local s=f.entry:status()
         check(s.phase=="returning" and s.recovery_pending and f.toggles>=100,
             "80 s down, asked every 500 ms or so all along, is still a Return: "..tostring(s.phase).." "..tostring(f.toggles))
-        check(f.entry:help_line()=="Waiting for the rider to get up.","while down the HUD says so")
+        check(f.entry:help_line()=="Press A to get up.","while down the HUD says so")
         local asked=f.toggles
         f.ragdoll=false;f.now+=500;f.tick()
         check(f.toggles==asked+1 and f.entry:status().stock_attempted,"once they stand the next ask arms the switch")
@@ -870,7 +870,7 @@ function Tests.run()
         fall(f,"hit something at 4.5 m/s")
         f.latest=cleaned();f.ragdoll=true;refused_while_down(f)
         for _=1,30 do f.now+=184;f.tick() end
-        check(f.entry:help_line()=="Waiting for the rider to get up." and f.toggles>0,"down, and the switch refused")
+        check(f.entry:help_line()=="Press A to get up." and f.toggles>0,"down, and the switch refused")
         local asked,stood=f.toggles,f.now
         f.ragdoll=false;f.on_pad=function(pad) pad.left_x=1;return pad end
         for _=1,55 do f.now+=184;f.tick() end
@@ -904,11 +904,11 @@ function Tests.run()
         f.on_pad=function(pad) pad.left_x=1;return pad end
         for _=1,330 do f.now+=184;f.tick();if f.entry:status().phase=="blocked" then break end end
         local s=f.entry:status()
-        check(s.phase=="returning" and f.toggles==0 and f.entry:help_line()=="Waiting for the rider to get up.",
+        check(s.phase=="returning" and f.toggles==0 and f.entry:help_line()=="Press A to get up.",
             "60 s ragdolled with the stick held: "..s.phase.." "..tostring(f.entry:help_line()))
         -- Let go while still down: the switch is asked for and refused, and the HUD still says why it waits.
         f.on_pad=nil;f.now+=500;f.tick()
-        check(f.toggles==1 and not f.entry:status().stock_attempted and f.entry:help_line()=="Waiting for the rider to get up.",
+        check(f.toggles==1 and not f.entry:status().stock_attempted and f.entry:help_line()=="Press A to get up.",
             "let go while down, refused, and still waiting")
         f.ragdoll=false;f.now+=500;f.tick()
         check(f.toggles==2 and f.entry:status().stock_attempted,"up and let go, the switch is armed")
@@ -978,7 +978,7 @@ function Tests.run()
         local f=fixture({two=true,auto_return=true});recover_stepping_off(f)
         f.ragdoll=true
         for _=1,25 do f.now+=184;f.tick() end
-        check(f.entry:status().phase=="stepping_off" and f.entry:help_line()=="Waiting for the rider to get up.",
+        check(f.entry:status().phase=="stepping_off" and f.entry:help_line()=="Press A to get up.",
             "a rider the game has down is waited for, and the HUD says so: "..tostring(f.entry:help_line()))
         f.ragdoll=false;f.stock=504;f.now+=184;f.tick()
         check(f.entry:help_line()~=Y_LINE,"a first standing read does not yet ask for Y")

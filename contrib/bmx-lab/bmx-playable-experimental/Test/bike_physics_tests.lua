@@ -230,6 +230,56 @@ function T.run()
             check(lowest>=6.9 and highest<=7.75,string.format("and the speed keeps to the band: %.2f to %.2f",lowest,highest))
         end
     end)
+    case(function() -- A brake, a manual or a climb ends the least coast: with A held the rider pedals once under the band.
+        -- Cruising with A held from 7.4 m/s, at eight points of the pedal and coast cycle. With the least coast kept
+        -- through them, up 3, 6 and 10% the rider pedalled again only at 6.85, 6.69 and 6.66 m/s (1.68, 1.45 and
+        -- 1.07 s after the foot), let go of B after .2 s at 7.18 m/s or less they waited up to 1.73 s, and after a .5 s
+        -- manual up to 1.55 s. Ended by them: 7.17, 7.13 and 7.05 m/s (.97, .80 and .63 s), .07 s and .33 s.
+        local function flat(body) return math.sqrt(body.linear_velocity[1]^2+body.linear_velocity[3]^2) end
+        local resume=Forces.tuning().pedal_resume_speed
+        local function climb(at,grade)
+            local blend=4
+            return {height=function(x,z) if z<=at then return 0 end if z<=at+blend then return grade*(z-at)^2/(2*blend) end return grade*(z-at-blend/2) end,
+                grad=function(x,z) if z<=at then return 0,0 end if z<=at+blend then return 0,grade*(z-at)/blend end return 0,grade end}
+        end
+        for _,grade in ipairs({.03,.06,.1}) do
+            local longest,lowest=0,math.huge
+            for k=0,7 do
+                local at=30+k*3.3
+                local started,first,v_first
+                run({steps=600,speed=7.4,immediate=true,ground=climb(at,grade),controls=function() return {pedal=1} end,each=function(step,body,out)
+                    if not started and body.center_of_mass[3]>=at then started=step end
+                    if started and not first and out.pedaling then first=step v_first=flat(body) end
+                end})
+                check(started~=nil and first~=nil,"the bike reaches the climb and pedals up it")
+                longest=math.max(longest,(first-started)*h) lowest=math.min(lowest,v_first)
+            end
+            check(longest<=1 and lowest>=7,string.format("up %.0f%%: pedals again within %.2f s of the foot, at %.2f m/s or more",grade*100,longest,lowest))
+        end
+        local longest,top=0,0
+        for k=0,7 do
+            local from=200+k*13
+            local released,first,v
+            run({steps=from+150,speed=7.4,immediate=true,controls=function(step) return {pedal=1,brake=(step>from and step<=from+12) and 1 or 0} end,
+                each=function(step,body,out)
+                    if step==from+12 then released=step v=flat(body) end
+                    if released and step>released and not first and out.pedaling then first=step end
+                end})
+            check(first~=nil,"A held pedals again after B")
+            longest=math.max(longest,(first-released)*h) top=math.max(top,v)
+        end
+        check(longest<=.1 and top<resume,string.format("B for .2 s: let go at %.2f m/s at most, pedals within %.2f s",top,longest))
+        longest=0
+        for k=0,7 do
+            local from=200+k*13
+            local first
+            run({steps=from+150,speed=7.4,controls=function(step) return {pedal=1,manual=(step>from and step<=from+30) and .5 or nil} end,
+                each=function(step,body,out) if step>from+30 and not first and out.pedaling then first=step end end})
+            check(first~=nil,"A held pedals again after a manual")
+            longest=math.max(longest,(first-from-30)*h)
+        end
+        check(longest<=.6,string.format("a .5 s manual: pedals within %.2f s of letting go",longest))
+    end)
     case(function() -- A coast slows by itself, and speed from a hill is not taken away on the flat.
         local coast=run({steps=600,speed=7.4})
         local speed=M.length(coast.body.linear_velocity)

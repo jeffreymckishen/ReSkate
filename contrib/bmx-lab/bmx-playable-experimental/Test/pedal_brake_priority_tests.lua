@@ -52,8 +52,13 @@ function Tests.run()
             and controller.pedal_latch.spun_out,"braking inside the band preserves spin-out history")
         check(not step(controller,7.6,{pedal=1,brake=0}).pedaling
             and controller.pedal_latch.spun_out,"brake release cannot bypass the governor")
-        -- A spin-out coasts at least two seconds: until then only a bike half a metre a second under the resume
-        -- threshold pedals again.
+        -- The brake ended the least coast, so the resume threshold is the band's own.
+        check(step(controller,tuning.pedal_resume_speed,{pedal=1}).pedaling
+            and not controller.pedal_latch.spun_out,"after a brake the resume threshold permits pedaling at once")
+        -- A spin-out left to the road coasts at least two seconds: until then only a bike half a metre a second
+        -- under the resume threshold pedals again.
+        controller=F.new()
+        check(not step(controller,tuning.pedal_top_speed,{pedal=1}).pedaling,"top speed arms the latch")
         check(not step(controller,tuning.pedal_resume_speed,{pedal=1}).pedaling
             and controller.pedal_latch.spun_out,"the resume threshold waits out the least coast")
         check(step(controller,tuning.pedal_resume_speed-.5,{pedal=1}).pedaling
@@ -64,6 +69,16 @@ function Tests.run()
         check(controller.pedal_latch.spun_out,"two seconds inside the band stay coasting")
         check(step(controller,tuning.pedal_resume_speed,{pedal=1}).pedaling
             and not controller.pedal_latch.spun_out,"after the least coast the original resume threshold still permits pedaling")
+        -- A step that slowed (a brake, a manual or a climb) ends the least coast; a malformed one is refused.
+        local function cadence(previous,slowed)
+            return F.pedal_cadence(previous,{enabled=true,pedal=1,motor_speed=tuning.pedal_resume_speed,top_speed=tuning.pedal_top_speed,
+                resume_speed=tuning.pedal_resume_speed,seconds=F.native_seconds,slowed=slowed})
+        end
+        local fresh={spun_out=true,coasted=0}
+        check(not cadence(fresh,false).pedaling and not cadence(fresh,nil).pedaling,"a coast left to the road waits")
+        check(cadence(fresh,true).pedaling,"a step that slowed ends the least coast")
+        local refused,latch=cadence(fresh,"yes")
+        check(not refused.valid and not latch.spun_out,"a malformed slowed is refused")
     end
     return {cases=cases,assertions=assertions}
 end

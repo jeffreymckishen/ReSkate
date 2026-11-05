@@ -275,9 +275,21 @@ end
 -- flipped every 1.5 s it ran 7.09 to 7.74 m/s, and the rider started and
 -- stopped 29 times in 22 s (1.32 a second), pedalling .6 s and coasting .9 s.
 -- A straight cruise coasts 2.1 s each time, so 2 s leaves it as it was.
--- s={enabled,pedal,motor_speed,top_speed,resume_speed,seconds}, seconds the
--- step's length; previous is nil or a pedal_state().
-local PEDAL_LEAST_COAST,PEDAL_EARLY_RESUME=2,.5
+-- The least coast is only for a coast left to the road. A step that slowed is
+-- one the rider brakes, rides a manual or a nose manual, or climbs a grade
+-- steeper than PEDAL_CLIMB (as a sine), and it ends the least coast: from then
+-- the rider pedals as soon as the bike is under resume_speed. Without that,
+-- B for .2 s at the top speed with A held, let go under 7.2 m/s, left the
+-- cranks still for up to 1.73 s, a .5 s manual up to 1.55 s after the stick
+-- was let go, and climbs of 3 to 10% from the top speed restarted the pedal at
+-- 6.66 to 6.85 m/s, not 7.05 to 7.17 (bike_physics_tests). On a
+-- climb of PEDAL_CLIMB the pedal can no longer reach the top speed, so a bike
+-- spun out there was carried up by speed it had before: A held from 6 m/s for
+-- 60 s spun out on the flat and up to 1.75% (7.70 m/s), and not up 1.8%
+-- (7.699). s.slowed is that step.
+-- s={enabled,pedal,motor_speed,top_speed,resume_speed,seconds,slowed}, seconds
+-- the step's length; previous is nil or a pedal_state().
+local PEDAL_LEAST_COAST,PEDAL_EARLY_RESUME,PEDAL_CLIMB=2,.5,.018
 function F.pedal_state() return {spun_out=false,coasted=0} end
 function F.pedal_cadence(previous,s)
     local refused=table.freeze({valid=false,pedaling=false,spun_out=false})
@@ -286,10 +298,12 @@ function F.pedal_cadence(previous,s)
     if type(s)~="table" or type(s.enabled)~="boolean" or not M.finite(s.pedal) or s.pedal<0 or s.pedal>1 or
         not M.finite(s.motor_speed) or s.motor_speed<0 or s.motor_speed>1e6 or not M.finite(s.top_speed) or
         not M.finite(s.resume_speed) or s.resume_speed<0 or s.resume_speed>=s.top_speed or s.top_speed>50 or
-        not M.finite(s.seconds) or s.seconds<0 or s.seconds>1 then return refused,F.pedal_state() end
+        not M.finite(s.seconds) or s.seconds<0 or s.seconds>1 or (s.slowed~=nil and type(s.slowed)~="boolean") then
+        return refused,F.pedal_state() end
     local was=previous~=nil and previous.spun_out
     -- A latch kept without its time, as one from before it was kept, counts as having coasted.
     local coasted=was and (previous.coasted or PEDAL_LEAST_COAST)+s.seconds or 0
+    if was and s.slowed then coasted=math.max(coasted,PEDAL_LEAST_COAST) end
     local resume=coasted>=PEDAL_LEAST_COAST and s.resume_speed or s.resume_speed-PEDAL_EARLY_RESUME
     local armed=s.enabled and s.pedal>0 and s.motor_speed>=s.top_speed
     local spun=armed or (was and s.motor_speed>resume)
@@ -757,9 +771,11 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     -- mass, lifts the nose by 170 to 300 N*m, more than the 156 N*m the rider
     -- can lean forward, so a pedalled manual loops out at once. The cranks then
     -- stay still with it, and the top-speed latch is left as it was. A nose
-    -- manual coasts too: its driven rear wheel is in the air.
+    -- manual coasts too: its driven rear wheel is in the air. Each of these, and
+    -- a climb, ends the latch's least coast (pedal_cadence).
+    local climbing=forward~=nil and -M.dot(t.gravity,forward)>PEDAL_CLIMB*M.length(t.gravity)
     local cadence,next_latch=F.pedal_cadence(prior_latch,{enabled=c.enabled,pedal=(braking or manual_engaged or nose_engaged) and 0 or math.clamp(c.pedal,0,1),motor_speed=motor_speed,
-        top_speed=t.pedal_top_speed,resume_speed=t.pedal_resume_speed,seconds=h})
+        top_speed=t.pedal_top_speed,resume_speed=t.pedal_resume_speed,seconds=h,slowed=braking or manual_engaged or nose_engaged or climbing})
     if not cadence.valid then return out end out.pedaling=cadence.pedaling
     local pedal_scale=math.clamp((t.pedal_cutoff-motor_speed)/(t.pedal_cutoff-t.pedal_fade_start),0,1)
     -- Torque times wheel speed is the rider's power; past rider_power the push falls as the bike goes faster.

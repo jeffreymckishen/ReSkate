@@ -93,8 +93,9 @@ offline the game does not keep it, so set it again each launch.
   released. Then hold LB and press A to ride again.
 - Top speed is about 7.7 m/s on the flat. The rider stops pedalling there and coasts down to about 7.2 m/s before
   pedalling again, and coasts for two seconds at least unless the bike slows under about 6.7 m/s first, so weaving at
-  top speed does not start and stop the cranks every half turn. A hill can take the bike much faster than that, and a
-  coast slows by itself.
+  top speed does not start and stop the cranks every half turn. B, a manual or a climb steeper than about 2% ends that
+  wait: with A held the rider pedals again as soon as the bike is under 7.2 m/s. A hill can take the bike much faster
+  than that, and a coast slows by itself.
 - Whenever the rider stops pedalling, coasting, at top speed or in a manual, the cranks come round to level, feet
   at 3 and 9 o'clock, within about half a second at 1 m/s and up: back, as a rider backpedals, or forward with
   the back wheel when that is sooner. From about 1.2 m/s up, a tap of A from level cranks, or while they go back to a

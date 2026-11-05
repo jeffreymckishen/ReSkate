@@ -439,7 +439,7 @@ function T.run()
         local function trick(r,kind,pick)
             local bar,tail,hand,foot=C.Model.new(),C.Model.new(),C.OneHand.new(),C.OneFoot.new()
             local stepped,started,finished,steepest,turned=true,false,nil,0,0
-            for step=1,160 do
+            for step=1,#r.grounded do
                 local grounded=r.grounded[step]
                 local picked=step==pick
                 local neutral=not (step>=pick and step<pick+11)
@@ -483,6 +483,42 @@ function T.run()
                         check(math.abs(turned-2*math.pi)<1e-9 and steepest<=twelfth,
                             string.format("%s: one turn, at most %.1f degrees a step",what,math.deg(steepest)))
                     end
+                end
+            end
+        end
+        -- And from a manual or a nose manual, ridden as their hop cases ride them: the stick held, then R3 with it let
+        -- go (rear) or still held (nose). Those hops are 45 or 46 steps in the air, against 43 to 47 from two wheels.
+        local function hop_from(speed,m,front)
+            local measured,pop,grounded=nil,nil,{}
+            run({steps=200,speed=speed,controls=function(step,body)
+                measured=body
+                if step<=15 then return {} end
+                if front then return step==106 and {hop=true,nose=0,nose_held=true} or {nose=m} end
+                if step<76 then return {manual=m} end
+                return {manual=0,hop=step==76}
+            end,each=function(step,body,out,wheels,samples)
+                local on=false
+                for i=1,2 do on=on or samples[i].contact.status=="hit" and Forces.eligible_support(measured,samples[i],.005,.10) end
+                grounded[step]=on
+                if out.valid and out.hop_applied then pop=step end
+            end})
+            local off,touch
+            for step=(pop or 200)+1,200 do
+                if not off then
+                    if not grounded[step] then off=step end
+                elseif not touch and grounded[step] then touch=step end
+            end
+            return {pop=pop,off=off,touch=touch,grounded=grounded}
+        end
+        for _,ride in ipairs({{2.5,.3},{2.5,1},{4,.3},{4,1},{7,.3},{7,1},{4,.5,true},{4,1,true},{7,1,true}}) do
+            local r=hop_from(ride[1],ride[2],ride[3])
+            local from=string.format("%s m=%.1f at %.1f m/s",ride[3] and "a nose manual" or "a manual",ride[2],ride[1])
+            check(r.pop~=nil and r.off~=nil and r.touch~=nil and r.touch-r.off>=43,from..": a full hop that lands")
+            for _,kind in ipairs({"barspin","tailwhip","one hander","one footer"}) do
+                for _,late in ipairs({19,20}) do
+                    local started,finished=trick(r,kind,r.pop+late)
+                    check(started and finished~=nil and r.touch-finished>=2,string.format("a %s picked %d steps after R3 from %s: done on step %s, the first wheel touching on %d",
+                        kind,late,from,tostring(finished),r.touch))
                 end
             end
         end
@@ -1255,9 +1291,11 @@ function T.run()
     case(function() -- A hop from any manual pops level: the rider pushes the bars forward on either side of the balance.
         -- With the law past the balance the pop was a 156 N*m nudge: m=.85 landed at 9 degrees and m=.9 at 33, on the
         -- back wheel, near where it goes over.
+        -- The pop step alone goes past balance_torque_limit, the arms' shove: by at most a fifth (1430 N*m from m=1).
         local previous
+        local limit=Forces.tuning().balance_torque_limit
         for _,m in ipairs({.3,.5,.75,.85,.9,1}) do
-            local couple,landing,air,landed=nil,nil,0,false
+            local couple,landing,air,landed,over=nil,nil,0,false,0
             local ride=run({steps=240,speed=4,controls=function(step)
                 if step<=15 then return {} end
                 if step<76 then return {manual=m} end
@@ -1265,6 +1303,7 @@ function T.run()
                 return {manual=0}
             end,each=function(step,body,out,wheels,samples)
                 if step==76 then couple=out.hop_applied and out.manual_couple end
+                if step~=76 and out.valid then over=math.max(over,M.length(out.balance_torque)-limit) end
                 local any=gap(samples[1])<=.005 or gap(samples[2])<=.005
                 if step>76 and not landed then
                     if not any then air+=1 elseif air>0 then landed=true;landing=pitch_of(body) end
@@ -1272,7 +1311,8 @@ function T.run()
             end})
             local what=string.format("m=%.2f",m)
             check(ride.refused==0 and air>=43 and landed,what..": a full hop from the manual: "..air)
-            check(couple and couple< -500,what..": the pop pushes the nose down: "..tostring(couple))
+            check(couple and couple< -500 and couple>=-1.2*limit,what..": the pop pushes the nose down: "..tostring(couple))
+            check(over<=1e-6,what..": and no other step goes past the limit: "..over)
             check(landing>=0 and landing<15,what..": lands near level: "..tostring(landing))
             if previous then check(math.abs(landing-previous)<4,string.format("%s: a little higher lands a little higher, %.1f after %.1f",what,landing,previous)) end
             previous=landing

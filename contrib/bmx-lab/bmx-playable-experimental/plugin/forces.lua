@@ -857,7 +857,12 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
             end
             if manual_engaged or nose_engaged then
                 assist=M.limited(assist,t.balance_torque_limit)
-                -- The step a hop pops, the rider's push on the bars is more than the spring (see hop_pitch_push).
+                -- The step a hop pops, the rider's push on the bars is more than the spring (see hop_pitch_push), and
+                -- for that one step more than balance_torque_limit too: the arms shove as the legs jump, where the limit
+                -- is the weight the rider can shift. Measured on the pop from manuals at 2.5 to 7 m/s, the couple is
+                -- 1009 N*m from the lowest stick (.3) and 1430 from the highest, over 1200 from .75 up; from nose
+                -- manuals 942 to 1208. Held inside the limit, a hop from the highest manual landed at 13.7 degrees on
+                -- the back wheel against 7.3, and from .9 at 11.3 against 6.1. torque_limit still bounds the step.
                 if popping then assist=M.add(assist,M.mul(lateral,M.dot(assist,lateral)*(t.hop_pitch_push-1))) end
                 -- What the pose shows: the pitch couple this step applies, nose up positive, as the rider's shift.
                 out.manual_couple=-M.dot(assist,lateral)

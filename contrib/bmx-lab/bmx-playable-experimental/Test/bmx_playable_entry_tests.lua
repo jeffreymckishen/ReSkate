@@ -273,50 +273,54 @@ function Tests.run()
             end
         end
     end)
+    -- A measured Return: the bike stopped where Core measured a placement at (55, 5.8, 80) heading .2. The rider's
+    -- reads come from f: f.stock, f.pending, f.ragdoll, f.wipeouts, f.watch_air (telemetry) and f.actor_air (skater.get).
+    -- f.no_skater, f.invalid, f.rag_unknown and f.rag_nil turn off the facts the telemetry read is otherwise sure of.
+    local function stock_done(f)
+        f.stock=100;f.latest=cleaned()
+        f.latest.equipment={phase="done",outcome="target_observed",initial_state=504,expected_state=100,
+            retained=false,acknowledged=true,qualified_transition=true,current_transition=true,unloaded=false,storage_fault=false,
+            terminal_receipt={terminal=true,claim_released=true,report_debt=false,quarantined=false}}
+    end
+    local function prepared(options)
+        options=options or {}
+        local f=fixture();f.riding();f.placements=0;f.pending=false
+        function f.R.input.allowed() return true end
+        f.R.level={current=function()return{name="constructed"}end}
+        function f.R.skater.get()return{position=f.position,heading=f.heading,airborne=f.actor_air==true}end
+        function f.R.skater.telemetry()return{skater=not f.no_skater,airborne=f.watch_air==true,teleport_pending=f.pending,
+            watch={valid=not f.invalid,state=f.stock,ragdoll_known=not f.rag_unknown,
+                ragdoll=if f.rag_nil then nil else f.ragdoll==true,wipeouts=f.wipeouts or 0}}end
+        function f.owner:request_return()
+            self:request_stop("explicit return to skateboard")
+            local stop=f.now
+            return true,table.freeze({schema="measured_return_position_v1",ground=table.freeze({55,5,80}),
+                actor_floor_clearance_m=.8,heading=.2,level="constructed",wipeouts=0,stop_ms=stop,expires_ms=stop+20000})
+        end
+        function f.R.skater.teleport(at,heading,placement_options)
+            f.placements+=1;f.placed_at=f.now
+            check(type(placement_options)=="table" and getmetatable(placement_options)==nil and placement_options.on_board==true
+                and next(placement_options)=="on_board" and next(placement_options,"on_board")==nil,
+                "the single postACK placement explicitly requests only on_board=true")
+            check(f.latest.bike_cleanup_complete and f.stops==1 and f.toggles==1 and f.stock==100
+                and f.latest.equipment.acknowledged,"full bike cleanup and exact stock100 target/ACK precede the ONE placement")
+            check(at==vector.create(55,5.8,80) and heading==.2,"final captured target survives a stock-root reset in exact native-vector representation")
+            if options.refuse then return false,"host disabled" end
+            if options.raise then error("constructed unknown queued result") end
+            f.pending=true;return true
+        end
+        check(f.entry:return_to_skateboard(),"one explicit Return starts the transaction")
+        f.tick(2);check(f.placements==0 and f.toggles==0,"retained bike cleanup blocks stock and placement")
+        return f
+    end
+    local function after_stock(options)
+        local f=prepared(options);f.latest=cleaned();f.tick()
+        check(f.toggles==1 and f.placements==0,"clean bike requests stock exactly once with NO earlier504placement")
+        f.position=vector.create(1,.5,1) -- actual stock transition may reset the physical root
+        stock_done(f);f.tick()
+        return f
+    end
     case("22 measured Return places once after clean stock100 ACK and then converges",function()
-        local function stock_done(f)
-            f.stock=100;f.latest=cleaned()
-            f.latest.equipment={phase="done",outcome="target_observed",initial_state=504,expected_state=100,
-                retained=false,acknowledged=true,qualified_transition=true,current_transition=true,unloaded=false,storage_fault=false,
-                terminal_receipt={terminal=true,claim_released=true,report_debt=false,quarantined=false}}
-        end
-        local function prepared(options)
-            options=options or {}
-            local f=fixture();f.riding();f.placements=0;f.pending=false
-            function f.R.input.allowed() return true end
-            f.R.level={current=function()return{name="constructed"}end}
-            function f.R.skater.get()return{position=f.position,heading=f.heading,airborne=false}end
-            function f.R.skater.telemetry()return{skater=true,airborne=false,teleport_pending=f.pending,
-                watch={valid=true,state=f.stock,ragdoll_known=true,ragdoll=false,wipeouts=0}}end
-            function f.owner:request_return()
-                self:request_stop("explicit return to skateboard")
-                local stop=f.now
-                return true,table.freeze({schema="measured_return_position_v1",ground=table.freeze({55,5,80}),
-                    actor_floor_clearance_m=.8,heading=.2,level="constructed",wipeouts=0,stop_ms=stop,expires_ms=stop+20000})
-            end
-            function f.R.skater.teleport(at,heading,placement_options)
-                f.placements+=1;f.placed_at=f.now
-                check(type(placement_options)=="table" and getmetatable(placement_options)==nil and placement_options.on_board==true
-                    and next(placement_options)=="on_board" and next(placement_options,"on_board")==nil,
-                    "the single postACK placement explicitly requests only on_board=true")
-                check(f.latest.bike_cleanup_complete and f.stops==1 and f.toggles==1 and f.stock==100
-                    and f.latest.equipment.acknowledged,"full bike cleanup and exact stock100 target/ACK precede the ONE placement")
-                check(at==vector.create(55,5.8,80) and heading==.2,"final captured target survives a stock-root reset in exact native-vector representation")
-                if options.refuse then return false,"host disabled" end
-                if options.raise then error("constructed unknown queued result") end
-                f.pending=true;return true
-            end
-            check(f.entry:return_to_skateboard(),"one explicit Return starts the transaction")
-            f.tick(2);check(f.placements==0 and f.toggles==0,"retained bike cleanup blocks stock and placement")
-            return f
-        end
-        local function after_stock(options)
-            local f=prepared(options);f.latest=cleaned();f.tick()
-            check(f.toggles==1 and f.placements==0,"clean bike requests stock exactly once with NO earlier504placement")
-            f.position=vector.create(1,.5,1) -- actual stock transition may reset the physical root
-            stock_done(f);f.tick()
-            return f
-        end
         local f=after_stock()
         check(f.placements==1 and f.pending and f.toggles==1 and f.entry:status().phase=="returning",
             "postACK sent means queued only; final Return and remount remain unavailable")
@@ -375,14 +379,20 @@ function Tests.run()
         check(lost.placements==1 and lost.toggles==1 and lost.entry:status().phase=="blocked",
             "a placement the game may still carry out at the original deadline stays failed")
         -- loop5 (2026-11-04): placed on a grade, the board turned and rolled away, so it never held still at the target.
-        -- The game had finished with the placement, so the Return finishes on the board where the rider is.
-        local rolled=after_stock();rolled.pending=false;rolled.tick(12)
-        check(rolled.entry:status().phase=="returning" and rolled.entry:status().return_position.actual_pending==false
-            and not rolled.entry:status().return_position.observed,"placed, then rolled away: not converged")
-        rolled.now+=20001;rolled.tick()
+        -- The game had finished with the placement, so the Return finishes on the board where the rider is, a second
+        -- after the game is done with it rather than when the 20 s run out (loop7), rolling or not.
+        local rolled=after_stock();rolled.tick(4)
+        check(rolled.entry:status().return_position.pending_seen==true and rolled.entry:status().phase=="returning",
+            "the queued placement is read pending")
+        rolled.pending=false;local done_at=rolled.now
+        for i=1,100 do
+            rolled.position=vector.create(1+i*.05,.5-i*.01,1);rolled.tick()
+            if rolled.entry:status().phase~="returning" then break end
+        end
         check(rolled.placements==1 and rolled.toggles==1 and rolled.entry:status().phase=="skateboard"
-            and rolled.entry:status().return_position==nil,
-            "a finished placement that never held still ends on the board, not blocked: "..rolled.entry:status().phase)
+            and rolled.entry:status().return_position==nil and rolled.now-done_at>=1000 and rolled.now-done_at<1100,
+            "a finished placement rolling away on the board ends there a second later: "..rolled.entry:status().phase
+                .." after "..(rolled.now-done_at).." ms")
         -- Only a read that says the game is done with the placement lets the Return go on: one that cannot say stops it.
         local unread=after_stock();unread.pending=nil;unread.now+=20001;unread.tick()
         check(unread.placements==1 and unread.toggles==1 and unread.entry:status().phase=="blocked",
@@ -404,7 +414,159 @@ function Tests.run()
         local legacy=fixture();legacy.riding();check(legacy.entry:return_to_skateboard(),"legacy stopped recovery path remains available")
         legacy.latest=cleaned();legacy.tick();check(legacy.toggles==1,"legacy owner without measured Return method retains its existing transaction")
     end)
-    check(cases==22,"exactly22 focused entry groups authored")
+    case("23 a rider the game is done placing who holds on the board ends the Return there",function()
+        -- loop7 (2026-11-04 22:35): the placement read pending, then left the rider grinding 1.7 m above the target
+        -- (state 403), then on the board 7 m off it, turned 70 deg. They stood there in a traffic lane until they were slammed, most likely by
+        -- a car, just before the 20 s ran out. A rider on the board for a second after the game is done placing now ends
+        -- the Return there.
+        -- One poll per call, at ms after the placement was sent (polls are at least 50 ms apart).
+        local function at(f,ms) check(f.placed_at+ms-16>=f.now,"times only go forward");f.now=f.placed_at+ms-16;f.tick() end
+        local function logged(f) local lines={};f.R.log=function(line) lines[#lines+1]=line end;return lines end
+        local function has(lines,piece) for _,line in lines do if line:find(piece,1,true) then return true end end;return false end
+        local function returning(f,why)
+            local s=f.entry:status()
+            check(s.phase=="returning" and s.return_position and not s.return_position.observed and f.placements==1 and f.toggles==1,
+                why..": "..s.phase.." "..tostring(s.detail))
+        end
+        local function finished(f,why)
+            local s=f.entry:status()
+            check(s.phase=="skateboard" and s.return_position==nil and f.placements==1 and f.toggles==1,
+                why..": "..s.phase.." "..tostring(s.detail))
+        end
+        -- (a) Read pending, then done: on the board 7 m off the target for 1000 ms, five reads 250 ms apart, ends there.
+        local a=after_stock();local lines=logged(a);at(a,100)
+        check(a.entry:status().return_position.pending_seen==true,"the placement is read pending")
+        a.pending=false;a.heading=.2+math.rad(70)
+        for _,ms in {300,550,800,1050} do at(a,ms) end
+        returning(a,"750 ms on the board off the target is not yet a second")
+        check(a.entry:status().return_position.settled_samples==4 and a.entry:status().return_position.first_settled==a.placed_at+300,
+            "the stretch counts from the first read after the game was done")
+        at(a,1300)
+        finished(a,"a second on the board after the placement ends the Return there")
+        check(has(lines,"The game is done with the Return placement, off its target (state 100 pending false h")
+            and has(lines,"the rider is on the board, so the Return finishes there.")
+            and not has(lines,"not confirmed in its 20 s window"),"the log says the game is done with the placement, off its target")
+        check(not has(lines,"Stopped:") and a.entry:status().return_requested==false,"nothing blocked, and the Return is over")
+        -- (b) 999 ms is not a second.
+        local b=after_stock();at(b,100);b.pending=false
+        for _,ms in {300,500,700,900,1100,1299} do at(b,ms) end
+        returning(b,"999 ms on the board is still Returning")
+        at(b,1349);finished(b,"the next read past a second ends it")
+        -- (c) A pending flag never read true counts only 5.1 s after the send: the SDK may not have taken the request.
+        local c=after_stock();c.pending=false
+        for ms=200,5000,200 do at(c,ms) end
+        returning(c,"4.8 s on the board with the placement never read pending is still Returning")
+        check((c.entry:status().return_position.settled_samples or 0)==0,"no read before 5.1 s counts")
+        for _,ms in {5100,5300,5500,5700,5900,6000} do at(c,ms) end
+        returning(c,"900 ms past 5.1 s is not yet a second, so the read at 5 s did not count")
+        at(c,6100);finished(c,"a second from 5.1 s after the send ends it")
+        -- (d) A read in the air, ragdolled, off the board or after another crash starts the second over, as does one that
+        -- cannot say the rider is there, the watch is valid, or whether they are ragdolled: a stale state 100 or a rider
+        -- the game cannot call out of ragdoll may be one who is down.
+        local breaks={
+            {"in the air (telemetry)",function(f,on) f.watch_air=on end},
+            {"in the air (skater)",function(f,on) f.actor_air=on end},
+            {"ragdolled",function(f,on) f.ragdoll=on end},
+            {"off the board (504)",function(f,on) f.stock=on and 504 or 100 end},
+            {"another wipeout",function(f,on) f.wipeouts=on and 1 or 0 end},
+            {"no skater",function(f,on) f.no_skater=on end},
+            {"watch invalid",function(f,on) f.invalid=on end},
+            {"ragdoll unknown",function(f,on) f.rag_unknown=on end},
+            {"ragdoll nil",function(f,on) f.rag_nil=on end}}
+        for _,row in breaks do
+            local d=after_stock();at(d,100);d.pending=false
+            for _,ms in {300,500,700,900} do at(d,ms) end
+            row[2](d,true);at(d,1100)
+            returning(d,row[1].." keeps the Return waiting")
+            check((d.entry:status().return_position.settled_samples or 0)==0,row[1].." resets the stretch")
+            row[2](d,false)
+            for _,ms in {1300,1500,1700,1900,2100} do at(d,ms) end
+            returning(d,"after "..row[1].." the second starts over")
+            at(d,2300);finished(d,"a second after "..row[1].." ends it")
+        end
+        -- A read that fails says nothing of the rider, so it too starts the second over rather than being skipped.
+        local unreadable={
+            {"a telemetry read that raises","telemetry",function() error("constructed telemetry fault") end},
+            {"a skater read that raises","get",function() error("constructed skater fault") end},
+            {"a skater read of nil","get",function() return nil end}}
+        for _,row in unreadable do
+            local d=after_stock();at(d,100);d.pending=false
+            for _,ms in {300,500,700,900} do at(d,ms) end
+            local original=d.R.skater[row[2]];d.R.skater[row[2]]=row[3];at(d,1100);d.R.skater[row[2]]=original
+            returning(d,row[1].." keeps the Return waiting")
+            check((d.entry:status().return_position.settled_samples or 0)==0,row[1].." resets the stretch")
+            at(d,1300);returning(d,"the read after "..row[1].." starts the second")
+            for _,ms in {1500,1700,1900,2100} do at(d,ms) end
+            returning(d,"800 ms after "..row[1])
+            at(d,2300);finished(d,"a second after "..row[1].." ends it")
+        end
+        -- (e) More than 250 ms between reads starts the second over.
+        local e=after_stock();at(e,100);e.pending=false
+        for _,ms in {300,550,800,1051} do at(e,ms) end
+        check(e.entry:status().return_position.settled_samples==1,"a 251 ms gap restarts the stretch")
+        at(e,1301);returning(e,"1001 ms since the first read, across the gap, is not a held second")
+        for _,ms in {1551,1801} do at(e,ms) end
+        returning(e,"750 ms since the gap is not yet a second")
+        at(e,2051);finished(e,"a second of reads 250 ms apart after the gap ends it")
+        -- (f) A rider who comes to the target is observed there, as before, and a match starts the second over.
+        local f=after_stock();lines=logged(f);at(f,100);f.pending=false
+        for _,ms in {300,500,700,900,1100} do at(f,ms) end
+        f.position=vector.create(55,5.8,80);f.heading=.2
+        for _,ms in {1200,1250,1300} do at(f,ms) end
+        local s=f.entry:status()
+        check(s.phase=="skateboard" and s.return_position and s.return_position.observed==true
+            and s.return_position.phase=="observed" and not has(lines,"off its target"),
+            "a rider who converges is observed at the target, not settled")
+        local m=after_stock();at(m,100);m.pending=false
+        for _,ms in {300,500,700,900,1100} do at(m,ms) end
+        m.position=vector.create(55,5.8,80);m.heading=.2;at(m,1200)
+        m.position=vector.create(1,.5,1);at(m,1300)
+        returning(m,"a pass over the target starts the second over")
+        for _,ms in {1500,1700,1900,2100} do at(m,ms) end
+        returning(m,"800 ms since the pass")
+        at(m,2300);finished(m,"a second after the pass ends it")
+        -- (g) A placement the game still has pending never settles, and blocks at the deadline; so does one whose read
+        -- cannot say, and one read pending once but unreadable since.
+        local g=after_stock()
+        for ms=200,19800,200 do at(g,ms) end
+        returning(g,"19.8 s on the board with the placement still pending is still Returning")
+        g.now+=20001;g.tick()
+        check(g.entry:status().phase=="blocked" and g.placements==1 and g.toggles==1,"still pending at the deadline blocks")
+        local u=after_stock();at(u,100);u.pending=nil
+        for ms=300,3000,200 do at(u,ms) end
+        returning(u,"an unreadable pending flag never settles")
+        u.now+=20001;u.tick()
+        check(u.entry:status().phase=="blocked" and u.placements==1,"and blocks at the deadline")
+        -- A rider the game is done with who never held on the board, in the air the whole window, goes on at the
+        -- deadline ("unconfirmed") and the Return waits for them to come down, as the slammed rider of loop7 did.
+        local air=after_stock();lines=logged(air);at(air,100);air.pending=false;air.stock=403;air.watch_air=true;air.actor_air=true
+        for ms=300,19900,200 do at(air,ms) end
+        returning(air,"a rider in the air never settles")
+        air.now+=20001;air.tick()
+        check(air.entry:status().phase=="returning" and air.entry:status().return_position==nil
+            and has(lines,"Return placement not confirmed in its 20 s window (state 403 pending false")
+            and has(lines,"Return waits for the rider") and not has(lines,"off its target"),
+            "at the deadline the Return goes on from where the rider is and waits for them")
+        air.stock=100;air.watch_air=false;air.actor_air=false;air.tick()
+        check(air.entry:status().phase=="skateboard" and air.placements==1 and air.toggles==1,"down on the board, it finishes there")
+        -- Cancel during the second still wins.
+        local x=after_stock();at(x,100);x.pending=false
+        for _,ms in {300,500,700,900} do at(x,ms) end
+        check(x.entry:cancel(),"cancel during the second");at(x,1100);at(x,1300)
+        check(x.entry:status().phase=="cancelled" and x.placements==1 and x.toggles==1,"a cancelled Return never settles")
+        -- A pending flag read unreadable, never true, is not a read of true (as while the game rebuilt the skater at 17.3
+        -- in loop7): an early false still waits for 5.1 s, or a queued placement could land after the Return is over.
+        local nn=after_stock();nn.pending=nil;at(nn,100);nn.pending=false
+        check(nn.entry:status().return_position.pending_seen==false,"an unreadable pending flag is not seen pending")
+        for ms=300,2500,200 do at(nn,ms) end
+        returning(nn,"a pending flag read unreadable, then false, at 2.5 s is still Returning")
+        for ms=2700,5000,200 do at(nn,ms) end
+        check((nn.entry:status().return_position.settled_samples or 0)==0,"no read before 5.1 s counts")
+        for _,ms in {5100,5300,5500,5700,5900} do at(nn,ms) end
+        returning(nn,"800 ms past 5.1 s is not yet a second")
+        at(nn,6100);finished(nn,"a second from 5.1 s after the send ends it")
+    end)
+    check(cases==23,"exactly23 focused entry groups authored")
     return {cases=cases,assertions=assertions,game_evidence=false,native_actions=0}
 end
 return table.freeze(Tests)

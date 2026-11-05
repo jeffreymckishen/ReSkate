@@ -4,8 +4,8 @@
   "flat_file_count": 89,
   "quota_file_count": 90,
   "expected_processes": 47,
-  "expected_cases": 466,
-  "expected_assertions": 41352,
+  "expected_cases": 467,
+  "expected_assertions": 42224,
   "source_admission": "UNCHANGED_FALSE",
   "files": [
     {
@@ -23,8 +23,8 @@
     {
       "source": "Test/two_cycle_entry_tests.lua",
       "destination": "two_cycle_entry_tests.lua",
-      "bytes": 81568,
-      "sha256": "3A046949D25B2A5C938D8AAE3C9C3C15525A54D4E76E04771C53CBE044D6D632"
+      "bytes": 83040,
+      "sha256": "3B1EE7FEA20E93D9A0AD6B8C2D1B4D6E08A192BCAD2B57E73C2870FAA4DD47B7"
     },
     {
       "source": "Test/two_cycle_handoff_tests.lua",
@@ -107,8 +107,8 @@
     {
       "source": "Test/bmx_playable_entry_tests.lua",
       "destination": "bmx_playable_entry_tests.lua",
-      "bytes": 29457,
-      "sha256": "D8067B3F26A9AFEC580341755C768B1F907ABBC46AC29805A4611411BF33C590"
+      "bytes": 41411,
+      "sha256": "E09878B1E3D429D4E78ED96BFBA209F19C2242D9DA68EC61BEC358E90F97E4C2"
     },
     {
       "source": "Test/bmx_playable_main_tests.lua",
@@ -137,8 +137,8 @@
     {
       "source": "plugin/bmx_playable_entry.lua",
       "destination": "bmx_playable_entry.lua",
-      "bytes": 87287,
-      "sha256": "D09DB355EB1A7BF6634090C7CA7478D603066ABEB6EDA67C9CB5B32E4CFB4C25"
+      "bytes": 91441,
+      "sha256": "B705A5FD8A78DEC08A5C2EF03D34699D2F478DDEB71239CE654474EF5463BD63"
     },
     {
       "source": "plugin/ride_r1_record.lua",
@@ -583,8 +583,8 @@
     },
     {
       "source": "plugin/bmx_playable_entry.lua",
-      "bytes": 87287,
-      "sha256": "D09DB355EB1A7BF6634090C7CA7478D603066ABEB6EDA67C9CB5B32E4CFB4C25"
+      "bytes": 91441,
+      "sha256": "B705A5FD8A78DEC08A5C2EF03D34699D2F478DDEB71239CE654474EF5463BD63"
     },
     {
       "source": "plugin/board_drop.lua",
@@ -776,7 +776,7 @@
       "invoked": "two_cycle_entry_tests",
       "context": "flat",
       "expected_cases": 51,
-      "expected_assertions": 2291
+      "expected_assertions": 2303
     },
     {
       "suite": "two_cycle_handoff_tests",
@@ -887,8 +887,8 @@
       "suite": "bmx_playable_entry_tests",
       "invoked": "bmx_playable_entry_tests",
       "context": "flat",
-      "expected_cases": 22,
-      "expected_assertions": 473
+      "expected_cases": 23,
+      "expected_assertions": 1333
     },
     {
       "suite": "bmx_playable_main_tests",

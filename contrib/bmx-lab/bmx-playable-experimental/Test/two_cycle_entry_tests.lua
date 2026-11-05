@@ -786,6 +786,24 @@ function Tests.run()
         local s=u.entry:status()
         check(s.phase=="skateboard" and u.placements==1 and u.toggles==1 and s.return_position==nil,
             "a finished placement the window ran out on ends on the board: "..tostring(s.phase).." "..tostring(s.detail))
+        -- The same rider read on the board, with time to spare, ends the Return a second after the game is done with
+        -- the placement, not at the deadline: loop7 (2026-11-04) stood a rider still in a traffic lane for the rest of
+        -- the 20 s. This pending flag is never read true, so the game counts as done only 5.1 s after the send.
+        local v=fixture({two=true});v.R.log=function(line) v.lines=v.lines or {};v.lines[#v.lines+1]=line end
+        v.riding();stop=v.now;measured_return(v);v.stock=100
+        v.position=vector.create(3,.5,0)
+        v.now=stop+20000-9000-16;switch_ended(v,matched)
+        local sent=v.now
+        check(v.placements==1 and v.entry:status().phase=="returning","placed 9 s before the deadline, away from the target")
+        for _=1,600 do v.tick();if v.entry:status().phase~="returning" then break end end
+        s=v.entry:status()
+        local said=false
+        for _,line in v.lines or {} do if line:find("The game is done with the Return placement, off its target",1,true) then said=true end end
+        check(s.phase=="skateboard" and v.placements==1 and v.toggles==1 and s.return_position==nil and said
+            and v.now-sent>=6100 and v.now-sent<6300 and v.now<stop+20000,
+            "on the board a second after the placement is done ends the Return there: "..tostring(s.phase).." "
+                ..(v.now-sent).." ms after the send")
+        check(v.entry:mount(),"and the second Mount is offered")
     end)
     case("time out of the game does not run out a Return waiting to press the switch",function()
         -- The user's log of 2026-11-02: a ride ended by focus loss at 19:33:32 went back on its own, and that Return

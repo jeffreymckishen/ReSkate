@@ -489,8 +489,11 @@ function Entry.new(R,Runtime,Survey,options)
         end
         -- A placement the game has finished with cannot land later, so one that never held still at its target is not
         -- a reason to stop. In loop5 (2026-11-04), on a grade, the rider was placed on the board, which turned and rolled
-        -- 5.7 m downhill: the 20 s ran out on a rider already on the skateboard, and the Return blocked. Such a Return
-        -- goes on from where the rider is ("unconfirmed"). One the game may still be carrying out stays blocked.
+        -- 5.7 m downhill: the 20 s ran out on a rider already on the skateboard, and the Return blocked. A rider the
+        -- game is done placing who then holds on the board for 1 s already went on before this, from where they were
+        -- ("settled", below). What reaches the deadline is a rider who had not held on the board for a second by then
+        -- (in the air, grinding, down, off the board, or only just back on it): that Return also goes on from where the
+        -- rider is ("unconfirmed"), and the ordinary path waits for a downed rider to get up. One the game may still be carrying out stays blocked, as does one whose read cannot say.
         local function late(why)
             if return_position.queued and not return_position.observed then
                 local watch=call(R.skater and R.skater.telemetry);if not live() then return false,"cancelled" end
@@ -522,10 +525,13 @@ function Entry.new(R,Runtime,Survey,options)
             if not now or now+5100>=return_plan.expires_ms then return false,"unplaced" end
             return_position.attempted=true;return_position.unknown=true -- burn before callback; never retry
             return_position.target=table.freeze({p[1],p[2]+return_plan.actor_floor_clearance_m,p[3]})
-            return_position.sent_ms=now
+            return_position.sent_ms=now;return_position.pending_seen=false
             local q=return_position.target
             -- The generic per-request option preserves the intended stock
             -- equipment target; actual100 convergence is required while the game may still carry the placement out.
+            -- Once the game is done with it (its pending flag read true and then false, or false 5.1 s after this send,
+            -- past the SDK's 5 s queue lifetime) a rider who holds on the board for 1 s ends the Return where they are,
+            -- on the target or not (loop7, below the observation reads).
             local sent=call(R.skater and R.skater.teleport,vector.create(q[1],q[2],q[3]),return_plan.heading,{on_board=true})
             if not live() then return false,"cancelled" end
             if not sent[1] or sent.n~=2 or sent[2]~=true then
@@ -573,32 +579,58 @@ function Entry.new(R,Runtime,Survey,options)
             return_position.horizontal_error_m,return_position.vertical_error_m,return_position.heading_error_deg) or " pose unknown"
         return_position.diagnostic="state "..state_text.." pending "..pending_text..errors
         detail="Return observation: "..return_position.diagnostic
-        if watch[1] and watch.n==2 and plain(w) and w.skater==true and type(w.teleport_pending)=="boolean"
+        if watch[1] and watch.n==2 and plain(w) and w.teleport_pending==true then return_position.pending_seen=true end
+        -- What both endings below need of the rider: on the board, out of ragdoll, not crashed since the stop.
+        local rider=watch[1] and watch.n==2 and plain(w) and w.skater==true and type(w.teleport_pending)=="boolean"
             and plain(w.watch) and w.watch.valid==true and w.watch.ragdoll_known==true and w.watch.ragdoll==false
             and w.watch.wipeouts==return_plan.wipeouts and w.watch.state==100
-            and actor[1] and actor.n==2 and plain(a) and typeof(a.position)=="vector"
+            and actor[1] and actor.n==2 and plain(a)
+        -- Sparse samples do not establish a sustained suffix, for either ending.
+        -- Use the equipment owner's existing maximum observation gap.
+        local broken=not previous_sample_ms or now<=previous_sample_ms or now-previous_sample_ms>250
+        local matched=false
+        if rider and typeof(a.position)=="vector"
             and finite(a.position.x) and finite(a.position.y) and finite(a.position.z) and finite(a.heading) then
             local p=return_position.target
             local dx,dy,dz=a.position.x-p[1],a.position.y-p[2],a.position.z-p[3]
             local turn=(a.heading-return_plan.heading+math.pi)%(2*math.pi)-math.pi
-            local matched=w.teleport_pending==false and a.airborne==false and w.airborne==false
+            matched=w.teleport_pending==false and a.airborne==false and w.airborne==false
                 and dx*dx+dz*dz<=.25*.25 and math.abs(dy)<=.25 and math.abs(turn)<=math.rad(5)
-            if matched then
-                -- Sparse matching endpoints do not establish a sustained suffix.
-                -- Use the equipment owner's existing maximum observation gap.
-                if not previous_sample_ms or now<=previous_sample_ms or now-previous_sample_ms>250 then
-                    return_position.first_match=nil;return_position.samples=0
-                end
-                return_position.first_match=return_position.first_match or now
-                return_position.samples=(return_position.samples or 0)+1
-                if now-return_position.first_match>=100 and return_position.samples>=3 then
-                    return_position.observed=true;return_position.phase="observed"
-                    return_position.observed_ms=now;return_position.position=table.freeze({a.position.x,a.position.y,a.position.z})
-                    detail="Grounded100 Return position observed after the stock target and ACK."
-                    return true
-                end
-            else return_position.first_match=nil;return_position.samples=0 end
-        else return_position.first_match=nil;return_position.samples=0 end
+        end
+        if matched then
+            return_position.first_settled=nil;return_position.settled_samples=0
+            if broken then return_position.first_match=nil;return_position.samples=0 end
+            return_position.first_match=return_position.first_match or now
+            return_position.samples=(return_position.samples or 0)+1
+            if now-return_position.first_match>=100 and return_position.samples>=3 then
+                return_position.observed=true;return_position.phase="observed"
+                return_position.observed_ms=now;return_position.position=table.freeze({a.position.x,a.position.y,a.position.z})
+                detail="Grounded100 Return position observed after the stock target and ACK."
+                return true
+            end
+            return false,"pending"
+        end
+        return_position.first_match=nil;return_position.samples=0
+        -- A rider the game is done placing who stays on the board ends the Return where they are. loop7 (2026-11-04
+        -- 22:35, the log's 2 s CHOP_BEAT details): the placement read pending at 16.8, just after the switch; by 18.8 it
+        -- was done and the rider was grinding 1.7 m above the target and 2.8 m from it (state 403, the game's grind
+        -- state, held over two reads, so on a ledge or rail rather than falling); from 22.8 they were on the board
+        -- 7 m off it, turned 70 deg, and stood almost still in a traffic lane with Mount unavailable while the Return
+        -- waited out its 20 s. Just before the deadline they were slammed (the feed showed a Light and a Harsh Slam, a
+        -- traffic SUV stopped beside them), most likely by a car. "Done placing" is a pending flag read true and then
+        -- false, or false 5.1 s after the send: an earlier false may only be a request the SDK has not taken yet. The
+        -- rider may roll on the board, as on loop5's grade, so there is no stillness rule, only a held second of reads.
+        local done=rider and w.teleport_pending==false
+            and (return_position.pending_seen==true or now-return_position.sent_ms>=5100)
+        if done and a.airborne==false and w.airborne==false and return_position.queued==true and not return_position.observed then
+            if broken then return_position.first_settled=nil;return_position.settled_samples=0 end
+            return_position.first_settled=return_position.first_settled or now
+            return_position.settled_samples=(return_position.settled_samples or 0)+1
+            if now-return_position.first_settled>=1000 and return_position.settled_samples>=3 then
+                return_position.phase="settled";return_position.settled_ms=now
+                return false,"settled"
+            end
+        else return_position.first_settled=nil;return_position.settled_samples=0 end
         return false,"pending"
     end
     local function return_step()
@@ -651,9 +683,19 @@ function Entry.new(R,Runtime,Survey,options)
                     -- the ordinary path below finishes on the skateboard.
                     trace("Return placement skipped: the stock switch finished too late in its 20 s window.")
                     return_plan,return_position=nil,nil
+                elseif not ready and why=="settled" then
+                    -- The game is done with the placement and the rider has held on the board for a second, off the
+                    -- target. Waiting out the 20 s left them standing in the road in loop7, so the Return finishes
+                    -- where they are now, as below, and the next Mount surveys that ground.
+                    -- "Done with" rather than "placed": the SDK may have dropped the request instead of carrying it out.
+                    trace("The game is done with the Return placement, off its target ("..text(return_position.diagnostic,"pose unknown")
+                        .."); the rider is on the board, so the Return finishes there.")
+                    return_plan,return_position=nil,nil
                 elseif not ready and why=="unconfirmed" then
-                    -- The game placed the rider, or dropped the placement, and the rider never held still at the
-                    -- target. Where they are is where the Return finishes, and the next Mount surveys that ground.
+                    -- The game placed the rider, or dropped the placement, and in the whole 20 s the rider neither held
+                    -- still at the target nor held on the board for a second: in the air, grinding, down or off the
+                    -- board at the end, as the slammed rider of loop7 was, or only just back on it. Where they are is where the Return goes on from: the ordinary path
+                    -- below waits for them to get up, and the next Mount surveys that ground.
                     trace("Return placement not confirmed in its 20 s window ("..text(return_position.diagnostic,"pose unknown")
                         .."); the Return goes on from where the rider is.")
                     return_plan,return_position=nil,nil
@@ -669,8 +711,10 @@ function Entry.new(R,Runtime,Survey,options)
         -- During a queued placement handback_step tolerates missing/transient
         -- samples without admitting an effect. A queued placement reaches this
         -- fresh state check and final Return path only after its actual100
-        -- convergence, or at the deadline once a fresh read says the game no
-        -- longer has it pending ("unconfirmed"), when the plan is dropped.
+        -- convergence, once the game is done with it and the rider has held on
+        -- the board for a second ("settled"), or at the deadline once a fresh
+        -- read says the game no longer has it pending ("unconfirmed"). The last
+        -- two drop the plan.
         local observed,down=state();if generation~=version or cancelled or unloaded then return end
         -- Mid fall or mid air the rider is down; on the board or on foot only while the game still has them ragdolled
         -- or in the air. A rider standing with a control held is not down: the line below tells them to let go, and

@@ -27,8 +27,9 @@ If there is no room or the ground is too steep, move and mount again. If the rid
 while the bike gets ready, the HUD says to step off or stand still, and the next Mount tries again.
 
 - A pedals, B brakes, the left stick steers.
-- Click the right stick to hop. For a smaller hop, pull the right stick all the way back and flick it forward: the
-  longer it was held back, the higher the hop.
+- Click the right stick to hop. A full hop rises about 0.6 m, a street bunny hop, with about three quarters of a
+  second in the air. For a smaller hop, pull the right stick all the way back and flick it forward: the longer it
+  was held back, the higher the hop, up to the full hop at a quarter of a second.
 - Pull the right stick part of the way back for a manual: the front wheel comes up and the bike rolls on its back
   wheel. A little back holds it low, about 20 degrees, further back holds it higher, up to about 36, just past where
   the rider balances. A little past the end of that, the manual stays at its highest. Let the stick go and the
@@ -64,7 +65,9 @@ while the bike gets ready, the HUD says to step off or stand still, and the next
 - In the air, hold a button and push the right stick all the way over for a trick: LB or RB and down for a barspin
   left or right, LB or RB and left or right for a one hander, LT and RT together and left or right for a tailwhip,
   LT or RT and left or right for a one footer. Let the stick come back to the middle before the next one, and finish
-  it before landing.
+  it before landing. A full hop has room for one trick started within about a third of a second of the hop: a
+  barspin or a tailwhip takes about 0.4 s with the catch, and a one hander or one footer can be held over for about
+  0.3 s and still come back before the wheels touch.
 - F8, or hold LB + RB and click R3, goes back to the skateboard.
 - From the skateboard, hold LB, then press A to ride again. Stand still and let go while the rider steps off.
 

@@ -31,7 +31,22 @@ end
 local defaults={gravity={0,-9.8,0},wheelbase=1.203956057050485*scale,steer_limit=.4,steer_speed_scale=8,
     pedal_torque=75,front_brake_torque=60,rear_brake_torque=45,friction={longitudinal_friction=1,lateral_friction=1},
     balance_stiffness=1600,balance_damping=360,balance_torque_limit=1200,lean_limit=.52,
-    air_yaw_torque=200,air_pitch_torque=160,neutral_air_damping_rate=2.75,hop_delta_speed=4.5,
+    air_yaw_torque=200,air_pitch_torque=160,neutral_air_damping_rate=2.75,
+    -- The upward speed a full hop adds (R3, or a flick charged all the way back), a shorter charge its share of it.
+    -- At 4.5 every full hop rose .99 m with .97 s in the air, in the game (all 12 hops of trial f9) and in
+    -- bike_physics_tests alike: a contest bunny hop on every tap. At 3.55 it rises .61 m on the flat from a stop to
+    -- 7 m/s, a good street bunny hop, with 45 steps (.75 s) from the wheels leaving the ground to the first touching
+    -- it again. v^2/2g says .64 m: stepping the motion 60 times a second, as the game does, takes about v*h/2 off.
+    -- The air tricks in trick_adapter.lua are timed to finish inside this hop.
+    hop_delta_speed=3.55,
+    -- The step a hop pops from a manual or a nose manual, the rider pushes the bars forward harder than the spring
+    -- alone holds the bike: the spring's pitch part is taken this many times. The spring alone was enough in the 1 m
+    -- hop's .97 s of air. In the .61 m hop it landed a hop from the highest manual (35 degrees, 4 m/s) at 18.5 degrees
+    -- on the back wheel and one from the highest nose manual at 12.9 on the front, against 12.5 and 7.4 before. At
+    -- 1.5 they land at 7.3 and 6.4, and manuals from 20 to 35 degrees land 2.7 to 7.3 nose up from 2.5 to 4 m/s;
+    -- at 5.5 and 7 m/s the highest lands at 9.7, against 12.4 before. From 1.25 to 1.35 a step's difference in where
+    -- the landing brake first caught the back wheel moved the landing by up to 4 degrees between neighbouring manuals.
+    hop_pitch_push=1.5,
     contact_gap=.02,maximum_penetration=.10,recovery_fraction=.15,recovery_speed_limit=.4,
     force_limit=40000,torque_limit=4000,wheel_speed_limit=500,contact_iterations=12,pedal_fade_start=7,pedal_cutoff=8,
     pedal_top_speed=7.7,pedal_resume_speed=7.2,
@@ -162,7 +177,7 @@ local function tuning_valid(t)
         if not M.finite(t[name]) or t[name]<=0 or t[name]>1e6 then return false end
     end
     for _,name in {"pedal_torque","front_brake_torque","rear_brake_torque","balance_stiffness","balance_damping","balance_torque_limit",
-        "lean_limit","air_yaw_torque","air_pitch_torque","hop_delta_speed","contact_gap","maximum_penetration",
+        "lean_limit","air_yaw_torque","air_pitch_torque","hop_delta_speed","hop_pitch_push","contact_gap","maximum_penetration",
         "recovery_fraction","recovery_speed_limit","pedal_fade_start","pedal_cutoff","pedal_top_speed","pedal_resume_speed","rider_power",
         "curvature_rate_limit","curvature_step_limit","curvature_min_speed","neutral_air_damping_rate",
         "rolling_resistance","air_drag","tyre_section_radius","brake_lateral_cut","rear_brake_load_share",
@@ -181,7 +196,7 @@ local function tuning_valid(t)
         t.nose_carve_rate>4 or t.nose_carve_lateral>10 or t.nose_yaw_torque>t.balance_torque_limit or
         t.nose_roll_gain<1 or t.nose_roll_gain>3 or t.nose_catch_torque>t.balance_torque_limit or t.nose_catch_span<=0 or
         t.nose_catch_seconds>1 or t.nose_air_seconds>1 or t.nose_brake_fade<=0 or t.nose_brake_fade>.3 then return false end
-    return t.brake_lateral_cut<=1 and t.rear_brake_load_share<=1 and t.steer_limit<=1 and t.lean_limit<=.8 and t.hop_delta_speed<=4.5 and t.contact_gap<=.05 and
+    return t.brake_lateral_cut<=1 and t.rear_brake_load_share<=1 and t.steer_limit<=1 and t.lean_limit<=.8 and t.hop_delta_speed<=4.5 and t.hop_pitch_push>=1 and t.hop_pitch_push<=3 and t.contact_gap<=.05 and
         t.maximum_penetration<=.15 and t.recovery_fraction<=1 and t.recovery_speed_limit<=1 and t.pedal_fade_start<t.pedal_cutoff and
         t.pedal_cutoff<=50 and t.pedal_resume_speed<t.pedal_top_speed and t.pedal_top_speed<=t.pedal_cutoff and t.curvature_rate_limit<=10 and t.curvature_step_limit<=.35 and t.curvature_min_speed<=5 and t.neutral_air_damping_rate<=10
 end
@@ -773,6 +788,8 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
             end
             if manual_engaged or nose_engaged then
                 assist=M.limited(assist,t.balance_torque_limit)
+                -- The step a hop pops, the rider's push on the bars is more than the spring (see hop_pitch_push).
+                if popping then assist=M.add(assist,M.mul(lateral,M.dot(assist,lateral)*(t.hop_pitch_push-1))) end
                 -- What the pose shows: the pitch couple this step applies, nose up positive, as the rider's shift.
                 out.manual_couple=-M.dot(assist,lateral)
                 out.manual_shift=weight>0 and out.manual_couple/weight or 0

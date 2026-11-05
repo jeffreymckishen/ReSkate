@@ -70,7 +70,10 @@ function Tests.run()
             if not grounded then second_air=true end
             if second_air and both and math.abs(body.linear_velocity[2])<=.4 then second_stable+=1 else second_stable=0 end
         end
-        if first_air and not air_snapshot and samples[1].contact.status=="clear" and samples[2].contact.status=="clear" then
+        -- The flight body is taken at the top of the first hop. The .61 m full hop never takes the wheels past the
+        -- .75 m landing rays, so neither is ever clear; at the top both rays hit the road about .6 m below the tyres.
+        -- (The 1 m hop's wheels went past them, and the body was taken once both rays were clear.)
+        if first_air and not air_snapshot and not grounded and body.linear_velocity[2]<=0 then
             air_snapshot={body=M.copy(body),wheels=M.copy(wheels),samples=M.copy(samples)}
         end
         -- Hold the first press through actual landing, then observe ten fresh
@@ -123,12 +126,12 @@ function Tests.run()
     local status=mapper:status()
     check(status.hop_counter==2 and status.pending_hop==nil and status.last_retired.event.id==2,
         "no third held-button hop or unretired intent remains after the second landing")
-    check(air_snapshot and land_snapshot,"separate actual clear-flight and stable-landing bodies were observed")
+    check(air_snapshot and land_snapshot,"separate actual flight and stable-landing bodies were observed")
     -- Preserve the ordinary kernel's intentional policy: an event presented in
     -- air is consumed in that accepted candidate and cannot spring on landing.
     local raw=Forces.new()
     local air,candidate=raw:preview(h,air_snapshot.body,air_snapshot.wheels,air_snapshot.samples,{hop_event_id=9,hop_strength=1})
-    check(air.valid and not air.grounded and not air.hop_applied,"actual clear-flight body cannot hop")
+    check(air.valid and not air.grounded and not air.hop_applied,"actual flight body at the top of the hop cannot hop")
     check(raw:consumed_hop_event_id()==0 and candidate:consumed_hop_event_id()==9,"preview consumes only candidate history")
     raw:_adopt(candidate)
     local landed=raw:preview(h,land_snapshot.body,land_snapshot.wheels,land_snapshot.samples,{hop_event_id=9,hop_strength=1})

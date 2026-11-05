@@ -1,9 +1,19 @@
--- Pure authored bar/tail channels. Turn/catch/blend equations and timings are
--- the existing tricks.lua _channel policy (.45 bar/.55 tail/.12/.06), with no
--- landing, tally, movement, score or native effect machinery. A ray-qualified
--- airborne interval is not a native collision or a qualified landing.
+-- Pure authored bar/tail channels. Turn/catch/blend equations, the .12 catch
+-- window and the .06 re-grip blend are the existing tricks.lua _channel policy,
+-- with no landing, tally, movement, score or native effect machinery. A
+-- ray-qualified airborne interval is not a native collision or a qualified landing.
+-- The turns are shorter than that policy's .45 bar and .55 tail, which fit a 1 m
+-- hop. A full hop (forces.lua hop_delta_speed) leaves the ground 2 steps after R3
+-- and first touches it again 47 steps after. A trick picked 320 ms (19 steps) after
+-- R3, as the chop-tricks pad does, landed a .55 tail mid-turn. The tail now turns
+-- in 21 steps and its re-grip ends 3 steps before the touch, the bar in 19 and 5
+-- before, so a pick a step later still finishes in the air. On the smoothstep the
+-- peak rate is 1.5 times the mean: the frame whips at up to 1590 degrees/s (26 a
+-- frame) and the bars spin at up to 1740 (29 a frame), against 980 and 1200 at the
+-- old times, each still one turn over 20 or so drawn frames. The tail is kept the
+-- slower by 2 steps: a whole frame is a bigger throw than the bars.
 local Model = {}
-local TAU, BAR_SECONDS, TAIL_SECONDS, CATCH_WINDOW, CATCH_BLEND = 2 * math.pi, .45, .55, .12, .06
+local TAU, BAR_SECONDS, TAIL_SECONDS, CATCH_WINDOW, CATCH_BLEND = 2 * math.pi, .31, .34, .12, .06
 local function smooth(t) return t * t * (3 - 2 * t) end
 function Model.new(primed)
     return {primed=primed==true,airborne=false,air_seconds=0,armed=false,rotating=false,
@@ -64,6 +74,10 @@ end
 -- Closed authored motions.lua entries36/42: One Hander Left/Right, release masks1/2,
 -- pose enter .18s/recover .12s, no bar/tail/crank/bike rotation. This is one
 -- presentation channel, not the full catalog or a physical completion model.
+-- These still fit a full hop unchanged: picked 19 steps after R3 and let go as
+-- the hand comes off (180 ms), the hand is back 9 steps before the touch. Held,
+-- the stick can stay over for 18 steps (.3 s) and the hand is still back 2 steps
+-- before the touch. The chop-tricks pad's 480 ms hold lands with the hand off.
 local ONE_HAND=table.freeze({id=36,right_id=42,enter_seconds=.18,recover_seconds=.12})
 local OneHand={}
 function OneHand.new()
@@ -377,4 +391,8 @@ function Runtime.new()
     end
     return table.freeze(object)
 end
+-- The pure channels and their turn times, for bike_physics_tests to time each
+-- trick against a full hop's flight. They hold no ride's state and grant nothing.
+Runtime.channels=table.freeze({Model=Model,OneHand=OneHand,OneFoot=OneFoot,
+    bar_seconds=BAR_SECONDS,tail_seconds=TAIL_SECONDS})
 return table.freeze(Runtime)

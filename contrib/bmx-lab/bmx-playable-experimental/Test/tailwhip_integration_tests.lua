@@ -344,7 +344,7 @@ function Tests.run()
             wrapped=row;break
         end
     end
-    check(wrapped~=nil,"authored .55 second turn reaches wrapped-zero while feet remain in neutral blend")
+    check(wrapped~=nil,"authored .34 second turn reaches wrapped-zero while feet remain in neutral blend")
     local commands=#f.commands
     local stopped=f.ride:stop("constructed switch or recovery")
     check(stopped.stop_requested and stopped.presentation_trick==nil and fields(stopped.presentation_pose)==8
@@ -362,9 +362,10 @@ function Tests.run()
         "no physical tail catch/completion/landing or score is invented")
     local bar=fixture();bar.tick(true);bar.tick(false);bar.tick(false,"bar_left")
     local existing=bar.tick(false)
-    local h=bar.read.seconds;local p=h/.45;local expected=-2*math.pi*p*p*(3-2*p)
+    -- .31 s since the full hop came down to .61 m (.45 before).
+    local h=bar.read.seconds;local p=h/.31;local expected=-2*math.pi*p*p*(3-2*p)
     check(not existing.stop_requested and math.abs(existing.presentation_pose.barspin-expected)<1e-9,
-        "existing left barspin retains the .45 second smooth channel equation")
+        "existing left barspin retains the .31 second smooth channel equation")
     check(existing.presentation_pose.tailwhip==0 and existing.presentation_pose.tailwhip_release==nil
         and existing.presentation_pose.release_left_foot==nil and existing.presentation_pose.release_right_foot==nil,
         "bar-only riding retains zero tail/foot articulation")

@@ -946,9 +946,12 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
             -- catch is the rider's to soak up. Given back in full, a knock of 2.5 rad/s about the roll axis rolling
             -- straight at 1.2 m/s sent the bike on .23 m/s faster than it was going, at 1.6 m/s .23 and at 3 m/s .12;
             -- owed, it gains nothing. In a held corner or a weave a knock can still be paid from what the rider's lean is
-            -- owed: at most .006 m/s over the speed at the knock in a corner held at steer .5 from .8 to 7 m/s, and .023
-            -- m/s by the end of a weave against the same weave unknocked. A lean that has stopped moving owes nothing either: without that a weave's credit
-            -- was kept, and a knock three seconds after 6 s of weaving at 6 m/s still sent the bike on .08 m/s faster.
+            -- owed. Knocked at 2 to 3 rad/s from .8 to 7 m/s, a corner held at full lock got at most .033 m/s over the
+            -- speed at the knock (2 m/s), .016 to .022 at .8 to 1.6 m/s, and .012 at steer .5; a weave of full lock
+            -- flipped every second at 2 m/s ended .065 m/s faster than the same weave unknocked (.19 at a moment), at 3
+            -- m/s every .75 s .029, and of .7 every .6 s from 2 to 6 m/s .021 at most. A lean that has stopped moving
+            -- owes nothing either: without that a weave's credit was kept, and a knock three seconds after 6 s of
+            -- weaving at 6 m/s still sent the bike on .08 m/s faster.
             -- The roll's own kinetic energy (a factor of .5 here) is too tight: a coast from 7.5 m/s weaving full lock
             -- every second ended at 1.41 m/s against 2.37 owed in full. A factor of 2 ended a weave of .7 every .6 s from
             -- 6 m/s at 1.87, 4 and 8 both at 1.93 (2.24 owed in full), so at 4 the cap only bites as the lean stops.

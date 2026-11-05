@@ -96,14 +96,19 @@ offline the game does not keep it, so set it again each launch.
   top speed does not start and stop the cranks every half turn. B, a manual or a climb steeper than about 2% ends that
   wait: with A held the rider pedals again as soon as the bike is under 7.2 m/s. A hill can take the bike much faster
   than that, and a coast slows by itself.
-- Whenever the rider stops pedalling, coasting, at top speed or in a manual, the cranks come round to level, feet
-  at 3 and 9 o'clock, within about half a second at 1 m/s and up: back, as a rider backpedals, or forward with
-  the back wheel when that is sooner. From about 1.2 m/s up, a tap of A from level cranks, or while they go back to a
-  level, finishes its half stroke forward with the back wheel, about a second at 2 m/s and half a second at 4 m/s and
-  faster, instead of going back, so quick taps turn the cranks on forward. Slower, the wheel cannot bring them round
-  in time and the rider backpedals a tap back to level. Stopped, the rider only backpedals the short way to the
-  nearer level, and otherwise leaves the cranks where they are. Rolling backward from about 0.6 m/s, they go back to
-  the level behind. They never turn the wheel. Pedalling again starts them from there.
+- Whenever the rider stops pedalling, coasting, at top speed or in a manual, the cranks come round to the nearer
+  level, feet at 3 and 9 o'clock: back, as a rider backpedals, never more than a quarter turn, or forward with the
+  back wheel. From anywhere they are within 5 degrees of level in about 0.4 s at most from 4 m/s up, and in 1.2 s at
+  1 m/s, where the back wheel brings them forward slowly. From about 1.15 m/s up, a tap of A from level cranks, or
+  while they go to a level, finishes its half stroke forward with the back wheel, about 1.3 s tapped at 1.8 m/s and
+  half a second from about 4.5 m/s up, and a tap that carries them past a level goes on to the next one, so quick
+  taps turn the cranks on forward and never back: taps 1 to 6 steps long, every 8 to 45 steps, from 2 to 7 m/s
+  never turned them back in 6 s of each. Slower, the wheel cannot bring them round in time and the rider backpedals a tap back to
+  level. Stopped, the rider backpedals at most a quarter turn to the nearer level; when that is the level ahead,
+  which only the wheel can bring them to, they stay where they are. Rolling backward, the back wheel takes the
+  cranks round backward with it at its own pace. The rider backpedals faster than that only to a level behind that
+  the wheel would take more than two seconds to bring them to, as when it has all but stopped, or to finish a
+  backpedal already started. They never turn the wheel. Pedalling again starts them from there.
 - Into a manual or a nose manual the rider stands up on the pedals over about half a second, and the hips follow
   where the physics puts the weight, about a fifteenth of a second behind it: a manual's throw is drawn two thirds
   of the way in a tenth of a second and all of it in about a third. They move back and sit down the same way after
@@ -117,11 +122,16 @@ offline the game does not keep it, so set it again each launch.
 - On two wheels or in a manual, weaving does not make speed. Throwing the bike from lean to lean is paid from its
   speed, so a coast weaving from side to side slows faster than a straight one: a little for small throws of the
   stick, much faster at full lock. Coasting 20 s from 7.5 m/s, a straight line ends at about 4 m/s, a small quick
-  weave at about 3.7 and full lock flipped every second at about 2.4. A nose manual keeps its own balance, and there a
-  weave still gains a little: the stick at half flipped every 0.75 s for 5 s ends up to 0.07 m/s faster than a
-  straight nose manual from 3 to 5 m/s. Rolling straight, a knock from the side never pushes the bike on. In a corner
-  or a weave a knock can give back some of the speed the lean already took, at most about 0.01 m/s in a held corner
-  and about 0.02 m/s by the end of a weave. Pedalling through a weave still stops at top speed.
+  weave at about 3.7 and full lock flipped every second at about 2.4. A nose manual keeps its own balance and is not
+  charged for its lean, and there a weave slows the bike less than riding straight: over 5 s from 3 to 5 m/s, the
+  stick at half flipped every 0.75 or 1 s ends up to 0.06 m/s faster than a straight nose manual (0.08 in the
+  kernel's own harness), and full lock up to 0.32 m/s faster; at 2 m/s full lock gains 0.05 and at 6 m/s 0.12.
+  Rolling straight, a knock from the side never pushes the bike on. In a corner or a weave a knock can give back
+  some of the speed the lean already took. In a corner held at full lock it gets at most about 0.03 m/s over the
+  speed at the knock at 2 m/s, and about 0.02 m/s at a walk; at half lock about 0.01 m/s. By the end of a weave the
+  bike can be up to about 0.065 m/s faster than the same weave unknocked, full lock flipped every second at 2 m/s
+  (0.19 m/s for a moment), 0.03 at 3 m/s, and about 0.02 with the stick at 0.7 from 2 to 6 m/s. Those are for
+  knocks that roll the bike at 2 to 3 rad/s. Pedalling through a weave still stops at top speed.
 - Pedalling has a rider's power, not a motor's. Up a ramp steeper than about 15% the bike slows with A held, the
   steeper the slower, while the city's hills still climb at close to full speed.
 - Riding into a kerb costs some speed as each tyre strikes it, more for a taller one. Hop clear of its top to keep

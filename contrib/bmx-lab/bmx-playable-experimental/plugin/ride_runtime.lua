@@ -119,16 +119,22 @@ local TAU = 2 * math.pi
 -- than leaving them wherever the last stroke stopped: in six trials (mn5, mn8, mn10, nb2, rr2, photo3) the cranks sat
 -- 8 to 84 degrees off level through 26 coasts of half a second or more, a median of 38, and 84 through an 8 s manual.
 -- After CRANK_SETTLE_DELAY of not pedalling, so cranks let go for less than that between pushes hold where they are,
--- they go to the level nearer in time at no more than CRANK_SETTLE_RATE (rad/s, a quarter turn in about a fifth of a second, under
--- the 10.5 rad/s of pedalling at top speed), gaining and losing that speed at CRANK_SETTLE_ACCEL, and stay there.
--- Back is a free backpedal. Forward they go no faster than the rear wheel turns them through the gearing, so the
--- freewheel never drives the wheel and nothing the physics does is drawn otherwise; a stopped wheel lets them only back.
--- From any phase they are within 5 degrees of level in at most .57 s at 1 m/s and up; ride_fall_tests measures
--- .53 s letting go at 24 phases at 1 to 8 m/s. Forward the rider leaves the wheel CRANK_WAIT (s) to bring them round:
--- a wheel slower than that counts as stopped, and a stopped rider backpedals only the short way, so stopped nearer
--- the level ahead the cranks wait for the wheel. A stroke of A let go (cranks) is finished forward when the wheel
--- turns the rest of it within CRANK_WAIT, a whole half turn from about 1.1 m/s up.
-local CRANK_SETTLE_DELAY, CRANK_SETTLE_RATE, CRANK_SETTLE_ACCEL, CRANK_WAIT = .1, 7, 60, 2
+-- they go to the nearer level at no more than CRANK_SETTLE_RATE (rad/s, a quarter turn in about a fifth of a second,
+-- under the 10.5 rad/s of pedalling at top speed), gaining and losing that speed at CRANK_SETTLE_ACCEL, and stay there.
+-- Back is a free backpedal, never more than a quarter turn. Forward they go no faster than the rear wheel turns them
+-- through the gearing, so the freewheel never drives the wheel and nothing the physics does is drawn otherwise: a
+-- stopped wheel lets them only back, and short of the level ahead they wait for it. A wheel turning backward takes
+-- them back with it (cranks). From any phase they are within 5 degrees of level in at most a tenth of a second and a
+-- quarter turn at the slower of CRANK_SETTLE_RATE and the wheel's pace: letting go at 24 phases, ride_fall_tests
+-- measures .38 s at 8 m/s, .42 at 4 and 1.17 at 1, where the wheel turns them at 1.37 rad/s. A stroke of A let go
+-- (cranks) is finished forward when the wheel turns the rest of it within CRANK_WAIT (s), a whole half turn from
+-- about 1.15 m/s up.
+local CRANK_WAIT = 2
+local CRANK_SETTLE_DELAY, CRANK_SETTLE_RATE, CRANK_SETTLE_ACCEL = .1, 7, 60
+-- Cranks this close behind a level are level to the eye, and with the wheel stopped they stay there rather than go
+-- back half a turn to the level behind: a rear wheel creeping back a hair at a standstill takes them that far, 0.02
+-- degrees in 10 s on the flat.
+local CRANK_LEVEL_SLACK = math.rad(2)
 -- The most the rider shifts the weight in a manual, forward and back (forces.lua manual_hold_forward and
 -- manual_hold_back).
 local RIDER_SHIFT_FORWARD, RIDER_SHIFT_BACK = .15, .20
@@ -305,42 +311,43 @@ local function crank_level(geometry)
 end
 -- The drawn cranks one step on, and how they are moving, for the next step: turned by the rear wheel through the
 -- gearing while the rider pedals, otherwise set level (CRANK_SETTLE_DELAY). The level is chosen as they start to
--- move, from the rear wheel then: the one reached sooner, forward at the freewheel's pace or back at
--- CRANK_SETTLE_RATE. Chosen the step the pedalling stopped, from the wheel of the pedalling, a rider who let go and
--- slowed at once to 1 m/s took .75 s to come level going forward. Back the long way, past a quarter turn, is
--- sooner only for a wheel that would take them forward to the nearer level within CRANK_WAIT: slower than that, they
--- go to the nearer level, back or forward with the wheel, and so wait on a stopped one. Sent the sooner way by a
--- wheel all but stopped (.16 rad/s), cranks let go 71 degrees short of level were backpedalled 109 degrees. A push of A from cranks at rest on a level, or moving forward to one, is a
--- stroke: let go before the cranks reach the level ahead, they finish it forward with no pause, rather than go back
--- to the level the push left. Taps of A of 1 to 6 steps at 2, 4 and 7 m/s drew them 4 to 37 degrees forward and, a
--- tenth of a second later, back to where they started. A push while they go back to a level is a stroke to the level
--- ahead as well: otherwise quick taps (3 steps every 12 or 15, at 4 m/s) caught them going back each time, and in 6 s
--- they turned back 120 and 196 degrees, reversing 41 and 21 times. motion is {stroke = radians still to the level ahead} while a
--- stroke is pedalled, nil while any other pedalling, else {coast = seconds not pedalling, target = the chosen level,
--- nil until they move, rate = rad/s}. Pedalling again starts from wherever the cranks are drawn, so nothing jumps.
+-- move: the nearer one, back as a backpedal or forward at the freewheel's pace, so the rider never backpedals more
+-- than a quarter turn to it. Chosen as the one reached sooner, a wheel slower than the backpedal sent cranks short of
+-- the level ahead back nearly half a turn: let go 2.7 degrees short of it as the bike stopped at a crawl, they went
+-- back 177 degrees, and let go under .6 m/s as it slowed at 1 m/s^2 to a stop, 9 of 24 phases went back more than a
+-- quarter turn, up to 162. A push of A from cranks let go is a stroke to the level they go to, or, from on it
+-- (within CRANK_LEVEL_SLACK), to the next one half a turn on, and a stroke the push carries past its level goes on
+-- to the next one, once: let go before the cranks reach it, they finish it forward with no pause, rather than go back
+-- to the level the push left or just passed. Taps of A of 1 to 6 steps at 2, 4 and 7 m/s drew them 4 to 37 degrees
+-- forward and, a tenth of a second later, back to where they started; quick taps (3 steps every 12 or 15 at 4 m/s)
+-- that caught them going back to a level turned them back 120 and 196 degrees in 6 s, reversing 41 and 21 times; and
+-- taps at 6 and 7 m/s that carried them 11 to 15 degrees past a level ended there and were backpedalled onto it a
+-- tenth of a second later, 193 degrees back in 6 s with 17 reversals (6 steps every 20 at 7 m/s). Held on through a
+-- second level the push is pedalling, and let go the rider takes the nearer level. motion is {stroke = radians still
+-- to the level ahead, renewed = true once it went on to the next} while a stroke is pedalled, nil while any other
+-- pedalling, else {coast = seconds not pedalling, target = the chosen level, nil until they move, rate = rad/s}.
+-- Pedalling again starts from wherever the cranks are drawn, so nothing jumps.
 local function cranks(phase,pedaling,wheel_rate,h,level,motion)
-    if pedaling then
+    if pedaling and level and motion and (motion.stroke or motion.target) then
         local step=wheel_rate*h/CRANK_RATIO
-        local left=motion and motion.stroke
-        if left==nil and level and motion and motion.coast~=nil and motion.target~=nil then
+        local left,renewed=motion.stroke,motion.renewed
+        if left==nil then
             local gap=wrap(motion.target-phase)
-            if math.abs(gap)<1e-4 and motion.rate==0 then left=math.pi
-            elseif gap>0 and motion.rate>0 then left=gap
-            elseif gap<0 and motion.rate<0 then left=gap+math.pi end
+            left=gap>CRANK_LEVEL_SLACK and gap or gap+math.pi
         end
-        if left then left-=step end
-        if left and (left<=1e-6 or left>math.pi+1e-9) then left=nil end
-        return wrap(phase+step),left and {stroke=left} or nil
+        left-=step
+        if left<=1e-6 and not renewed then left,renewed=left+math.pi,true end
+        if left>1e-6 and left<=math.pi+CRANK_LEVEL_SLACK then return wrap(phase+step),{stroke=left,renewed=renewed} end
     end
-    if not level then return phase,nil end
-    local free=math.max(0,wheel_rate)/CRANK_RATIO
-    local forward_most=math.min(CRANK_SETTLE_RATE,free)
-    -- Rolling backward, the freewheel's pawls turn the cranks back with the wheel, so they go to the level behind when
-    -- the wheel would turn them back to it within CRANK_WAIT, or turns them a quarter turn back in that time (from
-    -- about .6 m/s). Counted as stopped, cranks let go nearer the level ahead as the bike rolled back at 1 and 2 m/s
-    -- (ride_fall_tests) waited up to 71 degrees short of it for as long as it rolled.
-    local back=math.max(0,-wheel_rate)/CRANK_RATIO
-    local function reversing(behind) return back>1e-6 and (behind/back<=CRANK_WAIT or back*CRANK_WAIT>=math.pi/2) end
+    if pedaling then return wrap(phase+wheel_rate*h/CRANK_RATIO),nil end
+    -- A freewheel lets the wheel run ahead of the cranks but not behind them: not pedalled, they never turn forward
+    -- faster than the rear wheel turns them through the gearing (forward_most), so a rear wheel turning backward,
+    -- rolling back after a 180 or off a ramp the bike stalled on, takes the cranks round backward with it, A held or
+    -- not, and the rider cannot hold them level.
+    local drive=wheel_rate/CRANK_RATIO
+    if not level then return wheel_rate<0 and wrap(phase+drive*h) or phase,nil end
+    local free=math.max(0,drive)
+    local forward_most=math.min(CRANK_SETTLE_RATE,drive)
     -- Let go in a stroke that the wheel turns them through within CRANK_WAIT, they carry on to the level ahead from
     -- the pace they were pedalled at. Otherwise they are let go as from any other pedalling: they hold a tenth of a
     -- second and go to the nearer level, for a short push the one it left.
@@ -350,31 +357,43 @@ local function cranks(phase,pedaling,wheel_rate,h,level,motion)
         else motion=nil end
     end
     local coast,target,rate=(motion and motion.coast or 0)+h,motion and motion.target,motion and motion.rate or 0
+    local gap
     if coast>=CRANK_SETTLE_DELAY-1e-9 then
         if target==nil then
             local ahead=(level-phase)%math.pi
-            local behind=math.pi-ahead
-            local rolling=forward_most>1e-6 and ahead/forward_most<=CRANK_WAIT
-            local sooner=forward_most>1e-6 and ahead/forward_most<=behind/CRANK_SETTLE_RATE
-            target=wrap(phase+((ahead<1e-9 or not reversing(behind) and (sooner or (ahead<behind and not rolling))) and ahead or -behind))
+            target=wrap(phase+(ahead<=math.pi/2 and ahead or ahead-math.pi))
         end
-        local gap=wrap(target-phase)
-        -- Waiting on the level ahead, or going to it, as the wheel starts back, they go back with it instead, once.
-        if gap>0 and reversing(math.pi-gap) then target=wrap(target-math.pi);gap=wrap(target-phase) end
+        gap=wrap(target-phase)
         -- Only a stroke goes forward more than a quarter turn. One whose wheel slows under it so that it would not
         -- finish within twice CRANK_WAIT goes back to the level behind instead, which is then the nearer, once. At
         -- the wait itself, a 1 m/s wheel's step to step wobble in ride_fall_tests (3.6 to 4.1 rad/s) took a tap
         -- forward a step and then back. Any other forward move whose wheel slows or stops under it creeps on or
         -- waits: sent back to the other level once forward was much the slower, cranks a bike stopped under 11
-        -- degrees short of level were backpedalled 169 degrees (ride_fall_tests, stopped at 24 phases).
+        -- degrees short of level were backpedalled 169 degrees (ride_fall_tests, stopped at 24 phases). A wheel
+        -- turning back that takes them more than a quarter turn short of the level ahead gives it up the same way.
         if gap>math.pi/2 and (forward_most<1e-6 or gap/forward_most>2*CRANK_WAIT) then
             target=wrap(target-math.pi);gap=wrap(target-phase)
         end
+    end
+    -- Rolling backward they go round with the wheel at its own pace, and stop with it. The rider backpedals faster
+    -- than that only to a level behind that the wheel would not bring them to within CRANK_WAIT, as one that has all
+    -- but stopped, or to finish a backpedal already under way: never more than a quarter turn. Sent to the level
+    -- behind at the backpedal's 7 rad/s, they went 100 to 179 degrees and then stood still on the wheel still rolling
+    -- back. Held to the wheel whenever it turned back at all, cranks backpedalling to level as a bike braked to a stop
+    -- from 2 m/s stopped 60 degrees short of it for 1.3 s, the bike rocking back with its rear turning back at .02 to
+    -- .05 rad/s; and rolled back at up to 1.5 m/s and stopped, 47 of 72 rides were left up to 88 degrees past the
+    -- level behind, the rear still turning back at .007 rad/s a second after the stop (ride_fall_tests).
+    if wheel_rate<0 and not (gap and gap<0 and (rate<drive or gap/drive>CRANK_WAIT)) then
+        return wrap(phase+drive*h),{coast=coast,target=target,rate=0}
+    end
+    if gap then
         local most=gap>0 and forward_most or CRANK_SETTLE_RATE
         local want=(gap>0 and 1 or -1)*math.min(most,math.sqrt(2*CRANK_SETTLE_ACCEL*math.abs(gap)))
-        rate=math.clamp(rate+math.clamp(want-rate,-CRANK_SETTLE_ACCEL*h,CRANK_SETTLE_ACCEL*h),-CRANK_SETTLE_RATE,forward_most)
+        rate=math.clamp(rate+math.clamp(want-rate,-CRANK_SETTLE_ACCEL*h,CRANK_SETTLE_ACCEL*h),math.min(-CRANK_SETTLE_RATE,forward_most),forward_most)
         local step=rate*h
-        if math.abs(gap)<1e-4 or (gap>0 and step>=gap) or (gap<0 and step<=gap) then phase,rate=target,0
+        -- A backpedal that reaches its level as the wheel turns back past it goes on back with the wheel.
+        if math.abs(gap)<1e-4 or (gap>0 and step>=gap) or (gap<0 and step<=gap) then
+            phase,rate=drive<0 and gap>drive*h and wrap(phase+drive*h) or target,0
         else phase=wrap(phase+step) end
     end
     return phase,{coast=coast,target=target,rate=rate}
@@ -394,7 +413,9 @@ local NO_MOTION=table.freeze({})
 -- kernel commanded, each wheel turned by its accepted angular speed over the
 -- step, and the cranks turned by the rear wheel through CRANK_RATIO only while
 -- the kernel's pedal latch says the rider pedals (forces.lua pedal_cadence);
--- a coast or a held pedal at top speed sets them level (cranks). These are
+-- a coast or a held pedal at top speed sets them level (cranks), and a rear
+-- wheel turning backward takes them round backward with it, as a freewheel
+-- does (cranks). These are
 -- accepted Lua predictions drawn on the measured body, never native wheel
 -- state. ForceStage's zero stage commands nothing and reports no steer or
 -- cadence: the bars and cranks hold. One new table a step, which status

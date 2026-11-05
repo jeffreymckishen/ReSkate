@@ -18,4 +18,9 @@ struct GameUiState {
 GameUiState sample_game_ui_state(std::uintptr_t base) noexcept;
 // Movement ownership needs a current menu state, rather than the HUD's 100 ms cache.
 GameUiState read_game_ui_state(std::uintptr_t base) noexcept;
+
+// Whether the replay editor is open: the game's replay session holds its lease on the session
+// manager (Engine/Game/Build/<build>/replay_activity.h), the same check plugin effects stop on
+// (Extension/Rendering/plugin_effects.cpp). Any thread; reads a few pointers, no lock.
+bool replay_editor_open(std::uintptr_t base) noexcept;
 } // namespace dingosdk::multiplayer

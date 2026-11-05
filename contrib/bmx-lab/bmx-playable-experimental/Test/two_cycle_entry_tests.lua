@@ -765,14 +765,27 @@ function Tests.run()
         r.now=stop+20000-5300-16;lag=300;switch_ended(r,matched)
         check(r.entry:status().phase=="skateboard" and r.placements==0 and r.now==stop+20000-5000,
             "a window that closes during the reads places nothing and ends on the board")
-        -- Once the rider has been placed the window still holds: a placement not seen in time stops the Return.
+        -- Once the rider has been placed the window still holds while the game may still carry the placement out: one
+        -- still pending when the window runs out stops the Return.
         local h=fixture({two=true});h.riding();stop=h.now;measured_return(h);h.stock=100
+        local read_h=h.R.skater.telemetry
+        function h.R.skater.telemetry() local t=read_h();t.teleport_pending=h.pending==true;return t end
         h.position=vector.create(3,.5,0)
-        h.now=stop+20000-6000-16;switch_ended(h,matched)
+        h.now=stop+20000-6000-16;switch_ended(h,matched);h.pending=true
         check(h.placements==1 and h.entry:status().phase=="returning","placed with time to spare, not yet seen there")
         h.now=stop+20000-16;h.tick()
         check(h.entry:status().phase=="blocked" and h.placements==1 and h.toggles==1,
-            "a placement the window ran out on still stops the Return")
+            "a placement still pending when the window runs out stops the Return")
+        -- One the game has finished with that never held still at the target cannot land later. loop5 (2026-11-04): on a
+        -- grade the board turned and rolled 5.7 m away. That Return finishes on the board where the rider is.
+        local u=fixture({two=true});u.riding();stop=u.now;measured_return(u);u.stock=100
+        u.position=vector.create(3,.5,0)
+        u.now=stop+20000-6000-16;switch_ended(u,matched)
+        check(u.placements==1 and u.entry:status().phase=="returning","placed, then away from the target")
+        u.now=stop+20000-16;u.tick()
+        local s=u.entry:status()
+        check(s.phase=="skateboard" and u.placements==1 and u.toggles==1 and s.return_position==nil,
+            "a finished placement the window ran out on ends on the board: "..tostring(s.phase).." "..tostring(s.detail))
     end)
     case("time out of the game does not run out a Return waiting to press the switch",function()
         -- The user's log of 2026-11-02: a ride ended by focus loss at 19:33:32 went back on its own, and that Return

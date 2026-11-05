@@ -373,7 +373,20 @@ function Tests.run()
             "time spent obtaining stock ACK is charged to original20s; no late placement, the rider stays on the board")
         local lost=after_stock();lost.now+=20001;lost.tick()
         check(lost.placements==1 and lost.toggles==1 and lost.entry:status().phase=="blocked",
-            "missing poststock convergence by original deadline stays failed")
+            "a placement the game may still carry out at the original deadline stays failed")
+        -- loop5 (2026-11-04): placed on a grade, the board turned and rolled away, so it never held still at the target.
+        -- The game had finished with the placement, so the Return finishes on the board where the rider is.
+        local rolled=after_stock();rolled.pending=false;rolled.tick(12)
+        check(rolled.entry:status().phase=="returning" and rolled.entry:status().return_position.actual_pending==false
+            and not rolled.entry:status().return_position.observed,"placed, then rolled away: not converged")
+        rolled.now+=20001;rolled.tick()
+        check(rolled.placements==1 and rolled.toggles==1 and rolled.entry:status().phase=="skateboard"
+            and rolled.entry:status().return_position==nil,
+            "a finished placement that never held still ends on the board, not blocked: "..rolled.entry:status().phase)
+        -- Only a read that says the game is done with the placement lets the Return go on: one that cannot say stops it.
+        local unread=after_stock();unread.pending=nil;unread.now+=20001;unread.tick()
+        check(unread.placements==1 and unread.toggles==1 and unread.entry:status().phase=="blocked",
+            "an unreadable pending flag at the deadline still stops the Return")
         local cancelled=after_stock();check(cancelled.entry:cancel(),"cancel after queued poststock placement accepted")
         cancelled.tick(10)
         check(cancelled.placements==1 and cancelled.toggles==1 and cancelled.entry:status().return_position.unknown,

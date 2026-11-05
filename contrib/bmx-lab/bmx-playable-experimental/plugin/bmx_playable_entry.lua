@@ -487,7 +487,19 @@ function Entry.new(R,Runtime,Survey,options)
         if not return_position.attempted and (not now or now<return_plan.stop_ms or now+5100>=return_plan.expires_ms) then
             return false,"unplaced"
         end
-        if not now or now<return_plan.stop_ms or now>=return_plan.expires_ms then return false,"Return position deadline expired; final Return blocked" end
+        -- A placement the game has finished with cannot land later, so one that never held still at its target is not
+        -- a reason to stop. In loop5 (2026-11-04), on a grade, the rider was placed on the board, which turned and rolled
+        -- 5.7 m downhill: the 20 s ran out on a rider already on the skateboard, and the Return blocked. Such a Return
+        -- goes on from where the rider is ("unconfirmed"). One the game may still be carrying out stays blocked.
+        local function late(why)
+            if return_position.queued and not return_position.observed then
+                local watch=call(R.skater and R.skater.telemetry);if not live() then return false,"cancelled" end
+                if watch[1] and watch.n==2 and plain(watch[2]) and watch[2].teleport_pending==false then return false,"unconfirmed" end
+            end
+            return false,why
+        end
+        if not now or now<return_plan.stop_ms then return false,"Return position deadline expired; final Return blocked" end
+        if now>=return_plan.expires_ms then return late("Return position deadline expired; final Return blocked") end
         if not environment(false) or not live() then return false,"Return position context lost" end
         if return_position.last_poll and now-return_position.last_poll<50 then return false,"pending" end
         return_position.last_poll=now
@@ -513,7 +525,7 @@ function Entry.new(R,Runtime,Survey,options)
             return_position.sent_ms=now
             local q=return_position.target
             -- The generic per-request option preserves the intended stock
-            -- equipment target; actual100 convergence remains mandatory.
+            -- equipment target; actual100 convergence is required while the game may still carry the placement out.
             local sent=call(R.skater and R.skater.teleport,vector.create(q[1],q[2],q[3]),return_plan.heading,{on_board=true})
             if not live() then return false,"cancelled" end
             if not sent[1] or sent.n~=2 or sent[2]~=true then
@@ -530,7 +542,8 @@ function Entry.new(R,Runtime,Survey,options)
         local watch=call(R.skater and R.skater.telemetry);if not live() then return false,"cancelled" end
         local actor=call(R.skater and R.skater.get);if not live() then return false,"cancelled" end
         now=clock();if not live() then return false,"cancelled" end
-        if not now or now>=return_plan.expires_ms then return false,"Return position observation crossed original deadline" end
+        if not now then return false,"Return position observation crossed original deadline" end
+        if now>=return_plan.expires_ms then return late("Return position observation crossed original deadline") end
         local w,a=watch[2],actor[2]
         -- Last-value diagnostics from these EXISTING reads only. Absence is
         -- unknown, never zero/false; this projection grants no effect authority.
@@ -638,6 +651,12 @@ function Entry.new(R,Runtime,Survey,options)
                     -- the ordinary path below finishes on the skateboard.
                     trace("Return placement skipped: the stock switch finished too late in its 20 s window.")
                     return_plan,return_position=nil,nil
+                elseif not ready and why=="unconfirmed" then
+                    -- The game placed the rider, or dropped the placement, and the rider never held still at the
+                    -- target. Where they are is where the Return finishes, and the next Mount surveys that ground.
+                    trace("Return placement not confirmed in its 20 s window ("..text(return_position.diagnostic,"pose unknown")
+                        .."); the Return goes on from where the rider is.")
+                    return_plan,return_position=nil,nil
                 elseif not ready then
                     if why~="pending" then
                         return_position.phase="blocked";return_position.reason=why
@@ -648,8 +667,10 @@ function Entry.new(R,Runtime,Survey,options)
                 end
         end
         -- During a queued placement handback_step tolerates missing/transient
-        -- samples without admitting an effect. Only its actual100 convergence
-        -- reaches this fresh state check and final Return path.
+        -- samples without admitting an effect. A queued placement reaches this
+        -- fresh state check and final Return path only after its actual100
+        -- convergence, or at the deadline once a fresh read says the game no
+        -- longer has it pending ("unconfirmed"), when the plan is dropped.
         local observed,down=state();if generation~=version or cancelled or unloaded then return end
         -- Mid fall or mid air the rider is down; on the board or on foot only while the game still has them ragdolled
         -- or in the air. A rider standing with a control held is not down: the line below tells them to let go, and

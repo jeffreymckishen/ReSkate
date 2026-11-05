@@ -118,14 +118,17 @@ local TAU = 2 * math.pi
 -- A rider who stops pedalling sets the cranks level, feet at 3 and 9 o'clock, as one coasts, hops and manuals, rather
 -- than leaving them wherever the last stroke stopped: in six trials (mn5, mn8, mn10, nb2, rr2, photo3) the cranks sat
 -- 8 to 84 degrees off level through 26 coasts of half a second or more, a median of 38, and 84 through an 8 s manual.
--- After CRANK_SETTLE_DELAY of not pedalling, so a quick tap of A does not swing them back and forth, they go to the
--- level nearer in time at no more than CRANK_SETTLE_RATE (rad/s, a quarter turn in about a fifth of a second, under
+-- After CRANK_SETTLE_DELAY of not pedalling, so cranks let go for less than that between pushes hold where they are,
+-- they go to the level nearer in time at no more than CRANK_SETTLE_RATE (rad/s, a quarter turn in about a fifth of a second, under
 -- the 10.5 rad/s of pedalling at top speed), gaining and losing that speed at CRANK_SETTLE_ACCEL, and stay there.
 -- Back is a free backpedal. Forward they go no faster than the rear wheel turns them through the gearing, so the
 -- freewheel never drives the wheel and nothing the physics does is drawn otherwise; a stopped wheel lets them only back.
--- From any phase they are within 5 degrees of level in at most .57 s, at any speed: the most is a standstill's, where
--- they can only go back; ride_fall_tests measures .53 s letting go at 24 phases at 0 to 8 m/s.
-local CRANK_SETTLE_DELAY, CRANK_SETTLE_RATE, CRANK_SETTLE_ACCEL = .1, 7, 60
+-- From any phase they are within 5 degrees of level in at most .57 s at 1 m/s and up; ride_fall_tests measures
+-- .53 s letting go at 24 phases at 1 to 8 m/s. Forward the rider leaves the wheel CRANK_WAIT (s) to bring them round:
+-- a wheel slower than that counts as stopped, and a stopped rider backpedals only the short way, so stopped nearer
+-- the level ahead the cranks wait for the wheel. A stroke of A let go (cranks) is finished forward when the wheel
+-- turns the rest of it within CRANK_WAIT, a whole half turn from about 1.1 m/s up.
+local CRANK_SETTLE_DELAY, CRANK_SETTLE_RATE, CRANK_SETTLE_ACCEL, CRANK_WAIT = .1, 7, 60, 2
 -- The most the rider shifts the weight in a manual, forward and back (forces.lua manual_hold_forward and
 -- manual_hold_back).
 local RIDER_SHIFT_FORWARD, RIDER_SHIFT_BACK = .15, .20
@@ -134,13 +137,20 @@ local RIDER_SHIFT_FORWARD, RIDER_SHIFT_BACK = .15, .20
 local RIDER_SHIFT_NOSE = .30
 -- The drawn shift follows the physics' as a critically damped spring of RIDER_SHIFT_OMEGA rad/s, moving no faster
 -- than RIDER_SHIFT_RATE (m/s) and gaining or losing speed no faster than RIDER_SHIFT_ACCEL (m/s2), so the hips start
--- and stop at rest. MP.manual_rider moves the hips 1.3 times a back shift, so they move at most 13 mm a step. Eased a
--- tenth of a second first order, the hips moved fastest on the first step: 36 to 39 mm into every manual in mn8,
--- mn10 and photo3, and 54 to 67 mm a step coming out. A full .2 m shift is 95% drawn in .40 s and at rest in .63.
+-- and stop at rest, and it is at rest once within RIDER_SHIFT_REST (m) and slow. MP.manual_rider moves the hips 1.3
+-- times a back shift, so they move at most 32.5 mm a step. A manual's throw takes the physics' shift to .2 within a
+-- tenth of a second; the drawn one is .13 at .1 s, .19 at .2 s and at rest in .35. Eased a tenth of a second first
+-- order, the hips moved 36 to 39 mm on a manual's first step in mn8, mn10 and photo3, and 54 to 67 mm a step coming
+-- out. At 20 rad/s, .6 m/s and 15 m/s2 the throw was drawn .06 at .1 s and .12 at .2, and replayed through mn8,
+-- mn10, photo3 and mn5 the drawn shift trailed the physics' by 100 to 133 ms, within 7.5 mm of it on 766 of 2080
+-- manual steps; now 67 ms and 991, with hips still for a step between moving ones once in the four (base 12).
 -- What it follows is the physics' shift held to the centimetre, moved on only once the physics' is RIDER_SHIFT_HOLD
 -- from it, so a held manual's drawn shift comes to rest and the rider is mapped from the pose memo (MP.manual_rider
 -- keeps the millimetre; to the centimetre, a moving shift drew the hips in 12 mm stairs with still steps between).
-local RIDER_SHIFT_OMEGA, RIDER_SHIFT_RATE, RIDER_SHIFT_ACCEL, RIDER_SHIFT_HOLD = 20, .6, 15, .0075
+-- A step the drawn rider moves is a step the memo composes the rider again (.27 ms a compose in the test runner):
+-- 1532 of those 2080 manual steps, against 1582 at the slower follower and 1003 eased, which drew the moves as jumps.
+-- Snapped to rest from 5 mm, 1161, but a slowly moving shift was drawn in 13 mm stairs again (28 in the four).
+local RIDER_SHIFT_OMEGA, RIDER_SHIFT_RATE, RIDER_SHIFT_ACCEL, RIDER_SHIFT_HOLD, RIDER_SHIFT_REST = 30, 1.5, 40, .0075, .001
 -- The rider stands up on the pedals for a manual and sits back down after it the same way, standing following 0 or 1
 -- as a spring of RIDER_STAND_OMEGA, at most RIDER_STAND_RATE a second and RIDER_STAND_ACCEL a second squared. On a
 -- bike drawn pitched 8.6 degrees on a kerb a standing rider turns with all of the drawn bike, so that bounds the turn:
@@ -154,8 +164,9 @@ local RIDER_NOSE_OMEGA, RIDER_NOSE_RATE, RIDER_NOSE_ACCEL = 12, 1.5, 10
 -- the knees, thighs and shins keep 8.5 cm or more off the bars at every hold to .25 m (7.9 at .30), 5 cm at 10
 -- degrees off, and 5 cm or more on the gate's line between; all the way over at a pedal high in front they met them,
 -- while hips up kept 10 cm at every phase. The cranks only move toward the level they go to in a manual, so the gate
--- only opens, unless a stopped wheel sends them back to the other level. Up to over the bars moves the hips .825 of the shift, so over follows (RIDER_OVER_OMEGA) no faster than
--- moves them RIDER_OVER_HIPS (m/s), 6 mm a step, and never faster than RIDER_OVER_RATE a second.
+-- only opens (a stroke a stopped wheel sends back goes to the nearer level). Up to over the bars moves the hips .825
+-- of the shift, so over follows (RIDER_OVER_OMEGA) no faster than moves them RIDER_OVER_HIPS (m/s), 6 mm a step, and
+-- never faster than RIDER_OVER_RATE a second.
 local RIDER_OVER_OMEGA, RIDER_OVER_RATE, RIDER_OVER_ACCEL, RIDER_OVER_HIPS = 20, 4, 40, .36
 local NOSE_OVER_OPEN, NOSE_OVER_CLOSED = math.rad(10), math.rad(25)
 
@@ -296,29 +307,56 @@ end
 -- gearing while the rider pedals, otherwise set level (CRANK_SETTLE_DELAY). The level is chosen as they start to
 -- move, from the rear wheel then: the one reached sooner, forward at the freewheel's pace or back at
 -- CRANK_SETTLE_RATE. Chosen the step the pedalling stopped, from the wheel of the pedalling, a rider who let go and
--- slowed at once to 1 m/s took .75 s to come level going forward. A forward move whose wheel slows or stops under
--- it, a brake on the rear, goes back to the other level instead once that is much the sooner. motion is nil while pedalling, else
--- {coast = seconds not pedalling, target = the chosen level, nil until they move, rate = rad/s}. Pedalling again
--- starts from wherever the cranks are drawn, so nothing jumps.
+-- slowed at once to 1 m/s took .75 s to come level going forward. Back the long way, past a quarter turn, is
+-- sooner only for a wheel that would take them forward to the nearer level within CRANK_WAIT: slower than that, they
+-- go to the nearer level, back or forward with the wheel, and so wait on a stopped one. Sent the sooner way by a
+-- wheel all but stopped (.16 rad/s), cranks let go 71 degrees short of level were backpedalled 109 degrees. A push of A from cranks at rest on a level, or moving forward to one, is a
+-- stroke: let go before the cranks reach the level ahead, they finish it forward with no pause, rather than go back
+-- to the level the push left. Taps of A of 1 to 6 steps at 2, 4 and 7 m/s drew them 4 to 37 degrees forward and, a
+-- tenth of a second later, back to where they started. motion is {stroke = radians still to the level ahead} while a
+-- stroke is pedalled, nil while any other pedalling, else {coast = seconds not pedalling, target = the chosen level,
+-- nil until they move, rate = rad/s}. Pedalling again starts from wherever the cranks are drawn, so nothing jumps.
 local function cranks(phase,pedaling,wheel_rate,h,level,motion)
-    if pedaling then return wrap(phase+wheel_rate*h/CRANK_RATIO),nil end
+    if pedaling then
+        local step=wheel_rate*h/CRANK_RATIO
+        local left=motion and motion.stroke
+        if left==nil and level and motion and motion.coast~=nil and motion.target~=nil then
+            local gap=wrap(motion.target-phase)
+            if math.abs(gap)<1e-4 and motion.rate==0 then left=math.pi
+            elseif gap>0 and motion.rate>0 then left=gap end
+        end
+        if left then left-=step end
+        if left and (left<=1e-6 or left>math.pi+1e-9) then left=nil end
+        return wrap(phase+step),left and {stroke=left} or nil
+    end
     if not level then return phase,nil end
     local free=math.max(0,wheel_rate)/CRANK_RATIO
     local forward_most=math.min(CRANK_SETTLE_RATE,free)
+    -- Let go in a stroke that the wheel turns them through within CRANK_WAIT, they carry on to the level ahead from
+    -- the pace they were pedalled at. Otherwise they are let go as from any other pedalling: they hold a tenth of a
+    -- second and go to the nearer level, for a short push the one it left.
+    if motion and motion.stroke then
+        if motion.stroke<math.pi-1e-6 and forward_most>1e-6 and motion.stroke/forward_most<=CRANK_WAIT then
+            motion={coast=CRANK_SETTLE_DELAY-h,target=wrap(phase+motion.stroke),rate=free}
+        else motion=nil end
+    end
     local coast,target,rate=(motion and motion.coast or 0)+h,motion and motion.target,motion and motion.rate or 0
     if coast>=CRANK_SETTLE_DELAY-1e-9 then
         if target==nil then
             local ahead=(level-phase)%math.pi
             local behind=math.pi-ahead
-            local sooner=ahead<1e-9 or forward_most>1e-6 and ahead/forward_most<=behind/CRANK_SETTLE_RATE
-            target=wrap(phase+(sooner and ahead or -behind))
+            local rolling=forward_most>1e-6 and ahead/forward_most<=CRANK_WAIT
+            local sooner=forward_most>1e-6 and ahead/forward_most<=behind/CRANK_SETTLE_RATE
+            target=wrap(phase+((ahead<1e-9 or sooner or (ahead<behind and not rolling)) and ahead or -behind))
         end
         local gap=wrap(target-phase)
-        -- Forward, a wheel slowing under them can make the level behind the sooner after all: past twice as long and a
-        -- tenth of a second more, they go back to it, once, so a wheel's wobble does not swing them about. Sent back
-        -- only once the rear had all but stopped, a bike stopped under them with its rear creeping at .27 rad/s
-        -- would have taken 8 s over the last 43 degrees forward.
-        if gap>0 and (forward_most<1e-6 or gap/forward_most>2*(math.pi-gap)/CRANK_SETTLE_RATE+.1) then
+        -- Only a stroke goes forward more than a quarter turn. One whose wheel slows under it so that it would not
+        -- finish within twice CRANK_WAIT goes back to the level behind instead, which is then the nearer, once. At
+        -- the wait itself, a 1 m/s wheel's step to step wobble in ride_fall_tests (3.6 to 4.1 rad/s) took a tap
+        -- forward a step and then back. Any other forward move whose wheel slows or stops under it creeps on or
+        -- waits: sent back to the other level once forward was much the slower, cranks a bike stopped under 11
+        -- degrees short of level were backpedalled 169 degrees (ride_fall_tests, stopped at 24 phases).
+        if gap>math.pi/2 and (forward_most<1e-6 or gap/forward_most>2*CRANK_WAIT) then
             target=wrap(target-math.pi);gap=wrap(target-phase)
         end
         local most=gap>0 and forward_most or CRANK_SETTLE_RATE
@@ -332,7 +370,8 @@ local function cranks(phase,pedaling,wheel_rate,h,level,motion)
 end
 -- How far the drawn cranks are from the level they are going to, or from the nearer one until they move: the gate
 -- on a nose manual's hips over the bars. The chosen level is never nearer than the other, and the cranks only come
--- toward it, so the gate only opens as they come level (a stopped wheel turning them back closes it again).
+-- toward it, so the gate only opens as they come level (a stroke sent back goes to the nearer level, so that opens it
+-- too).
 local function crank_off_level(phase,level,motion)
     if not level then return 0 end
     if motion and motion.target then return math.abs(wrap(motion.target-phase)) end
@@ -463,7 +502,7 @@ local function presentation(previous,model,wheels,h,samples,geometry,orientation
         else nose_rate,over_rate=0,0 end
     else held,nose_rate,over_rate=nil,0,0 end
     if active or shift~=nil then
-        shift,shift_rate=follow(shift or 0,shift_rate,target,h,RIDER_SHIFT_OMEGA,RIDER_SHIFT_RATE,RIDER_SHIFT_ACCEL,5e-4)
+        shift,shift_rate=follow(shift or 0,shift_rate,target,h,RIDER_SHIFT_OMEGA,RIDER_SHIFT_RATE,RIDER_SHIFT_ACCEL,RIDER_SHIFT_REST)
         standing,stand_rate=follow(standing,stand_rate,active and 1 or 0,h,RIDER_STAND_OMEGA,RIDER_STAND_RATE,RIDER_STAND_ACCEL,.005)
         if standing<=0 or standing>=1 then standing,stand_rate=math.clamp(standing,0,1),0 end
         nose,over=math.clamp(nose,0,1),math.clamp(over,0,1)

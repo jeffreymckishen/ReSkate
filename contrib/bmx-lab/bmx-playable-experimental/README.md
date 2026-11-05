@@ -94,10 +94,15 @@ offline the game does not keep it, so set it again each launch.
 - Top speed is about 7.7 m/s on the flat. The rider stops pedalling there and coasts down to about 7.2 m/s before
   pedalling again. A hill can take the bike much faster than that, and a coast slows by itself.
 - Whenever the rider stops pedalling, coasting, at top speed or in a manual, the cranks come round to level, feet
-  at 3 and 9 o'clock, within about half a second: back, as a rider backpedals, or forward with the back wheel when
-  that is sooner. They never turn the wheel. Pedalling again starts them from there.
-- Into a manual or a nose manual the rider stands up on the pedals and the hips move to where the physics puts the
-  weight over about half a second, and they move back and sit down the same way after it, without a jump.
+  at 3 and 9 o'clock, within about half a second at 1 m/s and up: back, as a rider backpedals, or forward with
+  the back wheel when that is sooner. A tap of A from level cranks finishes its half stroke forward with the back
+  wheel, about a second at 2 m/s and half a second at 4 m/s and faster, instead of going back. Stopped, the rider only
+  backpedals the short way to the nearer level, and otherwise leaves the cranks where they are. They never turn the
+  wheel. Pedalling again starts them from there.
+- Into a manual or a nose manual the rider stands up on the pedals over about half a second, and the hips follow
+  where the physics puts the weight, about a fifteenth of a second behind it: a manual's throw is drawn two thirds
+  of the way in a tenth of a second and all of it in about a third. They move back and sit down the same way after
+  it, without a jump.
 - At a walk the bars turn up to about 32 degrees, so the bike turns round inside about 3.3 m, where it used to take
   5.3 m. They come back to the old lock by 3 m/s, and from there steering is as before. With the bars that far round
   the rider's near hand is drawn turned a little short of its grip, its wrist at the end of its bend.

@@ -79,13 +79,14 @@ local function harness(ground)
             sample={user=0,sequence="77",source_epoch="78",context_generation="79",observation_serial="81",observed_ms="1016",packet=10,pad=pressed}}
     end
     -- From now on every step brings a fresh pad observation a native step on, with the right stick here, and the left
-    -- stick across when given.
+    -- stick across, A and B when given.
     local fresh
-    function w.set_pad(right_y,left_x,a)
+    function w.set_pad(right_y,left_x,a,b)
         local moved=table.clone(pad)
         moved.buttons=table.clone(pad.buttons);moved.right_y=right_y
         if left_x then moved.left_x=left_x end
         if a then moved.buttons.a=true end
+        if b then moved.buttons.b=true end
         fresh=fresh or {serial=80}
         fresh.pad=moved
     end
@@ -1313,9 +1314,9 @@ function T.run()
     case(function() -- From a rear manual straight into a nose manual, the drawn hips swing forward no faster than in either alone.
         -- The body moves here. Eased a sixth of the way a step from the rear manual's shift to the nose manual's, the
         -- hips moved .095 m in one frame and stopped dead as the shift crossed to forward; from a rear manual held a
-        -- third of a second, its own let-go moved them .066 m a step. Followed, they move at most 13 mm a step on the
-        -- rider's own frame, and a rear manual held with its weight a little forward (stick -.72) does not drop the hips
-        -- from its line to the nose manual's in one step either.
+        -- third of a second, its own let-go moved them .066 m a step. Followed, they move at most 32.5 mm a step on the
+        -- rider's own frame (1.3 times the drawn shift's 1.5 m/s), and a rear manual held with its weight a little
+        -- forward (stick -.72) does not drop the hips from its line to the nose manual's in one step either.
         local most=0
         for _,row in ipairs({{-.53,3,64},{-.53,4,64},{-.72,3,64},{-.72,4,64},{-.53,4,24},{-.72,4,24}}) do
             local back,speed,switch=row[1],row[2],row[3]
@@ -1335,7 +1336,7 @@ function T.run()
                 last=hip
             end
             check(reared and nosed,what..": a rear manual, then a nose manual")
-            check(worst<=.015,string.format("%s: the drawn hips move at most %.4f m in a step",what,worst))
+            check(worst<=.033,string.format("%s: the drawn hips move at most %.4f m in a step",what,worst))
             most=math.max(most,worst)
         end
         print(string.format("MEASURE rear manual into nose manual: hips move %.4f m in a step at most",most))
@@ -1366,7 +1367,7 @@ function T.run()
             last=hip
         end
         check(nosed and rising>0,"a nose manual, its line taken over "..rising.." steps")
-        check(worst<=.015,string.format("the drawn hips move at most %.4f m in a step",worst))
+        check(worst<=.033,string.format("the drawn hips move at most %.4f m in a step",worst))
         print(string.format("MEASURE rear manual forward into a nose manual: shift %.3f, hips %.4f m a step at most, nose over %d steps",
             before.rider_shift,worst,rising))
     end)
@@ -1605,7 +1606,8 @@ function T.run()
                 -- The body is posed still, so the hips' move in the world is their move on the bike.
                 local moved=M.length(M.sub(c.planned.hips.position,last_at))
                 farthest=math.max(farthest,moved)
-                check(moved<=.015,string.format("step %d: the hips move %.1f mm in a tick",i,moved*1000))
+                -- At most 1.3 times the drawn shift's RIDER_SHIFT_RATE, 1.5 m/s: 32.5 mm.
+                check(moved<=.033,string.format("step %d: the hips move %.1f mm in a tick",i,moved*1000))
             end
             last,last_at=hips,c.planned.hips.position
         end
@@ -1617,19 +1619,19 @@ function T.run()
         check(pitched==100,"the bike is drawn pitched on the kerb throughout: "..pitched)
         print(string.format("MEASURE kerb manual: hips turn %.2f degrees and move %.1f mm a tick at most",most,farthest*1000))
     end)
-    case(function() -- Into and out of a manual the drawn hips move no more than 15 mm a tick on the bike, and come to rest on the physics' shift.
+    case(function() -- Into and out of a manual the drawn hips keep up with the physics' shift, no more than 33 mm a tick on the bike, and come to rest on it.
         -- The body moves here, every step accepted as in game. Eased a tenth of a second first order toward the
         -- physics' shift taken to the centimetre, the hips moved 36 to 39 mm on a manual's first tick in game (mn8,
         -- mn10, photo3) and 54 to 67 mm a tick coming out, 43 where a rider sitting down met the saddle's back edge.
         local Q=MP.math
-        local worst,worst_at,rest,limited,steady,moving=0,nil,0,0,0,0
+        local worst,worst_at,rest,limited,steady,moving,kept,kept_at=0,nil,0,0,0,0,math.huge,nil
         for _,row in ipairs({{-.53,3},{-.72,4},{-.53,6},{-.72,2}}) do
             local back,speed=row[1],row[2]
             local what=string.format("stick %.2f at %d m/s",back,speed)
             local w=harness(flat)
             w.prompt=true
             local b=World.place(World.terrain.flat(),{speed=speed})
-            local manual,last,ended,drawn_was=false,nil,nil,nil
+            local manual,last,ended,drawn_was,thrown=false,nil,nil,nil,nil
             for step=1,300 do
                 if step==41 then w.set_pad(back) elseif step==161 then w.set_pad(0) end
                 local out
@@ -1651,6 +1653,14 @@ function T.run()
                 end
                 last=hip
                 if step<=160 then manual=manual or w.model.manual_active==true end
+                -- A tenth of a second after the throw takes the physics' shift past .1, the drawn shift is most of it, of
+                -- the .2 at most it draws (RIDER_SHIFT_BACK).
+                if not thrown and step>40 and w.model.manual_active==true and w.model.manual_shift>=.1 then thrown=step end
+                if thrown and step==thrown+6 then
+                    local physics=math.min(w.model.manual_shift,.2)
+                    local share=(a.rider_shift or 0)/physics
+                    if share<kept then kept,kept_at=share,string.format("%s: %.3f of %.3f",what,a.rider_shift or 0,physics) end
+                end
                 if step==160 then
                     check(w.model.manual_active==true and a.rider_shift~=nil,what..": the manual is held two seconds")
                     local off=math.abs(a.rider_shift-w.model.manual_shift)
@@ -1668,18 +1678,19 @@ function T.run()
             check(manual,what..": a manual")
             check(ended~=nil and ended<=280,what..": ordinary riding is back after it: "..tostring(ended))
         end
-        check(worst<=.015,string.format("the hips move at most %.1f mm a tick on the bike (%s)",worst*1000,tostring(worst_at)))
+        check(worst<=.033,string.format("the hips move at most %.1f mm a tick on the bike (%s)",worst*1000,tostring(worst_at)))
+        check(kept>=.6,string.format("a tenth of a second into the throw the drawn shift is %.2f of the physics' (%s)",kept,tostring(kept_at)))
         check(limited==0,"the saddle's back edge never holds the hips: "..limited)
         check(moving<=160,"held, the drawn shift rests on a third or more of the second second of each manual: it moved on "..moving.." of 240 steps")
-        print(string.format("MEASURE manual in and out: hips move %.1f mm a tick at most (%s); held, drawn shift within %.4f of the physics' (%.4f over the last third of a second), moving on %d of 240 held steps",
-            worst*1000,tostring(worst_at),rest,steady,moving))
+        print(string.format("MEASURE manual in and out: hips move %.1f mm a tick at most (%s); .1 s into the throw the drawn shift is %.2f of the physics' at least (%s); held, drawn shift within %.4f of the physics' (%.4f over the last third of a second), moving on %d of 240 held steps",
+            worst*1000,tostring(worst_at),kept,tostring(kept_at),rest,steady,moving))
     end)
-    case(function() -- Not pedalling, the cranks come round to the nearer level at a backpedal's pace, never driving the wheel, and pedalling takes them on from there.
+    case(function() -- Not pedalling, the cranks come round to the sooner level at a backpedal's pace, never driving the wheel, and pedalling takes them on from there.
         local ratio=25/9
         local flat_cranks=math.atan2(Geometry.pedals[1][2]-Geometry.bottom_bracket[2],Geometry.pedals[1][3]-Geometry.bottom_bracket[3])
         local function off_level(phase) local off=(phase-flat_cranks)%math.pi return math.min(off,math.pi-off) end
         local function turn_of(from,to) return math.atan2(math.sin(to-from),math.cos(to-from)) end
-        local slowest,slowest_at,fastest,pedalled,resumed,backward,forward=0,nil,0,0,0,0,0
+        local slowest,slowest_at,fastest,pedalled,resumed,backward,forward,held=0,nil,0,0,0,0,0,0
         local starts={}
         for _,speed in ipairs({8,4,1,0}) do
             for k=0,23 do
@@ -1706,20 +1717,36 @@ function T.run()
                 -- Let go, rolling on at this speed.
                 local coasting=level();coasting.velocity={0,0,speed}
                 w.set_pad(0)
-                local came,rested,way,idle=nil,nil,nil,0
+                -- At 0 m/s the posed body stops at once, and the rear wheel spins on under it at 0.16 to 8.5 rad/s,
+                -- by row: the cranks go by the wheel. One that would not bring them forward to the nearer level
+                -- within two seconds is a stopped wheel, and they go back only the short way, to the level behind when
+                -- that is the nearer, and otherwise wait for the wheel. Chosen as they may first move, a tenth of a
+                -- second after the pedalling, which can run a step or two on.
+                local stopped,stays=false,false
+                local came,rested,way,idle,back=nil,nil,nil,0,0
                 for i=1,90 do
                     local out=w.step(coasting)
                     local now=out.presentation_pose.crank_phase
                     local turn=turn_of(last,now)
                     local rear=w.model.wheels[2].angular_speed
                     check(w.model.pedaling~=true or i<=2,what..": the rider stops pedalling")
-                    if w.model.pedaling~=true then idle+=1 end
+                    if w.model.pedaling~=true then
+                        idle+=1
+                        if idle==6 and speed==0 then
+                            local ahead=(flat_cranks-last)%math.pi
+                            local forward_most=math.min(7,math.max(rear,0)/ratio)
+                            stopped=ahead>1e-9 and not (forward_most>1e-6 and ahead/forward_most<=2)
+                            stays=stopped and math.pi-ahead>ahead
+                        end
+                    end
                     -- A tenth of a second first, so a tap of A does not swing them about.
                     if idle<=5 then check(turn==0 or w.model.pedaling==true,what..": the cranks hold a tenth of a second first") end
                     check(math.abs(turn)<=7*h+1e-9,string.format("%s, step %d: the cranks turn %.4f rad, no faster than a backpedal",what,i,turn))
                     check(turn<=math.max(rear,0)*h/ratio+1e-9,string.format("%s, step %d: forward %.4f, never faster than the rear wheel turns them, %.4f",
                         what,i,turn,math.max(rear,0)*h/ratio))
                     fastest=math.max(fastest,math.abs(turn))
+                    if turn<0 then back-=turn end
+                    if stays then check(turn>=0,what..": stopped nearer the level ahead, the cranks never go back") end
                     if turn~=0 then
                         way=way or (turn>0 and 1 or -1)
                         check(turn*way>0,what..": the cranks go one way to the level")
@@ -1730,9 +1757,15 @@ function T.run()
                     last=now
                 end
                 if way==1 then forward+=1 elseif way==-1 then backward+=1 end
-                check(came~=nil and came<=36,string.format("%s: within 5 degrees of level in .6 s: step %s",what,tostring(came)))
-                check(rested~=nil,what..": and come to rest level")
-                if came and came>slowest then slowest,slowest_at=came,what end
+                if stopped then
+                    check(back<=math.pi/2+1e-9,string.format("%s: stopped, back %.1f degrees, at most the short way",what,math.deg(back)))
+                    if stays then held+=1 end
+                end
+                if not stays then
+                    check(came~=nil and came<=36,string.format("%s: within 5 degrees of level in .6 s: step %s",what,tostring(came)))
+                    check(rested~=nil,what..": and come to rest level")
+                    if came and came>slowest then slowest,slowest_at=came,what end
+                end
                 -- Pedalling again takes the cranks on from where they are.
                 w.set_pad(0,0,true)
                 for i=1,20 do
@@ -1746,9 +1779,9 @@ function T.run()
                 end
             end
         end
-        -- Let go at 4 m/s, the cranks start forward to the level ahead, and the bike stops under them: they go back to
-        -- the level behind instead of waiting forward on a wheel that no longer turns them.
-        local stopped_back,stopped_slowest=0,0
+        -- Let go at 4 m/s, the cranks start forward to the level ahead, the nearer one, and the bike stops under them:
+        -- they wait there, rather than backpedal the long way round to the level behind.
+        local stopped_back,stopped_held=0,0
         for k=0,23 do
             local what=string.format("stopped, start %d",k)
             local w=harness(flat)
@@ -1767,27 +1800,126 @@ function T.run()
             end
             if started then
                 local still=level()
-                local rested=nil
+                local back=0
                 for i=1,90 do
                     local now=w.step(still).presentation_pose.crank_phase
                     local turn=turn_of(last,now)
                     local rear=w.model.wheels[2].angular_speed
                     check(math.abs(turn)<=7*h+1e-9 and turn<=math.max(rear,0)*h/ratio+1e-9,string.format("%s, step %d: the cranks turn %.4f",what,i,turn))
-                    if turn<0 then stopped_back+=1 end
-                    if not rested and off_level(now)<1e-9 then rested=i end
+                    if turn<0 then back-=turn end
                     last=now
                 end
-                check(rested~=nil and rested<=60,what..": the cranks come level within a second of the stop: "..tostring(rested))
-                stopped_slowest=math.max(stopped_slowest,rested or math.huge)
+                check(back==0,string.format("%s: stopped under a forward move, the cranks went back %.1f degrees",what,math.deg(back)))
+                if back>0 then stopped_back+=1 end
+                if off_level(last)>1e-9 then stopped_held+=1 end
             end
         end
-        check(stopped_back>0,"some went back")
-        print(string.format("MEASURE cranks stopped under a forward move: level within %.3f s of the stop",stopped_slowest*h))
+        check(stopped_held>0,"some were stopped short of level")
+        check(held>0,"some were let go stopped nearer the level ahead")
+        print(string.format("MEASURE cranks stopped under a forward move: %d left short of level, %d went back; %d let go stopped stayed",
+            stopped_held,stopped_back,held))
         check(pedalled>0 and resumed>0,"the rider pedals")
         check(forward>0 and backward>0,"rolling, the cranks go forward to a level that is sooner that way, and back otherwise")
         print("MEASURE cranks let go at 4 m/s "..table.concat(starts," ").." degrees off level")
         print(string.format("MEASURE cranks within 5 degrees of level in %.3f s at most (%s), %.2f rad/s at most; %d went forward, %d back",
             slowest*h,tostring(slowest_at),fastest/h,forward,backward))
+    end)
+    case(function() -- A tap of A from level cranks finishes its half stroke forward at the wheel's pace, and a stop on the way takes them back only the short way.
+        local ratio=25/9
+        local flat_cranks=math.atan2(Geometry.pedals[1][2]-Geometry.bottom_bracket[2],Geometry.pedals[1][3]-Geometry.bottom_bracket[3])
+        local function off_level(phase) local off=(phase-flat_cranks)%math.pi return math.min(off,math.pi-off) end
+        local function turn_of(from,to) return math.atan2(math.sin(to-from),math.cos(to-from)) end
+        -- Coasting at speed until the cranks rest level, then A held for taps steps: the phase the tap started from.
+        local function tapped(speed,taps)
+            local w=harness(flat)
+            w.prompt=true
+            local ridden=level();ridden.velocity={0,0,speed}
+            local last=w.step(ridden).presentation_pose.crank_phase
+            for _=1,120 do last=w.step(ridden).presentation_pose.crank_phase end
+            local start=last
+            w.set_pad(0,0,true)
+            for _=1,taps do last=w.step(ridden).presentation_pose.crank_phase end
+            w.set_pad(0)
+            return w,ridden,start,last
+        end
+        local slowest,smallest=0,math.huge
+        for _,speed in ipairs({2,4,7}) do
+            for taps=1,6 do
+                local what=string.format("%d m/s, A for %d steps",speed,taps)
+                local w,ridden,start,last=tapped(speed,taps)
+                check(off_level(start)<1e-9,what..": coasting, the cranks rest level first")
+                local pushed=turn_of(start,last)
+                check(pushed>0 and pushed<math.pi/2,string.format("%s: the tap turns them %.1f degrees forward",what,math.deg(pushed)))
+                smallest=math.min(smallest,pushed)
+                local rested,back,paused=nil,0,0
+                for i=1,150 do
+                    local now=w.step(ridden).presentation_pose.crank_phase
+                    local turn=turn_of(last,now)
+                    local rear=w.model.wheels[2].angular_speed
+                    check(turn<=math.max(rear,0)*h/ratio+1e-9 and math.abs(turn)<=math.max(7,math.max(rear,0)/ratio)*h+1e-9,
+                        string.format("%s, step %d: the cranks turn %.4f, never ahead of the wheel",what,i,turn))
+                    if turn<0 then back-=turn end
+                    if not rested and turn==0 then paused+=1 end
+                    if not rested and off_level(now)<1e-9 then rested=i end
+                    last=now
+                end
+                check(back==0,string.format("%s: let go, the cranks went back %.1f degrees",what,math.deg(back)))
+                check(rested~=nil and paused==0,string.format("%s: they carry on to the level ahead without a pause (%d still steps)",what,paused))
+                check(math.abs(turn_of(start,last+math.pi))<1e-6,what..": and rest at the next level, half a turn on")
+                slowest=math.max(slowest,rested or math.huge)
+            end
+        end
+        -- Braked to a stop while finishing the stroke, on a body that moves, they go on with the slowing wheel, and go
+        -- back to the level the tap left only once that is the nearer: stopped, they rest on a level, or wait short of
+        -- the nearer one ahead.
+        local went_back,waited=0,0
+        for rolled=0,60,6 do
+            local what=string.format("2 m/s, braked %d steps after the tap",rolled)
+            local w=harness(flat)
+            w.prompt=true
+            local b=World.place(World.terrain.flat(),{speed=2})
+            local out
+            for _=1,120 do out,b=w.ride_step(b) end
+            local last=out.presentation_pose.crank_phase
+            check(off_level(last)<1e-9,what..": coasting, the cranks rest level first")
+            w.set_pad(0,0,true)
+            for _=1,3 do out,b=w.ride_step(b) end
+            w.set_pad(0)
+            for _=1,rolled do out,b=w.ride_step(b) end
+            last=out.presentation_pose.crank_phase
+            w.set_pad(0,0,false,true)
+            local back,way=0,nil
+            for i=1,150 do
+                out,b=w.ride_step(b)
+                local now=out.presentation_pose.crank_phase
+                local turn=turn_of(last,now)
+                local rear=w.model.wheels[2].angular_speed
+                check(turn<=math.max(rear,0)*h/ratio+1e-9,string.format("%s, step %d: braked, the cranks turn %.4f forward",what,i,turn))
+                if turn<0 then
+                    back-=turn
+                    check(way~=-1 or turn<0,what..": they turn back once")
+                    way=-1
+                elseif turn>0 then
+                    check(way~=-1,what..": and never forward again after")
+                    way=1
+                end
+                last=now
+            end
+            check(M.length(b.linear_velocity)<.01 and math.abs(w.model.wheels[2].angular_speed)<1e-6,
+                string.format("%s: the bike stops: %.3f m/s",what,M.length(b.linear_velocity)))
+            check(back<=math.pi/2+1e-9,string.format("%s: back %.1f degrees, at most the short way",what,math.deg(back)))
+            local ahead=(flat_cranks-last)%math.pi
+            if back>0 then
+                check(off_level(last)<1e-9,string.format("%s: back %.1f degrees, to the level the tap left",what,math.deg(back)))
+                went_back+=1
+            elseif off_level(last)>1e-9 then
+                check(ahead<math.pi/2,string.format("%s: stopped %.1f degrees short of the level ahead, the nearer",what,math.deg(ahead)))
+                waited+=1
+            end
+        end
+        check(went_back>0 and waited>0,"braked both sides of a quarter turn")
+        print(string.format("MEASURE a tap of A from level cranks: %.1f degrees at least, on to the next level in %.2f s at most at 2 to 7 m/s; stopped on the way, %d went back the short way, %d waited",
+            math.deg(smallest),slowest*h,went_back,waited))
     end)
     case(function() -- In a nose manual the rider is drawn standing, hips forward over the bars by the physics' shift, and sits back down after it.
         local w=harness(flat)
@@ -2083,9 +2215,90 @@ function T.run()
         check(worst.legs>=.05,string.format("the knees, thighs and shins stay %.3f off the bars (%s)",worst.legs,tostring(worst.at)))
         check(worst.torso>=.25,string.format("and the torso %.3f",worst.torso))
         check(worst.ground>=.2,string.format("no part of the rider goes near the road: %.3f",worst.ground))
-        check(worst.step<=.015,string.format("the hips move at most %.1f mm a tick on the bike (%s)",worst.step*1000,tostring(worst.step_at)))
+        check(worst.step<=.033,string.format("the hips move at most %.1f mm a tick on the bike (%s)",worst.step*1000,tostring(worst.step_at)))
         print(string.format("MEASURE nose manual sweep: knees %.3f off the bars at worst (%s), torso %.3f, lowest joint %.3f, hips %.1f mm a tick at most (%s)",
             worst.legs,tostring(worst.at),worst.torso,worst.ground,worst.step*1000,tostring(worst.step_at)))
+        -- Steered: the bars turned to full lock either way through the same sweep at 2 to 4 m/s, and through the lift at
+        -- 1.6 m/s, below where a nose manual starts; thrown from level riding with the bars turned; and nose manuals
+        -- ridden on a body that moves, held at full lock. Composed still with the bars turned half a radian and the
+        -- hips all the way over at a .23 hold on a bike pitched 28 degrees, the knees came 2.5 cm off the bars. Ridden,
+        -- the kernel keeps a held nose manual's bars to the front contact's path (.19 rad at most here once the hips
+        -- are over); bars turned near half a radian with the hips over come only on a bike pitched little, lifting or
+        -- thrown from level at 1.6 m/s, where the knees have room.
+        worst={legs=math.huge,torso=math.huge,ground=math.huge,miss=0,refused=0,clamped=0,poses=0,over=0,step=0}
+        local turned,turned_over,ridden_over=0,0,0
+        local ridden=false
+        local function steered(w,shown,label)
+            turned=math.max(turned,math.abs(shown.steer or 0))
+            if (shown.rider_over or 0)>=.5 then
+                turned_over=math.max(turned_over,math.abs(shown.steer or 0))
+                if ridden then ridden_over=math.max(ridden_over,math.abs(shown.steer or 0)) end
+            end
+            if w.samples[w.serial-1] then sweep(w,shown,label) end
+        end
+        local plan={}
+        for i=1,20 do plan[#plan+1]={.53,28*i/20,"lifting"} end
+        for _=1,60 do plan[#plan+1]={.53,28,"held"} end
+        for i=1,20 do plan[#plan+1]={0,28*(20-i)/20,"dropping"} end
+        for _=1,40 do plan[#plan+1]={0,0,"riding after"} end
+        for _,row in ipairs({{1,4},{-1,4},{1,3},{-1,2},{1,2},{1,1.6},{-1,1.6}}) do
+            local steer,speed=row[1],row[2]
+            for k=0,23,2 do
+                local w=harness(flat)
+                w.prompt=true
+                local ridden=level();ridden.velocity={0,0,speed}
+                check(steps(w,ridden,3)==nil,"riding before the steered nose manual")
+                w.set_pad(0,steer,true)
+                for _=1,3*k+1 do w.step(ridden) end
+                hips_was=nil
+                for i,leg in ipairs(plan) do
+                    w.set_pad(leg[1],steer)
+                    local out=w.step(nose_down(leg[2],speed))
+                    local what=string.format("steer %.0f at %.1f m/s, start %d, %s, step %d",steer,speed,k,leg[3],i)
+                    check(not out.stop_requested,what..": the nose manual rides on: "..tostring(out.issue))
+                    steered(w,out.presentation_pose,what)
+                end
+            end
+        end
+        for _,row in ipairs({{1,1.6},{-1,1.6},{-.5,2},{-1,3},{1,4}}) do
+            local steer,speed=row[1],row[2]
+            local w=harness(flat)
+            w.prompt=true
+            local ridden=level();ridden.velocity={0,0,speed}
+            check(steps(w,ridden,40)==nil,"riding level before the throw")
+            w.set_pad(.53,steer)
+            hips_was=nil
+            for i=1,60 do
+                local out=w.step(ridden)
+                steered(w,out.presentation_pose,string.format("thrown level, steer %.1f at %.1f m/s, step %d",steer,speed,i))
+            end
+        end
+        local ridden_nose=0
+        ridden=true
+        for _,row in ipairs({{-1,2},{1,3},{-1,4}}) do
+            local steer,speed=row[1],row[2]
+            local w=harness(flat)
+            w.prompt=true
+            local b=World.place(World.terrain.flat(),{speed=speed})
+            hips_was=nil
+            for i=1,200 do
+                if i==41 then w.set_pad(1,steer) elseif i==161 then w.set_pad(0,0) end
+                local out
+                out,b=w.ride_step(b)
+                local what=string.format("ridden at %.0f m/s, steer %.0f, step %d",speed,steer,i)
+                check(not out.stop_requested,what..": the nose manual rides on: "..tostring(out.issue))
+                if w.model.nose_manual_active==true then ridden_nose+=1 end
+                steered(w,out.presentation_pose,what)
+            end
+        end
+        check(ridden_nose>=300 and worst.over==1,"ridden steered nose manuals, the hips over the bars: "..ridden_nose.." steps")
+        check(worst.refused==0 and worst.clamped==0 and worst.miss<=1e-4,string.format("steered, every rider composes, hands and feet on: %d clamped, %.6f off, %s",
+            worst.clamped,worst.miss,tostring(worst.why)))
+        check(turned>=.4,string.format("the bars are drawn turned: %.3f rad",turned))
+        check(worst.legs>=.05,string.format("steered, the knees, thighs and shins stay %.3f off the bars (%s)",worst.legs,tostring(worst.at)))
+        check(worst.step<=.033,string.format("steered, the hips move at most %.1f mm a tick on the bike (%s)",worst.step*1000,tostring(worst.step_at)))
+        print(string.format("MEASURE steered nose manuals: knees %.3f off the bars at worst (%s); bars drawn %.3f rad at most, %.3f with the hips over, %.3f ridden; %d ridden nose manual steps",
+            worst.legs,tostring(worst.at),turned,turned_over,ridden_over,ridden_nose))
     end)
     case(function() -- loop2 in game: the VM stopped at 64 MB after four rides, every Ride of the launch kept.
         -- Luau's weak keys are not ephemerons, and a Ride's api leads back to the Core that holds the Ride.

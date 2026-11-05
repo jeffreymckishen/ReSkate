@@ -418,7 +418,7 @@ function Tests.run()
         f.latest=cleaned();f.stock=504;f.on_ready504=function()return true,2 end
         f.tick();f.await_mount();f.tick()
         check(f.mounts==2 and f.probes>=probes+1260 and f.entry:status().phase=="riding","fresh504 ACK and complete fresh survey precede mount two")
-        check(f.new_calls==1 and f.entry:status().fall_reason==nil,"same bounded manager; fallen display clears only on actual following")
+        check(f.new_calls==1 and f.entry:status().fall_reason==nil,"same bounded manager; the old fall is not shown once mount two rides")
         fall(f,"measured tilt 56.0 deg over the 55 deg Ride stop")
         check(f.entry:status().recovery_available and f.entry:recover() and f.mounts==2,"a second fall recovers like the first, spending another mount")
     end)

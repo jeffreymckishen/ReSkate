@@ -4,8 +4,8 @@
   "flat_file_count": 89,
   "quota_file_count": 90,
   "expected_processes": 47,
-  "expected_cases": 467,
-  "expected_assertions": 42224,
+  "expected_cases": 473,
+  "expected_assertions": 42313,
   "source_admission": "UNCHANGED_FALSE",
   "files": [
     {
@@ -24,7 +24,7 @@
       "source": "Test/two_cycle_entry_tests.lua",
       "destination": "two_cycle_entry_tests.lua",
       "bytes": 83040,
-      "sha256": "3B1EE7FEA20E93D9A0AD6B8C2D1B4D6E08A192BCAD2B57E73C2870FAA4DD47B7"
+      "sha256": "681E3880FDFF462AD9FD1BB79F0FB3E6E2BD731C35BBF6A7CB72B7D7FF5372F6"
     },
     {
       "source": "Test/two_cycle_handoff_tests.lua",
@@ -137,8 +137,8 @@
     {
       "source": "plugin/bmx_playable_entry.lua",
       "destination": "bmx_playable_entry.lua",
-      "bytes": 91441,
-      "sha256": "B705A5FD8A78DEC08A5C2EF03D34699D2F478DDEB71239CE654474EF5463BD63"
+      "bytes": 91727,
+      "sha256": "401E83B296AFB4D0C1D9B9A1574BDB9095752890F610FD0E57C6C827900E2EB7"
     },
     {
       "source": "plugin/ride_r1_record.lua",
@@ -179,8 +179,8 @@
     {
       "source": "plugin/bike_runtime_core.lua",
       "destination": "bike_runtime_core.lua",
-      "bytes": 144858,
-      "sha256": "9BF14B4479FD211944B0B050BD4A28DB682E93A1A6D5FD0D8D1314C67B6AEF68"
+      "bytes": 146784,
+      "sha256": "AE2FB9A2337E16D70691522829FC6EB86A283E41F79D9617337D0F93067DC7C0"
     },
     {
       "source": "plugin/force_math.lua",
@@ -402,8 +402,8 @@
     {
       "source": "Test/core_session_renewable_fixture.lua",
       "destination": "core_session_renewable_fixture.lua",
-      "bytes": 144888,
-      "sha256": "6CC36E4AB5649D43113C75D7A3A1CAE481C091B0D807B4EF6D67D57256542C7F"
+      "bytes": 146814,
+      "sha256": "97DE300BCB16A3723861D5731EBA862C7DAA31FE6F950D55FE6383727160125D"
     },
     {
       "source": "Test/tailwhip_integration_tests.lua",
@@ -528,14 +528,14 @@
     {
       "source": "Test/remount_chain_fixture.lua",
       "destination": "remount_chain_fixture.lua",
-      "bytes": 33162,
-      "sha256": "7A95F9EE92F601F18CAEF812DDDF6D976F86318D65809755E3AF31FA6C4BFD7D"
+      "bytes": 34103,
+      "sha256": "5C75E5C0C00914039279A77055E0FCC55B0F10C05256033580E06FB2287371A7"
     },
     {
       "source": "Test/remount_routes_tests.lua",
       "destination": "remount_routes_tests.lua",
-      "bytes": 37307,
-      "sha256": "C66D3F52962B7A83AE9B064E9FABDEA7372CDFAED8BCBF9F16854242CC901454"
+      "bytes": 49274,
+      "sha256": "03FA690A802DE7C2BBF5B59DD73DEF30C13414B1215DA683409308D8AFB4E66D"
     },
     {
       "source": "Test/bike_physics_tests.lua",
@@ -563,8 +563,8 @@
     },
     {
       "source": "plugin/bike_runtime_core.lua",
-      "bytes": 144858,
-      "sha256": "9BF14B4479FD211944B0B050BD4A28DB682E93A1A6D5FD0D8D1314C67B6AEF68"
+      "bytes": 146784,
+      "sha256": "AE2FB9A2337E16D70691522829FC6EB86A283E41F79D9617337D0F93067DC7C0"
     },
     {
       "source": "plugin/bike_runtime.lua",
@@ -583,8 +583,8 @@
     },
     {
       "source": "plugin/bmx_playable_entry.lua",
-      "bytes": 91441,
-      "sha256": "B705A5FD8A78DEC08A5C2EF03D34699D2F478DDEB71239CE654474EF5463BD63"
+      "bytes": 91727,
+      "sha256": "401E83B296AFB4D0C1D9B9A1574BDB9095752890F610FD0E57C6C827900E2EB7"
     },
     {
       "source": "plugin/board_drop.lua",
@@ -752,8 +752,8 @@
     {
       "source": "plugin/bike_runtime_core.lua",
       "fixture": "Test/core_session_renewable_fixture.lua",
-      "source_sha256": "9BF14B4479FD211944B0B050BD4A28DB682E93A1A6D5FD0D8D1314C67B6AEF68",
-      "fixture_sha256": "6CC36E4AB5649D43113C75D7A3A1CAE481C091B0D807B4EF6D67D57256542C7F",
+      "source_sha256": "AE2FB9A2337E16D70691522829FC6EB86A283E41F79D9617337D0F93067DC7C0",
+      "fixture_sha256": "97DE300BCB16A3723861D5731EBA862C7DAA31FE6F950D55FE6383727160125D",
       "prefix": "return function(require)\n",
       "suffix": "\nend\n"
     }
@@ -1076,8 +1076,8 @@
       "suite": "remount_routes_tests",
       "invoked": "remount_routes_tests",
       "context": "flat",
-      "expected_cases": 35,
-      "expected_assertions": 190
+      "expected_cases": 41,
+      "expected_assertions": 279
     },
     {
       "suite": "bike_physics_tests",

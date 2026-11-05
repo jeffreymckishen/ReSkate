@@ -778,7 +778,8 @@ snapshot=function()
         effect_start_ms=T.effect_at,stop_ms=T.stop_at,stop_reason=T.stop_reason,
         stop_latched=T.stop_latched==true,unloaded=T.unloaded==true,clock_unknown=T.clock_unknown==true,
         storage_fault=T.storage_fault==true,readiness=T.facts,initial_readiness=T.initial_facts,
-        capture_attempted=T.capture_attempted==true,source=source_record(s,true),last_source_step=T.source_record,
+        capture_attempted=T.capture_attempted==true,capture_refusals=T.capture_refusals or 0,capture_refusal=T.capture_refusal,
+        source=source_record(s,true),last_source_step=T.source_record,
         spawn=b,equipment=e,return_position_plan=T.return_position_plan,return_capture_issue=T.return_capture_issue,
         ride_composition_qualified=RIDE_COMPOSITION_QUALIFIED,ride=T.ride_status,
         pose=T.pose_status, -- S2 declared change: the Poser's status and the last sent plan's targets
@@ -1086,6 +1087,13 @@ local function source_cleanup_open(now)
     return T.stop_latched==true and not T.unloaded and not T.clock_unknown
         and finite(now) and finite(start) and now>=start
 end
+-- A capture the SDK refuses reserves nothing: Capture::request changes its state only when it admits, and
+-- native_input_pulse.cpp expects the owner to retry these three after drain with a fresh issued observation. In
+-- loop10 (2026-11-05 00:55) one authority_lost refusal at the fourth Mount latched the stop and spent the chain,
+-- though the Source would have asked again on its next fresh observation. Eight bounds the retries in one cycle; the
+-- Source's own capture watchdog bounds their time.
+local CAPTURE_RETRY_REASONS={authority_lost=true,busy=true,source_stale=true}
+local CAPTURE_REFUSAL_LIMIT=8
 local input_proxy={}
 local input_methods={"lease","lease_read","lease_renew","lease_state","lease_release","lease_acknowledge",
     "lease_capture","lease_capture_state","lease_release_capture","lease_acknowledge_capture"}
@@ -1105,20 +1113,32 @@ for _,method in ipairs(input_methods) do
             follow_stop_once()
         end
         if name=="lease_capture" then
-            if T.capture_attempted or T.stop_latched then latch_stop("second or cancelled capture attempt refused");return false,"one-shot capture only" end
-            T.capture_attempted=true
+            -- One admitted capture a cycle, and none from inside another capture's callback.
+            if T.capture_attempted or T.capture_inflight or T.stop_latched then latch_stop("second or cancelled capture attempt refused");return false,"one-shot capture only" end
+            T.capture_inflight=true
         end
         local r=call(label,lookup(label),...)
+        if name=="lease_capture" then T.capture_inflight=false end
         if cleanup_observation and not source_cleanup_open(clock()) then
             return nil,"bike source cleanup window closed during callback"
         end
         -- Let Source classify known false versus unknown before outer cleanup.
         -- The reason goes with it: loop5 (2026-11-04) latched this at the fifth Mount and the log could not say which.
-        if name=="lease_capture" and not yes(r) then
-            local why=not r[1] and "exception: "..tostring(r[2])
-                or r[2]==false and "refused: "..(type(r[3])=="string" and r[3] or "no reason given")
-                or "malformed result: "..type(r[2]).."/"..tostring(r.n)
-            latch_stop("capture refusal, exception or malformed result ("..why..")")
+        if name=="lease_capture" then
+            local refused=r[1]==true and r[2]==false and r.n<=3 and (r[3]==nil or type(r[3])=="string")
+            -- Only an admitted or unknown capture can have reserved anything, so only those spend the cycle's one,
+            -- and a cycle that was only refused stays untouched for cycle_ready.
+            if refused then T.capture_refusals=(T.capture_refusals or 0)+1;T.capture_refusal=short(r[3] or "no reason given")
+            else T.capture_attempted=true end
+            -- A refusal the SDK expects to be retried goes back to the Source unchanged, which asks again on its next
+            -- fresh observation.
+            local retry=refused and CAPTURE_RETRY_REASONS[r[3]]==true and T.capture_refusals<=CAPTURE_REFUSAL_LIMIT
+            if not yes(r) and not retry then
+                local why=not r[1] and "exception: "..tostring(r[2])
+                    or r[2]==false and "refused: "..(type(r[3])=="string" and r[3] or "no reason given")
+                    or "malformed result: "..type(r[2]).."/"..tostring(r.n)
+                latch_stop("capture refusal, exception or malformed result ("..why..")")
+            end
         end
         if not r[1] then error("input "..name.." callback failed",0) end
         return table.unpack(r,2,r.n)
@@ -2180,7 +2200,9 @@ end
 -- These hooks stay inside one facade-owned experimental factory. They never
 -- expose or recycle native handles, and default Core.new has no such handoff.
 local function cycle_ready(expected,after_attempt)
-    -- A mount refused before it reserved anything has no Follow, visual, pose or board to account for.
+    -- A mount refused before it reserved anything has no Follow, visual, pose or board to account for. That includes
+    -- one whose captures the SDK only refused, as a refusal reserves nothing: in loop10 (2026-11-05 00:55) an
+    -- authority_lost refusal at the fourth Mount stopped the ride, and every Mount after it said the bike was stuck.
     local untouched=T.reserve_attempted~=true and T.handoff_attempted~=true and T.capture_attempted~=true
     -- Nor has one whose create the SDK refused with a retry (bike_spawn.lua create_refusal), so the next Mount can ask
     -- again. Its capture is the Source's to clean up and Spawn's visuals must be removed, but no body was made, handed

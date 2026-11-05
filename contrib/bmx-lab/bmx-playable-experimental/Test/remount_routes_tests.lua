@@ -600,6 +600,168 @@ function T.run()
             "one Y after cleanup reaches the board: "..tostring(w.entry:status().detail))
         check(player_remounts(w),"and the next Mount rides")
     end)
+    -- Ticks until Core latches a stop, then until the Entry has gone back to the board or settled elsewhere.
+    local function until_settled(w)
+        for _=1,1000 do if w.manager:status().stop_latched then break end;w.tick() end
+        for _=1,4000 do local p=w.entry:status().phase;if p=="skateboard" or p=="spent" or p=="blocked" then break end;w.tick() end
+    end
+    local REFUSED="capture refusal, exception or malformed result (refused: "
+    case(function() -- One authority_lost capture refusal, as at loop10's fourth Mount (2026-11-05 00:55): asked again, and rides.
+        local w=Chain.new({create=reusing_sdk})
+        w.on_capture=function(n) if n==1 then return {false,"authority_lost",n=2} end end
+        check(w.entry:mount(),"Mount accepted")
+        local reached,why=w.until_phase("riding")
+        check(reached,"the Source asks again on its next observation and rides: "..tostring(why))
+        w.ride_ms(500)
+        local core=w.manager:status()
+        check(core.phase=="following" and not core.stop_latched and core.source.phase=="capturing"
+            and core.last_source_step and core.last_source_step.input_ok==true,
+            "riding on the captured input: "..tostring(core.phase).." "..tostring(core.stop_reason))
+        check(w.capture_calls==2 and w.captures_admitted==1 and core.capture_attempted==true,"one admitted capture: "..w.capture_calls)
+        check(core.capture_refusals==1 and core.capture_refusal=="authority_lost","the refusal is kept for the log")
+        -- The same at the fourth Mount, a remount after a fall with the parked bike.
+        local v=start({create=reusing_sdk})
+        falls(v,1,3,check)
+        v.on_capture=function(n) if n==4 then return {false,"authority_lost",n=2} end end
+        v.tilt_stop(59.7)
+        for _=1,3000 do v.tick();if riding(v,3) then break end end
+        check(riding(v,3) and v.capture_calls==5 and v.captures_admitted==4,"the fourth Mount rides: "..tostring(v.entry:status().phase)
+            .." "..tostring(v.manager:status().stop_reason))
+        check(v.manager:status().capture_refusals==1 and not v.manager:status().stop_latched,"after one refusal")
+    end)
+    case(function() -- Loop10's shape: three rides and Returns, then a fourth Mount the SDK refuses past the bound.
+        local lines={}
+        local w=start({create=reusing_sdk,log=function(line) lines[#lines+1]=line end});measured(w,0)
+        for used=1,3 do
+            check(w.entry:return_to_skateboard(),"Return "..used.." accepted")
+            for _=1,3000 do w.tick();if w.entry:status().phase=="skateboard" then break end end
+            check(w.entry:status().phase=="skateboard","Return "..used.." reaches the board: "..tostring(w.entry:status().phase))
+            if used<3 then check(player_remounts(w,used),"Mount "..(used+1).." rides");w.ride_ms(500) end
+        end
+        w.on_capture=function() return {false,"authority_lost",n=2} end
+        w.tick(70)
+        check(w.entry:mount(),"Mount 4 accepted")
+        until_settled(w)
+        local core,s=w.manager:status(),w.entry:status()
+        check(core.stop_reason==REFUSED.."authority_lost)","the stop keeps the text trials grep: "..tostring(core.stop_reason))
+        check(told(lines,"Ride ended: "..REFUSED.."authority_lost)"),"and the log says so")
+        check(s.phase=="skateboard" and w.stock==100,"back on the board, not spent: "..tostring(s.phase).." "..tostring(s.detail))
+        check(w.manager:can_prepare_next_mount()==true,"a clean successor is available")
+        check(core.capture_attempted==false,"a refused capture reserved nothing")
+        check(w.capture_calls==12 and w.captures_admitted==3 and core.capture_refusals==9 and core.capture_refusal=="authority_lost",
+            "nine refusals and no capture: "..w.capture_calls)
+        w.on_capture=nil
+        check(player_remounts(w,4) and w.captures_admitted==4,"and Mount 5 rides")
+        -- Eight retryable refusals are each asked again, and the ninth capture rides.
+        for _,why in ipairs({"authority_lost","busy","source_stale"}) do
+            local v=Chain.new({create=reusing_sdk})
+            v.on_capture=function(n) if n<=8 then return {false,why,n=2} end end
+            check(v.entry:mount(),"Mount accepted")
+            local reached,detail=v.until_phase("riding")
+            check(reached and v.capture_calls==9 and v.captures_admitted==1,"eight "..why.." refusals, then rides: "..tostring(detail))
+            check(v.manager:status().capture_refusals==8 and not v.manager:status().stop_latched,"no stop within the bound")
+        end
+    end)
+    case(function() -- A refusal the SDK does not expect retried stops the ride at once, and the next Mount still rides.
+        for _,answer in ipairs({{false,"menu_open",n=2},{false,n=1}}) do
+            local reason=answer[2] or "no reason given"
+            local w=Chain.new({create=reusing_sdk})
+            w.on_capture=function() return answer end
+            check(w.entry:mount(),"Mount accepted")
+            until_settled(w)
+            local core,s=w.manager:status(),w.entry:status()
+            check(core.stop_reason==REFUSED..reason..")" and w.capture_calls==1,"stopped at the first refusal: "..tostring(core.stop_reason))
+            check(s.phase=="skateboard" and w.stock==100,"back on the board, not spent: "..tostring(s.phase).." "..tostring(s.detail))
+            check(core.capture_attempted==false and core.capture_refusals==1 and core.capture_refusal==reason,"which reserved nothing")
+            w.on_capture=nil
+            check(player_remounts(w) and w.captures_admitted==1,"and the next Mount rides")
+        end
+    end)
+    case(function() -- A capture asked for inside another's callback, or after one was admitted, still stops the ride.
+        local w=Chain.new()
+        local inner
+        w.on_capture=function(n,h,epoch) if n==1 then inner=table.pack(w.source_api.lease_capture(h,epoch)) end end
+        check(w.entry:mount(),"Mount accepted")
+        for _=1,400 do w.tick();if w.manager and w.manager:status().stop_latched then break end end
+        local core=w.manager:status()
+        check(inner and inner[1]==false and inner[2]=="one-shot capture only","the reentrant capture is refused")
+        check(core.stop_reason=="second or cancelled capture attempt refused" and w.capture_calls==1 and w.captures_admitted==1,
+            "and stops the ride without reaching the SDK: "..tostring(core.stop_reason))
+        local v=start()
+        local again=table.pack(v.source_api.lease_capture(v.handle,newproxy()))
+        local c=v.manager:status()
+        check(again[1]==false and again[2]=="one-shot capture only" and c.stop_reason=="second or cancelled capture attempt refused",
+            "a second capture after one was admitted is refused: "..tostring(c.stop_reason))
+        check(v.capture_calls==1 and v.captures_admitted==1,"and never reaches the SDK")
+    end)
+    case(function() -- A capture whose outcome is unknown, raised or malformed, still spends the chain.
+        for _,answer in ipairs({"raise","malformed"}) do
+            -- admitted: the SDK took the capture and its answer was lost, so the Source's cleanup can see it end. Without
+            -- it nothing was taken, but nothing can show that either, so the cleanup stays retained.
+            for _,admitted in ipairs({true,false}) do
+                local w=Chain.new({create=reusing_sdk})
+                w.on_capture=function(_,h,epoch)
+                    if admitted then assert(w.admit_capture(h,epoch)) end
+                    if answer=="raise" then error("constructed capture fault",0) end
+                    return {"admitted",n=1}
+                end
+                check(w.entry:mount(),"Mount accepted")
+                until_settled(w)
+                local core,s=w.manager:status(),w.entry:status()
+                local why=answer=="raise" and "exception: constructed capture fault" or "malformed result: string/2"
+                check(core.stop_reason=="capture refusal, exception or malformed result ("..why..")","the same stop: "..tostring(core.stop_reason))
+                check(core.capture_attempted==true and (core.capture_refusals or 0)==0,"an unknown capture spends the cycle's one")
+                check(w.manager:can_prepare_next_mount()~=true,"no clean successor: "..tostring(s.phase))
+                -- With its cleanup seen through, the rider is back on the board and the chain is spent, as before.
+                check(not admitted or s.phase=="spent" and w.stock==100 and core.bike_cleanup_complete==true,
+                    "spent on the board: "..tostring(s.phase).." "..tostring(s.detail))
+                local mounted,told_why=w.entry:mount()
+                check(not mounted and (not admitted or told_why=="The bike is stuck: restart the game to ride again."),
+                    "the next Mount is refused: "..tostring(told_why))
+                for _=1,600 do w.tick() end
+                check(w.capture_calls==1 and w.captures_admitted==(admitted and 1 or 0),"and asks the SDK no more")
+            end
+        end
+    end)
+    case(function() -- The automatic remount after a fall refused for its input: back on the board once, not remounting for ever.
+        -- The fall belongs to the ride that fell. Carried into the remount's stop it read as a second fall, and the mod
+        -- got back on by itself again after every refusal (the capture-retry review, 2026-11-05).
+        for _,variant in ipairs({"capture","lease"}) do
+            local lines={}
+            local w=start({create=reusing_sdk,log=function(line) lines[#lines+1]=line end})
+            local base_lease,leases_refused=w.R.input.lease,0
+            if variant=="capture" then w.on_capture=function(n) if n>=2 then return {false,"authority_lost",n=2} end end
+            else w.R.input.lease=function() leases_refused+=1;return nil,"busy" end end
+            w.tilt_stop(59.7)
+            local back,mounts={},{}
+            for _=1,9000 do
+                w.tick()
+                local s=w.entry:status()
+                mounts[s.attempts_used]=true
+                if s.phase=="skateboard" and s.attempts_used==2 and w.manager:status().stop_latched then back[#back+1]=w.now;break end
+            end
+            for _=1,1500 do w.tick() end
+            local s,core=w.entry:status(),w.manager:status()
+            check(#back==1 and s.phase=="skateboard" and w.stock==100,
+                variant..": the refused remount ends on the board: "..tostring(s.phase).." "..tostring(s.detail))
+            -- Core asks for the lease and the capture before the body, so the refused remount makes no bike.
+            check(s.attempts_used==2 and not mounts[3] and #w.creates==1,variant..": and does not mount again by itself: "
+                ..s.attempts_used.." mounts, "..#w.creates.." creates")
+            check(s.fall_reason==nil and s.recovery_pending==false,variant..": the remount's stop is not a fall: "..tostring(s.fall_reason))
+            check(times_told(lines,"told: The rider came off. Getting back on the bike.")==1
+                and times_told(lines,"told: The ride stopped. Going back to the skateboard.")==1,variant..": the fall is told once, then the stop")
+            if variant=="capture" then
+                check(core.stop_reason==REFUSED.."authority_lost)" and w.capture_calls==10 and w.captures_admitted==1,
+                    "capture: nine refusals, then the stop: "..tostring(core.stop_reason).." "..w.capture_calls)
+                w.on_capture=nil
+            else
+                check(core.stop_latched and leases_refused==1 and w.capture_calls==1 and w.captures_admitted==1,
+                    "lease: one refused lease, and no capture asked for: "..leases_refused.." "..w.capture_calls.." "..tostring(core.stop_reason))
+                w.R.input.lease=base_lease
+            end
+            check(player_remounts(w,2),variant..": and the player's next Mount rides")
+        end
+    end)
     case(function() -- Nothing else going wrong: the mod remounts by itself.
         local w=start();w.tilt_stop(59.7)
         for _=1,3000 do w.tick();if riding(w,1) then break end end

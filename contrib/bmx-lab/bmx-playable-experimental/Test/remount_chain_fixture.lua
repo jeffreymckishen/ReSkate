@@ -143,15 +143,28 @@ function M.new(options)
         w.passive,w.handle,w.sample=nil,nil,nil
         return true
     end
-    function api.lease_capture(h,epoch)
+    local function admit(h,epoch)
         if not owns(h) or w.issued[epoch]~=w.sample.observation_serial then return false,"authority_lost" end
         if w.capture then return false,"busy" end
+        w.captures_admitted+=1
         w.capture=metadata({sequence=w.seq,source_epoch="15",context_generation=w.context,user=0,phase="waiting_neutral",
             reason="none",terminal=false,quarantined=false,generation="20",revision="22",expires_ms=str(w.now+60000),
             publications="0",neutral_releases="0"},"capture")
         w.capture.capture_scope,w.capture.publication_scope="selected_observed_xinput_stream","process_outer_xinput_buffer"
         w.capture.consumption,w.capture.semantic_completion="unobserved","unobserved"
         sync();return true
+    end
+    -- w.on_capture(n,h,epoch) answers the n-th capture request in place of the SDK when it returns a packed result.
+    -- It may also raise, admit first (w.admit_capture) and then answer, or call Core's input proxy (w.source_api)
+    -- again, as an SDK callback could.
+    w.capture_calls,w.captures_admitted,w.admit_capture=0,0,admit
+    function api.lease_capture(h,epoch)
+        w.capture_calls+=1
+        if w.on_capture then
+            local out=w.on_capture(w.capture_calls,h,epoch)
+            if out then return table.unpack(out,1,out.n) end
+        end
+        return admit(h,epoch)
     end
     function api.lease_capture_state(h)
         if not owns(h) or not w.capture then return nil,"unavailable" end
@@ -445,6 +458,10 @@ function M.new(options)
     local overrides={["./bike_spawn"]=not options.create and FakeSpawn or nil,["./mounted_pose"]=FakePose,["./board_drop"]=FakeBoard}
     if options.real_ride then overrides["./ride_runtime"]=require("./ride_runtime_qualified_fixture")
     else overrides["./ride_runtime"]=FakeRide end
+    -- The real Source, keeping the input API Core builds it with (Core's input proxy) so a case can call it as the
+    -- Source does.
+    local LeaseSource=require("./lease_source")
+    overrides["./lease_source"]={new=function(input_api,...) w.source_api=input_api;return LeaseSource.new(input_api,...) end}
     if options.overrides then for k,v in pairs(options.overrides) do overrides[k]=v end end
 
     ---------------- The real chain ----------------

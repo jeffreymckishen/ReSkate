@@ -977,6 +977,10 @@ function Entry.new(R,Runtime,Survey,options)
         end
         if attempts_used==0 and state()~=504 then return tell(STEP_OFF) end
         attempts_used+=1;used=true;generation+=1;stop_told=nil;mount_refunded=false
+        -- A fall belongs to the ride that fell. Kept into this one, a stop before it rides, such as a refused capture or
+        -- lease, read as a second fall and the mod got back on by itself after every refusal (the capture-retry review,
+        -- 2026-11-05).
+        fallen=nil
         terrain_refusals={}
         mount_charged=attempts_used>=2
         local version=generation

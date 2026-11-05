@@ -52,8 +52,18 @@ function Tests.run()
             and controller.pedal_latch.spun_out,"braking inside the band preserves spin-out history")
         check(not step(controller,7.6,{pedal=1,brake=0}).pedaling
             and controller.pedal_latch.spun_out,"brake release cannot bypass the governor")
+        -- A spin-out coasts at least two seconds: until then only a bike half a metre a second under the resume
+        -- threshold pedals again.
+        check(not step(controller,tuning.pedal_resume_speed,{pedal=1}).pedaling
+            and controller.pedal_latch.spun_out,"the resume threshold waits out the least coast")
+        check(step(controller,tuning.pedal_resume_speed-.5,{pedal=1}).pedaling
+            and not controller.pedal_latch.spun_out,"a bike well under the band pedals at once")
+        controller=F.new()
+        check(not step(controller,tuning.pedal_top_speed,{pedal=1}).pedaling,"top speed arms the latch again")
+        for _=1,120 do step(controller,7.5,{pedal=1}) end
+        check(controller.pedal_latch.spun_out,"two seconds inside the band stay coasting")
         check(step(controller,tuning.pedal_resume_speed,{pedal=1}).pedaling
-            and not controller.pedal_latch.spun_out,"the original resume threshold still permits pedaling")
+            and not controller.pedal_latch.spun_out,"after the least coast the original resume threshold still permits pedaling")
     end
     return {cases=cases,assertions=assertions}
 end

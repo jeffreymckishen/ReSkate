@@ -208,6 +208,28 @@ function T.run()
         check(pedaled>0 and pedaled<1140,"the rider pedals and coasts in turn at the top")
         check(changes>=2 and changes<=19,"the cranks start and stop less than once a second: "..changes)
     end)
+    case(function() -- Weaving gently at the top speed, the rider does not start and stop the cranks every half turn.
+        -- Pedal held for 30 s from 7.4 m/s, the stick flipped every 1.5 s, counted after 8 s. The weave swings the rear
+        -- wheel's speed through the whole band, and with stick .5 the rider pedalled .6 s and coasted .9 s, 29 changes
+        -- in 22 s (1.32 a second), and as many with stick .7. With the least coast of 2 s, 14 for both (.64 a second),
+        -- pedalling about 1 s each time, as a straight cruise does.
+        for _,stick in ipairs({.5,.7}) do
+            local changes,last,counted,lowest,highest=0,nil,0,math.huge,0
+            run({steps=1800,speed=7.4,controls=function(step)
+                return {pedal=1,steer=step<=30 and 0 or (math.floor((step-31)/90)%2==0 and stick or -stick)}
+            end,each=function(step,body,out)
+                if step>480 then
+                    counted+=1
+                    if last~=nil and last~=out.pedaling then changes+=1 end
+                    last=out.pedaling
+                    local speed=math.sqrt(body.linear_velocity[1]^2+body.linear_velocity[3]^2)
+                    lowest=math.min(lowest,speed);highest=math.max(highest,speed)
+                end
+            end})
+            check(changes>=2 and changes<counted*h,string.format("stick %.1f: %d changes in %.0f s",stick,changes,counted*h))
+            check(lowest>=6.9 and highest<=7.75,string.format("and the speed keeps to the band: %.2f to %.2f",lowest,highest))
+        end
+    end)
     case(function() -- A coast slows by itself, and speed from a hill is not taken away on the flat.
         local coast=run({steps=600,speed=7.4})
         local speed=M.length(coast.body.linear_velocity)
@@ -220,8 +242,10 @@ function T.run()
     case(function() -- Weaving does not make speed: the lean the rider throws is paid from the bike's speed.
         -- 20 s coasting, the stick flipped from side to side after half a second. Before the balance couple's work was
         -- paid from the speed, full lock flipped every second from 7.5 m/s ended at 6.80 m/s and every 0.75 s at 5.03,
-        -- where a straight coast ended at 3.96; now both end at 2.39. Stick 0.7 every 0.6 s from 6 m/s ends at 2.27
-        -- (2.21 before, 3.08 straight), and stick 0.4 from 5 m/s at 2.17 (2.09 before, 2.43 straight).
+        -- where a straight coast ended at 3.96; paid, both ended at 2.39. Stick 0.7 every 0.6 s from 6 m/s ended at 2.27
+        -- (2.21 before, 3.08 straight), and stick 0.4 from 5 m/s at 2.17 (2.09 before, 2.43 straight). Measured again
+        -- before the lean came to give back only what it owed, they ended at 2.37, 2.36, 2.24 and 2.16, and now at
+        -- 2.37, 2.35, 1.93 and 2.01: the quicker weaves lose more.
         local function flat(body) return math.sqrt(body.linear_velocity[1]^2+body.linear_velocity[3]^2) end
         local straight={}
         local function coast(speed,stick,every)
@@ -249,6 +273,35 @@ function T.run()
             check(fastest<=7.75,string.format("pedalled with stick %.1f flipped every %.2f s, the bike tops out at %.2f m/s",flip.stick,flip.every*h,fastest))
         end
     end)
+    case(function() -- A knock from the side does not push the bike on: the lean gives back only what it took.
+        -- Coasting straight, a knock about the roll axis, then 2 s more, its speed along its heading. When the couple's
+        -- catch was given back in full it sent the bike on faster than it was going: 2.5 rad/s at 1.2 m/s by .23 m/s,
+        -- at 1.6 by .23 and at 3 by .12. Owing only what the couple took, a knock three seconds after 6 s of weaving at
+        -- 6 m/s still did, by .08, until a lean that has stopped moving owed nothing. Now none goes faster than at the
+        -- knock: the most is .004 m/s slower, rolling resistance's.
+        local function along(body)
+            local f=M.turn(M.normalized(body.orientation),{0,0,1})
+            return (f[1]*body.linear_velocity[1]+f[3]*body.linear_velocity[3])/math.sqrt(f[1]^2+f[3]^2)
+        end
+        local function knocked(speed,at,rate,steer)
+            local start,most=nil,-math.huge
+            run({steps=at+120,speed=speed,controls=function(step,body)
+                if step==at then
+                    start=along(body)
+                    local f=M.turn(M.normalized(body.orientation),{0,0,1})
+                    body.angular_velocity=M.add(body.angular_velocity,M.mul(M.unit({f[1],0,f[3]}),rate))
+                end
+                return {steer=steer and steer(step) or 0}
+            end,each=function(step,body) if start and step>at then most=math.max(most,along(body)-start) end end})
+            return most
+        end
+        for _,speed in ipairs({.8,1.2,1.6,2,3}) do for _,rate in ipairs({2,2.5,3,-2.5}) do
+            local gain=knocked(speed,3,rate)
+            check(gain<=.001,string.format("a %.1f rad/s knock at %.1f m/s gains %+.3f m/s",rate,speed,gain))
+        end end
+        local gain=knocked(6,540,2.5,function(step) return step>30 and step<=360 and (math.floor((step-31)/36)%2==0 and .7 or -.7) or 0 end)
+        check(gain<=.001,string.format("a knock 3 s after a weave gains %+.3f m/s",gain))
+    end)
     case(function() -- Manuals, nose manuals and a landing's first steps keep their own laws: the lean is not paid there.
         -- The steps on both wheels are the ones that matter: a manual's first, a nose manual's first two and the landing's
         -- one step of recovery were paid before they were left out, and the weave around them still is.
@@ -271,13 +324,16 @@ function T.run()
         check(held>0 and paid==0 and two>0,string.format("a steered landing: %d steps, %d paid; %d paid on two wheels",held,paid,two))
     end)
     case(function() -- Corners: tighter than the old 11 m at speed, leaned as far as the speed asks.
-        local radius,lean
-        run({steps=420,speed=7.4,controls=function(step) return {steer=-1,pedal=1} end,each=function(step,body,out)
-            if step==420 then
+        -- The radius breathes with the pedal, 8.18 to 9.52 m from 5 to 10 s, so its mean there is held, 8.82 m. One step
+        -- at 7 s was, and read 9.19, then 9.22 once the lean gave back only what it owed with the mean unchanged.
+        local radius,lean,samples=0,0,0
+        run({steps=600,speed=7.4,controls=function(step) return {steer=-1,pedal=1} end,each=function(step,body,out)
+            if step>=300 then
                 local v=M.length(body.linear_velocity)
-                radius=v/math.abs(body.angular_velocity[2]);lean=tilt_of(body)
+                radius+=v/math.abs(body.angular_velocity[2]);lean+=tilt_of(body);samples+=1
             end
         end})
+        radius/=samples;lean/=samples
         check(radius<9.2 and radius>8,"radius at top speed: "..radius)
         check(lean>21 and lean<30,"lean at top speed: "..lean)
     end)
@@ -666,7 +722,8 @@ function T.run()
         -- lock and brake_lateral_cut .25 went in, which this ride meets: it starts at 2 m/s and brakes while it steers,
         -- and again when the full hop came down from 1 m to .61 m (hop_delta_speed 4.5 to 3.55), which changes both
         -- hops and all that follows them, and again when the balance couple's work on the lean came to be paid
-        -- from the speed, which this ride's weave does on two wheels, and again when brake_lateral_cut came to .2.
+        -- from the speed, which this ride's weave does on two wheels, and again when brake_lateral_cut came to .2, and
+        -- again when the lean came to give back only what the couple put into it while it still moves.
         local hash=2166136261
         local function mix(x)
             local text=string.format("%.17g",x)
@@ -683,7 +740,7 @@ function T.run()
         end})
         for i=1,3 do mix(ride.body.center_of_mass[i]) end
         check(sent==900 and ride.refused==0,"every step of the ordinary ride is sent: "..sent)
-        check(hash==0xd1031528,string.format("ordinary riding is unchanged: digest %08x",hash))
+        check(hash==0x57ebaccb,string.format("ordinary riding is unchanged: digest %08x",hash))
     end)
     -- Manuals. The pitch is the body's own, nose up positive, from the surface under the bike when one is given.
     local function pitch_of(body,ground)

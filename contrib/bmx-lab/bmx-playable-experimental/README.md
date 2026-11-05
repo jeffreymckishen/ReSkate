@@ -92,7 +92,9 @@ offline the game does not keep it, so set it again each launch.
   skateboard." The rider goes back to the skateboard on their own once the menu is closed and the controls are
   released. Then hold LB and press A to ride again.
 - Top speed is about 7.7 m/s on the flat. The rider stops pedalling there and coasts down to about 7.2 m/s before
-  pedalling again. A hill can take the bike much faster than that, and a coast slows by itself.
+  pedalling again, and coasts for two seconds at least unless the bike slows under about 6.7 m/s first, so weaving at
+  top speed does not start and stop the cranks every half turn. A hill can take the bike much faster than that, and a
+  coast slows by itself.
 - Whenever the rider stops pedalling, coasting, at top speed or in a manual, the cranks come round to level, feet
   at 3 and 9 o'clock, within about half a second at 1 m/s and up: back, as a rider backpedals, or forward with
   the back wheel when that is sooner. A tap of A from level cranks finishes its half stroke forward with the back
@@ -110,7 +112,10 @@ offline the game does not keep it, so set it again each launch.
   by about a fifth on the flat and up to a third down a steep street, then tightens as the bike slows, rather than
   running wide.
 - Weaving does not make speed. Throwing the bike from lean to lean is paid from its speed, so a coast weaving from
-  side to side slows a little faster than a straight one, and pedalling through a weave still stops at top speed.
+  side to side slows faster than a straight one: a little for small throws of the stick, much faster at full lock.
+  Coasting 20 s from 7.5 m/s, a straight line ends at about 4 m/s, a small quick weave at about 3.7 and full lock
+  flipped every second at about 2.4. A knock from the side never pushes the bike on. Pedalling through a weave still
+  stops at top speed.
 - Pedalling has a rider's power, not a motor's. Up a ramp steeper than about 15% the bike slows with A held, the
   steeper the slower, while the city's hills still climb at close to full speed.
 - Riding into a kerb costs some speed as each tyre strikes it, more for a taller one. Hop clear of its top to keep

@@ -13,6 +13,10 @@ local MAXIMUM_CAMBER=.8
 -- The balance couple's work is paid from the speed only above a walk: below BALANCE_WORK_FADE_LOW m/s there is too
 -- little speed to pay a lean from, and it is all paid from BALANCE_WORK_FADE_LOW+BALANCE_WORK_FADE_SPAN m/s up.
 local BALANCE_WORK_FADE_LOW,BALANCE_WORK_FADE_SPAN,BALANCE_WORK_SHARE=.5,1,.25
+-- What the couple's work gave the lean is given back as speed only as far as it was taken from the speed, and only
+-- while the lean it went into is still moving: what is owed is held under BALANCE_CREDIT_ROLL times the roll's
+-- kinetic energy about the tyres.
+local BALANCE_CREDIT_ROLL=4
 local steering_axis={0,.9601196050643921,-.2795896530151367} -- the source float coefficients
 -- Hop-only authored landing policy. The compliance arithmetic comes from our
 -- native contact_compliance.h; earlier braking from a fresh measured ray is a
@@ -265,17 +269,32 @@ end
 -- spin back up, while a bike that coasted down from above can be pedaled at
 -- once. The rear drive, the pump's pedal factor and the composer's drawn crank
 -- all read this one decision.
--- s={enabled,pedal,motor_speed,top_speed,resume_speed}; previous is nil or a
--- pedal_state().
-function F.pedal_state() return {spun_out=false} end
+-- Once spun out the rider coasts at least PEDAL_LEAST_COAST seconds, unless the
+-- bike slows PEDAL_EARLY_RESUME under resume_speed first. Weaving at the top
+-- speed swings the rear wheel's speed through the whole band: with stick .5
+-- flipped every 1.5 s it ran 7.09 to 7.74 m/s, and the rider started and
+-- stopped 29 times in 22 s (1.32 a second), pedalling .6 s and coasting .9 s.
+-- A straight cruise coasts 2.1 s each time, so 2 s leaves it as it was.
+-- s={enabled,pedal,motor_speed,top_speed,resume_speed,seconds}, seconds the
+-- step's length; previous is nil or a pedal_state().
+local PEDAL_LEAST_COAST,PEDAL_EARLY_RESUME=2,.5
+function F.pedal_state() return {spun_out=false,coasted=0} end
 function F.pedal_cadence(previous,s)
     local refused=table.freeze({valid=false,pedaling=false,spun_out=false})
-    if previous~=nil and (type(previous)~="table" or type(previous.spun_out)~="boolean") then return refused,F.pedal_state() end
+    if previous~=nil and (type(previous)~="table" or type(previous.spun_out)~="boolean" or
+        (previous.coasted~=nil and (not M.finite(previous.coasted) or previous.coasted<0))) then return refused,F.pedal_state() end
     if type(s)~="table" or type(s.enabled)~="boolean" or not M.finite(s.pedal) or s.pedal<0 or s.pedal>1 or
         not M.finite(s.motor_speed) or s.motor_speed<0 or s.motor_speed>1e6 or not M.finite(s.top_speed) or
-        not M.finite(s.resume_speed) or s.resume_speed<0 or s.resume_speed>=s.top_speed or s.top_speed>50 then return refused,F.pedal_state() end
-    local spun=(s.enabled and s.pedal>0 and s.motor_speed>=s.top_speed) or (previous~=nil and previous.spun_out and s.motor_speed>s.resume_speed)
-    return table.freeze({valid=true,pedaling=s.enabled and s.pedal>0 and not spun,spun_out=spun}),{spun_out=spun}
+        not M.finite(s.resume_speed) or s.resume_speed<0 or s.resume_speed>=s.top_speed or s.top_speed>50 or
+        not M.finite(s.seconds) or s.seconds<0 or s.seconds>1 then return refused,F.pedal_state() end
+    local was=previous~=nil and previous.spun_out
+    -- A latch kept without its time, as one from before it was kept, counts as having coasted.
+    local coasted=was and (previous.coasted or PEDAL_LEAST_COAST)+s.seconds or 0
+    local resume=coasted>=PEDAL_LEAST_COAST and s.resume_speed or s.resume_speed-PEDAL_EARLY_RESUME
+    local armed=s.enabled and s.pedal>0 and s.motor_speed>=s.top_speed
+    local spun=armed or (was and s.motor_speed>resume)
+    if not was then coasted=0 end
+    return table.freeze({valid=true,pedaling=s.enabled and s.pedal>0 and not spun,spun_out=spun}),{spun_out=spun,coasted=spun and coasted or 0}
 end
 function F.new(tuning)
     local out=setmetatable({tuning=F.tuning(tuning)},Controller) out:reset() return out
@@ -287,8 +306,8 @@ end
 -- how long the rider's throw has been in use, whether the front has come up
 -- since it left the ground, the ground the lift started from, and whether a
 -- manual slowed to a walk with the stick still held. The nose manual's state
--- is kept the same way.
-function Controller:reset() self.last_hop_event=0 self.normals={{},{}} self.landing_impact={false,false} self.travel_direction=0 self.air={} self.steering={} self.pump=Pump.new() self.pump:reset() self.pedal_latch=F.pedal_state() self.brake_share=0 self.brake_squeeze=0 self.manual_engaged=false self.manual_throw_seconds=0 self.manual_risen=false self.manual_slowed=false self.manual_ground=nil
+-- is kept the same way, and so is what the lean owes the speed.
+function Controller:reset() self.last_hop_event=0 self.normals={{},{}} self.landing_impact={false,false} self.travel_direction=0 self.air={} self.steering={} self.pump=Pump.new() self.pump:reset() self.pedal_latch=F.pedal_state() self.brake_share=0 self.brake_squeeze=0 self.lean_credit=0 self.manual_engaged=false self.manual_throw_seconds=0 self.manual_risen=false self.manual_slowed=false self.manual_ground=nil
     self.nose_engaged=false self.nose_throw_seconds=0 self.nose_risen=false self.nose_slowed=false self.nose_ground=nil
     self.nose_catch_spent=0 self.nose_air_clock=-1 self.nose_air_target=0 self.nose_bars_on_path=false end
 function Controller:invalidate_continuity()
@@ -318,6 +337,8 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     local prior_manual=self.manual_engaged==true
     local prior_throw=M.finite(self.manual_throw_seconds) and math.max(0,self.manual_throw_seconds) or 0
     local prior_risen=self.manual_risen==true
+    local prior_credit=M.finite(self.lean_credit) and math.max(0,self.lean_credit) or 0
+    local credit=0
     local prior_slowed=self.manual_slowed==true
     local prior_ground=M.unit(self.manual_ground)
     local prior_nose=self.nose_engaged==true
@@ -738,7 +759,7 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     -- stay still with it, and the top-speed latch is left as it was. A nose
     -- manual coasts too: its driven rear wheel is in the air.
     local cadence,next_latch=F.pedal_cadence(prior_latch,{enabled=c.enabled,pedal=(braking or manual_engaged or nose_engaged) and 0 or math.clamp(c.pedal,0,1),motor_speed=motor_speed,
-        top_speed=t.pedal_top_speed,resume_speed=t.pedal_resume_speed})
+        top_speed=t.pedal_top_speed,resume_speed=t.pedal_resume_speed,seconds=h})
     if not cadence.valid then return out end out.pedaling=cadence.pedaling
     local pedal_scale=math.clamp((t.pedal_cutoff-motor_speed)/(t.pedal_cutoff-t.pedal_fade_start),0,1)
     -- Torque times wheel speed is the rider's power; past rider_power the push falls as the bike goes faster.
@@ -882,7 +903,7 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     -- through the tyres' side forces. In the bike_physics_tests harness, 20 s of coasting from 7.5 m/s with full
     -- lock flipped every second took about 4 kJ from the couple and ended at 6.80 m/s where a straight coast ended
     -- at 3.96; paid as below, it ends at 2.39. So the work the couple does on the lean this step is taken from the speed along the ground, and work
-    -- it takes out is given back. Only the lean: the tyres hold the pitch, and charging the couple's pitch work cost
+    -- it takes out is given back as far as it is owed. Only the lean: the tyres hold the pitch, and charging the couple's pitch work cost
     -- speed over a 2 cm step in the road. Only on both wheels: a nose manual steered at 7 m/s into a face turned 15
     -- degrees went over sideways (66.6 degrees) when the steps on one wheel were charged too. The first steps of a
     -- touchdown belong to the landing, so manuals, nose manuals and landings keep their own laws.
@@ -899,9 +920,25 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
         local fade=math.clamp((math.abs(along)-BALANCE_WORK_FADE_LOW)/BALANCE_WORK_FADE_SPAN,0,1) fade=fade*fade*(3-2*fade)
         if fade>0 then
             -- Never more than a quarter of the speed in one step, so one hard catch cannot stop or launch the bike.
+            -- Work the couple takes back out of the lean is given back only up to what is owed: the work it put in,
+            -- charged from the speed. A lean something else gave the bike, a knock from the side, owes nothing, and its
+            -- catch is the rider's to soak up. Given back in full, a knock of 2.5 rad/s about the roll axis rolling
+            -- straight at 1.2 m/s sent the bike on .23 m/s faster than it was going, at 1.6 m/s .23 and at 3 m/s .12;
+            -- owed, it gains nothing. A lean that has stopped moving owes nothing either: without that a weave's credit
+            -- was kept, and a knock three seconds after 6 s of weaving at 6 m/s still sent the bike on .08 m/s faster.
+            -- The roll's own kinetic energy (.5 times) is too tight: a coast from 7.5 m/s weaving full lock every second
+            -- ended at 1.41 m/s against 2.37 owed in full. 2 times ended a weave of .7 every .6 s from 6 m/s at 1.87, 4
+            -- and 8 times both at 1.93 (2.24 owed in full), so at 4 the cap only bites as the lean stops.
             local share=BALANCE_WORK_SHARE*math.abs(along)
-            prediction.linear_velocity=M.add(prediction.linear_velocity,M.mul(forward,math.clamp(-work*fade/(measured.mass*along),-share,share)))
-            out.balance_work=work*fade
+            local rate=M.dot(measured.angular_velocity,forward)
+            local owed=math.min(prior_credit,BALANCE_CREDIT_ROLL*inertia*rate*rate)
+            local paid=-work*fade
+            if paid>0 then paid=math.min(paid,owed) end
+            local dv=math.clamp(paid/(measured.mass*along),-share,share)
+            prediction.linear_velocity=M.add(prediction.linear_velocity,M.mul(forward,dv))
+            local energy=measured.mass*along*dv
+            credit=math.max(0,owed-energy)
+            out.balance_work=-energy
         end
     end
     local new_event=c.hop_event_id>self.last_hop_event
@@ -956,7 +993,7 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     local loaded=false for i=1,2 do loaded=loaded or (out.normal_load[i]>0 and F.eligible_support(measured,samples[i],.005,t.maximum_penetration)) end
     if loaded and not out.hop_applied then reservation(air,c.recovery_step_verified,c.enabled,true,intent,launch) end
     self.air=air out.air_rotation_reserved=air.reserved==true if c.enabled then self.steering={valid=true,angle=out.front_steer_angle} end
-    self.brake_share=brake_share self.brake_squeeze=brake
+    self.brake_share=brake_share self.brake_squeeze=brake self.lean_credit=credit
     out.manual_active=manual_engaged out.manual_offset=manual_d self.manual_engaged=manual_engaged self.manual_slowed=slowed
     self.manual_throw_seconds=manual_engaged and not front_support and manual_d>t.manual_hold_back and prior_throw+h or 0
     self.manual_risen=risen self.manual_ground=manual_ground
@@ -1002,7 +1039,8 @@ end
 function Controller:_adopt(other)
     self.last_hop_event=other.last_hop_event self.normals=other.normals self.landing_impact=other.landing_impact self.travel_direction=other.travel_direction
     self.air=other.air self.steering=other.steering self.pump=other.pump self.pedal_latch=other.pedal_latch
-    self.brake_share=other.brake_share self.brake_squeeze=other.brake_squeeze self.manual_engaged=other.manual_engaged
+    self.brake_share=other.brake_share self.brake_squeeze=other.brake_squeeze self.lean_credit=other.lean_credit
+    self.manual_engaged=other.manual_engaged
     self.manual_throw_seconds=other.manual_throw_seconds self.manual_risen=other.manual_risen self.manual_slowed=other.manual_slowed
     self.manual_ground=other.manual_ground
     self.nose_engaged=other.nose_engaged self.nose_throw_seconds=other.nose_throw_seconds self.nose_risen=other.nose_risen

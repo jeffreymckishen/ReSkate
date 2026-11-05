@@ -669,7 +669,7 @@ function T.run()
         end})
         for i=1,3 do mix(ride.body.center_of_mass[i]) end
         check(sent==900 and ride.refused==0,"every step of the ordinary ride is sent: "..sent)
-        check(hash==0x00000000,string.format("ordinary riding is unchanged: digest %08x",hash))
+        check(hash==0xe0e292b9,string.format("ordinary riding is unchanged: digest %08x",hash))
     end)
     -- Manuals. The pitch is the body's own, nose up positive, from the surface under the bike when one is given.
     local function pitch_of(body,ground)
@@ -1505,7 +1505,10 @@ function T.run()
     end)
     case(function() -- Carved into from a turn on both wheels, the bars come back to the front wheel's path in a few steps.
         -- Cut to that path in one step, they snapped .17 to .18 rad at full lock and .09 at half as the rear came up.
-        for _,speed in ipairs({1.8,2.5,4,7}) do
+        -- The slowest is 2 m/s. From 1.8 the second at the walk's full lock (walk_lock) before the stick, its turn-in paid
+        -- from the speed, left the bike at 1.53 m/s, its speed along its heading under manual_start_speed, so the nose
+        -- manual rightly did not lift; 1.57 with the wider lock alone.
+        for _,speed in ipairs({2,2.5,4,7}) do
             for _,steer in ipairs({1,.5,-1}) do
                 local what=string.format("steer %.1f at %.1f m/s",steer,speed)
                 local last,worst,engaged=nil,0,0

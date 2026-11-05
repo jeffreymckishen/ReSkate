@@ -105,10 +105,14 @@ offline the game does not keep it, so set it again each launch.
   taps turn the cranks on forward and never back: taps 1 to 6 steps long, every 8 to 45 steps, from 2 to 7 m/s
   never turned them back in 6 s of each. Slower, the wheel cannot bring them round in time and the rider backpedals a tap back to
   level. Stopped, the rider backpedals at most a quarter turn to the nearer level; when that is the level ahead,
-  which only the wheel can bring them to, they stay where they are. Rolling backward, the back wheel takes the
-  cranks round backward with it at its own pace. The rider backpedals faster than that only to a level behind that
-  the wheel would take more than two seconds to bring them to, as when it has all but stopped, or to finish a
-  backpedal already started. They never turn the wheel. Pedalling again starts them from there.
+  which only the wheel can bring them to, they stay where they are, and a push of A from there is a stroke to
+  it: from cranks stopped 6 to 47 degrees short, A held to 1.75 or 2.35 m/s and let go finishes forward. Rolling
+  backward, the back wheel takes the cranks round backward with it at its own pace, however slowly it rolls. The
+  rider backpedals faster than that only to finish a backpedal already started, or once the wheel has stopped to the
+  eye, turning the cranks under 2 degrees a second (the bike rolling back under about 2.5 cm/s) for a tenth of a
+  second, and then at most a quarter turn, to the level behind. Rolled back on the flat from 0.4 to 2.5 m/s to a
+  stop, the cranks turned exactly with the wheel on every step it turned them faster than that. They never turn the
+  wheel. Pedalling again starts them from there.
 - Into a manual or a nose manual the rider stands up on the pedals over about half a second, and the hips follow
   where the physics puts the weight, about a fifteenth of a second behind it: a manual's throw is drawn two thirds
   of the way in a tenth of a second and all of it in about a third. They move back and sit down the same way after
@@ -128,10 +132,17 @@ offline the game does not keep it, so set it again each launch.
   kernel's own harness), and full lock up to 0.32 m/s faster; at 2 m/s full lock gains 0.05 and at 6 m/s 0.12.
   Rolling straight, a knock from the side never pushes the bike on. In a corner or a weave a knock can give back
   some of the speed the lean already took. In a corner held at full lock it gets at most about 0.03 m/s over the
-  speed at the knock at 2 m/s, and about 0.02 m/s at a walk; at half lock about 0.01 m/s. By the end of a weave the
-  bike can be up to about 0.065 m/s faster than the same weave unknocked, full lock flipped every second at 2 m/s
-  (0.19 m/s for a moment), 0.03 at 3 m/s, and about 0.02 with the stick at 0.7 from 2 to 6 m/s. Those are for
-  knocks that roll the bike at 2 to 3 rad/s. Pedalling through a weave still stops at top speed.
+  speed at the knock at 2 m/s, and about 0.02 m/s at a walk; at half lock about 0.01 m/s. In a weave it depends most
+  on how slowly the stick is flipped. Coasting weaves from 2 to 7 m/s, the stick at half, 0.7 or full lock flipped
+  every 0.6 to 2.5 s, knocked either way at 2 to 3 rad/s at six points of the weave, and kept where neither bike
+  tipped past 30 degrees: 3 s after the knock the bike was up to about 0.15 m/s faster than the same weave unknocked
+  with the stick flipped every second or faster (0.065 at 2 m/s, full lock), up to 0.22 flipped every 1.1 to 1.5 s,
+  and up to about 0.5 flipped every 1.7 to 1.9 s at 5.5 to 7 m/s at full lock (0.4 with the stick at 0.7, 0.24 at
+  half); slower than 1.5 s at 2 to 3.5 m/s at most 0.27, at 4 to 5 m/s 0.36. For a moment the knocked weave was up
+  to 0.57 m/s faster. At speed most of that is the knock moving the weave against the stick, not speed it gives:
+  in the 1.5 s after a knock the bike rose at most 0.27 m/s over its speed at the knock beyond what the unknocked
+  weave rose (2.5 to 3 m/s, full lock every 1.7 to 1.8 s), and at 5.5 to 7 m/s at most 0.15. These are the kernel
+  harness's figures. Pedalling through a weave still stops at top speed.
 - Pedalling has a rider's power, not a motor's. Up a ramp steeper than about 15% the bike slows with A held, the
   steeper the slower, while the city's hills still climb at close to full speed.
 - Riding into a kerb costs some speed as each tyre strikes it, more for a taller one. Hop clear of its top to keep

@@ -4,8 +4,8 @@
   "flat_file_count": 89,
   "quota_file_count": 90,
   "expected_processes": 47,
-  "expected_cases": 487,
-  "expected_assertions": 162666,
+  "expected_cases": 489,
+  "expected_assertions": 178073,
   "source_admission": "UNCHANGED_FALSE",
   "files": [
     {
@@ -227,14 +227,14 @@
     {
       "source": "plugin/ride_runtime.lua",
       "destination": "ride_runtime.lua",
-      "bytes": 150736,
-      "sha256": "6750B49B32DD80C5CA97E56559BFAEE455F3BA81828A703974950415E8339FA7",
+      "bytes": 152693,
+      "sha256": "01C561E4A920E298E78E6ABCB9AC74288B9E2E89D5B50348EDAF2BB5651B54DF",
       "test_transform": {
         "kind": "inert_raw_ride_fixture",
         "before": "local ACTIVATION_QUALIFIED = true",
         "after": "local ACTIVATION_QUALIFIED = false",
-        "bytes": 150737,
-        "sha256": "486D8D6101D72BA63ADEBF21BCA39DA0AECDDFA639A2460886FB301A0AA43FB4"
+        "bytes": 152694,
+        "sha256": "9EBD0858252ED7D5DEEBC3825628B02652F17C54C2C6FDAF47975F397B584603"
       }
     },
     {
@@ -282,8 +282,8 @@
     {
       "source": "plugin/forces.lua",
       "destination": "forces.lua",
-      "bytes": 95690,
-      "sha256": "7A055497E4EE882C470F1F769D799912192825AF7C8B2454BD9EC58684013880"
+      "bytes": 96293,
+      "sha256": "BA4010762CFA701199B56FEBC70493440018321846894A514455D34EF07E1CEA"
     },
     {
       "source": "plugin/ride_inflight.lua",
@@ -390,8 +390,8 @@
     {
       "source": "plugin/ride_runtime.lua",
       "destination": "ride_runtime_qualified_fixture.lua",
-      "bytes": 150736,
-      "sha256": "6750B49B32DD80C5CA97E56559BFAEE455F3BA81828A703974950415E8339FA7"
+      "bytes": 152693,
+      "sha256": "01C561E4A920E298E78E6ABCB9AC74288B9E2E89D5B50348EDAF2BB5651B54DF"
     },
     {
       "source": "Test/barspin_rider_pose_integration_tests.lua",
@@ -546,8 +546,8 @@
     {
       "source": "Test/ride_fall_tests.lua",
       "destination": "ride_fall_tests.lua",
-      "bytes": 156785,
-      "sha256": "2EF647EDD0323AB4EA0BEE83101453FE33E624F5A95AD581611C37447D8FCF96"
+      "bytes": 171125,
+      "sha256": "06BF6C35BEFAD1E44E3EA2CCEB72298ACB0D9572AB33197F2C63D63A191323B8"
     }
   ],
   "runtime_files": [
@@ -638,8 +638,8 @@
     },
     {
       "source": "plugin/forces.lua",
-      "bytes": 95690,
-      "sha256": "7A055497E4EE882C470F1F769D799912192825AF7C8B2454BD9EC58684013880"
+      "bytes": 96293,
+      "sha256": "BA4010762CFA701199B56FEBC70493440018321846894A514455D34EF07E1CEA"
     },
     {
       "source": "plugin/frame_identity.lua",
@@ -693,8 +693,8 @@
     },
     {
       "source": "plugin/ride_runtime.lua",
-      "bytes": 150736,
-      "sha256": "6750B49B32DD80C5CA97E56559BFAEE455F3BA81828A703974950415E8339FA7"
+      "bytes": 152693,
+      "sha256": "01C561E4A920E298E78E6ABCB9AC74288B9E2E89D5B50348EDAF2BB5651B54DF"
     },
     {
       "source": "plugin/tire.lua",
@@ -703,8 +703,8 @@
     },
     {
       "source": "README.md",
-      "bytes": 15556,
-      "sha256": "FD570CC050203C203B1842BD1FD7B7CAE32D54C9152D0A35DBD32FDE02BAD8D8"
+      "bytes": 16752,
+      "sha256": "3E6323F14F987C445234EF9B2C130937D75F3A03B4B742680EE66FCD3C3FF012"
     },
     {
       "source": "reskate-plugin.json",
@@ -1090,8 +1090,8 @@
       "suite": "ride_fall_tests",
       "invoked": "ride_fall_tests",
       "context": "flat",
-      "expected_cases": 74,
-      "expected_assertions": 134696
+      "expected_cases": 76,
+      "expected_assertions": 150103
     }
   ]
 }

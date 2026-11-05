@@ -63,6 +63,8 @@ local function harness(ground)
     function force.preview(_,...)
         w.controls=select(5,...)
         local model,candidate=stage:preview(...)
+        -- w.no_cadence reports no pedal latch, as ForceStage's zero stage does.
+        if w.no_cadence and model then model=table.clone(model);model.pedaling=nil end
         w.model=model
         return model,candidate
     end
@@ -1853,19 +1855,24 @@ function T.run()
         check(followed>=2*24*25,"the wheel rolls back under them: "..followed)
         -- A held while the bike slows to a crawl and stops, or on through the stop to rolling back, and let go on the
         -- way: the rider backpedals at most a quarter turn, and once the wheel turns back the cranks go with it at its
-        -- own pace, never slower, and faster only to a level behind that the wheel would not bring them to within 2
-        -- s, or to finish a backpedal already under way. Chosen as the level reached sooner, cranks let go 2.7 to 31
-        -- degrees short of the level ahead as the bike stopped at a crawl were backpedalled 114 to 177 degrees, and
-        -- rolling back they were sent to the level behind at the backpedal's 7 rad/s, 4.4 times the wheel's pace.
+        -- own pace, never slower, and faster only once it has stopped to the eye (under 2 degrees a second of the
+        -- cranks), or to finish a backpedal already under way. Chosen as the level reached sooner, cranks let go 2.7
+        -- to 31 degrees short of the level ahead as the bike stopped at a crawl were backpedalled 114 to 177 degrees,
+        -- and rolling back they were sent to the level behind at the backpedal's 7 rad/s, 4.4 times the wheel's pace.
         -- Rolled back and stopped from step rise on, they end level or short of the level ahead, the nearer: held to
         -- the wheel whenever it turned back at all, 47 of these 72 rides were left up to 88 degrees past the level
-        -- behind, the rear still turning back at .007 rad/s a second after the stop.
-        local crawl_back,crawl_rows,crawl_stopped=0,0,0
+        -- behind, the rear still turning back at .007 rad/s a second after the stop. Rolled back steadily at .2 m/s
+        -- for 5 s from four starts, the cranks turn exactly with the wheel from a third of a second after the bike
+        -- comes to that speed: let backpedal to a level behind that the wheel would take more than 2 s to bring them
+        -- to, they were dragged a quarter turn past level and kicked back to it at 7 rad/s, over and over, and taken
+        -- from one step of the posed rear wheel's .034 and .58 rad/s, they were kicked back at step 390 of start 0.
+        -- At .35 and .5 m/s, 24 starts each over 12 and 10 s, they turned with the wheel on every step the same way.
+        local crawl_back,crawl_rows,crawl_stopped,steady,kicked=0,0,0,0,0
         for _,row in ipairs({{1.2,1,.3,0},{1.2,1,.45,0},{1.2,1,.6,0},{1.2,2,.45,0},{1.5,2,.3,-1.5},{1.5,2,.6,-1.5},
-            {1.5,2,.3,-1.5,120},{1.5,2,.6,-1.5,120},{1.2,2,.45,-1,100}}) do
-            local from,slowing,release,least,rise=row[1],row[2],row[3],row[4],row[5]
-            for k=0,23 do
-                local what=string.format("A held from %.1f m/s slowing %.0f m/s^2 to %.1f%s, let go under %.2f, start %d",from,slowing,least,
+            {1.5,2,.3,-1.5,120},{1.5,2,.6,-1.5,120},{1.2,2,.45,-1,100},{2,1,.3,-.2,nil,450}}) do
+            local from,slowing,release,least,rise,count=row[1],row[2],row[3],row[4],row[5],row[6] or 240
+            for k=0,23,row[6] and 6 or 1 do
+                local what=string.format("A held from %.1f m/s slowing %.0f m/s^2 to %.2f%s, let go under %.2f, start %d",from,slowing,least,
                     rise and string.format(" and stopping from step %d",rise) or "",release,k)
                 local w=harness(flat)
                 w.prompt=true
@@ -1875,10 +1882,11 @@ function T.run()
                 local last=w.step(ridden).presentation_pose.crank_phase
                 for _=1,3*k+2 do last=w.step(ridden).presentation_pose.crank_phase end
                 -- run is the backpedal under way, back the longest.
-                local held,back,run=true,0,0
-                for i=1,240 do
+                local held,back,run,reached=true,0,0,nil
+                for i=1,count do
                     local speed=rise and i>rise and math.min(0,least+slowing*(i-rise)*h) or math.max(from-slowing*i*h,least)
                     if held and speed<release then held=false w.set_pad(0) end
+                    if not rise and least<0 and speed==least then reached=reached or i end
                     local pose=level();pose.velocity={0,0,speed}
                     local now=w.step(pose).presentation_pose.crank_phase
                     local turn=turn_of(last,now)
@@ -1888,11 +1896,17 @@ function T.run()
                         check(turn<=wheel+1e-9,string.format("%s, step %d: the cranks turn %.4f on a wheel turning them %.4f",what,i,turn,wheel))
                         if turn<wheel-1e-9 then
                             local behind=(last-flat_cranks)%math.pi
-                            check(run>0 or behind/(-rear/ratio)>2*(1-1e-6),string.format(
-                                "%s, step %d: the cranks turn %.4f, faster back than the wheel's %.4f, %.1f degrees past a level it turns them to in %.2f s",
-                                what,i,turn,wheel,math.deg(behind),behind/(-rear/ratio)))
+                            check(run>0 or -rear/ratio<math.rad(2)*(1+1e-6),string.format(
+                                "%s, step %d: the cranks turn %.4f, faster back than the wheel's %.4f, %.1f degrees past a level, the wheel turning them %.2f degrees a second",
+                                what,i,turn,wheel,math.deg(behind),math.deg(-rear/ratio)))
+                            if run==0 and -rear/ratio>=math.rad(2)*(1+1e-6) then kicked+=1 end
                             run+=wheel-turn
                         else run=0 end
+                        if reached and i>=reached+20 then
+                            check(math.abs(turn-wheel)<1e-9,string.format("%s, step %d: rolling back steadily, the cranks turn %.4f on a wheel turning them %.4f",
+                                what,i,turn,wheel))
+                            steady+=1
+                        end
                     elseif not held and turn<0 then run-=turn
                     else run=0 end
                     back=math.max(back,run)
@@ -1908,8 +1922,53 @@ function T.run()
                 crawl_rows+=1
             end
         end
-        print(string.format("MEASURE cranks let go slowing to a stop: back %.1f degrees at most over %d rides; rolled back and stopped, %d of 72 came within a degree of level",
-            math.deg(crawl_back),crawl_rows,crawl_stopped))
+        -- On a body that moves, rolled back on the flat and left to stop with nothing pressed: the cranks turn exactly
+        -- with the wheel while it turns them back at 2 degrees a second or more, and once it has stopped the rider
+        -- backpedals at most a quarter turn to the nearer level, or leaves them short of the level ahead. Let backpedal
+        -- to a level the wheel would take more than 2 s to bring them to, 14 of 22 such rides (.4 to 2.5 m/s by .1)
+        -- were kicked back 77 to 89 degrees at up to 7 rad/s while still rolling back at .2 to .56 m/s. All 22 passed
+        -- these checks, 14942 steps turning with the wheel; six are kept, as the suite has three minutes.
+        local rolled,rolled_back,rolled_level=0,0,0
+        for _,v in ipairs({.4,.5,.6,.8,1,1.5}) do
+            local what=string.format("rolled back on the flat from %.1f m/s",v)
+            local w=harness(flat)
+            w.prompt=true
+            local b=World.place(World.terrain.flat(),{speed=-v})
+            local out
+            out,b=w.ride_step(b)
+            local last=out.presentation_pose.crank_phase
+            local run,most,stopped=0,0,nil
+            for i=1,1500 do
+                out,b=w.ride_step(b)
+                check(not out.stop_requested,what..": the ride goes on")
+                local now=out.presentation_pose.crank_phase
+                local turn=turn_of(last,now)
+                local rear=w.model.wheels[2].angular_speed
+                local wheel=rear*h/ratio
+                check(turn<=wheel+1e-9,string.format("%s, step %d: the cranks turn %.6f on a wheel turning them %.6f",what,i,turn,wheel))
+                if -rear/ratio>=math.rad(2) then
+                    check(math.abs(turn-wheel)<1e-9,string.format("%s, step %d: rolling back at %.2f m/s, the cranks turn %.4f on a wheel turning them %.4f",
+                        what,i,-b.linear_velocity[3],turn,wheel))
+                    rolled+=1
+                end
+                if turn<math.min(wheel,0)-1e-9 then run+=math.min(wheel,0)-turn;most=math.max(most,run) else run=0 end
+                if not stopped and M.length(b.linear_velocity)<.01 and math.abs(rear)<.05 then stopped=i end
+                last=now
+                if stopped and i>stopped+60 then break end
+            end
+            check(stopped~=nil,what..": the bike stops")
+            check(most<=math.pi/2+1e-9,string.format("%s: stopped, back %.1f degrees, at most a quarter turn",what,math.deg(most)))
+            check(off_level(last)<=math.rad(.1) or (flat_cranks-last)%math.pi<math.pi/2,string.format("%s: stopped %.1f degrees past the level behind",
+                what,math.deg(off_level(last))))
+            rolled_back=math.max(rolled_back,most)
+            if off_level(last)<=math.rad(.1) then rolled_level+=1 end
+        end
+        check(rolled>=6*250,"the wheel rolls back under them: "..rolled)
+        print(string.format("MEASURE cranks let go slowing to a stop: back %.1f degrees at most over %d rides; rolled back and stopped, %d of 72 came within a degree of level; rolling back steadily they turned with the wheel on %d steps",
+            math.deg(crawl_back),crawl_rows,crawl_stopped,steady))
+        print(string.format("MEASURE cranks rolled back on the flat to a stop: with the wheel on %d steps; stopped, back %.1f degrees at most, %d of 6 level",
+            rolled,math.deg(rolled_back),rolled_level))
+        check(kicked==0 and steady>=7000,string.format("rolling back slowly, the cranks turn with the wheel on %d steps, kicked back %d times",steady,kicked))
         check(crawl_stopped>0,"some of them backpedal to level once stopped")
         check(stopped_held>0,"some were stopped short of level")
         check(held>0,"some were let go stopped nearer the level ahead")
@@ -2061,6 +2120,156 @@ function T.run()
         end
         print(string.format("MEASURE a tap of A from level cranks: %.1f degrees at least, on to the next level in %.2f s at most at 2 to 7 m/s; stopped on the way, %d went back the short way, %d waited; quick taps back %.1f degrees in 6 s at most, %d reversals",
             math.deg(smallest),slowest*h,went_back,waited,math.deg(most_back),most_reversals))
+    end)
+    case(function() -- A push of A from cranks under 2 degrees short of a level is a stroke as from on it, and one from a stop short of the level ahead is a stroke whichever way the stopped wheel crept last.
+        local ratio=25/9
+        local flat_cranks=math.atan2(Geometry.pedals[1][2]-Geometry.bottom_bracket[2],Geometry.pedals[1][3]-Geometry.bottom_bracket[3])
+        local function off_level(phase) local off=(phase-flat_cranks)%math.pi return math.min(off,math.pi-off) end
+        local function turn_of(from,to) return math.atan2(math.sin(to-from),math.cos(to-from)) end
+        local slack=math.rad(2)
+        -- Pedalled at 4 m/s for a different time each and let go rolling at speed, the cranks come forward to the level
+        -- ahead. Without press, the first step of the coast from the seventh on that leaves them under 2 degrees short
+        -- of it; with it, A is pressed again after press steps of the coast and held until the cranks have turned
+        -- far(ahead) from where the stroke began, ahead short of the level ahead, then let go: the gap, the first
+        -- pedalled step's turn, and what the cranks did after, up to a sixth of a second after they come level.
+        local function pushed(speed,k,press,far)
+            local w=harness(flat)
+            w.prompt=true
+            local ridden=level();ridden.velocity={0,0,4}
+            check(steps(w,ridden,3)==nil,"riding before pedalling")
+            w.set_pad(0,0,true)
+            local last=w.step(ridden).presentation_pose.crank_phase
+            for _=1,3*k+2 do last=w.step(ridden).presentation_pose.crank_phase end
+            local rolling=level();rolling.velocity={0,0,speed}
+            w.set_pad(0)
+            for i=1,press or 90 do
+                last=w.step(rolling).presentation_pose.crank_phase
+                local gap=(flat_cranks-last)%math.pi
+                if not press and i>=7 and gap>1e-9 and gap<=slack then return i end
+            end
+            if not press then return nil end
+            w.set_pad(0,0,true)
+            local ahead,step,turned=nil,nil,0
+            for _=1,120 do
+                local now=w.step(rolling).presentation_pose.crank_phase
+                if w.model.pedaling==true and ahead==nil then ahead,step=(flat_cranks-last)%math.pi,w.model.wheels[2].angular_speed*h/ratio end
+                if ahead then turned+=turn_of(last,now) end
+                last=now
+                if ahead and turned>=far(ahead) then break end
+            end
+            w.set_pad(0)
+            local back,rested=0,nil
+            for i=1,180 do
+                local now=w.step(rolling).presentation_pose.crank_phase
+                local turn=turn_of(last,now)
+                if turn<0 then back-=turn end
+                if not rested and off_level(now)<1e-9 then rested=i end
+                last=now
+                if rested and i>=rested+10 then break end
+            end
+            return ahead,step,turned,back,rested
+        end
+        -- From under 2 degrees short of the level ahead, a push is a stroke to the level half a turn on, as from on the
+        -- level: at 4 m/s, let go just past that one, it goes on to the next. Counted from the level a hair ahead, such
+        -- pushes (at 2 and 4 m/s) were pedalling once past the second level, and let go there the rider backpedalled
+        -- them 0.1 to 4.6 degrees onto it. At 1.2 m/s, where a pedalled step can be shorter than the gap, the stroke is
+        -- kept from its first step, and let go a few degrees past the level a hair ahead it goes on to the next: refused
+        -- for starting more than half a turn short of its level, pushes from 1.8 to 1.9 degrees short were plain ones
+        -- and were backpedalled 4.4 to 4.7 degrees. Every other start is tried, as the suite has three minutes: all 24
+        -- at 2 and 4 m/s found 21 such pushes, and at 1.2 and 1.25 m/s 4, none going back.
+        local found={b=0,d=0}
+        local function past_next(ahead) return ahead+math.pi+1e-6 end
+        local function past_near(ahead) return ahead+math.rad(3) end
+        for _,row in ipairs({{4,"b",past_next},{1.2,"d",past_near}}) do
+            local speed,kind,far=row[1],row[2],row[3]
+            for k=1,23,2 do
+                local p=pushed(speed,k,nil)
+                if p then
+                    local what=string.format("%.2f m/s, start %d, A from step %d of the coast",speed,k,p)
+                    local ahead,step,turned,back,rested=pushed(speed,k,p,far)
+                    check(ahead~=nil,what..": the rider pedals")
+                    if ahead and ahead>1e-9 and ahead<=slack and (kind=="b" or ahead>step) then
+                        found[kind]+=1
+                        check(back==0 and rested~=nil,string.format("%s: pushed from %.2f degrees short of a level through %.1f, let go the cranks went back %.2f degrees",
+                            what,math.deg(ahead),math.deg(turned),math.deg(back)))
+                    end
+                end
+            end
+        end
+        check(found.b>=5 and found.d>=2,string.format("pushes from under 2 degrees short of a level: %d let go past the next, %d with a first step shorter than the gap",found.b,found.d))
+        -- Rolled back on the flat to a stop short of the level ahead, the stopped wheel creeping back a hair, and A held
+        -- to ride off and let go at 1.75 or 2.35 m/s: the push is a stroke, and the cranks finish it forward. Started
+        -- only from cranks moving toward their level, a push after a step the wheel crept back was a plain one, and let
+        -- go the rider backpedalled the cranks to the level it had carried them past: 47.0 and 47.3 degrees in the two
+        -- kept here, and 5.9 to 88.4 over six (.5, .6 and .9 m/s back, A for 45 and 60 steps).
+        local finished=0
+        for _,row in ipairs({{.5,45},{.6,60}}) do
+            local v,taps=row[1],row[2]
+            do
+                local what=string.format("rolled back from %.1f m/s to a stop, A for %d steps",v,taps)
+                local w=harness(flat)
+                w.prompt=true
+                local b=World.place(World.terrain.flat(),{speed=-v})
+                local out
+                for _=1,600 do out,b=w.ride_step(b) end
+                local crept=false
+                for _=1,300 do
+                    out,b=w.ride_step(b)
+                    if w.model.wheels[2].angular_speed<0 then crept=true break end
+                end
+                check(crept and M.length(b.linear_velocity)<.01,what..": stopped, the rear wheel creeps back")
+                local last=out.presentation_pose.crank_phase
+                local ahead=(flat_cranks-last)%math.pi
+                check(ahead>slack and ahead<math.pi/2,string.format("%s: stopped %.1f degrees short of the level ahead",what,math.deg(ahead)))
+                w.set_pad(0,0,true)
+                for _=1,taps do out,b=w.ride_step(b) end
+                check(b.linear_velocity[3]>1.5,string.format("%s: rolling on at %.2f m/s",what,b.linear_velocity[3]))
+                w.set_pad(0)
+                last=out.presentation_pose.crank_phase
+                local back=0
+                for _=1,240 do
+                    out,b=w.ride_step(b)
+                    local now=out.presentation_pose.crank_phase
+                    local turn=turn_of(last,now)
+                    if turn<0 then back-=turn end
+                    last=now
+                end
+                check(back==0 and off_level(last)<1e-9,string.format("%s: let go, the cranks went back %.2f degrees and ended %.2f off level",
+                    what,math.deg(back),math.deg(off_level(last))))
+                finished+=1
+            end
+        end
+        print(string.format("MEASURE pushes from under 2 degrees short of a level: %d let go past the next, %d with a first step shorter than the gap; %d from a stop short of the level ahead finished forward",
+            found.b,found.d,finished))
+    end)
+    case(function() -- With no pedal latch reported, as from ForceStage's zero stage, the cranks hold, and a rear wheel turning backward takes them back with it.
+        local ratio=25/9
+        local function turn_of(from,to) return math.atan2(math.sin(to-from),math.cos(to-from)) end
+        local w=harness(flat)
+        w.prompt=true
+        w.no_cadence=true
+        local ridden=level();ridden.velocity={0,0,2}
+        check(steps(w,ridden,3)==nil,"riding")
+        local last=w.step(ridden).presentation_pose.crank_phase
+        -- Slowing from 2 m/s to rolling back at 1. Held still whatever the wheel did, the cranks stood on a rear wheel
+        -- turning back for all 182 of those steps.
+        local held,turned=0,0
+        for i=1,240 do
+            local pose=level();pose.velocity={0,0,math.max(2-2*i*h,-1)}
+            local now=w.step(pose).presentation_pose.crank_phase
+            local turn=turn_of(last,now)
+            local rear=w.model.wheels[2].angular_speed
+            check(w.model.pedaling==nil,"no pedal latch is reported")
+            if rear<0 then
+                check(math.abs(turn-rear*h/ratio)<1e-9,string.format("step %d: the cranks turn %.3g degrees on a wheel turning them back %.3g",i,math.deg(turn),math.deg(rear*h/ratio)))
+                turned+=1
+            else
+                check(turn==0,string.format("step %d: the rear wheel turning forward, the cranks turn %.5f",i,turn))
+                held+=1
+            end
+            last=now
+        end
+        check(held>=30 and turned>=150,string.format("the cranks held on %d steps and went back with the wheel on %d",held,turned))
     end)
     case(function() -- In a nose manual the rider is drawn standing, hips forward over the bars by the physics' shift, and sits back down after it.
         local w=harness(flat)

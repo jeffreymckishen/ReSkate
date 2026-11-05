@@ -107,7 +107,8 @@ local function tilt_of(body)
     return math.deg(math.acos(math.clamp(M.turn(M.normalized(body.orientation),{0,1,0})[2],-1,1)))
 end
 -- ride.steps, and ride.controls(step,body,folded,forecast) -> {pedal,steer,brake,hop,manual,nose,nose_held}, from the
--- measured body and the forecast body and wheel rays the stage previews with. ride.pitch starts the
+-- measured body and the forecast body and wheel rays the stage previews with. hop is true for a full hop (R3) or a
+-- flick's strength, .25 to 1. ride.pitch starts the
 -- bike that many degrees nose up on its rear wheel, or nose down on its front wheel when it is negative, and ride.lift
 -- raises it that far. ride.push(step,body,command) may return a force sent with the command, as Ride's car stop adds
 -- one. Returns the peaks, and calls ride.each(step,body,out,wheels,samples) with the wheel rays this step's command
@@ -138,7 +139,7 @@ local function run(ride)
         end
         local want=ride.controls and ride.controls(step,body,folded,forecast) or {}
         local input={pedal=want.pedal or 0,steer=want.steer or 0,brake=want.brake or 0}
-        if want.hop then hop_id+=1;input.hop_event_id=hop_id;input.hop_strength=1 end
+        if want.hop then hop_id+=1;input.hop_event_id=hop_id;input.hop_strength=type(want.hop)=="number" and want.hop or 1 end
         if want.manual or want.nose then
             -- As Mapping sends them: only while a wheel is on the ground, and whether the stick holds one either way.
             local grounded=false
@@ -245,7 +246,8 @@ function T.run()
                     return {steer=-stick,pedal=1,hop=step==60}
                 end})
                 check(peak.tilt<42,string.format("hop at %.1f m/s, stick %.1f, peaks at %.1f",speed,stick,peak.tilt))
-                check(peak.height>.8,"the hop still rises")
+                -- A full hop rises .61 m; leaned into the held stick its centre of mass rises .53 to .60 (.99 m hop: over .8).
+                check(peak.height>.5,"the hop still rises: "..peak.height)
             end
         end
         local leaned=Forces.proposed_body()
@@ -267,6 +269,114 @@ function T.run()
         out=Forces.new():preview(h,leaned,Forces.proposed_wheels(),contacts(Ground.plane(0,0),leaned,0),landing)
         check(out.valid and out.landing_recovery_mask~=0 and math.abs(M.dot(out.contact_torque,forward))<600,
             "nor does the first hard step of a touchdown: "..M.dot(out.contact_torque,forward))
+    end)
+    -- A full hop on the flat, R3 on step 40: the step its command is made (pop), the first step neither wheel is on the
+    -- ground and the first one either is again, as Ride reads support for the tricks, and how far the centre of mass
+    -- rises. strength is a flick's, or nil for R3.
+    local function full_hop(speed,strength)
+        local measured,pop,start,top,grounded=nil,nil,nil,-math.huge,{}
+        local ride=run({steps=160,speed=speed,controls=function(step,body)
+            measured=body
+            return step==40 and {hop=strength or true} or {}
+        end,each=function(step,body,out,wheels,samples)
+            local on=false
+            for i=1,2 do on=on or samples[i].contact.status=="hit" and Forces.eligible_support(measured,samples[i],.005,.10) end
+            grounded[step]=on
+            if out.valid and out.hop_applied then pop=step;start=measured.center_of_mass[2] end
+            if pop then top=math.max(top,body.center_of_mass[2]) end
+        end})
+        local off,touch
+        for step=(pop or 160)+1,160 do
+            if not off then
+                if not grounded[step] then off=step end
+            elseif not touch and grounded[step] then touch=step end
+        end
+        return {refused=ride.refused,pop=pop,off=off,touch=touch,rise=pop and top-start or 0,grounded=grounded}
+    end
+    case(function() -- A full hop rises about .6 m on the flat from a stop to 7 m/s, a street bunny hop, and a flick its share.
+        -- With 4.5 m/s of pop every hop rose .99 m with 58 steps in the air, here and in the game (trial f9): a contest
+        -- hop on every tap.
+        local t=Forces.tuning()
+        check(t.hop_delta_speed==3.55 and t.hop_pitch_push==1.5,"the hop's tuning: "..t.hop_delta_speed.." and "..t.hop_pitch_push)
+        for _,speed in ipairs({0,3,5,7}) do
+            local r=full_hop(speed)
+            local what=string.format("at %d m/s",speed)
+            check(r.refused==0 and r.pop==40 and r.off==42 and r.touch~=nil,what..": the hop leaves two steps after R3 and lands")
+            check(r.rise>=.55 and r.rise<=.65,string.format("%s: a full hop rises %.3f m",what,r.rise))
+            check(r.touch-r.off>=43 and r.touch-r.off<=47,what..": "..(r.touch-r.off).." steps in the air")
+        end
+        local full,half,least=full_hop(5),full_hop(5,.5),full_hop(5,.25)
+        check(half.rise>.1 and half.rise<full.rise/3,string.format("half a flick's charge rises %.3f m",half.rise))
+        check(least.rise>.02 and least.rise<.05,string.format("the least flick rises %.3f m",least.rise))
+        local flat=Ground.plane(0,0)
+        local body,wheels=place(flat,4)
+        local samples=contacts(flat,body,0)
+        local function valid(overrides)
+            return Forces.new(Forces.tuning(overrides)):preview(h,body,wheels,samples,Forces.controls()).valid
+        end
+        check(valid(nil),"the defaults are valid")
+        for _,bad in ipairs({{hop_delta_speed=4.6},{hop_delta_speed=-1},{hop_pitch_push=.9},{hop_pitch_push=3.1},{hop_pitch_push=0/0}}) do
+            local name,value=next(bad)
+            check(not valid(bad),"a step is refused on "..name.."="..value)
+        end
+    end)
+    case(function() -- Each air trick picked as the chop-tricks pad picks it finishes in a full hop, 2 or more steps clear.
+        -- The pad picks 320 ms after R3, the 19th or 20th step depending on where the frames fall, with the stick over for
+        -- 180 ms (11 steps) and then back in the middle. The channels are trick_adapter's own, stepped as its preview
+        -- steps them on Ride's support. A turn is done when its re-grip blend ends and a pose when the hand or foot is
+        -- back, as their authored events count them. With the 1 m hop's .55 s tail and .45 s bar both landed mid-turn.
+        local C=require("./trick_adapter").channels
+        local twelfth=math.rad(30)
+        local function trick(r,kind,pick)
+            local bar,tail,hand,foot=C.Model.new(),C.Model.new(),C.OneHand.new(),C.OneFoot.new()
+            local stepped,started,finished,steepest,turned=true,false,nil,0,0
+            for step=1,160 do
+                local grounded=r.grounded[step]
+                local picked=step==pick
+                local neutral=not (step>=pick and step<pick+11)
+                local free=not hand.active and not foot.active
+                local next_bar=C.Model.advance(bar,h,grounded,picked and kind=="barspin" and "left" or "none",neutral,C.bar_seconds,free)
+                local next_tail=C.Model.advance(tail,h,grounded,picked and kind=="tailwhip" and "right" or "none",neutral,C.tail_seconds,free)
+                if not next_bar or not next_tail then stepped=false;break end
+                local can_pose=not next_bar.rotating and not next_bar.waiting and next_bar.release==0
+                    and not next_tail.rotating and not next_tail.waiting and next_tail.release==0
+                local takeoff=not bar.airborne and next_bar.airborne
+                local next_hand=C.OneHand.advance(hand,h,grounded,takeoff,picked and kind=="one hander",neutral,can_pose and not foot.active,"left")
+                local next_foot=C.OneFoot.advance(foot,h,grounded,takeoff,picked and kind=="one footer",neutral,can_pose and not hand.active,"left")
+                if kind=="barspin" or kind=="tailwhip" then
+                    local before,after=kind=="barspin" and bar or tail,kind=="barspin" and next_bar or next_tail
+                    started=started or after.rotating
+                    if before.airborne and after.airborne then steepest=math.max(steepest,math.abs(after.angle-before.angle)) end
+                    if not finished and before.caught and before.blend_remaining>0 and after.airborne
+                        and after.blend_remaining==0 and after.release==0 then
+                        finished=step;turned=math.abs(after.angle-after.origin)
+                    end
+                else
+                    local before,after=kind=="one hander" and hand or foot,kind=="one hander" and next_hand or next_foot
+                    started=started or after.active
+                    if not finished and before.active and before.recovering and before.progress==1 and not after.active
+                        and next_bar.airborne then finished=step end
+                end
+                bar,tail,hand,foot=next_bar,next_tail,next_hand,next_foot
+            end
+            return stepped and started,finished,steepest,turned
+        end
+        for _,speed in ipairs({0,3,5,7}) do
+            local r=full_hop(speed)
+            for _,kind in ipairs({"barspin","tailwhip","one hander","one footer"}) do
+                for _,late in ipairs({19,20}) do
+                    local what=string.format("a %s picked %d steps after R3 at %d m/s",kind,late,speed)
+                    local started,finished,steepest,turned=trick(r,kind,r.pop+late)
+                    check(started and finished~=nil and r.touch-finished>=2,
+                        string.format("%s: done on step %s, the first wheel touching on %d",what,tostring(finished),r.touch))
+                    if kind=="barspin" or kind=="tailwhip" then
+                        -- One turn, drawn over 19 or more frames: no step turns it more than a twelfth of the way round.
+                        check(math.abs(turned-2*math.pi)<1e-9 and steepest<=twelfth,
+                            string.format("%s: one turn, at most %.1f degrees a step",what,math.deg(steepest)))
+                    end
+                end
+            end
+        end
     end)
     case(function() -- A bank does not add to the lean: gravity sets the roll, not the ground.
         local peak=run({steps=360,speed=5,ground=Ground.twist(math.rad(33),2,6)})
@@ -446,7 +556,7 @@ function T.run()
             check(M.length(ramp.body.linear_velocity)>1,"past the limit a stall rolls, up or down: "..grade)
         end
         local hop=run({steps=120,controls=function(step) return {hop=step==60} end})
-        check(hop.height>.9,"a hop leaves from a held stop")
+        check(hop.height>.55,"a full hop leaves from a held stop, about .6 m: "..hop.height)
         local away=run({steps=60,ground=Ground.plane(0,.08),controls=function(step) return {pedal=step>30 and 1 or 0} end})
         check(M.length(away.body.linear_velocity)>.7,"the pedal lets go of the hold at once")
     end)
@@ -486,7 +596,9 @@ function T.run()
     case(function() -- Ordinary riding with no manual sends exactly what it did before the manual was added.
         -- The digest was taken on the kernel before the manual law went in: every force and torque of a 900 step ride
         -- with pedal, steering, brake and two hops, and where the bike ends. It was taken again when the walk's wider
-        -- lock and brake_lateral_cut .25 went in, which this ride meets: it starts at 2 m/s and brakes while it steers.
+        -- lock and brake_lateral_cut .25 went in, which this ride meets: it starts at 2 m/s and brakes while it steers,
+        -- and again when the full hop came down from 1 m to .61 m (hop_delta_speed 4.5 to 3.55), which changes both
+        -- hops and all that follows them.
         local hash=2166136261
         local function mix(x)
             local text=string.format("%.17g",x)
@@ -770,7 +882,8 @@ function T.run()
             if step>=150 and gap(samples[1])>.2 and not lifted then lifted=step end
         end})
         check(hop_step==true and ride.refused==0,"the hop leaves from the manual")
-        check(air and air>=40,"a full hop: "..tostring(air).." steps in the air")
+        -- A full hop is 45 steps in the air (it was 58 when it rose 1 m).
+        check(air and air>=43,"a full hop: "..tostring(air).." steps in the air")
         check(landing and math.abs(landing)<15,"landing near level: "..tostring(landing))
         check(landed and landed<150 and lifted and lifted<=180,"and the manual lifts again after it: "..tostring(lifted))
     end)
@@ -1010,7 +1123,7 @@ function T.run()
                 end
             end})
             local what=string.format("m=%.2f",m)
-            check(ride.refused==0 and air>=40 and landed,what..": a full hop from the manual: "..air)
+            check(ride.refused==0 and air>=43 and landed,what..": a full hop from the manual: "..air)
             check(couple and couple< -500,what..": the pop pushes the nose down: "..tostring(couple))
             check(landing>=0 and landing<15,what..": lands near level: "..tostring(landing))
             if previous then check(math.abs(landing-previous)<4,string.format("%s: a little higher lands a little higher, %.1f after %.1f",what,landing,previous)) end
@@ -1476,7 +1589,8 @@ function T.run()
                         end
                     end
                 end
-                check(ride.refused==0 and air*h>=.85 and air*h<=1.05,what..": a full hop, "..air*h.." s in the air")
+                -- .75 s for the .61 m full hop (.95 s when it rose 1 m).
+                check(ride.refused==0 and air*h>=.70 and air*h<=.80,what..": a full hop, "..air*h.." s in the air")
                 check(landed and first~="rear" and landing<=10,string.format("%s: lands %s first at %.1f degrees",what,tostring(first),landing or 0/0))
                 check(worst<=NOSE_HOLD[m]+.5,string.format("%s: at most %.1f degrees after",what,worst))
                 check(back and back<=.1,what..": and is in the nose manual again in "..tostring(back).." s")

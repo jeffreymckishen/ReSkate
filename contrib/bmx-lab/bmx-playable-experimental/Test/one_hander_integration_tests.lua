@@ -368,11 +368,12 @@ function Tests.run()
         and posing.presentation_trick.score==nil and posing.presentation_trick.model_events==nil,
         "pose never becomes physical completion/catch/landing or awarded score")
     local bar=fixture();bar.tick(true);bar.tick(false);bar.tick(false,"bar_left")
-    local b=bar.tick(false);local bp=bar.read.seconds/.45
+    -- The bar turns in .31 s and the tail in .34 s since the full hop came down to .61 m (.45 and .55 before).
+    local b=bar.tick(false);local bp=bar.read.seconds/.31
     check(not b.stop_requested and math.abs(b.presentation_pose.barspin+2*math.pi*bp*bp*(3-2*bp))<1e-9,
         "existing barspin equation remains unchanged when one-hander is idle")
     local tail=fixture();tail.tick(true);tail.tick(false);tail.tick(false,"tail_right")
-    local t=tail.tick(false);local tp=tail.read.seconds/.55
+    local t=tail.tick(false);local tp=tail.read.seconds/.34
     check(not t.stop_requested and math.abs(t.presentation_pose.tailwhip-2*math.pi*tp*tp*(3-2*tp))<1e-9,
         "existing tailwhip equation remains unchanged when one-hander is idle")
     -- Four more constructed adapter paths; the original complete left trace above

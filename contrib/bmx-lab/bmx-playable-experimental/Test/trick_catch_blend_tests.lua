@@ -135,10 +135,12 @@ function Tests.run()
             and stopped.presentation_pose[channel.name]==0,"stop cancels presentation and pending catch facts")
         check(#f.commands==count,"catch stop creates no additional physics command")
     end
-    -- Offset starts by six accepted samples: the .55/.45 second turns and
-    -- original .06 second re-grip blends complete together at this cadence.
+    -- Offset starts by two accepted samples, the stick back in the middle
+    -- between: the .34/.31 second turns take 21 and 19 samples, and with the
+    -- original .06 second re-grip blends they complete together at this cadence.
+    -- (Six samples apart for the .55/.45 turns of the 1 m hop.)
     local both=fixture();both.tick(true);both.tick(false);both.tick(false,"tail_right")
-    for _=1,5 do both.tick(false) end
+    both.tick(false)
     both.tick(false,"bar_left")
     local paired
     for _=1,45 do

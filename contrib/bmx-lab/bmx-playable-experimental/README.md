@@ -97,10 +97,12 @@ offline the game does not keep it, so set it again each launch.
   coast slows by itself.
 - Whenever the rider stops pedalling, coasting, at top speed or in a manual, the cranks come round to level, feet
   at 3 and 9 o'clock, within about half a second at 1 m/s and up: back, as a rider backpedals, or forward with
-  the back wheel when that is sooner. A tap of A from level cranks finishes its half stroke forward with the back
-  wheel, about a second at 2 m/s and half a second at 4 m/s and faster, instead of going back. Stopped, the rider only
-  backpedals the short way to the nearer level, and otherwise leaves the cranks where they are. They never turn the
-  wheel. Pedalling again starts them from there.
+  the back wheel when that is sooner. From about 1.2 m/s up, a tap of A from level cranks, or while they go back to a
+  level, finishes its half stroke forward with the back wheel, about a second at 2 m/s and half a second at 4 m/s and
+  faster, instead of going back, so quick taps turn the cranks on forward. Slower, the wheel cannot bring them round
+  in time and the rider backpedals a tap back to level. Stopped, the rider only backpedals the short way to the
+  nearer level, and otherwise leaves the cranks where they are. Rolling backward from about 0.6 m/s, they go back to
+  the level behind. They never turn the wheel. Pedalling again starts them from there.
 - Into a manual or a nose manual the rider stands up on the pedals over about half a second, and the hips follow
   where the physics puts the weight, about a fifteenth of a second behind it: a manual's throw is drawn two thirds
   of the way in a tenth of a second and all of it in about a third. They move back and sit down the same way after

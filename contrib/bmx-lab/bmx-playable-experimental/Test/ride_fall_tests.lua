@@ -1814,6 +1814,30 @@ function T.run()
                 if off_level(last)>1e-9 then stopped_held+=1 end
             end
         end
+        -- Let go as the bike rolls backward, the freewheel turns the cranks back with the wheel: they go back to the
+        -- level behind, never forward, and are not left still off level. Counted as a stopped wheel, at 1 and 2 m/s
+        -- cranks let go nearer the level ahead waited up to 71 degrees short of it for as long as the bike rolled back.
+        for _,speed in ipairs({-2,-1}) do
+            for k=0,23 do
+                local what=string.format("rolling back at %d m/s, start %d",-speed,k)
+                local w=harness(flat)
+                w.prompt=true
+                local ridden=level();ridden.velocity={0,0,4}
+                check(steps(w,ridden,3)==nil,"riding before pedalling")
+                w.set_pad(0,0,true)
+                local last=w.step(ridden).presentation_pose.crank_phase
+                for _=1,3*k+2 do last=w.step(ridden).presentation_pose.crank_phase end
+                local rolling=level();rolling.velocity={0,0,speed}
+                w.set_pad(0)
+                for i=1,150 do
+                    local now=w.step(rolling).presentation_pose.crank_phase
+                    local turn=turn_of(last,now)
+                    if w.model.wheels[2].angular_speed<0 then check(turn<=1e-9,string.format("%s, step %d: forward %.4f on a wheel rolling back",what,i,turn)) end
+                    if i>60 then check(turn<-1e-9 or off_level(now)<1e-9,string.format("%s, step %d: still %.1f degrees off level",what,i,math.deg(off_level(now)))) end
+                    last=now
+                end
+            end
+        end
         check(stopped_held>0,"some were stopped short of level")
         check(held>0,"some were let go stopped nearer the level ahead")
         print(string.format("MEASURE cranks stopped under a forward move: %d left short of level, %d went back; %d let go stopped stayed",
@@ -1918,8 +1942,42 @@ function T.run()
             end
         end
         check(went_back>0 and waited>0,"braked both sides of a quarter turn")
-        print(string.format("MEASURE a tap of A from level cranks: %.1f degrees at least, on to the next level in %.2f s at most at 2 to 7 m/s; stopped on the way, %d went back the short way, %d waited",
-            math.deg(smallest),slowest*h,went_back,waited))
+        -- Quick taps on a body that moves ratchet the cranks forward: a tap that catches them going back to a level
+        -- is a stroke to the level ahead. Caught as a plain push, 3 steps of A every 12 or 15 steps at 4 m/s turned
+        -- them back 120 and 196 degrees in 6 s, reversing 41 and 21 times; now 19 and 26, 8 and 4 times, each a few
+        -- degrees back onto a level a tap pushed them just past.
+        local most_back,most_reversals=0,0
+        for _,row in ipairs({{4,12},{4,15},{3,15}}) do
+            local speed,period=row[1],row[2]
+            local what=string.format("%d m/s, A for 3 steps every %d",speed,period)
+            local w=harness(flat)
+            w.prompt=true
+            local b=World.place(World.terrain.flat(),{speed=speed})
+            local out
+            for _=1,150 do out,b=w.ride_step(b) end
+            local last=out.presentation_pose.crank_phase
+            local back,reversals,way=0,0,nil
+            for i=1,360 do
+                local phase=(i-1)%period
+                if phase==0 then w.set_pad(0,0,true) elseif phase==3 then w.set_pad(0) end
+                out,b=w.ride_step(b)
+                local now=out.presentation_pose.crank_phase
+                local turn=turn_of(last,now)
+                if turn>1e-9 then
+                    if way==-1 then reversals+=1 end
+                    way=1
+                elseif turn<-1e-9 then
+                    back-=turn
+                    if way==1 then reversals+=1 end
+                    way=-1
+                end
+                last=now
+            end
+            check(back<=math.rad(40) and reversals<=10,string.format("%s: back %.1f degrees in 6 s, %d reversals",what,math.deg(back),reversals))
+            most_back,most_reversals=math.max(most_back,back),math.max(most_reversals,reversals)
+        end
+        print(string.format("MEASURE a tap of A from level cranks: %.1f degrees at least, on to the next level in %.2f s at most at 2 to 7 m/s; stopped on the way, %d went back the short way, %d waited; quick taps back %.1f degrees in 6 s at most, %d reversals",
+            math.deg(smallest),slowest*h,went_back,waited,math.deg(most_back),most_reversals))
     end)
     case(function() -- In a nose manual the rider is drawn standing, hips forward over the bars by the physics' shift, and sits back down after it.
         local w=harness(flat)

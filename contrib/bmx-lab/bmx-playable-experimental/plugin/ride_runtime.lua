@@ -313,7 +313,9 @@ end
 -- wheel all but stopped (.16 rad/s), cranks let go 71 degrees short of level were backpedalled 109 degrees. A push of A from cranks at rest on a level, or moving forward to one, is a
 -- stroke: let go before the cranks reach the level ahead, they finish it forward with no pause, rather than go back
 -- to the level the push left. Taps of A of 1 to 6 steps at 2, 4 and 7 m/s drew them 4 to 37 degrees forward and, a
--- tenth of a second later, back to where they started. motion is {stroke = radians still to the level ahead} while a
+-- tenth of a second later, back to where they started. A push while they go back to a level is a stroke to the level
+-- ahead as well: otherwise quick taps (3 steps every 12 or 15, at 4 m/s) caught them going back each time, and in 6 s
+-- they turned back 120 and 196 degrees, reversing 41 and 21 times. motion is {stroke = radians still to the level ahead} while a
 -- stroke is pedalled, nil while any other pedalling, else {coast = seconds not pedalling, target = the chosen level,
 -- nil until they move, rate = rad/s}. Pedalling again starts from wherever the cranks are drawn, so nothing jumps.
 local function cranks(phase,pedaling,wheel_rate,h,level,motion)
@@ -323,7 +325,8 @@ local function cranks(phase,pedaling,wheel_rate,h,level,motion)
         if left==nil and level and motion and motion.coast~=nil and motion.target~=nil then
             local gap=wrap(motion.target-phase)
             if math.abs(gap)<1e-4 and motion.rate==0 then left=math.pi
-            elseif gap>0 and motion.rate>0 then left=gap end
+            elseif gap>0 and motion.rate>0 then left=gap
+            elseif gap<0 and motion.rate<0 then left=gap+math.pi end
         end
         if left then left-=step end
         if left and (left<=1e-6 or left>math.pi+1e-9) then left=nil end
@@ -332,6 +335,12 @@ local function cranks(phase,pedaling,wheel_rate,h,level,motion)
     if not level then return phase,nil end
     local free=math.max(0,wheel_rate)/CRANK_RATIO
     local forward_most=math.min(CRANK_SETTLE_RATE,free)
+    -- Rolling backward, the freewheel's pawls turn the cranks back with the wheel, so they go to the level behind when
+    -- the wheel would turn them back to it within CRANK_WAIT, or turns them a quarter turn back in that time (from
+    -- about .6 m/s). Counted as stopped, cranks let go nearer the level ahead as the bike rolled back at 1 and 2 m/s
+    -- (ride_fall_tests) waited up to 71 degrees short of it for as long as it rolled.
+    local back=math.max(0,-wheel_rate)/CRANK_RATIO
+    local function reversing(behind) return back>1e-6 and (behind/back<=CRANK_WAIT or back*CRANK_WAIT>=math.pi/2) end
     -- Let go in a stroke that the wheel turns them through within CRANK_WAIT, they carry on to the level ahead from
     -- the pace they were pedalled at. Otherwise they are let go as from any other pedalling: they hold a tenth of a
     -- second and go to the nearer level, for a short push the one it left.
@@ -347,9 +356,11 @@ local function cranks(phase,pedaling,wheel_rate,h,level,motion)
             local behind=math.pi-ahead
             local rolling=forward_most>1e-6 and ahead/forward_most<=CRANK_WAIT
             local sooner=forward_most>1e-6 and ahead/forward_most<=behind/CRANK_SETTLE_RATE
-            target=wrap(phase+((ahead<1e-9 or sooner or (ahead<behind and not rolling)) and ahead or -behind))
+            target=wrap(phase+((ahead<1e-9 or not reversing(behind) and (sooner or (ahead<behind and not rolling))) and ahead or -behind))
         end
         local gap=wrap(target-phase)
+        -- Waiting on the level ahead, or going to it, as the wheel starts back, they go back with it instead, once.
+        if gap>0 and reversing(math.pi-gap) then target=wrap(target-math.pi);gap=wrap(target-phase) end
         -- Only a stroke goes forward more than a quarter turn. One whose wheel slows under it so that it would not
         -- finish within twice CRANK_WAIT goes back to the level behind instead, which is then the nearer, once. At
         -- the wait itself, a 1 m/s wheel's step to step wobble in ride_fall_tests (3.6 to 4.1 rad/s) took a tap

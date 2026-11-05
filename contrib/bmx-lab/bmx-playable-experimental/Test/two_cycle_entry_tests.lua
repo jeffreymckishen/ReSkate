@@ -862,6 +862,75 @@ function Tests.run()
         check(s.phase=="blocked" and s.detail:find("Return did not finish",1,true) and h.now-from>=179000 and h.now-from<=181000,
             "three minutes down ends it: "..tostring(h.now-from).." ms")
     end)
+    case("a rider who stands up holding a control is asked to let go, and the 45 s run",function()
+        -- No switch is asked for while a control is held, so Core's last answer, given while the rider was down, said
+        -- nothing about a rider who had stood since. Until 2026-11-04 that answer kept the HUD on 'Waiting for the rider
+        -- to get up.' over a standing rider, and stopped the 45 s, so only the 3-minute cap ended the Return.
+        local f=fixture({two=true,auto_return=true});f.riding()
+        fall(f,"hit something at 4.5 m/s")
+        f.latest=cleaned();f.ragdoll=true;refused_while_down(f)
+        for _=1,30 do f.now+=184;f.tick() end
+        check(f.entry:help_line()=="Waiting for the rider to get up." and f.toggles>0,"down, and the switch refused")
+        local asked,stood=f.toggles,f.now
+        f.ragdoll=false;f.on_pad=function(pad) pad.left_x=1;return pad end
+        for _=1,55 do f.now+=184;f.tick() end
+        local s=f.entry:status()
+        check(s.phase=="returning" and f.toggles==asked and s.detail=="Let go of the controls to go back to the skateboard.",
+            "standing with the stick held, nothing is asked: "..tostring(s.detail))
+        check(f.entry:help_line()=="Going back to the skateboard: let go of the controls.",
+            "and the HUD asks to let go: "..tostring(f.entry:help_line()))
+        for _=1,300 do f.now+=184;f.tick();if f.entry:status().phase=="blocked" then break end end
+        s=f.entry:status()
+        check(s.phase=="blocked" and s.detail:find("Return did not finish",1,true) and f.now-stood>=44000 and f.now-stood<=46000,
+            "held while standing, the 45 s limit ends it: "..tostring(f.now-stood).." ms "..s.phase)
+        -- Letting go asks at once.
+        local g=fixture({two=true,auto_return=true});g.riding()
+        fall(g,"hit something at 4.5 m/s")
+        g.latest=cleaned();g.ragdoll=true;refused_while_down(g)
+        for _=1,30 do g.now+=184;g.tick() end
+        g.ragdoll=false;g.on_pad=function(pad) pad.left_x=1;return pad end
+        for _=1,55 do g.now+=184;g.tick() end
+        asked=g.toggles;g.on_pad=nil;g.now+=500;g.tick()
+        check(g.toggles==asked+1 and g.entry:status().stock_attempted,"letting go arms the switch")
+        g.latest=cleaned();g.stock=100;g.tick()
+        check(g.entry:status().phase=="stepping_off" and g.entry:status().attempts_used==2,"and the remount starts on the board")
+    end)
+    case("a rider kept down with a control held is still down, and stands into the switch",function()
+        -- A stick held from the crash on: nothing is asked of Core, so only the rider's own read says they are down.
+        -- Until 2026-11-04 that Return gave up at 45 s, as loop3's did beside the SUV.
+        local f=fixture({two=true,auto_return=true});f.riding()
+        fall(f,"hit something at 4.5 m/s")
+        f.latest=cleaned();f.ragdoll=true;refused_while_down(f)
+        f.on_pad=function(pad) pad.left_x=1;return pad end
+        for _=1,330 do f.now+=184;f.tick();if f.entry:status().phase=="blocked" then break end end
+        local s=f.entry:status()
+        check(s.phase=="returning" and f.toggles==0 and f.entry:help_line()=="Waiting for the rider to get up.",
+            "60 s ragdolled with the stick held: "..s.phase.." "..tostring(f.entry:help_line()))
+        -- Let go while still down: the switch is asked for and refused, and the HUD still says why it waits.
+        f.on_pad=nil;f.now+=500;f.tick()
+        check(f.toggles==1 and not f.entry:status().stock_attempted and f.entry:help_line()=="Waiting for the rider to get up.",
+            "let go while down, refused, and still waiting")
+        f.ragdoll=false;f.now+=500;f.tick()
+        check(f.toggles==2 and f.entry:status().stock_attempted,"up and let go, the switch is armed")
+    end)
+    case("each Return after a crash gets its own three minutes",function()
+        local f=fixture({two=true,auto_return=true});f.riding()
+        fall(f,"hit something at 4.5 m/s")
+        f.latest=cleaned();f.ragdoll=true;refused_while_down(f)
+        for _=1,650 do f.now+=184;f.tick() end
+        check(f.entry:status().phase=="returning","first crash, 120 s down, still a Return")
+        f.ragdoll=false;f.now+=500;f.tick()
+        f.latest=cleaned();f.stock=100;f.tick()
+        f.await_stepoff()
+        f.latest=cleaned();f.stock=504;f.on_ready504=function()return true,2 end
+        f.tick();f.await_mount();f.tick()
+        check(f.entry:status().phase=="riding","rides again")
+        fall(f,"hit something at 4.5 m/s")
+        f.latest=cleaned();f.ragdoll=true
+        for _=1,650 do f.now+=184;f.tick() end
+        check(f.entry:status().phase=="returning","a second 120 s crash is not cut short by the first one's time: "
+            ..f.entry:status().phase.." "..tostring(f.entry:status().detail))
+    end)
     case("the remount after a crash waits out a rider off the board as it steps off",function()
         -- The user's crash of 2026-11-02 19:35: the board read once, the step-off read the rider off it 1.1 s later,
         -- and the remount stopped for good with 'Attempt two lost its stock100 baseline before admission.'
@@ -896,6 +965,56 @@ function Tests.run()
         check(h.entry:help_line()=="Press Y for your skateboard, then hold LB and press A.","the notice says what to press")
         h.now+=4000;h.tick()
         check(h.entry:help_line()=="Press Y for your skateboard, then hold LB and press A.","and so does the line after it")
+    end)
+    case("while the remount after a crash waits for the board, the HUD says what helps",function()
+        -- Until 2026-11-04 the HUD said 'Stepping off the board: stand still and let go of the controls.' all the
+        -- while, for up to 60 s. A rider standing on foot is not put back on the board by the game: Y does that.
+        local Y_LINE="Press Y for your skateboard, then let go of the controls."
+        local function recover_stepping_off(f)
+            f.riding();fall(f,"rider was knocked down")
+            f.latest=cleaned();f.tick();f.latest=cleaned();f.stock=100;f.tick()
+            check(f.entry:status().phase=="stepping_off" and f.entry:status().attempts_used==2,"Recover's step-off")
+        end
+        local f=fixture({two=true,auto_return=true});recover_stepping_off(f)
+        f.ragdoll=true
+        for _=1,25 do f.now+=184;f.tick() end
+        check(f.entry:status().phase=="stepping_off" and f.entry:help_line()=="Waiting for the rider to get up.",
+            "a rider the game has down is waited for, and the HUD says so: "..tostring(f.entry:help_line()))
+        f.ragdoll=false;f.stock=504;f.now+=184;f.tick()
+        check(f.entry:help_line()~=Y_LINE,"a first standing read does not yet ask for Y")
+        for _=1,6 do f.now+=184;f.tick() end
+        check(f.entry:help_line()==Y_LINE,"standing on foot for a second, the HUD asks for Y: "..tostring(f.entry:help_line()))
+        for _=1,16 do f.now+=184;f.tick() end
+        check(f.entry:status().phase=="stepping_off" and f.stepoffs==nil and f.entry:help_line()==Y_LINE,"and keeps asking")
+        f.stock=100;f.tick()
+        check(f.entry:help_line()=="Stepping off the board: stand still and let go of the controls.","Y pressed, the usual line")
+        f.await_stepoff()
+        check(f.stepoffs==1,"the step-off goes on")
+        f.latest=cleaned();f.stock=504;f.on_ready504=function()return true,2 end
+        f.tick();f.await_mount();f.tick()
+        check(f.mounts==2 and f.entry:status().phase=="riding" and f.entry:status().attempts_used==2,"and the ride goes on")
+        -- One odd read of the rider on foot never asks a rider on the board for Y.
+        local g=fixture({two=true,auto_return=true});recover_stepping_off(g)
+        g.on_pad=function(pad) pad.buttons.x=true;return pad end
+        for _=1,25 do g.now+=184;g.tick() end
+        g.on_pad=nil
+        local shown=false
+        g.stock=504
+        for _=1,12 do g.tick();shown=shown or g.entry:help_line()==Y_LINE end
+        g.stock=100
+        for _=1,80 do g.tick();shown=shown or g.entry:help_line()==Y_LINE;if g.stepoffs then break end end
+        check(not shown and g.stepoffs==1,"a 200 ms read on foot, then the board: no Y line, and the step-off goes on")
+    end)
+    case("a Recover step-off that runs out with the rider back on the board is not told to press Y",function()
+        local h=fixture({two=true,auto_return=true});h.riding();fall(h,"rider was knocked down")
+        h.latest=cleaned();h.tick();h.latest=cleaned();h.stock=100;h.tick()
+        check(h.entry:status().phase=="stepping_off","Recover's step-off")
+        h.ragdoll=true;h.tick(2);h.ragdoll=false
+        h.on_pad=function(pad) pad.buttons.x=true;return pad end
+        for _=1,400 do h.now+=184;h.tick();if h.entry:status().phase=="blocked" then break end end
+        check(h.entry:status().phase=="blocked" and h.stepoffs==nil,"the step-off ran out")
+        check(h.entry:help_line()=="That didn't finish. Get on your skateboard, then hold LB and press A.",
+            "on the board the HUD gives the general line: "..tostring(h.entry:help_line()))
     end)
     case("a Mount from a blocked ride that cannot start yet keeps the blocked help line up",function()
         local f=fixture({two=true});f.riding();f.on_stock=function() return false,"constructed refusal" end
@@ -978,7 +1097,10 @@ function Tests.run()
         g.latest.stop_reason="fresh sampled upright/focus/context/fall readiness lost"
         g.latest.ride={stop_requested=true,issue=g.latest.stop_reason}
         g.tick()
-        check(g.entry:help_line()=="The ride stopped. Hold LB and press A to ride again.","any other end says the ride stopped and how to ride again")
+        -- The Return starts on the same tick, and LB + A is refused until it reaches the board, so the notice says where
+        -- the rider is going. Until 2026-11-04 it said 'Hold LB and press A to ride again.' over the Return.
+        check(g.entry:help_line()=="The ride stopped. Going back to the skateboard." and g.entry:status().phase=="returning",
+            "any other end says the ride stopped and where the rider is going: "..tostring(g.entry:help_line()))
         check(logged(lines,"[BMX] Ride ended: fresh sampled upright/focus/context/fall readiness lost")
             and g.entry:status().last_stop=="fresh sampled upright/focus/context/fall readiness lost","with the reason kept in the log and status")
         -- With no mount left (an SDK that cannot reuse the bike), a fall goes back to the skateboard instead.

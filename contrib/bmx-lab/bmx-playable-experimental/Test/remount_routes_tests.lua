@@ -478,6 +478,104 @@ function T.run()
             "a ragdoll sample in the step-off waits, and the mount still happens: "..tostring(w.entry:status().detail))
         check(w.pulses[2] and w.pulses[2].at>=cleared+600,"the step-off's Y waits a full quiet window after it")
     end)
+    -- Ticks to the end of a Return that may give up, noting when each HUD line was first and last shown after `from`.
+    local function until_blocked_or_riding(w,limit)
+        local first,last={},{}
+        for _=1,limit do
+            w.tick()
+            local h=w.entry:help_line() or "none"
+            local at=w.now-(w.stop_seen_at or w.now)
+            first[h]=first[h] or at;last[h]=at
+            local p=w.entry:status().phase
+            if p=="blocked" or riding(w,1) then break end
+        end
+        return first,last
+    end
+    local WAITING,LET_GO="Waiting for the rider to get up.","Going back to the skateboard: let go of the controls."
+    case(function() -- Down 10 s after a crash, then standing with the stick held: told to let go, and the 45 s run.
+        -- Until 2026-11-04 the last refusal from while the rider was down kept 'Waiting for the rider to get up.' up
+        -- and the 45 s stopped, so this Return sat for 3 minutes with the HUD hiding what would unblock it.
+        local w=start();w.tilt_stop(59.7)
+        local stood
+        w.on_tick=function()
+            if not w.stop_seen_at or stood then return end
+            if w.now-w.stop_seen_at<10000 then w.ragdoll=true
+            else stood=w.now-w.stop_seen_at;w.ragdoll=false;w.stock=504;w.pad.left_x=.9 end
+        end
+        local first,last=until_blocked_or_riding(w,math.ceil(200000/16))
+        w.on_tick=nil;w.pad.left_x=0
+        local s=w.entry:status()
+        check(stood and first[WAITING] and last[WAITING]<stood+100,"the waiting line only while down: "..tostring(last[WAITING]))
+        check(first[LET_GO] and first[LET_GO]<=stood+100,"standing with the stick held, the HUD asks to let go")
+        local at=w.now-w.stop_seen_at
+        check(s.phase=="blocked" and s.detail:find("Return did not finish",1,true) and at>=50000 and at<=57000 and w.pulse_n==0,
+            "and the 45 s limit ends it, not the 3-minute cap: "..tostring(at).." ms "..s.phase)
+    end)
+    case(function() -- Ragdolled 65 s with the stick held all along, then up and let go: still gets back on the bike.
+        local w=start();w.tilt_stop(59.7)
+        local stood
+        w.on_tick=function()
+            if not w.stop_seen_at or stood then return end
+            if w.now-w.stop_seen_at<65000 then w.ragdoll=true;w.pad.left_x=.9 else stood=w.now;w.ragdoll=false;w.pad.left_x=0 end
+        end
+        local rode,shown=until_riding(w,1,8000)
+        w.on_tick=nil;w.pad.left_x=0
+        local s=w.entry:status()
+        check(rode and s.attempts_used==2,"a stick held while down does not run out the Return: "..tostring(s.phase).." "..tostring(s.detail))
+        check(shown[WAITING] and not shown["That didn't finish. Get on your skateboard, then hold LB and press A."],
+            "the HUD said why it waited, and never that it gave up")
+        check(stood and w.pulses[1] and w.pulses[1].at>=stood,"no Y while the rider was down")
+    end)
+    case(function() -- A level change after the stop: Core refuses every switch, though the rider stands and has let go.
+        -- Core's refusal is the same text it gives a rider who is down. Until 2026-11-04 that kept 'Waiting for the rider
+        -- to get up.' up and the Return going for 3 minutes; it ends at 45 s, as before 21f2f0a2.
+        local w=start();w.tilt_stop(59.7)
+        w.on_tick=function() if w.stop_seen_at and w.level~="another" then w.level="another" end end
+        local first=until_blocked_or_riding(w,math.ceil(200000/16))
+        w.on_tick=nil
+        local s=w.entry:status()
+        local at=w.now-w.stop_seen_at
+        check(s.phase=="blocked" and s.detail:find("Return did not finish",1,true) and at>=43000 and at<=47000,
+            "the Return ends at 45 s: "..tostring(at).." ms "..s.phase.." "..tostring(s.detail))
+        check(not first[WAITING],"the HUD never says the rider is down")
+        check(w.entry:help_line()=="That didn't finish. Get on your skateboard, then hold LB and press A.",
+            "a ride whose Core was made keeps the general blocked line: "..tostring(w.entry:help_line()))
+    end)
+    case(function() -- The remount after a crash steps off and reads the rider standing on foot: the HUD asks for Y.
+        local Y_LINE="Press Y for your skateboard, then let go of the controls."
+        local w=start();w.tilt_stop(59.7)
+        local hit,boarded
+        local first={}
+        w.on_tick=function()
+            if not hit and w.entry:status().phase=="stepping_off" then hit=w.now;w.stock=504;w.ragdoll=false end
+            -- The player presses Y 5 s in.
+            if hit and not boarded and w.now-hit>=5000 then boarded=w.now;w.stock=100 end
+        end
+        for _=1,4000 do
+            w.tick()
+            if hit then local h=w.entry:help_line() or "none";first[h]=first[h] or w.now-hit end
+            if w.entry:status().phase=="blocked" or riding(w,1) then break end
+        end
+        w.on_tick=nil
+        check(hit and first[Y_LINE] and first[Y_LINE]>=1000 and first[Y_LINE]<=1500,
+            "standing on foot for a second, the HUD asks for Y: "..tostring(first[Y_LINE]))
+        check(boarded and riding(w,1) and w.entry:status().attempts_used==2,
+            "Y pressed, the step-off goes on and the rider gets back on the bike: "..tostring(w.entry:status().detail))
+        -- One 200 ms read on foot, then the board again: no Y line, and the remount goes on.
+        local v=start();v.tilt_stop(59.7)
+        local seen,back
+        local shown=false
+        v.on_tick=function()
+            if not seen and v.entry:status().phase=="stepping_off" then seen=v.now;v.stock=504 end
+            if seen and not back and v.now-seen>=200 then back=v.now;v.stock=100 end
+        end
+        for _=1,4000 do
+            v.tick();shown=shown or v.entry:help_line()==Y_LINE
+            if v.entry:status().phase=="blocked" or riding(v,1) then break end
+        end
+        v.on_tick=nil
+        check(back and not shown and riding(v,1),"a short read on foot never asks for Y: "..tostring(v.entry:status().detail))
+    end)
     case(function() -- The game loses focus mid-ride: the same readiness stop as before, and a plain Return to the board.
         local w=start();w.focused=false
         w.on_tick=function() if w.stop_seen_at and w.now-w.stop_seen_at>=5000 then w.focused=true end end

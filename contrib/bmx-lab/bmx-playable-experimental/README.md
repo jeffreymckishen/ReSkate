@@ -83,9 +83,9 @@ offline the game does not keep it, so set it again each launch.
 - Getting back on reuses the bike from the last ride, so mounts are not limited. Reloading the mod needs a new one,
   and a game launch can make eight, shared with other mods: past that, restart the game. After changing level,
   restart the game to ride again.
-- Pausing, opening Insert or leaving the game ends the ride, and the HUD says "The ride stopped. Hold LB and press A
-  to ride again." The rider goes back to the skateboard on their own once the menu is closed and the controls are
-  released.
+- Pausing, opening Insert or leaving the game ends the ride, and the HUD says "The ride stopped. Going back to the
+  skateboard." The rider goes back to the skateboard on their own once the menu is closed and the controls are
+  released. Then hold LB and press A to ride again.
 - Top speed is about 7.7 m/s on the flat. The rider stops pedalling there and coasts down to about 7.2 m/s before
   pedalling again. A hill can take the bike much faster than that, and a coast slows by itself.
 - Pedalling has a rider's power, not a motor's. Up a ramp steeper than about 15% the bike slows with A held, the
@@ -95,10 +95,14 @@ offline the game does not keep it, so set it again each launch.
 - A stopped bike holds on a street grade, so hold A for a moment to start down a gentle hill. Ramps steeper than about 15% roll back.
 - A crash (the bike going over, a hit at speed, or the rider being knocked off, as by a car) gets back on the bike
   after a few seconds: the HUD says "The rider came off. Getting back on the bike." While the game keeps the rider
-  down the HUD says "Waiting for the rider to get up.", and the mod waits for that, up to three minutes. Banks and
-  quarter pipes do not count as going over. If there is no room to get back on, move and mount again.
+  down the HUD says "Waiting for the rider to get up.", and the mod waits for that, up to three minutes. Once the
+  rider is up, let go of the controls: the switch to the skateboard waits for that. If the rider is left standing on
+  foot as they are put back on the bike, the HUD says "Press Y for your skateboard, then let go of the controls."
+  Banks and quarter pipes do not count as going over. If there is no room to get back on, move and mount again.
 - If something does not finish, the HUD says what to do next, usually "That didn't finish. Get on your skateboard,
-  then hold LB and press A." The reason the mod stopped, in its own words, is in the ReSkate log and on the BMX page.
+  then hold LB and press A." On the first ride of a launch a few failures cannot be tried again, and the HUD then
+  says "The bike is stuck: restart the game to ride again." The reason the mod stopped, in its own words, is in the
+  ReSkate log and on the BMX page.
 - A slower bump into something just stops the bike, and it has no reverse. If it is stuck, go back to the skateboard.
 - A nose manual rides over small bumps and kerb ramps. With the stick past about half way, a steep kerb face or a
   bump of about 12 cm often throws it over the bars below about 3 m/s and can still do it at 5 m/s, and so can a

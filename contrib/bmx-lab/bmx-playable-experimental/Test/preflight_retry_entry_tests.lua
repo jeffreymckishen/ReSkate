@@ -285,6 +285,37 @@ function Tests.run()
         g.stock=100;g.overlay=false;g.latest.startup.loaded=1;g.tick()
         check(g.entry:status().phase=="blocked" and g.mounts==0,"without the proof that nothing is held, it still stops")
     end)
+    case("22 after the notice a moved first-ride survey keeps saying stand still",function()
+        local f=fixture();f.rough=false;f.overlay=true
+        check(f.entry:mount(),"first intent");f.tick(100)
+        f.position=vector.create(.3,.5,0);f.overlay=false;f.tick()
+        check(f.entry:status().phase=="preflight_refused","retry open")
+        f.now+=5000;f.tick()
+        check(f.entry:help_line()==MOVED,"HUD after the notice: "..tostring(f.entry:help_line()))
+    end)
+    -- Before Core is made there is nothing a Mount can reopen: Mount answers that the bike is stuck. Until 2026-11-04
+    -- the HUD said 'That didn't finish. Get on your skateboard, then hold LB and press A.' here, a Mount that only
+    -- ever answered the same thing.
+    case("23 a first ride that cannot go on says the bike is stuck, not to mount again",function()
+        local STUCK="The bike is stuck: restart the game to ride again."
+        local f=fixture();f.on_prepare=function()return false,"waiting for a fresh qualified 60 Hz physics step"end
+        check(f.entry:mount(),"first intent");f.tick(200)
+        check(f.entry:status().phase=="blocked" and f.mounts==0,"the preparation timed out")
+        check(f.entry:help_line()==STUCK,"at once the HUD says what Mount would: "..tostring(f.entry:help_line()))
+        f.stock=100
+        local mounted,why=f.entry:mount()
+        check(not mounted and why==STUCK,"which Mount does say, on the board too")
+        f.now+=5000;f.tick()
+        check(f.entry:help_line()==STUCK,"and after its notice: "..tostring(f.entry:help_line()))
+        -- A menu left open 46 s after the survey passed blocks the same way.
+        local g=fixture();g.rough=false;g.overlay=true
+        check(g.entry:mount(),"first intent");g.tick(100)
+        g.now+=46000;g.overlay=false;g.tick()
+        check(g.entry:status().phase=="blocked" and g.mounts==0 and g.entry:help_line()==STUCK,"a stale survey says so too")
+        -- A refusal that can be retried keeps its own line.
+        local t=fixture();t.refuse();t.now+=5000;t.tick()
+        check(t.entry:help_line()=="No room here or too steep: move, then hold LB and press A.","a terrain refusal still says to move")
+    end)
     return{cases=cases,assertions=assertions}
 end
 return Tests

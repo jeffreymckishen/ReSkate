@@ -10,6 +10,9 @@ F.wheel_radius=.34*scale
 -- B is all or nothing, so the lever is squeezed here: this long to full brake, and this long to let go.
 local BRAKE_SQUEEZE_SECONDS,BRAKE_RELEASE_SECONDS=.15,.05
 local MAXIMUM_CAMBER=.8
+-- The balance couple's work is paid from the speed only above a walk: below BALANCE_WORK_FADE_LOW m/s there is too
+-- little speed to pay a lean from, and it is all paid from BALANCE_WORK_FADE_LOW+BALANCE_WORK_FADE_SPAN m/s up.
+local BALANCE_WORK_FADE_LOW,BALANCE_WORK_FADE_SPAN,BALANCE_WORK_SHARE=.5,1,.25
 local steering_axis={0,.9601196050643921,-.2795896530151367} -- the source float coefficients
 -- Hop-only authored landing policy. The compliance arithmetic comes from our
 -- native contact_compliance.h; earlier braking from a fresh measured ray is a
@@ -145,7 +148,7 @@ local function result(issue)
         normal_load={0,0},normal_impulse={0,0},longitudinal_impulse={0,0},lateral_impulse={0,0},recovery_velocity={0,0},
         front_steer_angle=0,requested_front_steer_angle=0,turning_lean_angle=0,steering_limited=false,contact_scale=1,
         desired_support_angular_velocity={0,0,0},balance_support_mask=0,balance_continuation_mask=0,brake_impulse={0,0},
-        balance_reference_up={0,0,0},desired_balance_up={0,0,0},balance_torque={0,0,0},air_control_torque={0,0,0},
+        balance_reference_up={0,0,0},desired_balance_up={0,0,0},balance_torque={0,0,0},balance_work=0,air_control_torque={0,0,0},
         motor_torque={0,0,0},contact_torque={0,0,0},pre_contact_prediction_available=false,pump_force={0,0,0},
         air_damping_torque={0,0,0},air_rotation_reserved=false,neutral_air_damping_active=false,pedaling=false,
         landing_approach_mask=0,compliant_normal_mask=0,landing_recovery_mask=0,approach_normal_impulse={0,0},approach_normal_force={0,0},
@@ -812,6 +815,33 @@ function Controller:_impl(h,measured,wheels,samples,c,recovery_mask)
     out.pump_force={0,-measured.mass*out.pump.down_acceleration,0}
     prediction.linear_velocity=M.add(prediction.linear_velocity,M.mul(out.pump_force,h/measured.mass))
     prediction.angular_velocity=M.add(prediction.angular_velocity,M.tensor(measured,M.mul(assist,h),true))
+    -- The balance couple is the rider shifting their weight on the bike. That moves energy between the lean and the
+    -- speed but cannot make any, and the couple was making it: the spring's work on the lean came back as speed
+    -- through the tyres' side forces. In the bike_physics_tests harness, 20 s of coasting from 7.5 m/s with full
+    -- lock flipped every second took about 4 kJ from the couple and ended at 6.80 m/s where a straight coast ended
+    -- at 3.96; paid as below, it ends at 2.39. So the work the couple does on the lean this step is taken from the speed along the ground, and work
+    -- it takes out is given back. Only the lean: the tyres hold the pitch, and charging the couple's pitch work cost
+    -- speed over a 2 cm step in the road. Only on both wheels: a nose manual steered at 7 m/s into a face turned 15
+    -- degrees went over sideways (66.6 degrees) when the steps on one wheel were charged too. The first steps of a
+    -- touchdown belong to the landing, so manuals, nose manuals and landings keep their own laws.
+    if support_mask==3 and balance_frame and out.landing_recovery_mask==0 and not manual_engaged and not nose_engaged then
+        -- The work is done on the lean's rate midway through the step. The bike leans about its tyres, so that half
+        -- step uses the roll inertia about the line through them (about 96 kg m^2) and not the free body's (10):
+        -- with the free body's a weaving coast stopped dead.
+        local roll=M.dot(assist,forward)
+        local arm=M.sub(measured.center_of_mass,M.mul(M.add(contacts[1].point,contacts[2].point),.5))
+        arm=M.sub(arm,M.mul(forward,M.dot(arm,forward)))
+        local inertia=M.dot(forward,M.tensor(measured,forward,false))+measured.mass*M.dot(arm,arm)
+        local work=roll*(M.dot(measured.angular_velocity,forward)+.5*h*roll/inertia)*h
+        local along=M.dot(M.sub(measured.linear_velocity,surface),forward)
+        local fade=math.clamp((math.abs(along)-BALANCE_WORK_FADE_LOW)/BALANCE_WORK_FADE_SPAN,0,1) fade=fade*fade*(3-2*fade)
+        if fade>0 then
+            -- Never more than a quarter of the speed in one step, so one hard catch cannot stop or launch the bike.
+            local share=BALANCE_WORK_SHARE*math.abs(along)
+            prediction.linear_velocity=M.add(prediction.linear_velocity,M.mul(forward,math.clamp(-work*fade/(measured.mass*along),-share,share)))
+            out.balance_work=work*fade
+        end
+    end
     local new_event=c.hop_event_id>self.last_hop_event
     if new_event and c.enabled and out.grounded and math.clamp(c.hop_strength,0,1)>0 then
         out.hop_impulse=M.mul(world_up,measured.mass*t.hop_delta_speed*math.clamp(c.hop_strength,0,1))

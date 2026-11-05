@@ -216,6 +216,59 @@ function T.run()
         local long=run({steps=2400,speed=.8})
         check(math.abs(long.body.linear_velocity[3])<.01,"a coast ends at rest, and does not roll back")
     end)
+    case(function() -- Weaving does not make speed: the lean the rider throws is paid from the bike's speed.
+        -- 20 s coasting, the stick flipped from side to side after half a second. Before the balance couple's work was
+        -- paid from the speed, full lock flipped every second from 7.5 m/s ended at 6.80 m/s and every 0.75 s at 5.03,
+        -- where a straight coast ended at 3.96; now both end at 2.39. Stick 0.7 every 0.6 s from 6 m/s ends at 2.27
+        -- (2.21 before, 3.08 straight), and stick 0.4 from 5 m/s at 2.17 (2.09 before, 2.43 straight).
+        local function flat(body) return math.sqrt(body.linear_velocity[1]^2+body.linear_velocity[3]^2) end
+        local straight={}
+        local function coast(speed,stick,every)
+            return flat(run({steps=1200,speed=speed,controls=function(step)
+                if step<=30 or stick==0 then return {steer=0,pedal=0} end
+                return {steer=math.floor((step-31)/every)%2==0 and stick or -stick,pedal=0}
+            end}).body)
+        end
+        for _,weave in ipairs({{speed=6,stick=.7,every=36},{speed=7.5,stick=1,every=60},{speed=7.5,stick=1,every=45},{speed=5,stick=.4,every=36}}) do
+            straight[weave.speed]=straight[weave.speed] or coast(weave.speed,0,1)
+            local weaving=coast(weave.speed,weave.stick,weave.every)
+            check(weaving<=straight[weave.speed],string.format("stick %.1f flipped every %.2f s from %.1f m/s coasts to %.2f m/s, a straight coast to %.2f",
+                weave.stick,weave.every*h,weave.speed,weaving,straight[weave.speed]))
+        end
+        -- Pedalling with the stick flipped, the replay that once passed the band's top, still stops there. It reached
+        -- 7.68, 7.71 and 7.75 m/s before, and 7.65, 7.70 and 7.70 now.
+        for _,flip in ipairs({{stick=1,every=60},{stick=.7,every=36},{stick=1,every=45}}) do
+            local fastest=0
+            run({steps=1800,speed=2.9,controls=function(step)
+                return {steer=step<=120 and 0 or (math.floor((step-121)/flip.every)%2==0 and flip.stick or -flip.stick),pedal=1}
+            end,each=function(step,body)
+                local f=M.turn(M.normalized(body.orientation),{0,0,1}) local across=math.sqrt(f[1]^2+f[3]^2)
+                fastest=math.max(fastest,math.abs(body.linear_velocity[1]*f[1]+body.linear_velocity[3]*f[3])/across)
+            end})
+            check(fastest<=7.75,string.format("pedalled with stick %.1f flipped every %.2f s, the bike tops out at %.2f m/s",flip.stick,flip.every*h,fastest))
+        end
+    end)
+    case(function() -- Manuals, nose manuals and a landing's first steps keep their own laws: the lean is not paid there.
+        -- The steps on both wheels are the ones that matter: a manual's first, a nose manual's first two and the landing's
+        -- one step of recovery were paid before they were left out, and the weave around them still is.
+        local function weave(step) return step>30 and (math.floor(step/30)%2==0 and .7 or -.7) or 0 end
+        local function count(ride,state)
+            local held,paid,two=0,0,0
+            run({steps=ride.steps,speed=ride.speed,lift=ride.lift,controls=ride.controls,each=function(step,body,out)
+                if out.valid and state(out) then held+=1 if out.balance_work~=0 then paid+=1 end
+                elseif out.valid and out.balance_support_mask==3 and out.balance_work~=0 then two+=1 end
+            end})
+            return held,paid,two
+        end
+        local held,paid,two=count({steps=240,speed=5,controls=function(step) return {steer=weave(step),manual=step>90 and step<=180 and 1 or 0} end},
+            function(out) return out.manual_active end)
+        check(held>0 and paid==0 and two>0,string.format("a steered manual: %d steps, %d paid; %d paid on two wheels",held,paid,two))
+        held,paid,two=count({steps=240,speed=5,controls=function(step) return {steer=weave(step),nose=step>90 and step<=180 and .5 or 0} end},
+            function(out) return out.nose_manual_active end)
+        check(held>0 and paid==0 and two>0,string.format("a steered nose manual: %d steps, %d paid; %d paid on two wheels",held,paid,two))
+        held,paid,two=count({steps=120,speed=5,lift=.3,controls=function() return {steer=-1} end},function(out) return out.landing_recovery_mask~=0 end)
+        check(held>0 and paid==0 and two>0,string.format("a steered landing: %d steps, %d paid; %d paid on two wheels",held,paid,two))
+    end)
     case(function() -- Corners: tighter than the old 11 m at speed, leaned as far as the speed asks.
         local radius,lean
         run({steps=420,speed=7.4,controls=function(step) return {steer=-1,pedal=1} end,each=function(step,body,out)
@@ -376,7 +429,8 @@ function T.run()
     end)
     case(function() -- Ordinary riding with no manual sends exactly what it did before the manual was added.
         -- The digest was taken on the kernel before the manual law went in: every force and torque of a 900 step ride
-        -- with pedal, steering, brake and two hops, and where the bike ends.
+        -- with pedal, steering, brake and two hops, and where the bike ends. It was taken again when the balance
+        -- couple's work on the lean came to be paid from the speed, which this ride's weave does on two wheels.
         local hash=2166136261
         local function mix(x)
             local text=string.format("%.17g",x)
@@ -393,7 +447,7 @@ function T.run()
         end})
         for i=1,3 do mix(ride.body.center_of_mass[i]) end
         check(sent==900 and ride.refused==0,"every step of the ordinary ride is sent: "..sent)
-        check(hash==0x24483bca,string.format("ordinary riding is unchanged: digest %08x",hash))
+        check(hash==0x4db235d6,string.format("ordinary riding is unchanged: digest %08x",hash))
     end)
     -- Manuals. The pitch is the body's own, nose up positive, from the surface under the bike when one is given.
     local function pitch_of(body,ground)

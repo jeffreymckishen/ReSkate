@@ -1112,7 +1112,13 @@ for _,method in ipairs(input_methods) do
             return nil,"bike source cleanup window closed during callback"
         end
         -- Let Source classify known false versus unknown before outer cleanup.
-        if name=="lease_capture" and not yes(r) then latch_stop("capture refusal, exception or malformed result") end
+        -- The reason goes with it: loop5 (2026-11-04) latched this at the fifth Mount and the log could not say which.
+        if name=="lease_capture" and not yes(r) then
+            local why=not r[1] and "exception: "..tostring(r[2])
+                or r[2]==false and "refused: "..(type(r[3])=="string" and r[3] or "no reason given")
+                or "malformed result: "..type(r[2]).."/"..tostring(r.n)
+            latch_stop("capture refusal, exception or malformed result ("..why..")")
+        end
         if not r[1] then error("input "..name.." callback failed",0) end
         return table.unpack(r,2,r.n)
     end

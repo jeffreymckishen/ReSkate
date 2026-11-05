@@ -861,6 +861,16 @@ function Tests.run()
         s=h.entry:status()
         check(s.phase=="blocked" and s.detail:find("Return did not finish",1,true) and h.now-from>=179000 and h.now-from<=181000,
             "three minutes down ends it: "..tostring(h.now-from).." ms")
+        -- loop5 (2026-11-04): a rider still lying there once the mod stops waiting is told to get up, not to find a board.
+        h.tick(16)
+        check(h.entry:help_line()=="Press A to get up.","a blocked rider still down is told to get up: "..tostring(h.entry:help_line()))
+        h.ragdoll=false;h.tick(16)
+        check(h.entry:help_line()~="Press A to get up." and h.entry:status().phase=="blocked","standing, the blocked line comes back")
+        -- Only a ragdoll is a rider who is down. In the air, or back on the board and skating, nothing is said.
+        h.airborne=true;h.tick(16)
+        check(h.entry:help_line()~="Press A to get up.","a rider in the air is not told to get up")
+        local k=fixture({two=true});first_return(k);k.ragdoll=true;k.tick(32)
+        check(k.entry:status().phase=="skateboard" and k.entry:help_line()~="Press A to get up.","a bail on the skateboard is the game's: "..tostring(k.entry:help_line()))
     end)
     case("a rider who stands up holding a control is asked to let go, and the 45 s run",function()
         -- No switch is asked for while a control is held, so Core's last answer, given while the rider was down, said

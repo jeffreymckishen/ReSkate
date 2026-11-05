@@ -85,6 +85,10 @@ function Entry.new(R,Runtime,Survey,options)
     -- the switch is not used for it. Core gives the same refusal for a level change, and no switch is asked for while a
     -- control is held, so its last answer can be stale for a rider who has stood up since.
     local return_total,return_down=0,false
+    -- Whether the game has the rider ragdolled while Entry waits on the player outside a Return (DOWN_WAITS), read at
+    -- most every 250 ms in step(). help_line runs every frame and reads nothing itself.
+    local DOWN_WAITS={blocked=true,spent=true,fallen=true,stopped=true,preflight_refused=true}
+    local rider_down,down_read_at=false,nil
     local notice,notice_until,last_clock=nil,0,nil
     local mount_charged,last_stop,logged_phase,logged_line=false,nil,nil,nil
     -- What this Mount's stop has told the rider, so a stop is told once and not every tick it stays latched. Each
@@ -1124,6 +1128,18 @@ function Entry.new(R,Runtime,Survey,options)
             if line~=logged_line then logged_line=line;trace(line.." pad="..(pad_released() and "rest" or "held")) end
         end
         logged_phase=phase
+        -- A crash can leave the rider lying after the mod has stopped waiting for them: in loop5 (2026-11-04) the
+        -- board rolled away on a grade, the Return blocked, and the rider lay on the road under 'Get on your
+        -- skateboard' for four minutes. A down rider reads state 504 with ragdoll set (chain2); only the ragdoll is
+        -- used, so a rider in the air or mid grind is not told to get up.
+        if DOWN_WAITS[phase] and not cancelled and not unloaded then
+            local now=clock()
+            if now and (not down_read_at or now<down_read_at or now-down_read_at>=250) then
+                down_read_at=now
+                local out=call(R.skater and R.skater.telemetry)
+                rider_down=out[1] and out.n==2 and plain(out[2]) and plain(out[2].watch) and out[2].watch.ragdoll==true
+            end
+        else rider_down,down_read_at=false,nil end
         if not advanced then known=false;fail("Entry step failed; cleanup remains required.")
         -- A ride that ended on its own hands the player back straight away: a fall gets back on the bike, anything
         -- else returns to the skateboard, ready to mount again. A fall with no mount left to spend, which happens only
@@ -1171,6 +1187,8 @@ function Entry.new(R,Runtime,Survey,options)
                 return "Press Y for your skateboard, then let go of the controls."
             end
         end
+        -- Whatever this phase asks for next, a rider still lying down has to get up first.
+        if rider_down and DOWN_WAITS[phase] then return "Press A to get up." end
         -- A first ride that ended before Core was made leaves nothing a Mount can reopen: mount() never finds a
         -- finished cleanup on the facade's own status (bike_runtime.lua status, bike_admission.lua snapshot), so it
         -- answers that the bike is stuck. The HUD says the same rather than asking for a Mount that cannot start.

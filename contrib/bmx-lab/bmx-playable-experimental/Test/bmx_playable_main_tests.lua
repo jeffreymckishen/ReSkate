@@ -1,6 +1,5 @@
 -- Test-only exact-main wrapper and constructor/event/menu wiring. No game APIs.
 local Main=require("./playable_main_fixture")
-local ScoreHUD=require("./score_hud")
 local YButton=require("./y_button")
 local Tests={}
 function Tests.run()
@@ -14,7 +13,7 @@ function Tests.run()
         return p
     end
     local function setup(score_view,world)
-        local f={new_calls=0,callbacks={},buttons={},mounts=0,returns=0,recovers=0,cancels=0,steps=0,unloads=0,status_reads=0,score_reads=0,requires={},binds={},notes={},
+        local f={new_calls=0,callbacks={},buttons={},mounts=0,returns=0,recovers=0,cancels=0,steps=0,unloads=0,status_reads=0,score_reads=0,help_reads=0,requires={},binds={},notes={},
             toggles={},controls={},events={}}
         local Runtime,Survey={},{}
         local controller={}
@@ -34,8 +33,13 @@ function Tests.run()
         function controller:set_controls(kind) f.controls[#f.controls+1]=kind;return true end
         -- y_button.lua's hold: the Entry hands nothing of the game's input on while it answers true.
         function controller:set_input_hold(fn) f.hold=fn;return true end
-        -- What Entry's HUD help says; nil (the default) is none.
-        function controller:help_line() return f.help end
+        -- What Entry's HUD help says; nil (the default) is none. A help_error makes the read itself fail.
+        function controller:help_line()
+            f.help_reads+=1
+            if f.help_error then error(f.help_error) end
+            return f.help
+        end
+        -- Main no longer reads the score; this counts any read so the cases can show that.
         function controller:score_view()
             f.score_reads+=1
             if score_view==nil then return nil,"ride_unavailable","unavailable" end
@@ -73,7 +77,7 @@ function Tests.run()
             f.options=options
             return controller
         end
-        local modules={["./bike_runtime"]=Runtime,["./ride_r1_record"]=Survey,["./bmx_playable_entry"]=E,["./score_hud"]=ScoreHUD,["./y_button"]=YButton}
+        local modules={["./bike_runtime"]=Runtime,["./ride_r1_record"]=Survey,["./bmx_playable_entry"]=E,["./y_button"]=YButton}
         local function require_one(name) check(modules[name]~=nil,"no undeclared main dependency");f.requires[#f.requires+1]=name;return modules[name] end
         Main(R,require_one)
         local ui={}
@@ -86,8 +90,8 @@ function Tests.run()
         end
         f.ui=ui;return f
     end
-    case("one inert controller and five declared Lua dependencies",function()
-        local f=setup();check(f.new_calls==1 and #f.requires==5 and f.requires[5]=="./y_button","main creates one owner coordinator once")
+    case("one inert controller and four declared Lua dependencies",function()
+        local f=setup();check(f.new_calls==1 and #f.requires==4 and f.requires[4]=="./y_button","main creates one owner coordinator once")
         check(type(f.callbacks.tick)=="function" and type(f.callbacks.draw)=="function" and type(f.callbacks.unload)=="function" and type(f.callbacks.action)=="function" and type(f.menu)=="function","entry binds normal events/menu")
     end)
     case("explicit Mount Return Cancel reach the same controller",function()
@@ -212,77 +216,183 @@ function Tests.run()
         check(f.unloads==1 and f.new_calls==1 and f.mounts==3 and f.returns==0 and f.cancels==0 and #f.binds==6,
             "unload uses the existing Entry and SDK binding cleanup without an alternate lifecycle")
     end)
-    case("score HUD draws six cached lines above stock hints at the observed resolution",function()
-        local score={scope="authored_mod_score_only",calibration="C0_UNRUN",native_score=false,
-            active=true,stopped=false,issue="none",pending_score=120,eligible_pending_score=0,
-            banked_total=400,best_combo=250,tricks=2,multiplier=2,combo_factor=1.2,
-            rows={{name="Barspin"},{name="Tailwhip"}}}
-        local f=setup(score)
-        local expected=ScoreHUD.lines(score,"none","unavailable")
+    -- A draw target that records every call and measures text as the overlay would at this window's height. Its glyphs
+    -- are 8 pixels at 1080 unless given (per), and a fixed overhead makes the width not proportional to the length.
+    local function target(width,height,per,overhead)
         local draw={calls={},sizes=0,measures=0,panels={},order={}}
-        function draw:size() self.sizes+=1;return vector.create(2560,1440,0) end
-        function draw:measure(text,style)
-            self.measures+=1
-            return vector.create(#text*8*(1440/1080),style.size*(1440/1080),0)
-        end
-        function draw:rect(a,b,style)
-            self.panels[#self.panels+1]={a=a,b=b,style=style};self.order[#self.order+1]="rect"
-        end
+        local k=height/1080
+        per=per or 8;overhead=overhead or 0
+        function draw:size() self.sizes+=1;return vector.create(width,height,0) end
+        function draw:measure(text,style) self.measures+=1;return vector.create((#text*per+overhead)*k,style.size*k,0) end
+        function draw:rect(a,b,style) self.panels[#self.panels+1]={a=a,b=b,style=style};self.order[#self.order+1]="rect" end
         function draw:text(position,text,style)
-            self.order[#self.order+1]="text"
-            self.calls[#self.calls+1]={position=position,text=text,style=style}
+            self.order[#self.order+1]="text";self.calls[#self.calls+1]={position=position,text=text,style=style}
         end
+        return draw
+    end
+    -- A ride under way with tricks and points, as Entry's score view gives it: the old panel drew all of this.
+    local riding={scope="authored_mod_score_only",calibration="C0_UNRUN",native_score=false,
+        active=true,stopped=false,issue="none",pending_score=120,eligible_pending_score=0,
+        banked_total=400,best_combo=250,tricks=2,multiplier=2,combo_factor=1.2,
+        rows={{name="Barspin"},{name="Tailwhip"}}}
+    case("the help line is drawn alone at the old panel's top-left anchor at the observed resolution",function()
+        local f=setup(riding)
+        local draw=target(2560,1440)
         f.callbacks.draw(draw)
-        check(#draw.calls==0 and draw.sizes==0 and draw.measures==0 and #draw.panels==0 and f.steps==0 and f.score_reads==0,
-            "draw before a tick has no score cache or lifecycle work")
-        f.callbacks.tick(16)
-        check(f.steps==1 and f.last_dt==16 and f.score_reads==1,"only tick refreshes the cached score view")
-        f.callbacks.draw(draw)
-        check(draw.sizes==1 and draw.measures==6 and #draw.calls==6 and #draw.panels==1,"one size read, bounded text measurements, one backing and the same six text calls")
-        local panel=draw.panels[1]
-        local measured_width=0
-        for _,text in expected do measured_width=math.max(measured_width,#text*8*(1440/1080)) end
-        check(panel.style==ScoreHUD.panel_style and table.isfrozen(panel.style) and panel.style.fill==true
-            and panel.style.colour=="#10151DE6" and panel.style.rounding==8
-            and #draw.order==7 and draw.order[1]=="rect","one frozen translucent dark fill precedes the unchanged six texts")
-        check(panel.a.x==32 and panel.a.y==32 and panel.b.y==248
-            and math.abs(panel.b.x-(64+measured_width))<.001 and panel.b.x<=2560-32 and panel.b.y<=1440-32,
-            "compact backing uses measured pixels once with scaled padding inside the viewport")
-        for i=1,6 do
-            local call=draw.calls[i]
-            check(call.position.x==48 and call.position.y==48+(i-1)*32 and call.position.z==0,
-                "score row "..i.." uses the upper-left scaled position")
-            check(call.text==expected[i] and call.style==(i==1 and ScoreHUD.header_style or ScoreHUD.row_style),
-                "moving row "..i.." preserves the exact authored score text and style")
-        end
-        check(f.score_reads==1 and f.status_reads==0 and f.steps==1 and #f.notes==0
-            and f.mounts==0 and f.returns==0 and f.recovers==0 and f.cancels==0,
-            "drawing reads only cached text and never opens menus or drives lifecycle actions")
-        f.callbacks.unload();f.callbacks.draw(draw)
-        check(f.unloads==1 and #draw.calls==6 and draw.sizes==1 and draw.measures==6 and #draw.panels==1 and f.score_reads==1,
-            "unload clears the display cache without any late draw or score read")
-    end)
-    case("before the first ride the HUD panel still shows the help line",function()
-        -- With no Ride yet ScoreHUD.lines is nil, and copying it raised inside the tick's pcall, so nothing was drawn
-        -- while the bike got ready, checked for room or said why a Mount did not start.
-        local f=setup()
-        local draw={calls={},panels={}}
-        function draw:size() return vector.create(1920,1080,0) end
-        function draw:measure(text,style) return vector.create(#text*8,style.size,0) end
-        function draw:rect(a,b,style) self.panels[#self.panels+1]={a=a,b=b,style=style} end
-        function draw:text(position,text,style) self.calls[#self.calls+1]={position=position,text=text,style=style} end
-        f.callbacks.tick(16);f.callbacks.draw(draw)
-        check(#draw.calls==0 and #draw.panels==0,"no Ride and no help draws nothing, as before")
+        check(#draw.calls==0 and draw.sizes==0 and draw.measures==0 and #draw.panels==0 and f.steps==0 and f.help_reads==0,
+            "draw before a tick has no help or lifecycle work")
         f.help="Getting the bike ready: stand still."
-        f.callbacks.tick(16);f.callbacks.draw(draw)
-        check(#draw.calls==1 and draw.calls[1].text==f.help and #draw.panels==1,"the help is the panel's one row")
-        f.help="Step off your skateboard with Y, then hold LB and press A."
-        draw.calls,draw.panels={},{}
-        f.callbacks.tick(16);f.callbacks.draw(draw)
-        check(#draw.calls==1 and draw.calls[1].text==f.help,"and a refused Mount's notice shows the same way")
-        f.help=nil;draw.calls,draw.panels={},{}
-        f.callbacks.tick(16);f.callbacks.draw(draw)
-        check(#draw.calls==0,"and it goes when the help does")
+        f.callbacks.tick(16)
+        check(f.steps==1 and f.last_dt==16 and f.help_reads==1,"only tick reads the help, once, after the step")
+        f.callbacks.draw(draw)
+        check(draw.sizes==1 and draw.measures==1 and #draw.calls==1 and #draw.panels==1 and #draw.order==2
+            and draw.order[1]=="rect" and draw.order[2]=="text","one size read, one measurement, one backing, then one line")
+        local panel,line=draw.panels[1],draw.calls[1]
+        local measured=#f.help*8*(1440/1080)
+        check(line.text==f.help and line.position.x==48 and line.position.y==48 and line.position.z==0,
+            "the help is the whole line, at the old panel's first row, scaled from 1080")
+        check(table.isfrozen(line.style) and line.style.size==18 and line.style.font=="body" and line.style.shadow==true,
+            "one frozen body style whose size the overlay scales itself")
+        check(table.isfrozen(panel.style) and panel.style.fill==true and panel.style.rounding==8
+            and panel.style.colour=="#10151DE6","the backing is a frozen, rounded, translucent dark fill")
+        check(panel.a.x==32 and panel.a.y==32 and math.abs(panel.b.x-(64+measured))<.001 and math.abs(panel.b.y-88)<.001,
+            "the backing fits the one measured line with scaled padding")
+        check(f.help_reads==1 and f.score_reads==0 and f.status_reads==0 and f.steps==1 and #f.notes==0
+            and f.mounts==0 and f.returns==0 and f.recovers==0 and f.cancels==0,
+            "drawing reads only the cached help: no score, status, menu or lifecycle action")
+        f.callbacks.unload();f.callbacks.draw(draw)
+        check(f.unloads==1 and #draw.calls==1 and draw.sizes==1 and #draw.panels==1 and f.help_reads==1,
+            "unload clears the cached help, and a late draw draws and reads nothing")
+    end)
+    case("nothing is drawn without help, during a ride or on the skateboard",function()
+        -- The score panel drew the ride's tricks and points on every frame of a ride. Now a ride with tricks under
+        -- way, or a rider back on the skateboard, has nothing on screen from the mod unless the help says something.
+        for _,with_ride in {true,false} do
+            local f=setup(with_ride and riding or nil)
+            local draw=target(1920,1080)
+            for _=1,30 do f.callbacks.tick(16);f.callbacks.draw(draw) end
+            check(f.steps==30 and f.help_reads==30,"every tick still steps and asks for help")
+            check(#draw.calls==0 and #draw.panels==0 and draw.sizes==0 and draw.measures==0,"no help, no line and no backing")
+            check(f.score_reads==0,"the score is never read for the screen")
+            f.help="";f.callbacks.tick(16);f.callbacks.draw(draw)
+            check(#draw.calls==0 and #draw.panels==0,"an empty help is no help")
+            f.help="Press A to get up.";f.callbacks.tick(16);f.callbacks.draw(draw)
+            check(#draw.calls==1 and draw.calls[1].text==f.help and #draw.panels==1,"help shows the moment it has text")
+            f.help="Step off your skateboard with Y, then hold LB and press A."
+            f.callbacks.tick(16);f.callbacks.draw(draw)
+            check(#draw.calls==2 and draw.calls[2].text==f.help,"and a refused Mount's notice shows the same way")
+            f.help=nil;f.callbacks.tick(16);f.callbacks.draw(draw)
+            check(#draw.calls==2 and #draw.panels==2,"and it goes when the help does")
+        end
+    end)
+    case("a help error cannot break the tick or the draw",function()
+        local f=setup(riding)
+        local draw=target(1920,1080)
+        f.help="Checking for room: stand still.";f.callbacks.tick(16);f.callbacks.draw(draw)
+        check(#draw.calls==1,"the help shows before the error")
+        f.help_error="help exploded"
+        local ok=pcall(f.callbacks.tick,16)
+        check(ok and f.steps==2 and f.help_reads==2,"a help that raises does not raise out of the tick, which still stepped")
+        ok=pcall(f.callbacks.draw,draw)
+        check(ok and #draw.calls==1 and #draw.panels==1,"and the draw draws nothing rather than the stale line")
+        f.help_error=nil
+        for _,odd in {{text="a table"},42,true} do
+            f.help=odd;check(pcall(f.callbacks.tick,16),"a help that is not text does not raise")
+            check(pcall(f.callbacks.draw,draw) and #draw.calls==1,"and draws nothing")
+        end
+        local broken=target(1920,1080)
+        function broken:measure() error("measure failed") end
+        f.help="Close menus and let go of the controls.";f.callbacks.tick(16)
+        check(pcall(f.callbacks.draw,broken) and #broken.calls==0 and #broken.panels==0,
+            "a draw call that fails is contained in the draw's own pcall")
+        f.callbacks.draw(draw)
+        check(#draw.calls==2 and draw.calls[2].text==f.help,"and the next frame draws the help again")
+        check(f.mounts==0 and f.returns==0 and f.recovers==0 and f.cancels==0 and f.score_reads==0,
+            "no failure turns into a lifecycle action or a score read")
+    end)
+    case("in bike mode a Y press's line is drawn in place of Entry's, and Entry's comes back once it has gone",function()
+        -- On foot with the next ride starting on the board, the game keeps Y: it brings the board out, and the press
+        -- waits for the rider to arrive on it (y_button.lua). Entry is still idle then, and its own line asks for Y.
+        local world={records={bmx_settings_v1={schema=1,bike_mode=true}},writes=0,now=0,pad=pad(),masks={},state=504}
+        local f=setup(nil,world)
+        f.report={phase="idle",admitted=true,detail="",core_phase="idle",cleanup_pending=false,cleanup_unknown=false}
+        f.start=100;f.help="Press Y to ride again."
+        local draw=target(1920,1080)
+        world.now+=16;f.callbacks.tick(16);f.callbacks.draw(draw)
+        check(#draw.calls==1 and draw.calls[1].text==f.help and #world.masks==0,"before a press, Entry's line, and Y stays the game's")
+        f.callbacks.action("bmx_y")
+        world.now+=16;f.callbacks.tick(16);f.callbacks.draw(draw)
+        check(#draw.calls==2 and draw.calls[2].text=="Getting your board out for the bike: stand still and don't press Y."
+            and #draw.panels==2 and draw.calls[2].position.x==36 and draw.calls[2].position.y==36,
+            "the press's line takes Entry's place: one line on one backing at the same anchor")
+        -- The rider never gets onto the board: the press runs out at six seconds and says so for four.
+        world.now+=6000;f.callbacks.tick(16);f.callbacks.draw(draw)
+        check(#draw.calls==3 and draw.calls[3].text=="The bike didn't come. Stand still, then press Y again.",
+            "a press that ran out says the bike didn't come, in place of Entry's line")
+        world.now+=4000;f.callbacks.tick(16);f.callbacks.draw(draw)
+        check(#draw.calls==4 and draw.calls[4].text==f.help,"and Entry's line is back once that has gone")
+        f.help=nil;world.now+=16;f.callbacks.tick(16);f.callbacks.draw(draw)
+        check(#draw.calls==4 and #draw.panels==4,"with no line from either, nothing is drawn")
+        check(f.mounts==0 and f.returns==0 and f.score_reads==0,"the press that ran out asked Entry for nothing")
+    end)
+    case("a long help line is cut to fit the width, and too narrow a window draws nothing",function()
+        local f=setup()
+        f.help=string.rep("Let go of the controls. ",6).."\n\t\200"
+        f.callbacks.tick(16)
+        local wide=target(1920,1080);f.callbacks.draw(wide)
+        local text=wide.calls[1].text
+        check(#text==96 and text==string.sub(f.help,1,96) and wide.measures==1,
+            "a 1920 x 1080 window has room for all 96 characters the help keeps, measured once")
+        -- 800 - 72 leaves 728 of the measured 768: 96 x 728 / 768 is 91, three of them the ellipsis.
+        local narrow=target(800,1080);f.callbacks.draw(narrow)
+        check(narrow.calls[1].text==string.sub(f.help,1,88).."..." and narrow.measures==2 and narrow.panels[1].b.x<=800-24,
+            "a narrow window takes fewer, measured again after the cut, and the backing stays inside it")
+        f.help="Ready\nnow\t\200";f.callbacks.tick(16)
+        local clean=target(1920,1080);f.callbacks.draw(clean)
+        check(clean.calls[1].text=="Ready?now??","control and non-ASCII bytes are drawn as ? on the one line")
+        local tiny=target(320,1080);f.callbacks.draw(tiny)
+        check(#tiny.calls==0 and #tiny.panels==0,"a window under 400 pixels wide at 1080 draws nothing")
+        local odd=target(100000,1080);f.callbacks.draw(odd)
+        check(#odd.calls==0 and #odd.panels==0,"an implausible window size draws nothing")
+    end)
+    case("the line is fitted by its measured width, so a 5:4 or 4:3 window shows a line that fits it whole",function()
+        -- A count of 20 pixels a character cut this line to '...then hold LB and...' at 1280 x 1024 and to '...pres...'
+        -- at 1024 x 768, although it measures about 600 pixels in a window twice that wide (the fit review, 2026-11-06).
+        local f=setup()
+        f.help="That didn't finish. Get on your skateboard, then hold LB and press A."
+        f.callbacks.tick(16)
+        check(#f.help==69,"the longest blocked line, 69 characters")
+        for _,size in {{1280,1024},{1024,768},{1920,1080},{3840,2160}} do
+            local w,h=size[1],size[2]
+            local draw=target(w,h);f.callbacks.draw(draw)
+            check(#draw.calls==1 and draw.calls[1].text==f.help and draw.measures==1,
+                "the whole line at "..w.." x "..h..", measured once")
+            check(draw.panels[1].b.x<=w-24*h/1080+1e-9,"and its backing inside the window at "..w.." x "..h)
+        end
+        -- A font too wide for the window is still cut to it. Glyphs of 25 at 1080 make the line about 1230 pixels in a
+        -- 1024 x 768 window, and one cut in proportion fits it.
+        local room=1024-72*768/1080
+        local broad=target(1024,768,25);f.callbacks.draw(broad)
+        local cut=broad.calls[1].text
+        check(#cut<#f.help and string.sub(cut,-3)=="..." and string.sub(cut,1,#cut-3)==string.sub(f.help,1,#cut-3)
+            and #cut*25*768/1080<=room and broad.measures==2 and broad.panels[1].b.x<=1024-24*768/1080+1e-9,
+            "a wider font cuts the line, with an ellipsis, to the room there is, and measures it again")
+        -- A width that is not proportional to the length can need a second cut.
+        local lumpy=target(1024,768,16,300);f.callbacks.draw(lumpy)
+        local fitted=lumpy.calls[1].text
+        check(string.sub(fitted,-3)=="..." and (#fitted*16+300)*768/1080<=room and lumpy.measures==3,
+            "a second cut fits a line the first left just too wide")
+        -- One that no cut can fit is left out, after a few measurements, rather than drawn off the screen: here three
+        -- cuts take it to 33 characters and it is still too wide.
+        local stubborn=target(1024,768,8,1300);f.callbacks.draw(stubborn)
+        check(#stubborn.calls==0 and #stubborn.panels==0 and stubborn.measures==4,
+            "a line still too wide after three cuts draws nothing, and the cutting stops there")
+        -- And one whose cut would leave almost nothing stops cutting at once.
+        local hopeless=target(1024,768,8,5000);f.callbacks.draw(hopeless)
+        check(#hopeless.calls==0 and #hopeless.panels==0 and hopeless.measures==2,
+            "a cut that would leave under 8 characters draws nothing")
+        check(f.mounts==0 and f.returns==0 and f.recovers==0 and f.cancels==0 and f.score_reads==0,
+            "fitting the line takes no lifecycle action and reads no score")
     end)
     case("the sixth bind is Y on its own, and does nothing until bike mode is switched on",function()
         local f=setup()

@@ -1,5 +1,4 @@
 local Main=require("./playable_main_fixture")
-local ScoreHUD=require("./score_hud")
 local YButton=require("./y_button")
 local T={}
 function T.run()
@@ -16,7 +15,6 @@ function T.run()
     end
     local object={step=function()end,unload=function()end,status=function()return {phase="idle",detail="source closed",admitted=false,
         core_phase="idle",attempts_used=0,attempt_limit=2,cleanup_pending=false,cleanup_unknown=false}end}
-    function object:score_view() return nil,"ride_unavailable","unavailable" end
     function R.on(name,fn)check((name=="tick" or name=="unload" or name=="action" or name=="draw")and type(fn)=="function","normal callbacks only")end
     function R.menu.page(name,fn)check(name=="BMX" and type(fn)=="function","same explicit menu")end
     local Runtime,Survey={},{}
@@ -26,7 +24,7 @@ function T.run()
             "only this closed experimental Main selects the private bounded manager")
         return object
     end}
-    local modules={["./bike_runtime"]=Runtime,["./ride_r1_record"]=Survey,["./bmx_playable_entry"]=E,["./score_hud"]=ScoreHUD,["./y_button"]=YButton}
+    local modules={["./bike_runtime"]=Runtime,["./ride_r1_record"]=Survey,["./bmx_playable_entry"]=E,["./y_button"]=YButton}
     Main(R,function(name)check(modules[name]~=nil,"no new SDK or module dependency");return modules[name]end)
     check(count==1,"one inert manager is constructed once")
     check(count_binds==6,"exactly six binds")

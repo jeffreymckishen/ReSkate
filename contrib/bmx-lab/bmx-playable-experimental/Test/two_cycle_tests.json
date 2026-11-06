@@ -1,11 +1,11 @@
 {
   "schema": 1,
   "matrix": "closed-experimental-two-cycle-v1",
-  "flat_file_count": 91,
-  "quota_file_count": 92,
-  "expected_processes": 48,
-  "expected_cases": 526,
-  "expected_assertions": 183394,
+  "flat_file_count": 89,
+  "quota_file_count": 90,
+  "expected_processes": 47,
+  "expected_cases": 529,
+  "expected_assertions": 183390,
   "source_admission": "UNCHANGED_FALSE",
   "files": [
     {
@@ -101,8 +101,8 @@
     {
       "source": "Test/two_cycle_main_tests.lua",
       "destination": "two_cycle_main_tests.lua",
-      "bytes": 2163,
-      "sha256": "574B303D58E4511916FFFAD443A9016CDB04ECA40B14D9F09C1791DF6BC4DF5E"
+      "bytes": 2019,
+      "sha256": "06A473560D1359F3D6EC500D9EB251F5CE449BCE018641713F075600207E36EF"
     },
     {
       "source": "Test/bmx_playable_entry_tests.lua",
@@ -113,8 +113,8 @@
     {
       "source": "Test/bmx_playable_main_tests.lua",
       "destination": "bmx_playable_main_tests.lua",
-      "bytes": 24696,
-      "sha256": "0BFF131AC09EDF520806B0FB8C7FEFA1EDB051FAEC697E77EDD7AE4047E8E290"
+      "bytes": 33346,
+      "sha256": "C110D6ECE9538451C95AB37AD791DBBA0ADC331BD4C63B1CC2E3C58D3EE54B45"
     },
     {
       "source": "Test/source_cleanup_reconcile_tests.lua",
@@ -161,8 +161,8 @@
     {
       "source": "Test/playable_main_fixture.lua",
       "destination": "playable_main_fixture.lua",
-      "bytes": 6994,
-      "sha256": "527AC18759F5DB20F699A423089C1E4A73716088C00E50FA0EB1162154D0C80F"
+      "bytes": 7949,
+      "sha256": "8DAE05409DA02657957CDA8126422DBB2B79AADC0F2BF76B85AAD02358784C43"
     },
     {
       "source": "plugin/lease_source.lua",
@@ -442,12 +442,6 @@
       "sha256": "C7F273735F569CC60395E669D1A4B46C57868E5B707A5265166DED5649FFB0D6"
     },
     {
-      "source": "plugin/score_hud.lua",
-      "destination": "score_hud.lua",
-      "bytes": 6399,
-      "sha256": "96E00D4E6FE0CD76E65057CEBE838EB971A064DBE37550608E6BB419A916AAF8"
-    },
-    {
       "source": "plugin/y_button.lua",
       "destination": "y_button.lua",
       "bytes": 18973,
@@ -512,12 +506,6 @@
       "destination": "entry_score_view_tests.lua",
       "bytes": 2486,
       "sha256": "8C8A9AF5C307706CA097A5BCB95EE9D9E5EE138BE78AC195B07A64AFC011E153"
-    },
-    {
-      "source": "Test/score_hud_tests.lua",
-      "destination": "score_hud_tests.lua",
-      "bytes": 10039,
-      "sha256": "09F7C75A6F513AE590EE6F28B9E2F61CB6E53842C6AAEF453FA3C41D45F49BF0"
     },
     {
       "source": "Test/one_hander_score_tests.lua",
@@ -675,8 +663,8 @@
     },
     {
       "source": "plugin/main.lua",
-      "bytes": 6955,
-      "sha256": "2D072FCBBC42C29D92B70731FA8F7DE67E807273BBBAA804EBB8EFBAB5B3E198"
+      "bytes": 7910,
+      "sha256": "CB3F015A18DAC9E5E519F40D55653619920B9E65DC7F090D8172F10B78421068"
     },
     {
       "source": "plugin/mounted_pose.lua",
@@ -715,8 +703,8 @@
     },
     {
       "source": "README.md",
-      "bytes": 19974,
-      "sha256": "F5E7CFAAE388C4D58B821A045396B36DC8AE3A8465E3F2E2EFC504639C503056"
+      "bytes": 20747,
+      "sha256": "8F138A185AFF40A9EF1FDAFC0199517E333CDB01656CDC2BF4933C604ED608D2"
     },
     {
       "source": "reskate-plugin.json",
@@ -739,11 +727,6 @@
       "sha256": "C7F273735F569CC60395E669D1A4B46C57868E5B707A5265166DED5649FFB0D6"
     },
     {
-      "source": "plugin/score_hud.lua",
-      "bytes": 6399,
-      "sha256": "96E00D4E6FE0CD76E65057CEBE838EB971A064DBE37550608E6BB419A916AAF8"
-    },
-    {
       "source": "plugin/y_button.lua",
       "bytes": 18973,
       "sha256": "872A74D913DC708E4F84B8BB10D2353C9A71E432E7EC1F4AA5E64D567EAADAE0"
@@ -753,8 +736,8 @@
     {
       "source": "plugin/main.lua",
       "fixture": "Test/playable_main_fixture.lua",
-      "source_sha256": "2D072FCBBC42C29D92B70731FA8F7DE67E807273BBBAA804EBB8EFBAB5B3E198",
-      "fixture_sha256": "527AC18759F5DB20F699A423089C1E4A73716088C00E50FA0EB1162154D0C80F",
+      "source_sha256": "CB3F015A18DAC9E5E519F40D55653619920B9E65DC7F090D8172F10B78421068",
+      "fixture_sha256": "8DAE05409DA02657957CDA8126422DBB2B79AADC0F2BF76B85AAD02358784C43",
       "prefix": "return function(reskate, require)\n",
       "suffix": "\nend\n"
     },
@@ -884,7 +867,7 @@
       "invoked": "two_cycle_main_tests",
       "context": "flat",
       "expected_cases": 1,
-      "expected_assertions": 20
+      "expected_assertions": 19
     },
     {
       "suite": "two_cycle_quota_tests",
@@ -911,8 +894,8 @@
       "suite": "bmx_playable_main_tests",
       "invoked": "bmx_playable_main_tests",
       "context": "flat",
-      "expected_cases": 13,
-      "expected_assertions": 239
+      "expected_cases": 17,
+      "expected_assertions": 312
     },
     {
       "suite": "source_cleanup_reconcile_tests",
@@ -1067,13 +1050,6 @@
       "invoked": "entry_score_view_tests",
       "expected_cases": 2,
       "expected_assertions": 9
-    },
-    {
-      "suite": "score_hud_tests",
-      "context": "flat",
-      "invoked": "score_hud_tests",
-      "expected_cases": 1,
-      "expected_assertions": 76
     },
     {
       "suite": "one_hander_score_tests",

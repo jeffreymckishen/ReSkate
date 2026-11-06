@@ -4,8 +4,8 @@
   "flat_file_count": 89,
   "quota_file_count": 90,
   "expected_processes": 47,
-  "expected_cases": 529,
-  "expected_assertions": 183390,
+  "expected_cases": 536,
+  "expected_assertions": 184224,
   "source_admission": "UNCHANGED_FALSE",
   "files": [
     {
@@ -17,8 +17,8 @@
     {
       "source": "Test/preflight_retry_entry_tests.lua",
       "destination": "preflight_retry_entry_tests.lua",
-      "bytes": 24460,
-      "sha256": "8758AAD88E2337AA1D8EEC64B5D1CE01E0A909E98BAE54838600ACEB8E0EF38D"
+      "bytes": 26175,
+      "sha256": "D89846F9FB221D2B3545791BBFA42AA0B2F67446FF275D8E1A904A99DD53A216"
     },
     {
       "source": "Test/two_cycle_entry_tests.lua",
@@ -113,8 +113,8 @@
     {
       "source": "Test/bmx_playable_main_tests.lua",
       "destination": "bmx_playable_main_tests.lua",
-      "bytes": 33346,
-      "sha256": "C110D6ECE9538451C95AB37AD791DBBA0ADC331BD4C63B1CC2E3C58D3EE54B45"
+      "bytes": 33949,
+      "sha256": "3A74203E3D2D0902A062E948054B584CE0430156BAB6F482395BDE0734E1A315"
     },
     {
       "source": "Test/source_cleanup_reconcile_tests.lua",
@@ -444,8 +444,8 @@
     {
       "source": "plugin/y_button.lua",
       "destination": "y_button.lua",
-      "bytes": 18973,
-      "sha256": "872A74D913DC708E4F84B8BB10D2353C9A71E432E7EC1F4AA5E64D567EAADAE0"
+      "bytes": 20907,
+      "sha256": "F9EE77A4AC70A2B786D12951E06D95CB55B87B89CBCD989F3D00FDEE22A02C2B"
     },
     {
       "source": "Test/pedal_brake_priority_tests.lua",
@@ -546,8 +546,8 @@
     {
       "source": "Test/y_button_tests.lua",
       "destination": "y_button_tests.lua",
-      "bytes": 57158,
-      "sha256": "C012A23706DC2E2938CBEAFC66950584BDB61AE9B9E0F01E0BF807898C48EB19"
+      "bytes": 68355,
+      "sha256": "160F418172803FE8BD386781B482E466A1487041CC236FDC81C991AC9B4AD96E"
     }
   ],
   "runtime_files": [
@@ -703,8 +703,8 @@
     },
     {
       "source": "README.md",
-      "bytes": 20747,
-      "sha256": "8F138A185AFF40A9EF1FDAFC0199517E333CDB01656CDC2BF4933C604ED608D2"
+      "bytes": 21207,
+      "sha256": "0DDD58853EF0B33DADADF9F03FC61C816C279BEF5DA958A6899BCE984BDA78B7"
     },
     {
       "source": "reskate-plugin.json",
@@ -728,8 +728,8 @@
     },
     {
       "source": "plugin/y_button.lua",
-      "bytes": 18973,
-      "sha256": "872A74D913DC708E4F84B8BB10D2353C9A71E432E7EC1F4AA5E64D567EAADAE0"
+      "bytes": 20907,
+      "sha256": "F9EE77A4AC70A2B786D12951E06D95CB55B87B89CBCD989F3D00FDEE22A02C2B"
     }
   ],
   "wrappers": [
@@ -895,7 +895,7 @@
       "invoked": "bmx_playable_main_tests",
       "context": "flat",
       "expected_cases": 17,
-      "expected_assertions": 312
+      "expected_assertions": 314
     },
     {
       "suite": "source_cleanup_reconcile_tests",
@@ -915,8 +915,8 @@
       "suite": "preflight_retry_entry_tests",
       "invoked": "preflight_retry_entry_tests",
       "context": "flat",
-      "expected_cases": 24,
-      "expected_assertions": 282
+      "expected_cases": 25,
+      "expected_assertions": 297
     },
     {
       "suite": "playable_steering_tests",
@@ -1090,8 +1090,8 @@
       "suite": "y_button_tests",
       "invoked": "y_button_tests",
       "context": "flat",
-      "expected_cases": 30,
-      "expected_assertions": 4761
+      "expected_cases": 36,
+      "expected_assertions": 5578
     }
   ]
 }

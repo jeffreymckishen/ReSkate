@@ -95,7 +95,9 @@ skateboard.
 - The first ride of a launch starts on foot, so from the skateboard Y steps the rider off first, and the bike comes
   once they stand still with the controls let go. Later rides start on the skateboard, so on foot Y brings the
   skateboard out first. If the rider has not stood still there, with the controls let go, by 6 seconds after that Y,
-  the Y is dropped and the HUD says "The bike didn't come. Stand still, then press Y again." for 4 seconds.
+  the Y is dropped and the HUD says "The bike didn't come. Stand still, then press Y again." for 4 seconds, or until
+  another BMX control is pressed or a Mount starts. A rider who goes down before then has the Y dropped at once, with
+  no word; after a ride that did not finish, the HUD then says "Press A to get up." until they are up.
 - Where the next ride starts, the game does not see Y, so it does not step off or bring out the skateboard as well.
   That lasts while the rider skates there: after the first ride Y does not step off the skateboard, and a Y in the
   air or on a grind does nothing. Y goes back to the game where the game's Y is needed, off the board after the first
@@ -107,7 +109,9 @@ skateboard.
   skateboard out for a later ride it says "Getting your board out for the bike: stand still and don't press Y.", and
   while the rider gets on the bike, "Getting on the bike: let go of the controls and don't press Y." The game can see
   Y in those, and a second one puts the rider back on the board, puts the board away or ends that try: a step-off the
-  game made, or a skateboard it brought out, is not the mod's. While the bike gets ready on foot the HUD says
+  game made, or a skateboard it brought out, is not the mod's. When a second Y undoes the game's own step-off or
+  takes the board it brought out away again, before the bike is asked for, the Y is dropped at once and the HUD says
+  "The game took a second Y. Stand still, then press Y again." While the bike gets ready on foot the HUD says
   "Getting the bike ready: stand still." and "Checking for room: stand still."; the game does not see Y then, and a
   second Y does nothing.
 - LB + A, F8 and LB + RB + R3 still work, and the HUD's lines say to press Y.

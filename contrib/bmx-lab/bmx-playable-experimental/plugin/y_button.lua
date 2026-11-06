@@ -26,7 +26,7 @@ local OTHER={[100]=504,[504]=100}
 -- moves the rider within it.
 local GUARD_MS,GUARD_SAMPLES=300,5
 -- A press held longer than this is dropped without a word. One whose rider has not arrived and stood still by then
--- is dropped with NO_BIKE.
+-- is dropped with NO_BIKE. One whose rider the game has down is dropped at once, with no word.
 local PRESS_LIMIT_MS,ARRIVE_MS=6000,6000
 -- Before a Mount asked for from the other state: the rider in the start state with the pad at rest this long, as the
 -- step-off's own admission waits (second_quiet in bmx_playable_entry.lua). Samples further apart start it again.
@@ -39,7 +39,8 @@ local LEAK="The game got the Y, as it can on some controllers. Press Y again."
 -- The HUD's line while a press is being carried out, by its kind and the state the ride starts from. Entry is still
 -- idle then, and its own line is blank or one that asks for Y ("Press Y to ride again."), so a player who sees nothing
 -- happen presses again. Under the guard that second Y is kept from the game, but while a press waits for the game's
--- own Y it is not: the game then puts the rider back on the board or puts the board away, and the press runs out.
+-- own Y it is not: the game then puts the rider back on the board or puts the board away, and the press ends with
+-- SECOND_Y.
 -- The guard's lines are the ones Entry shows once the Mount starts from there (HELP.preparing and the step-off's
 -- line in bmx_playable_entry.lua), so the line does not change when it does.
 local PENDING={guard={[504]="Getting the bike ready: stand still.",
@@ -49,6 +50,11 @@ local PENDING={guard={[504]="Getting the bike ready: stand still.",
 -- A press that waited for the game's own Y and ran out. The rider is then where the ride starts, with Y kept from the
 -- game, or where the game's Y is needed again, and either way the next Y works once they stand still.
 local NO_BIKE="The bike didn't come. Stand still, then press Y again."
+-- A press whose rider had arrived in the start state and then, not down, read the other stock state again: the game
+-- saw a second Y and put the rider back on the board or put the board away. Kept waiting, the HUD said for the rest of
+-- the 6 s that the first was still under way. The rider is then where a press waits for the game's Y, so the next Y
+-- works from there.
+local SECOND_Y="The game took a second Y. Stand still, then press Y again."
 local BUTTONS={"up","down","left","right","start","back","left_stick","right_stick","lb","rb","a","b","x","y"}
 local function plain(v) return type(v)=="table" and getmetatable(v)==nil end
 local function finite(v) return type(v)=="number" and v==v and math.abs(v)<math.huge end
@@ -86,7 +92,10 @@ function Y.new(R,bike,key)
     end
     if enabled then call(bike.set_controls,bike,"y") end
     -- One press being carried out: "guard" waits for Y up and the start state to hold, "arrive" for the game's own Y
-    -- to bring the rider to the start state. notice is a line told when a press ended without the bike.
+    -- to bring the rider to the start state (arrived, once they have read it). notice is a line told when a press
+    -- ended without the bike. It goes once Entry is busy, and with any other BMX control or bike mode switched off:
+    -- kept up once a Mount was under way another way, a word that asks for Y covered Entry's own line for the rest of
+    -- its 4 s, and asked for Y while the mod's own step-off ran.
     local pending=nil
     local notice,notice_until=nil,0
     -- The log gets the first hide and the first give-back while Entry stays in one phase, and how many more there were
@@ -170,6 +179,11 @@ function Y.new(R,bike,key)
         local p=pending
         local limit=p.kind=="guard" and PRESS_LIMIT_MS or ARRIVE_MS
         if not idle(s) or next_start()~=p.start or now<p.at then pending=nil;return end
+        local r=rider()
+        -- A rider the game has down cannot arrive or stand still. Kept waiting, the press's line hid Entry's "Press A to
+        -- get up.", and at 6 s NO_BIKE asked a rider still lying there to stand still and press Y, which does nothing
+        -- for them. Ended here with no word, the HUD is Entry's again.
+        if p.kind=="arrive" and r and r.down then pending=nil;return end
         if now-p.at>=limit then
             pending=nil
             -- The HUD said to stand still and not press Y for all of it. Dropped with no word, it went back to
@@ -177,7 +191,6 @@ function Y.new(R,bike,key)
             if p.kind=="arrive" then tell(NO_BIKE,now) end
             return
         end
-        local r=rider()
         if p.kind=="guard" then
             -- Y was kept from the game, so the rider stays where they were. In the state the game's own Y leads to,
             -- the game had the Y after all, from a pad the mask does not cover. Any other way out of the start state,
@@ -190,6 +203,12 @@ function Y.new(R,bike,key)
             -- the game's input on, then waits for Y to come back.
             call(bike.mount,bike)
             return
+        end
+        if r and r.state==p.start then p.arrived=true
+        elseif p.arrived and r and r.state==OTHER[p.start] then
+            -- Back in the state the press began in, after the start state: the game's own Y again, which reaches the
+            -- game because Y is the game's while the press waits.
+            pending=nil;tell(SECOND_Y,now);return
         end
         if not held(p,now,r~=nil and r.standing and r.state==p.start and at_rest(read),QUIET_MS,QUIET_SAMPLES) then return end
         pending=nil
@@ -226,7 +245,7 @@ function Y.new(R,bike,key)
         end
         enabled=on
         call(bike.set_controls,bike,on and "y" or "lb_a")
-        if not on then pending=nil;set_mask(0) end
+        if not on then pending=nil;notice=nil;set_mask(0) end
         return true
     end
     -- The bmx_y bind's press. It reaches here with or without the mask: a bind does not take the press from the game.
@@ -269,8 +288,9 @@ function Y.new(R,bike,key)
         return false
     end
     -- Another BMX control was pressed: a Y press being carried out is dropped, so the two do not both ask Entry. The
-    -- mask stays as it is, since Entry waits for Y to come back before it hands the game's input on.
-    function object:drop_press() pending=nil end
+    -- mask stays as it is, since Entry waits for Y to come back before it hands the game's input on. A word told for an
+    -- earlier press goes too: it asked for Y, and Entry's own line answers this control.
+    function object:drop_press() pending=nil;notice=nil end
     -- Each tick, after Entry's step.
     function object:step()
         if unloaded then return end
@@ -291,6 +311,9 @@ function Y.new(R,bike,key)
             advance(now,s,read)
             if not pending then s=status() end
         end
+        -- A word for a press that did not bring the bike is about the mod being idle. Once Entry is busy its own line
+        -- says what is under way.
+        if notice and not idle(s) then notice=nil end
         local mask=wanted(s)
         if mask==applied then return end
         -- An unreadable pad is taken as Y up for giving Y back, since it is most likely gone, but not for hiding it.

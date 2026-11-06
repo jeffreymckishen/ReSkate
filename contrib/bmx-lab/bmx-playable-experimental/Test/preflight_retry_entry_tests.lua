@@ -357,6 +357,28 @@ function Tests.run()
         check(#bad.keys==0,"a malformed setting is cleared")
         bad.refuse()
     end)
+    case("25 an accepted terrain retry clears a notice still up, so the HUD says the bike is getting ready at once",function()
+        -- The notice said why an earlier Mount or retry did not start. Left up for its 4 s, it hid HELP.preparing while
+        -- the retry got ready (bmx_playable_entry.lua, the terrain retry's notice=nil).
+        local READY="Getting the bike ready: stand still."
+        local f=fixture();f.refuse()
+        -- On the board the retry says to step off, which is a notice for 4 s.
+        f.stock=100
+        local mounted,why=f.entry:mount()
+        check(not mounted and why==STEP_OFF and f.entry:help_line()==STEP_OFF,"told to step off")
+        f.now+=1000;f.tick()
+        f.stock=504;f.position=vector.create(20,.5,0);f.rough=false
+        check(f.entry:mount() and f.entry:status().phase=="preparing","on foot a second later, the retry is accepted")
+        check(f.entry:help_line()==READY,"and the HUD says so at once: "..tostring(f.entry:help_line()))
+        f.tick();check(f.entry:help_line()~=STEP_OFF,"and the old notice does not come back: "..tostring(f.entry:help_line()))
+        -- The terrain refusal's own notice, still fresh, goes the same way.
+        local g=fixture();g.refuse()
+        check(g.entry:help_line()=="No room here or too steep: move, then hold LB and press A.","the refusal's line")
+        g.position=vector.create(20,.5,0);g.rough=false
+        check(g.entry:mount() and g.entry:status().phase=="preparing","an accepted retry straight away")
+        check(g.entry:help_line()==READY,"says the bike is getting ready: "..tostring(g.entry:help_line()))
+        check(g.await().mount_requested and g.mounts==1,"and the bike is asked for")
+    end)
     return{cases=cases,assertions=assertions}
 end
 return Tests

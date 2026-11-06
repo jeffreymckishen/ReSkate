@@ -27,9 +27,12 @@ If there is no room or the ground is too steep, move and mount again. If the rid
 while the bike gets ready, the HUD says to step off or stand still, and the next Mount tries again.
 
 What the HUD says is one line at the top left of the screen, shown only while the mod needs something from you:
-standing still while the bike gets ready, letting go of the controls, pressing A to get up, or why a Mount did not
-start. A message like that last one stays for about four seconds. Nothing is drawn there during a normal ride, or on
-the skateboard when there is nothing to say.
+standing still while the bike gets ready, letting go of the controls, pressing A to get up, or what to do before the
+next Mount. When a Mount is undone while the bike gets ready, because there is no room, the ground is too steep, or
+you moved or got on the skateboard, its line stays until a Mount starts again, even while you skate away. So does
+the line after a ride that did not finish. A Mount refused straight away, such as one pressed on the skateboard,
+says why for about four seconds. Nothing is drawn there during a normal ride, or on the skateboard when there is
+nothing to say.
 
 - A pedals, B brakes, the left stick steers.
 - Click the right stick to hop. A full hop rises about 0.6 m, a street bunny hop, with about three quarters of a

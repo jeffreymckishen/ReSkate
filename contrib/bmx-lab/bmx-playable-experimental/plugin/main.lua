@@ -31,14 +31,26 @@ local function draw_help(d)
     if not (width>=320 and height>=240 and width<=16384 and height<=16384) then return end
     local scale=height/1080
     if width/scale<400 then return end
-    -- Allowing about 20 pixels a character at 1080p keeps the line inside the window with room to spare.
-    local limit=math.clamp(math.floor((width/scale-72)/20),16,MAX_HELP)
+    -- The line is fitted by its measured width. The backing runs from 24 to 12 past the line's end, and stays 24
+    -- inside the right edge. A guess of 20 pixels a character, wider than the body font's glyphs, cut lines that would
+    -- fit on 4:3 and 5:4 windows: at 1280 x 1024 'That didn't finish...' lost the 'press A' it ends with.
+    -- d:measure already returns display pixels; scale only the margins.
+    local room=width-72*scale
     local text=help_text
-    if #text>limit then text=string.sub(text,1,limit-3).."..." end
-    -- d:measure already returns display pixels; scale only the padding.
     local extent=d:measure(text,HELP_STYLE)
+    -- A line too wide is cut in proportion to how far over it is, with an ellipsis, and measured again. Glyphs are not
+    -- all one width, so that can take another cut, a few at most. A line still too wide after them is not drawn,
+    -- rather than run off the screen.
+    for _=1,3 do
+        if not (extent.x>room) then break end
+        local keep=math.floor(#text*room/extent.x)-3
+        if keep<8 then return end
+        text=string.sub(help_text,1,keep).."..."
+        extent=d:measure(text,HELP_STYLE)
+    end
+    if not (extent.x>=0 and extent.x<=room) then return end
     local padding=12*scale
-    d:rect(vector.create(24*scale,24*scale,0),vector.create(math.min(width-24*scale,36*scale+extent.x+padding),
+    d:rect(vector.create(24*scale,24*scale,0),vector.create(36*scale+extent.x+padding,
         math.min(height-24*scale,36*scale+extent.y+padding),0),BACKING_STYLE)
     d:text(vector.create(36*scale,36*scale,0),text,HELP_STYLE)
 end

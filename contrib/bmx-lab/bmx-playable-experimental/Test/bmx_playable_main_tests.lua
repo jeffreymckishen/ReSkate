@@ -182,12 +182,14 @@ function Tests.run()
         check(f.unloads==1 and f.new_calls==1 and f.mounts==3 and f.returns==0 and f.cancels==0 and #f.binds==5,
             "unload uses the existing Entry and SDK binding cleanup without an alternate lifecycle")
     end)
-    -- A draw target that records every call and measures text as the overlay would at this window's height.
-    local function target(width,height)
+    -- A draw target that records every call and measures text as the overlay would at this window's height. Its glyphs
+    -- are 8 pixels at 1080 unless given (per), and a fixed overhead makes the width not proportional to the length.
+    local function target(width,height,per,overhead)
         local draw={calls={},sizes=0,measures=0,panels={},order={}}
         local k=height/1080
+        per=per or 8;overhead=overhead or 0
         function draw:size() self.sizes+=1;return vector.create(width,height,0) end
-        function draw:measure(text,style) self.measures+=1;return vector.create(#text*8*k,style.size*k,0) end
+        function draw:measure(text,style) self.measures+=1;return vector.create((#text*per+overhead)*k,style.size*k,0) end
         function draw:rect(a,b,style) self.panels[#self.panels+1]={a=a,b=b,style=style};self.order[#self.order+1]="rect" end
         function draw:text(position,text,style)
             self.order[#self.order+1]="text";self.calls[#self.calls+1]={position=position,text=text,style=style}
@@ -280,11 +282,12 @@ function Tests.run()
         f.callbacks.tick(16)
         local wide=target(1920,1080);f.callbacks.draw(wide)
         local text=wide.calls[1].text
-        check(#text==92 and text==string.sub(f.help,1,89).."...",
-            "a 1920 x 1080 window takes 92 characters, the last three an ellipsis")
+        check(#text==96 and text==string.sub(f.help,1,96) and wide.measures==1,
+            "a 1920 x 1080 window has room for all 96 characters the help keeps, measured once")
+        -- 800 - 72 leaves 728 of the measured 768: 96 x 728 / 768 is 91, three of them the ellipsis.
         local narrow=target(800,1080);f.callbacks.draw(narrow)
-        check(narrow.calls[1].text==string.sub(f.help,1,33).."..." and narrow.panels[1].b.x<=800-24,
-            "a narrow window takes fewer, and the backing stays inside it")
+        check(narrow.calls[1].text==string.sub(f.help,1,88).."..." and narrow.measures==2 and narrow.panels[1].b.x<=800-24,
+            "a narrow window takes fewer, measured again after the cut, and the backing stays inside it")
         f.help="Ready\nnow\t\200";f.callbacks.tick(16)
         local clean=target(1920,1080);f.callbacks.draw(clean)
         check(clean.calls[1].text=="Ready?now??","control and non-ASCII bytes are drawn as ? on the one line")
@@ -292,6 +295,45 @@ function Tests.run()
         check(#tiny.calls==0 and #tiny.panels==0,"a window under 400 pixels wide at 1080 draws nothing")
         local odd=target(100000,1080);f.callbacks.draw(odd)
         check(#odd.calls==0 and #odd.panels==0,"an implausible window size draws nothing")
+    end)
+    case("the line is fitted by its measured width, so a 5:4 or 4:3 window shows a line that fits it whole",function()
+        -- A count of 20 pixels a character cut this line to '...then hold LB and...' at 1280 x 1024 and to '...pres...'
+        -- at 1024 x 768, although it measures about 600 pixels in a window twice that wide (the fit review, 2026-11-06).
+        local f=setup()
+        f.help="That didn't finish. Get on your skateboard, then hold LB and press A."
+        f.callbacks.tick(16)
+        check(#f.help==69,"the longest blocked line, 69 characters")
+        for _,size in {{1280,1024},{1024,768},{1920,1080},{3840,2160}} do
+            local w,h=size[1],size[2]
+            local draw=target(w,h);f.callbacks.draw(draw)
+            check(#draw.calls==1 and draw.calls[1].text==f.help and draw.measures==1,
+                "the whole line at "..w.." x "..h..", measured once")
+            check(draw.panels[1].b.x<=w-24*h/1080+1e-9,"and its backing inside the window at "..w.." x "..h)
+        end
+        -- A font too wide for the window is still cut to it. Glyphs of 25 at 1080 make the line about 1230 pixels in a
+        -- 1024 x 768 window, and one cut in proportion fits it.
+        local room=1024-72*768/1080
+        local broad=target(1024,768,25);f.callbacks.draw(broad)
+        local cut=broad.calls[1].text
+        check(#cut<#f.help and string.sub(cut,-3)=="..." and string.sub(cut,1,#cut-3)==string.sub(f.help,1,#cut-3)
+            and #cut*25*768/1080<=room and broad.measures==2 and broad.panels[1].b.x<=1024-24*768/1080+1e-9,
+            "a wider font cuts the line, with an ellipsis, to the room there is, and measures it again")
+        -- A width that is not proportional to the length can need a second cut.
+        local lumpy=target(1024,768,16,300);f.callbacks.draw(lumpy)
+        local fitted=lumpy.calls[1].text
+        check(string.sub(fitted,-3)=="..." and (#fitted*16+300)*768/1080<=room and lumpy.measures==3,
+            "a second cut fits a line the first left just too wide")
+        -- One that no cut can fit is left out, after a few measurements, rather than drawn off the screen: here three
+        -- cuts take it to 33 characters and it is still too wide.
+        local stubborn=target(1024,768,8,1300);f.callbacks.draw(stubborn)
+        check(#stubborn.calls==0 and #stubborn.panels==0 and stubborn.measures==4,
+            "a line still too wide after three cuts draws nothing, and the cutting stops there")
+        -- And one whose cut would leave almost nothing stops cutting at once.
+        local hopeless=target(1024,768,8,5000);f.callbacks.draw(hopeless)
+        check(#hopeless.calls==0 and #hopeless.panels==0 and hopeless.measures==2,
+            "a cut that would leave under 8 characters draws nothing")
+        check(f.mounts==0 and f.returns==0 and f.recovers==0 and f.cancels==0 and f.score_reads==0,
+            "fitting the line takes no lifecycle action and reads no score")
     end)
     return {cases=cases,assertions=assertions,game_evidence=false,native_actions=0}
 end

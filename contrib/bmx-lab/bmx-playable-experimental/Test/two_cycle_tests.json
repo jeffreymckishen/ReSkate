@@ -4,8 +4,8 @@
   "flat_file_count": 87,
   "quota_file_count": 88,
   "expected_processes": 46,
-  "expected_cases": 490,
-  "expected_assertions": 178030,
+  "expected_cases": 491,
+  "expected_assertions": 178053,
   "source_admission": "UNCHANGED_FALSE",
   "files": [
     {
@@ -113,8 +113,8 @@
     {
       "source": "Test/bmx_playable_main_tests.lua",
       "destination": "bmx_playable_main_tests.lua",
-      "bytes": 21828,
-      "sha256": "06C6427E785169B1762153BF5ED521492F604D875CECE64A0BD614DA663AD286"
+      "bytes": 25172,
+      "sha256": "B9C9608A9F2A0F2D3275219229F83865539D1D7D14AAE2232AEBFDCE5754DC94"
     },
     {
       "source": "Test/source_cleanup_reconcile_tests.lua",
@@ -161,8 +161,8 @@
     {
       "source": "Test/playable_main_fixture.lua",
       "destination": "playable_main_fixture.lua",
-      "bytes": 5261,
-      "sha256": "CF33AF756BB914E60E3F26240D148491D8769C3B95D73C3BCC9439B8CB85D985"
+      "bytes": 5944,
+      "sha256": "DC0A6C2431897E0F6DC65F40694E864148BFD62AE0AC3C6552BAE0A3DA051DFC"
     },
     {
       "source": "plugin/lease_source.lua",
@@ -651,8 +651,8 @@
     },
     {
       "source": "plugin/main.lua",
-      "bytes": 5222,
-      "sha256": "098DA092F5E12D0562A5253F11EB5B09B9093F60C1C2DD801987A57B6D8CA74C"
+      "bytes": 5905,
+      "sha256": "C3710F88BAB105D20627495339B8737E26CE3275EBD7911D4179CD509D99102D"
     },
     {
       "source": "plugin/mounted_pose.lua",
@@ -691,8 +691,8 @@
     },
     {
       "source": "README.md",
-      "bytes": 17364,
-      "sha256": "A1FADF1147D826CC7219AD2EF3487331BF67C48414C94B2B4614571D417EFED0"
+      "bytes": 17676,
+      "sha256": "FBB8AAFDFC3F054DED9EDFE8AF4EE8CF60FC2D564AE552B7AD461B1267821E39"
     },
     {
       "source": "reskate-plugin.json",
@@ -719,8 +719,8 @@
     {
       "source": "plugin/main.lua",
       "fixture": "Test/playable_main_fixture.lua",
-      "source_sha256": "098DA092F5E12D0562A5253F11EB5B09B9093F60C1C2DD801987A57B6D8CA74C",
-      "fixture_sha256": "CF33AF756BB914E60E3F26240D148491D8769C3B95D73C3BCC9439B8CB85D985",
+      "source_sha256": "C3710F88BAB105D20627495339B8737E26CE3275EBD7911D4179CD509D99102D",
+      "fixture_sha256": "DC0A6C2431897E0F6DC65F40694E864148BFD62AE0AC3C6552BAE0A3DA051DFC",
       "prefix": "return function(reskate, require)\n",
       "suffix": "\nend\n"
     },
@@ -877,8 +877,8 @@
       "suite": "bmx_playable_main_tests",
       "invoked": "bmx_playable_main_tests",
       "context": "flat",
-      "expected_cases": 12,
-      "expected_assertions": 203
+      "expected_cases": 13,
+      "expected_assertions": 226
     },
     {
       "suite": "source_cleanup_reconcile_tests",

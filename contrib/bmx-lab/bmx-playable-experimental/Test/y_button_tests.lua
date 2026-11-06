@@ -695,6 +695,39 @@ function T.run()
             check(d.y:notice()==word,"left alone, it stays up: "..word)
         end
     end)
+    case(function() -- A word for a press that did not bring the bike goes once the rider goes down.
+        -- Each asks the rider to stand still and press Y, which press() refuses for a rider not standing. Kept up after
+        -- a bail, it covered Entry's "Press A to get up." for the rest of its 4 s (the round-4 verification of bike mode).
+        local function told(word)
+            local w
+            if word==NO_BIKE then w=on({start=504,state=100,phase="idle"});w.press(100);w.tick(380)
+            elseif word==SECOND_Y then
+                w=on({start=100,state=504,phase="idle"});w.press(100);w.state=100;w.tick(5);w.state=504;w.tick()
+            else w=on();w.pad.buttons.y=true;w.y:press();w.tick(3);w.state=504;w.tick();w.pad.buttons.y=false;w.tick() end
+            check(w.y:notice()==word and w.y:status().pending==nil,"told: "..word)
+            return w
+        end
+        for _,word in {NO_BIKE,SECOND_Y,LEAK} do
+            -- A bail as the game reads it, on the next tick: on foot (504) with the ragdoll set.
+            local a=told(word);a.state,a.ragdoll=504,true;a.tick()
+            check(a.y:notice()==nil,"a bail clears it: "..word)
+            check(lines_with(a,"told: ")==1 and a.mounts==0,"with nothing else told or asked: "..word)
+            a.ragdoll=false;a.tick(20)
+            check(a.y:notice()==nil,"and it does not come back once the rider is up: "..word)
+            -- Some time into the word, in whatever state the rider was in.
+            local b=told(word);b.tick(30)
+            check(b.y:notice()==word,"still up half a second on: "..word)
+            b.ragdoll=true;b.tick()
+            check(b.y:notice()==nil,"down then: cleared: "..word)
+            -- A rider who cannot be read is not a downed one, as for a waiting press: the word stays.
+            local c=told(word);c.R.skater.telemetry=function() return {skater=true} end;c.tick(10)
+            check(c.y:notice()==word,"an unreadable rider keeps it: "..word)
+            -- Nor is a crouch or the air.
+            local d=told(word);local was=d.state
+            d.state=103;d.tick(2);d.state=200;d.airborne=true;d.tick(5);d.state=was;d.airborne=false;d.tick(3)
+            check(d.y:notice()==word,"skating on keeps it: "..word)
+        end
+    end)
     ---------------- The real Entry behind the button ----------------
     case(function() -- On foot, Y gets on the bike; riding, Y goes back to the board; on the board, Y rides again.
         local w=chain(check)
@@ -1103,6 +1136,57 @@ function T.run()
         local said=false
         for _,row in w.hud_log do if row.line==NO_BIKE then said=true end end
         check(rode and w.phase()=="riding" and not said,"and it rides, the old word never back: "..table.concat(w.phases,","))
+    end)
+    case(function() -- A word for a press that did not bring the bike, then a bail: the HUD is Entry's, and the word never comes back.
+        -- Until the round-4 verification the word stayed up for the rest of its 4 s, over Entry's "Press A to get up.",
+        -- asking a rider lying on the ground to stand still and press Y, which press() refuses for them.
+        local BLOCKED="That didn't finish. Press Y to ride again."
+        -- down: Entry's line while the rider is down, up: once they are up again.
+        local function bail_after(w,word,ms,down,up,name)
+            check(w.hud()==word,"told: "..name..": "..tostring(w.hud()))
+            local told_at=w.now
+            w.tick(math.ceil(ms/16))
+            check(w.hud()==word,"still up "..ms.." ms on: "..name)
+            -- A bail: on foot, with the ragdoll set.
+            w.hud_log={}
+            w.stock,w.ragdoll=504,true;w.tick()
+            check(w.y:notice()==nil,"the bail clears it on the same tick: "..name)
+            check(w.until_true(function() return w.hud()==down end,16),
+                "Entry's line within its 250 ms down read: "..name..": "..tostring(w.hud()))
+            local from=#w.hud_log
+            w.tick(300)
+            check(w.now-told_at>4000,"down past the word's 4 s: "..name)
+            local bad=nil
+            for i=from,#w.hud_log do if w.hud_log[i].line~=down then bad=bad or tostring(w.hud_log[i].line) end end
+            check(bad==nil,"while down, only Entry's line: "..name..": "..tostring(bad))
+            local said=false
+            for _,row in w.hud_log do if row.line==word then said=true end end
+            check(not said,"and never the word again: "..name)
+            w.pad.left_x=0;w.ragdoll=false;w.tick(20)
+            check(w.hud()==up,"up again, Entry's line: "..name..": "..tostring(w.hud()))
+            check(w.press_y(100) and w.until_true(function() return w.phase()=="riding" end,1500),"and a further Y rides: "..name)
+        end
+        -- Blocked on foot, Y, and the rider skates the board out with the stick pushed, so the quiet never passes.
+        local w=blocked_on_foot()
+        check(w.press_y(100) and w.stock==100,"Y, and the game brings out the board")
+        w.pad.left_x=.6
+        check(w.until_true(function() return w.y:status().pending==nil end,400),"the press runs out")
+        bail_after(w,NO_BIKE,480,"Press A to get up.",BLOCKED,"the bike didn't come")
+        -- Blocked on foot, Y, then a second Y the game takes: the board is put away.
+        local x=blocked_on_foot()
+        check(x.press_y(100) and x.stock==100,"Y, and the game brings out the board")
+        x.tick(5)
+        check(x.press_y(100)==false and x.stock==504,"a second Y, which the game takes")
+        bail_after(x,SECOND_Y,370,"Press A to get up.",BLOCKED,"a second Y")
+        -- On the board after a ride, a pad the mask does not cover: the game steps the rider off. Entry is on the board
+        -- (skateboard) and has no line of its own there, so the HUD is blank down and up.
+        local l=chain(check)
+        l.first_ride_and_back()
+        l.leaky=true
+        check(l.press_y(100),"Y, which the game takes anyway")
+        l.leaky=false;l.tick(10)
+        check(l.stock==504 and l.phase()=="skateboard","stepped off, on the board's phase")
+        bail_after(l,LEAK,400,nil,nil,"the game got the Y")
     end)
     return {cases=cases,assertions=n,native_authority=false,constructed=true}
 end

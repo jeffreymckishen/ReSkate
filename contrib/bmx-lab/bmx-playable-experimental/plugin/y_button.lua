@@ -93,9 +93,9 @@ function Y.new(R,bike,key)
     if enabled then call(bike.set_controls,bike,"y") end
     -- One press being carried out: "guard" waits for Y up and the start state to hold, "arrive" for the game's own Y
     -- to bring the rider to the start state (arrived, once they have read it). notice is a line told when a press
-    -- ended without the bike. It goes once Entry is busy, and with any other BMX control or bike mode switched off:
-    -- kept up once a Mount was under way another way, a word that asks for Y covered Entry's own line for the rest of
-    -- its 4 s, and asked for Y while the mod's own step-off ran.
+    -- ended without the bike. It goes once Entry is busy, once the rider goes down, and with any other BMX control or
+    -- bike mode switched off: kept up once a Mount was under way another way, a word that asks for Y covered Entry's
+    -- own line for the rest of its 4 s, and asked for Y while the mod's own step-off ran.
     local pending=nil
     local notice,notice_until=nil,0
     -- The log gets the first hide and the first give-back while Entry stays in one phase, and how many more there were
@@ -313,7 +313,15 @@ function Y.new(R,bike,key)
         end
         -- A word for a press that did not bring the bike is about the mod being idle. Once Entry is busy its own line
         -- says what is under way.
-        if notice and not idle(s) then notice=nil end
+        if notice and not idle(s) then notice=nil
+        elseif notice then
+            -- Each word asks the rider to stand still and press Y, which press() refuses for a rider not standing. One
+            -- who went down after it was told (a bail while skating on after NO_BIKE, say) was asked for Y for the rest
+            -- of its 4 s, over Entry's "Press A to get up.". By advance()'s rule for a waiting press, a rider who reads
+            -- down ends it here, and one who cannot be read keeps it.
+            local r=rider()
+            if r and r.down then notice=nil end
+        end
         local mask=wanted(s)
         if mask==applied then return end
         -- An unreadable pad is taken as Y up for giving Y back, since it is most likely gone, but not for hiding it.

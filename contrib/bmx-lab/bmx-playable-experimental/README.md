@@ -95,9 +95,10 @@ skateboard.
 - The first ride of a launch starts on foot, so from the skateboard Y steps the rider off first, and the bike comes
   once they stand still with the controls let go. Later rides start on the skateboard, so on foot Y brings the
   skateboard out first. If the rider has not stood still there, with the controls let go, by 6 seconds after that Y,
-  the Y is dropped and the HUD says "The bike didn't come. Stand still, then press Y again." for 4 seconds, or until
-  another BMX control is pressed or a Mount starts. A rider who goes down before then has the Y dropped at once, with
-  no word; after a ride that did not finish, the HUD then says "Press A to get up." until they are up.
+  the Y is dropped and the HUD says "The bike didn't come. Stand still, then press Y again." for 4 seconds. That word,
+  and the two below that also ask for Y again, go sooner when another BMX control is pressed, a Mount starts or the
+  rider goes down. A rider who goes down before the 6 seconds are up has the Y dropped at once, with no word. Either
+  way, after a ride that did not finish, the HUD then says "Press A to get up." until they are up.
 - Where the next ride starts, the game does not see Y, so it does not step off or bring out the skateboard as well.
   That lasts while the rider skates there: after the first ride Y does not step off the skateboard, and a Y in the
   air or on a grind does nothing. Y goes back to the game where the game's Y is needed, off the board after the first

@@ -4,8 +4,8 @@
   "flat_file_count": 89,
   "quota_file_count": 90,
   "expected_processes": 47,
-  "expected_cases": 536,
-  "expected_assertions": 184224,
+  "expected_cases": 538,
+  "expected_assertions": 184981,
   "source_admission": "UNCHANGED_FALSE",
   "files": [
     {
@@ -444,8 +444,8 @@
     {
       "source": "plugin/y_button.lua",
       "destination": "y_button.lua",
-      "bytes": 20907,
-      "sha256": "F9EE77A4AC70A2B786D12951E06D95CB55B87B89CBCD989F3D00FDEE22A02C2B"
+      "bytes": 21477,
+      "sha256": "4A6788695CFDFFD1FC0C03E4320E3EA247CA6B29002A5E076672BC91E62A1514"
     },
     {
       "source": "Test/pedal_brake_priority_tests.lua",
@@ -546,8 +546,8 @@
     {
       "source": "Test/y_button_tests.lua",
       "destination": "y_button_tests.lua",
-      "bytes": 68355,
-      "sha256": "160F418172803FE8BD386781B482E466A1487041CC236FDC81C991AC9B4AD96E"
+      "bytes": 73987,
+      "sha256": "E7E2F2638020E9A98EF2C20D9C25E3392DFEFDC0ECB087786091C5C82D1FAE7B"
     }
   ],
   "runtime_files": [
@@ -703,8 +703,8 @@
     },
     {
       "source": "README.md",
-      "bytes": 21207,
-      "sha256": "0DDD58853EF0B33DADADF9F03FC61C816C279BEF5DA958A6899BCE984BDA78B7"
+      "bytes": 21320,
+      "sha256": "854EE88BC45BCB5D7E3774CD825CD3A88BA3E853336962175452578EE0D94226"
     },
     {
       "source": "reskate-plugin.json",
@@ -728,8 +728,8 @@
     },
     {
       "source": "plugin/y_button.lua",
-      "bytes": 20907,
-      "sha256": "F9EE77A4AC70A2B786D12951E06D95CB55B87B89CBCD989F3D00FDEE22A02C2B"
+      "bytes": 21477,
+      "sha256": "4A6788695CFDFFD1FC0C03E4320E3EA247CA6B29002A5E076672BC91E62A1514"
     }
   ],
   "wrappers": [
@@ -1090,8 +1090,8 @@
       "suite": "y_button_tests",
       "invoked": "y_button_tests",
       "context": "flat",
-      "expected_cases": 36,
-      "expected_assertions": 5578
+      "expected_cases": 38,
+      "expected_assertions": 6335
     }
   ]
 }

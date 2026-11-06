@@ -143,19 +143,6 @@ bool score_held() noexcept {
     return std::any_of(fields.begin(), fields.end(), [](const Taken& field) { return field.taken.load(std::memory_order_acquire); });
 }
 
-// Runs `use(context)` on the game's UI model registry under its model lock, which the game's
-// writers take too. False while there is no registry.
-template <class Use> bool with_ui_models(Address base, Use&& use) {
-    if (!base) return false;
-    const auto ui = menu_data::read<Address>(base + addr::engine::ui_manager);
-    const auto manager = ui ? menu_data::read<Address>(ui + 0x140) : 0;
-    if (!manager) return false;
-    const menu_data::Context context(base, manager);
-    game::ModelWriteLock lock(manager);
-    use(context);
-    return true;
-}
-
 // Whether `next` says it is time to look again (at most once a second while something is not found).
 bool time_to_look(Clock::time_point& next) {
     const auto now = Clock::now();
@@ -275,7 +262,7 @@ bool hide_hud(bool hidden) noexcept {
     const bool hold = hidden && hook().hooked.load(std::memory_order_acquire);
     try {
         if (!hidden && !c.cover.handle && !score_held()) return true; // the game's own corner, untouched
-        with_ui_models(c.base, [&](const menu_data::Context& context) {
+        hud_stack::with_ui_models(c.base, [&](const menu_data::Context& context) {
             follow_registry(c, context);
             if (find_stack(c, context)) hide_dpad(c, context, hidden);
             if ((hold || score_held()) && find_score(c, context)) hold_score(c, context, hold);

@@ -311,6 +311,9 @@ struct WorldApi {
     // events) never report it. `line` takes only these keys:
     //   tricks      the line's trick names, newest last: a list of at most 5 names, each 1 to 63 bytes
     //               of UTF-8 without control characters; the HUD draws the newest 3. Default none.
+    //               They show once skate. has made a trick row of its own in the level (its first
+    //               scored action); until then a line shows without them. A line that opens after a
+    //               closed one, or after none, starts its rows again, so a repeated name comes in anew.
     //   points      the current action's points, the big number beside the ring: 0 to 999,999,999,
     //               floored. Default 0.
     //   line        what the line has banked, shown as "LINE: N" while above 0: 0 to 999,999,999,

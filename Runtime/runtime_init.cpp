@@ -34,6 +34,7 @@
 #include "Extension/World/texture_handle_limit.h"
 #include "Extension/Console/commands.h"
 #include "Extension/UI/ui_pointer_skip.h"
+#include "Extension/UI/score_line_hud.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/profiler_labels.h"
 #include "Engine/Game/Build/supported_build.h"
@@ -567,6 +568,7 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
                 dingosdk::profile_runtime::challenge_attempts_before_level_transition(next);
                 dingosdk::world_entities::before_level_transition(base, next);
                 dingosdk::placement_physics::before_level_transition(next);
+                dingosdk::score_line::before_level_transition(base, next);
                 dingosdk::multiplayer::native_menu_before_level_transition(base, next);
                 dingosdk::multiplayer::throwdown_lab_before_level_transition(next);
             });

@@ -172,7 +172,8 @@ commands and a `Test/` folder.
 | `Startup/` | startup window/splash |
 
 Beside them: `hud_corner` hides skate.'s bottom left HUD for `reskate.hud.corner`; `hud_stack` puts the SDK's
-own items into that corner's stack; `score_line` and `score_line_hud` show a plugin's own line (trick names,
+own items into that corner's stack (and holds `with_ui_models`, the UI model registry under its lock, for the
+SDK's HUD code); `score_line` and `score_line_hud` show a plugin's own line (trick names,
 points, multiplier, the line's total) in skate.'s score HUD for `reskate.hud.score_line`, from a model of the
 SDK's own, display only and never counted.
 

@@ -9,6 +9,7 @@
 #include "Engine/Game/Build/20260929/reference_lists.h"
 #include "Engine/Game/Build/20260929/score_hud.h"
 #include "Extension/UI/NativeMenu/native_menu_data.h"
+#include "Extension/UI/hud_stack.h"
 #include "Extension/UI/score_line.h"
 #include "Extension/UI/score_line_hud.h"
 #include <algorithm>
@@ -135,19 +136,6 @@ std::uint16_t label_text(const menu_data::Context& context, Address owner, std::
     const auto text = context.member(label.type, score::label_text);
     menu_data::require(menu_data::kind(text.type) == 7 && menu_data::size(text.type) == 8, "a label's Text is not text");
     return static_cast<std::uint16_t>(label.offset + text.offset);
-}
-
-// Runs `use(context)` on the game's UI model registry under its model lock (as Hall of Meat's
-// HUD code does). False while there is no registry.
-template <class Use> bool with_ui_models(Address base, Use&& use) {
-    if (!base) return false;
-    const auto ui = menu_data::read<Address>(base + addr::engine::ui_manager);
-    const auto manager = ui ? menu_data::read<Address>(ui + 0x140) : 0;
-    if (!manager) return false;
-    const menu_data::Context context(base, manager);
-    game::ModelWriteLock lock(manager);
-    use(context);
-    return true;
 }
 
 // The trick list's layout in `model`, checked against what the native list reads; not ok (and said
@@ -326,7 +314,7 @@ std::optional<ScoreHud> read_score_hud(std::uintptr_t image_base) noexcept {
     ScoreHud result;
     std::vector<std::uint64_t> fresh;
     try {
-        with_ui_models(image_base, [&](const menu_data::Context& context) {
+        hud_stack::with_ui_models(image_base, [&](const menu_data::Context& context) {
             if (!bind_model(h, context)) return;
             const auto at = context.address(h.model);
             for (auto& field : h.fields)

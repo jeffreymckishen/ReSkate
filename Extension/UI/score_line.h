@@ -135,6 +135,48 @@ private:
     bool must_scan_{};
 };
 
+// What of skate.'s own line is still in its root, which our model is made as a copy of. A copy while
+// any of it is on would carry the game's rows (stack items bound to row models of the game's) into
+// ours, and emptying them would run their destructors on ours: the scorep2 launch copied the root
+// only with all of these off. After a level load GameLine has seen nothing yet, so this is what keeps
+// that first copy clean.
+struct GameRoot {
+    bool hud_active{};              // HudWidgetActive
+    float line_timer{};             // LineTimer
+    unsigned trick_rows{}, second_rows{}; // items in its trick list and its second stack (emptied 150 ms after a line)
+    bool item{};                    // its score item in DpadScoringStack (out 2.3 s after a line)
+};
+// "" when the root may be copied, else what is on, for a log line.
+inline std::string root_busy(const GameRoot& root) {
+    std::string on;
+    const auto add = [&on](const char* what) { on += on.empty() ? what : std::string(", ") + what; };
+    if (root.hud_active) add("HudWidgetActive");
+    if (root.line_timer > 0) add("LineTimer above 0");
+    if (root.trick_rows) add("rows in its trick list");
+    if (root.second_rows) add("rows in its second stack");
+    if (root.item) add("its score item");
+    return on;
+}
+
+// Whether a line's rows start again from an empty list. A line that opens after none was shown, or
+// after a closed one, is a new line: the game empties its own list about 150 ms after each line ends,
+// so the rows of a plugin's last line never carry into its next, even under the same names (a bike's
+// hops never chain, so each is a line of its own and its name often repeats).
+class LineStart {
+public:
+    // Each tick a line is shown; true when its rows start again.
+    bool shown(bool closed) {
+        const bool starts = !open_ && !closed;
+        open_ = !closed;
+        return starts;
+    }
+    // The line was taken out or let go.
+    void out() { open_ = false; }
+
+private:
+    bool open_{};
+};
+
 // The game's root among the registry's roots of its type: the first that is not ours (`own`, 0 none).
 // The SDK's readers (score_hud.cpp, hud_corner.cpp) use it so they never read or hold a plugin's line.
 template <class Root> const Root* pick_game_root(const std::vector<Root>& roots, std::uint64_t own) {

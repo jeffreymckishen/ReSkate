@@ -3,7 +3,6 @@
 #include "hud_stack.h"
 #include "own_ui_writes.h"
 #include "Extension/Skater/trick_feed.h"
-#include "Extension/Throwdowns/native_type_scan.h"
 #include "Extension/UI/NativeMenu/native_menu_data.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/memory.h"
@@ -12,6 +11,7 @@
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Engine/Game/Build/20260929/hud_corner.h"
 #include "Engine/Game/Build/20260929/native_menu.h"
+#include "Engine/Game/Build/20260929/reference_lists.h"
 #include "Engine/Game/Build/20260929/score_hud.h"
 #include <array>
 #include <atomic>
@@ -19,7 +19,6 @@
 #include <cstring>
 #include <exception>
 #include <span>
-#include <thread>
 #include <utility>
 #include <vector>
 
@@ -42,29 +41,18 @@ constexpr std::uint32_t score_key = 0x52534853; // "RSHS": our score HUD item in
 constexpr std::uint32_t row_key = 0x52535200;   // "RSR" + n: a row of ours in our model's trick list
 constexpr std::uint64_t model_id = 0x5253485300000000ULL;
 constexpr std::string_view model_name = "ReSkate.ScoreLine";
-constexpr std::size_t transition_size = 16; // a stack item's Transition, copied from the d-pad's item
-constexpr double look_again_ms = 1000;      // what is not found is looked for at most this often
-constexpr double destroy_after_ms = 10000;  // our model is kept this long after a line, for the next
+constexpr std::size_t transition_size = corner::item_transition_size; // a stack item's Transition, copied from the d-pad's item
+constexpr double look_again_ms = 1000;     // what is not found is looked for at most this often
+constexpr double destroy_after_ms = 10000; // our model is kept this long after a line, for the next
 // A reading of the game's root (observe) counts for this tick only; plugin_runtime.cpp reads it each
 // tick, just before tick, while wanted.
 constexpr double fresh_reading_ms = 250;
-// Heap scans for the row type (row_type_now): one per UI model registry, and only a few a launch, as
-// each takes a core at background priority for a while.
-constexpr unsigned most_row_scans = 3;
 
 double now_ms() noexcept {
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
 std::atomic<std::uint64_t> own_root{};
-
-// The trick list's row type, found on the heap by a worker while the registry has none yet: the
-// registry only lists a type once a model of it is made, and the game makes its first row model at
-// its first scored action (scorep2: "Native menu schema has not loaded yet" for rows before any game
-// row, rows went in after one). Tagged with the registry generation it was looked for in.
-std::atomic<Address> heap_row_type{};
-std::atomic<unsigned> heap_row_generation{};
-std::atomic<bool> row_scan_running{};
 
 struct Fields {
     Value hud_active, extra_info, sequence_state, action_active, is_slam;
@@ -77,7 +65,6 @@ struct Row {
 // Client thread only.
 struct Hud {
     Address manager{};
-    unsigned generation{}; // a new registry, a new generation
     // The game's: its root, the d-pad's stack and what our items are made from.
     Value game_root, stack;
     Address score_blueprint{}, row_blueprint{};
@@ -86,11 +73,13 @@ struct Hud {
     double next_find{};
     Address row_type{};
     double next_row_look{};
-    bool row_scanned{}; // in this registry
+    // A row could not be made in this registry: lines show without their trick names until the next.
+    bool rows_off{};
     // Ours.
     Value model, item;
     Fields fields;
     std::vector<Row> rows; // newest first
+    LineStart line_start;  // when a line's rows start again from an empty list
     std::string points_text, multiplier_text;
     bool texts_set{};
     ItemPresence presence;
@@ -104,7 +93,7 @@ struct Hud {
     std::optional<double> read_at;
     std::string status; // what the last tick found, for the next ask
     bool unsupported{}, warned{};
-    bool said_made{}, said_in{}, said_out{}, said_yield{}, said_rows{}, said_rows_type{};
+    bool said_made{}, said_in{}, said_out{}, said_yield{}, said_busy{}, said_rows{}, said_rows_off{};
 };
 Hud& hud() {
     static auto* value = new Hud;
@@ -114,21 +103,6 @@ LineOwner& owner() {
     static auto* value = new LineOwner;
     return *value;
 }
-unsigned row_scans{}; // this launch
-
-// Runs `use(context)` on the game's UI model registry under its model lock, which the game's
-// writers take too. False while there is no registry.
-template <class Use> bool with_ui_models(Address base, Use&& use) {
-    if (!base) return false;
-    const auto ui = read<Address>(base + addr::engine::ui_manager);
-    const auto manager = ui ? read<Address>(ui + 0x140) : 0;
-    if (!manager) return false;
-    const Context context(base, manager);
-    game::ModelWriteLock lock(manager);
-    use(context);
-    return true;
-}
-
 bool alive(const Context& c, const Value& value) { return value.handle && c.type_of(value.handle) == value.type; }
 unsigned count_of(const Context& c, const Value& array) {
     const auto at = read<Address>(c.address(array));
@@ -145,14 +119,14 @@ void destroy_quietly(const Context& c, Value& value) noexcept {
 // and nothing is destroyed through another), and nothing found of the game's.
 void forget(Hud& h, Address manager) noexcept {
     h.manager = manager;
-    ++h.generation;
     h.game_root = h.stack = {};
     h.score_blueprint = h.row_blueprint = h.row_type = 0;
     h.next_find = h.next_row_look = 0;
-    h.row_scanned = false;
+    h.rows_off = false;
     h.model = h.item = {};
     h.fields = {};
     h.rows.clear();
+    h.line_start.out();
     h.texts_set = false;
     h.presence.registry_changed();
     h.out_since = 0;
@@ -161,12 +135,18 @@ void forget(Hud& h, Address manager) noexcept {
     tricks::feed::own({});
 }
 
+void destroy_ours(Hud& h, const Context& c) noexcept;
+
 // ---- The game's side: the d-pad's stack (kept while it lives, so a take-out always has it), its root
 // and the widgets. Looked for at most once a second while any is missing.
 void find_game(Hud& h, const Context& c, double now) {
     if (h.stack.handle && !alive(c, h.stack)) {
         h.stack = {};
         h.presence.scanned(false); // our item went with that stack
+        // Our item and rows show that HUD's widgets, which the next HUD may not keep: ours are made
+        // again with the next one's, never put back as they were.
+        destroy_ours(h, c);
+        h.score_blueprint = h.row_blueprint = 0;
     }
     if (h.game_root.handle && !alive(c, h.game_root)) h.game_root = {};
     if (h.stack.handle && h.game_root.handle) return;
@@ -201,7 +181,8 @@ void find_game(Hud& h, const Context& c, double now) {
         if (!dpad) return;
         const auto blueprint = [&](std::string_view name) -> Address {
             const auto asset = menu_data::named_asset(c, dpad, std::string(name).c_str());
-            if (!asset || read<Address>(asset + 8) != c.base + addr::native_menu::widget_blueprint_type || hud_stack::asset_name(asset) != name)
+            if (!asset || read<Address>(asset + addr::reference_lists::asset_type) != c.base + addr::native_menu::widget_blueprint_type ||
+                hud_stack::asset_name(asset) != name)
                 return 0;
             return asset;
         };
@@ -221,9 +202,10 @@ void find_game(Hud& h, const Context& c, double now) {
 
 // What the d-pad's stack holds now: ours, and the game's own score item (its ScoringHUD_Widget bound
 // to any model but ours, so any other score item counts too: it would draw over ours just the same).
+// Read as far as a take-out reads, so a stack that grew while ours was in still lets it out.
 void scan_stack(const Hud& h, const Context& c, bool& ours, bool& game) {
     unsigned count{}, stride{};
-    const auto items = c.array(hud_stack::items_of(c, h.stack), hud_stack::most_items, count, stride);
+    const auto items = c.array(hud_stack::items_of(c, h.stack), hud_stack::most_items_out, count, stride);
     require(!count || stride == menu_data::stack_item.size, "the stack's items differ");
     for (unsigned index = 0; index < count; ++index) {
         const auto* at = items.data() + std::size_t{index} * stride;
@@ -237,13 +219,21 @@ void scan_stack(const Hud& h, const Context& c, bool& ours, bool& game) {
 }
 
 // ---- Models of ours.
+// A model of ours of `type`. Whatever create made is destroyed again when a later step fails, also a
+// model of another type, so nothing of ours is left in the registry with no handle kept.
 Value create(Hud& h, const Context& c, Address type) {
     const auto handle =
         game::native_data().models.create(c.manager, type, model_id + ++h.next_id, game::native_name_hash(model_name), false, 2);
-    require(handle && c.type_of(handle) == type, "a model of ours was not made");
-    const Value value{handle, type};
-    c.address(value);
-    c.initialize_text(value);
+    require(handle != 0, "a model of ours was not made");
+    Value value{handle, c.type_of(handle)};
+    try {
+        require(value.type == type, "a model of ours was made of another type");
+        c.address(value);
+        c.initialize_text(value);
+    } catch (...) {
+        if (value.type) destroy_quietly(c, value); // (a handle that names no model is never destroyed)
+        throw;
+    }
     return value;
 }
 std::vector<std::byte> bytes_of(const Context& c, const Value& value) {
@@ -301,10 +291,10 @@ void bind(Hud& h, const Context& c) {
 }
 
 // Our ScoringHUDViewModel: the game root's type, the authored values copied in (ModelManager's alias of
-// the schema, mount_hud's way; there was none in scorep2, so the game's root is copied, idle as it is
-// whenever ours is made), and nothing of the game's live line: its trick list and second stack
-// emptied, its ScoringData Ref put back to what create gave ours ({0, 0}). False when this build's
-// model is not the one mapped.
+// the schema, mount_hud's way; there was none in scorep2, so the game's root is copied, only while
+// nothing of its own line is in it: step checks root_busy first), and nothing of the game's live line:
+// its trick list and second stack emptied, its ScoringData Ref put back to what create gave ours
+// ({0, 0}), its banner and tier word "". False when this build's model is not the one mapped.
 bool make_model(Hud& h, const Context& c) {
     const auto type = h.game_root.type;
     if (menu_data::size(type) != score::score_view_size) {
@@ -333,6 +323,10 @@ bool make_model(Hud& h, const Context& c) {
         c.set_if_changed(h.fields.sequence_state, corner::sequence_down);
         c.set_if_changed(h.fields.action_active, false);
         c.set_if_changed(h.fields.is_slam, false);
+        // The banner and the red tier word go too: the copy may hold the game's last ("OUCH", from
+        // ID_SCORING_SLAM_TIER_1, stayed between actions with SequenceState down), and nothing of
+        // ours writes them.
+        for (const auto label : {score::sequence_header, score::sequence_descriptor}) c.text(label_text(c, h.model, label), "");
         h.item = make_item(h, c, score_key, corner::score_priority, Widget{h.score_blueprint, {0, h.model.handle}});
     } catch (const std::exception& error) {
         own_root.store(0, std::memory_order_release);
@@ -359,65 +353,26 @@ void destroy_ours(Hud& h, const Context& c) noexcept {
         destroy_quietly(c, row.model);
     }
     h.rows.clear();
+    h.line_start.out();
     h.fields = {};
     h.texts_set = false;
     h.out_since = 0;
 }
 
 // ---- Rows.
-bool row_type_ok(const Context& c, Address type) noexcept {
-    try {
-        if (!type || menu_data::kind(type) != 2 || menu_data::size(type) != score::trick_row_size ||
-            read<std::uint32_t>(read<Address>(type)) != score::trick_row_schema)
-            return false;
-        (void)c.member(type, score::row_name);
-        (void)c.member(type, score::row_back);
-        return true;
-    } catch (...) {
-        return false;
-    }
-}
-void scan_for_row_type(unsigned generation) {
-    if (row_scan_running.exchange(true, std::memory_order_acq_rel)) return;
-    try {
-        std::thread([generation] {
-            // A class (kind 2), by its type name hash, as ui_sound.cpp and native_party_hooks.cpp find theirs.
-            multiplayer::NativeTypeQuery query{score::trick_row_schema, 0, 2};
-            (void)multiplayer::find_native_types(std::span<multiplayer::NativeTypeQuery>(&query, 1), true);
-            heap_row_generation.store(generation, std::memory_order_relaxed);
-            heap_row_type.store(query.object, std::memory_order_release);
-            row_scan_running.store(false, std::memory_order_release);
-        }).detach();
-    } catch (...) {
-        row_scan_running.store(false, std::memory_order_release);
-    }
-}
-// The row type, or 0 for none yet: the registry's once the game has made a row, else the one a heap
-// scan found in this registry (checked as the registry's own would be: a 2048-byte class with the
-// row's name and back members).
+// The row type, or 0 for none yet: the registry's, which lists it once the game has made a row model
+// of its own, at its first scored action in the level (scorep2: "Native menu schema has not loaded
+// yet" for rows before any game row; rows went in after one). Until then a line shows without its
+// trick names. (A row type found on the heap before that is not used: no launch has shown that
+// models.create takes one, and one left behind by the last level would pass any check of its bytes.)
 Address row_type_now(Hud& h, const Context& c, double now) {
     if (h.row_type) return h.row_type;
     if (now < h.next_row_look) return 0;
     h.next_row_look = now + look_again_ms;
     try {
         h.row_type = c.type({score::trick_row_schema, score::trick_row_size});
-        return h.row_type;
     } catch (const std::exception&) {} // not loaded yet
-    if (const auto found = heap_row_type.exchange(0, std::memory_order_acq_rel);
-        found && heap_row_generation.load(std::memory_order_relaxed) == h.generation) { // (one found for another registry is dropped)
-        if (row_type_ok(c, found)) {
-            h.row_type = found;
-            logging::write(logging::Level::info, logging::Channel::ui, "Score line: the trick list's row type was found on the heap.");
-            return found;
-        }
-        logging::write(logging::Level::warning, logging::Channel::ui, "Score line: a row type found on the heap did not check out; rows wait for the game's.");
-    }
-    if (!h.row_scanned && row_scans < most_row_scans && !row_scan_running.load(std::memory_order_acquire)) {
-        h.row_scanned = true;
-        ++row_scans;
-        scan_for_row_type(h.generation);
-    }
-    return 0;
+    return h.row_type;
 }
 Row make_row(Hud& h, const Context& c, Address type, const std::string& name) {
     Row row{name, create(h, c, type), {}};
@@ -481,6 +436,43 @@ void show_rows(Hud& h, const Context& c, const std::vector<std::string>& wanted,
     h.rows = std::move(next);
 }
 
+// Our trick list emptied, then its rows destroyed. Rows the list still holds are not destroyed (they
+// go with the model) when it could not be emptied.
+void clear_rows(Hud& h, const Context& c) noexcept {
+    if (h.rows.empty()) return;
+    try {
+        if (count_of(c, h.fields.rows)) c.array(h.fields.rows, std::span<const std::byte>{}, 0);
+    } catch (...) {
+        return;
+    }
+    for (auto& row : h.rows) {
+        destroy_quietly(c, row.item);
+        destroy_quietly(c, row.model);
+    }
+    h.rows.clear();
+}
+// The rows are the line's least part: one that cannot be made (none has been made from this build's
+// row type outside the scorep2 launch) leaves this registry's lines without their names, and never
+// takes the points, ring or LINE down with it.
+void show_rows_or_none(Hud& h, const Context& c, const std::vector<std::string>& wanted, double now) {
+    if (h.rows_off) return;
+    std::string why;
+    try {
+        show_rows(h, c, wanted, now);
+        return;
+    } catch (const std::exception& error) {
+        why = error.what();
+    } catch (...) {
+        why = "unknown";
+    }
+    h.rows_off = true;
+    h.row_type = 0;
+    clear_rows(h, c);
+    if (!std::exchange(h.said_rows_off, true))
+        logging::log(logging::Level::warning, logging::Channel::ui,
+            "Score line: a trick list row could not be made ({}); lines show without their trick names until the next level.", why);
+}
+
 // ---- Our line up: the model's values as the game's own line looks, then our item in.
 void publish(Hud& h, const Context& c, const Look& look) {
     const auto& f = h.fields;
@@ -505,9 +497,11 @@ void show(Hud& h, const Context& c, const Line& line, bool ours_in, double now) 
         destroy_ours(h, c);
     }
     if (!h.model.handle && !make_model(h, c)) return;
+    // A new line's rows come in as the game's do, into an empty list.
+    if (h.line_start.shown(line.closed)) clear_rows(h, c);
     const auto look = look_of(line, score::action_fill_points);
     publish(h, c, look);
-    show_rows(h, c, look.rows, now);
+    show_rows_or_none(h, c, look.rows, now);
     // No write to our models is ever a trick's, whoever makes it (the widget writes ours too).
     std::vector<std::uint64_t> entries{h.model.handle >> 16};
     for (const auto& row : h.rows) entries.push_back(row.model.handle >> 16);
@@ -526,6 +520,18 @@ void take_out(Hud& h, const Context& c, bool ours_in, double now) {
         logging::write(logging::Level::info, logging::Channel::ui, "Score line: a plugin's line left skate.'s score HUD.");
     h.presence.scanned(hud_stack::find_key(c, h.stack, score_key).has_value());
     if (!h.presence.must_scan() && !h.out_since) h.out_since = now;
+}
+
+// What of skate.'s own line is in its root now (root_busy says why that matters), `item` its score
+// item in the stack.
+GameRoot root_of(const Context& c, const Value& root, bool item) {
+    GameRoot r;
+    r.hud_active = read<std::uint8_t>(c.address(sized(c, root, corner::hud_widget_active, 1))) != 0;
+    r.line_timer = read<float>(c.address(sized(c, root, score::line_timer, 4)));
+    r.trick_rows = count_of(c, c.path(root, {score::trick_list, corner::stack_items}));
+    r.second_rows = count_of(c, c.path(root, {score::second_stack, corner::stack_items}));
+    r.item = item;
+    return r;
 }
 
 void step(Hud& h, const Context& c, const Line* line, std::string why, double now) {
@@ -551,9 +557,24 @@ void step(Hud& h, const Context& c, const Line* line, std::string why, double no
             // The first tick of a line has no reading yet (it comes on the next); ours never stays up without one.
             if (ours_in || h.presence.must_scan()) why = "skate.'s score HUD is unavailable now";
             else wait = true;
+        } else if (!h.model.handle || !alive(c, h.model) || !alive(c, h.item)) {
+            // Ours is about to be made as a copy of the game's root: not while its own line is in it.
+            try {
+                if (const auto busy = root_busy(root_of(c, h.game_root, game_item)); !busy.empty()) {
+                    why = "skate.'s own line is showing";
+                    if (!std::exchange(h.said_busy, true))
+                        logging::log(logging::Level::info, logging::Channel::ui, "Score line: a plugin's line waits for skate.'s own to leave its root ({}).",
+                            busy);
+                }
+            } catch (const std::exception& error) {
+                why = "skate.'s score HUD is unavailable now";
+                if (!std::exchange(h.said_busy, true))
+                    logging::log(logging::Level::warning, logging::Channel::ui, "Score line: skate.'s score HUD root could not be read: {}.", error.what());
+            }
         }
     }
     if (!line || !why.empty() || wait) {
+        h.line_start.out();
         if (h.stack.handle && (ours_in || h.presence.must_scan())) take_out(h, c, ours_in, now);
         if (!h.presence.must_scan() && !h.out_since) h.out_since = now;
         if (!wait) h.status = line ? why : std::string{};
@@ -606,7 +627,7 @@ void tick(std::uintptr_t base, std::string_view refusal) noexcept {
             return;
         }
         const ui::OwnUiWrites own_writes; // the trick feed ignores what we write
-        if (!with_ui_models(base, [&](const Context& c) { step(h, c, line, why, now); }))
+        if (!hud_stack::with_ui_models(base, [&](const Context& c) { step(h, c, line, why, now); }))
             h.status = line ? std::string("skate.'s score HUD is not loaded") : std::string{};
         else h.warned = false;
     } catch (const std::exception& error) {
@@ -620,22 +641,38 @@ void tick(std::uintptr_t base, std::string_view refusal) noexcept {
 
 void before_level_load(std::uintptr_t base) noexcept {
     auto& h = hud();
+    bool gone = true; // nothing of ours is left in the game's UI
     if (h.model.handle || h.presence.must_scan()) {
+        gone = false;
         try {
             const ui::OwnUiWrites own_writes;
-            with_ui_models(base, [&](const Context& c) {
-                if (c.manager != h.manager) return; // a registry of its own: ours went with the old one
-                if (h.stack.handle && alive(c, h.stack)) (void)hud_stack::remove_key(c, h.stack, score_key);
+            const bool registry = hud_stack::with_ui_models(base, [&](const Context& c) {
+                if (c.manager != h.manager) { // a registry of its own: ours went with the old one
+                    gone = true;
+                    return;
+                }
+                if (h.stack.handle && alive(c, h.stack)) {
+                    (void)hud_stack::remove_key(c, h.stack, score_key);
+                    h.presence.scanned(hud_stack::find_key(c, h.stack, score_key).has_value());
+                } else h.presence.scanned(false); // the stack went, and our item with it
                 destroy_ours(h, c);
+                gone = !h.presence.must_scan();
             });
+            if (!registry) gone = true; // no registry, and ours with it
         } catch (const std::exception& error) {
             logging::log(logging::Level::warning, logging::Channel::ui, "Score line: a plugin's line could not be taken out before a level load: {}.",
                 error.what());
         } catch (...) {}
     }
-    // The next level's HUD is found again; whatever was not taken out goes with this one's.
-    forget(h, 0);
+    // The next level's HUD is found again. What could not be taken out keeps what its take-out needs, so
+    // the next tick tries again: a ReSkate load can still be cancelled after this, and its HUD stays.
+    if (gone) forget(h, 0);
     h.status.clear();
+}
+
+void before_level_transition(std::uintptr_t base, unsigned next) noexcept {
+    // The world ends (as plugin_effects.cpp and placement_physics.cpp take it): 3, 14, 22, 24 and 25.
+    if (next == 3 || next == 14 || next == 22 || next == 24 || next == 25) before_level_load(base);
 }
 
 std::uint64_t own_model() noexcept { return own_root.load(std::memory_order_acquire); }

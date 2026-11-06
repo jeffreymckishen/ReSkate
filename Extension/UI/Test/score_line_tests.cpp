@@ -1,6 +1,7 @@
 // A plugin's own line in skate.'s score HUD (Extension/UI/score_line.h), apart from the game: one
 // plugin's line at a time on a 500 ms lease, the yield to skate.'s own line, the take-out that is
-// never dropped, the game's root picked over ours, and what a line writes.
+// never dropped, the game's root picked over ours and copied only while idle, a new line's rows, and
+// what a line writes.
 #include "Extension/UI/score_line.h"
 #include <cstdint>
 #include <iostream>
@@ -120,6 +121,32 @@ void only_new_rows_come_in() {
     check(fresh_rows({"Barspin"}, Names{}) == 0, "no rows were counted as new");
 }
 
+// Ours is a copy of the game's root, so it is made only while nothing of the game's line is in it
+// (after a level load GameLine has seen nothing, so this is what holds the first copy back).
+void the_games_root_is_copied_only_while_idle() {
+    check(root_busy({}).empty(), "an idle root was taken for a busy one");
+    check(root_busy({.hud_active = true}) == "HudWidgetActive", "HudWidgetActive on did not hold the copy");
+    check(!root_busy({.line_timer = 0.0001f}).empty(), "time left on the game's line did not hold the copy");
+    check(!root_busy({.trick_rows = 1}).empty() && !root_busy({.second_rows = 2}).empty(), "rows in the game's lists did not hold the copy");
+    check(!root_busy({.item = true}).empty(), "the game's score item in the stack did not hold the copy");
+    check(root_busy({.hud_active = true, .trick_rows = 3}) == "HudWidgetActive, rows in its trick list", "each thing on was not named");
+}
+
+// A line that opens after none, or after a closed one, starts its rows from an empty list.
+void a_new_line_starts_its_rows_again() {
+    LineStart start;
+    check(start.shown(false), "the first line did not start its rows");
+    check(!start.shown(false) && !start.shown(false), "a line going on started its rows again");
+    check(!start.shown(true), "closing a line started its rows");
+    check(!start.shown(true), "a closed line held started its rows");
+    check(start.shown(false), "a line opening after a closed one kept the old line's rows");
+    start.out();
+    check(start.shown(false), "a line after the last was taken out kept its rows");
+    start.out();
+    check(!start.shown(true), "a closed line after none started rows it does not show");
+    check(start.shown(false), "and the line opening after it did not start them");
+}
+
 void a_line_looks_like_the_games() {
     auto line = barspin();
     auto look = look_of(line, 400);
@@ -151,6 +178,8 @@ int main() {
         the_take_out_is_never_dropped();
         the_games_root_is_picked_over_ours();
         only_new_rows_come_in();
+        the_games_root_is_copied_only_while_idle();
+        a_new_line_starts_its_rows_again();
         a_line_looks_like_the_games();
     } catch (const std::exception& e) {
         std::cerr << e.what() << '\n';

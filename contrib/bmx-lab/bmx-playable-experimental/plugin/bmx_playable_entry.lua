@@ -1075,6 +1075,8 @@ function Entry.new(R,Runtime,Survey,options)
             -- Keep the reserved attempt; the deadline is this press's (above).
             -- Only a NEW survey/preparation is allowed; no old-owner Y repeats.
             generation+=1;prep_at=now;prep_last=nil;prep_calls=0;survey=nil;hold_waiting=false
+            -- A notice still up said why an earlier Mount or retry did not start, and this one has (as below).
+            notice=nil
             second_terrain_pending=attempts_used>=2
             if second_terrain_pending then reset_second_quiet() end
             phase,detail="preparing","Retrying terrain preflight; stay on foot and still. Prior refusals remain recorded."
@@ -1096,6 +1098,11 @@ function Entry.new(R,Runtime,Survey,options)
             return tell(words.board)
         end
         attempts_used+=1;used=true;generation+=1;stop_told=nil;mount_refunded=false;hold_waiting=false
+        -- A notice still up said why an earlier Mount did not start, or how the last ride ended, and often what to
+        -- press: in bike mode "Press Y to ride again." This Mount has started, and its phase's own line says what is
+        -- under way. Left up for its 4 s, it asked for Y while the step-off's own Y went out, where a Y the game sees
+        -- ends the attempt. fail() clears it for the same reason.
+        notice=nil
         -- A fall belongs to the ride that fell. Kept into this one, a stop before it rides, such as a refused capture or
         -- lease, read as a second fall and the mod got back on by itself after every refusal (the capture-retry review,
         -- 2026-11-05).

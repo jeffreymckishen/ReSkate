@@ -18,7 +18,8 @@ local score_lines
 local function score_snapshot()
     local view,issue,landing=bike:score_view()
     local lines=ScoreHUD.lines(view,issue,landing)
-    -- A Y press that did not bring the bike says why for a few seconds, in place of Entry's line.
+    -- In place of Entry's line: what a Y press being carried out waits for, and for a few seconds why one did not
+    -- bring the bike.
     local help=ybutton:notice() or bike.help_line and bike:help_line()
     if not help then return lines end
     -- Before the first ride there is no score to show, and the help is all the panel has: getting ready, checking

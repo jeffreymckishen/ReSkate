@@ -9,6 +9,11 @@ local T={}
 local KEY="bmx_settings_v1"
 local Y_BIT=0x8000
 local LEAK="The game got the Y, as it can on some controllers. Press Y again."
+-- The button's own lines while a press is carried out (by the state the ride starts from), and when one runs out.
+local STEPPING="Stepping off the board for the bike: stand still and don't press Y."
+local READY="Getting the bike ready: stand still."
+local BOARD_OUT="Getting your board out for the bike: stand still and don't press Y."
+local NO_BIKE="The bike didn't come. Stand still, then press Y again."
 local IDLE={"idle","skateboard","preflight_refused","blocked","spent"}
 local BUSY={"preparing","surveying","awaiting_mount","mounting","riding","stepping_off","returning","fallen","stopped",
     "cancelled","unloaded"}
@@ -138,7 +143,13 @@ local function chain(check,options)
         local p=w.entry:status().phase
         if p~=w.phases[#w.phases] then w.phases[#w.phases+1]=p end
         w.y:step()
+        -- The HUD's help line as main.lua reads it after the button's step, each tick, once a case asks for it.
+        if w.hud_log then
+            w.hud_log[#w.hud_log+1]={line=w.hud(),pending=w.y:status().pending,phase=w.entry:status().phase,now=w.now}
+        end
     end
+    -- main.lua's help line: the button's own line first, then Entry's.
+    function w.hud() return w.y:notice() or w.entry:help_line() end
     -- A press of Y. The game sees it unless it is hidden, or a riding capture hands the game a neutral pad. leaky: a
     -- PlayStation pad the mask does not cover.
     function w.press_y(ms)
@@ -185,6 +196,35 @@ function T.run()
         local count=0
         for _,line in w.lines do if string.find(line,text,1,true) then count+=1 end end
         return count
+    end
+    -- Whether a HUD line asks for Y. The button's own lines say not to press it, which is not asking.
+    local function asks_for_y(line)
+        return type(line)=="string" and string.find((string.gsub(line,"don't press Y","")),"ress Y",1,true)~=nil
+    end
+    -- The HUD a chain case recorded from a Y press on (w.hud_log), up to the first tick riding: while the press was
+    -- carried out it was the button's own line want, and from the press to the ride no line was empty or asked for Y.
+    -- Answers for how many ticks the press was carried out.
+    local function hud_until_ride(w,want,why)
+        local waited,bad,rode=0,nil,false
+        for _,row in w.hud_log do
+            if row.phase=="riding" then rode=true;break end
+            if row.pending then
+                waited+=1
+                if row.line~=want then bad=bad or "not the press's own line: "..tostring(row.line) end
+            end
+            if type(row.line)~="string" or row.line=="" then bad=bad or "an empty line in "..row.phase end
+            if asks_for_y(row.line) then bad=bad or "a line asking for Y in "..row.phase..": "..row.line end
+        end
+        check(rode and bad==nil,why..": "..tostring(bad or "never rode"))
+        return waited
+    end
+    -- The rows of w.hud_log after the press stopped being carried out: the first is the tick it ended.
+    local function after_press(w)
+        local out,seen={},false
+        for _,row in w.hud_log do
+            if row.pending then seen=true elseif seen then out[#out+1]=row end
+        end
+        return out
     end
     case(function() -- Off by default, and a missing or malformed setting is off: Y does nothing, and is never hidden.
         local stored={{},{[KEY]={schema=1,bike_mode=false}},{[KEY]={schema=2,bike_mode=true}},
@@ -344,11 +384,17 @@ function T.run()
         w.on_mount=function() w.phase,w.hold="stepping_off",100 end
         w.events={}
         check(w.press(100)==true and w.y:status().pending=="guard","the press is carried out")
+        check(w.y:notice()==STEPPING,"and the HUD says what the step-off that follows will: "..tostring(w.y:notice()))
         check(w.y:press()==false,"a second while it is says no")
         w.tick(15)
-        check(w.mounts==0,"Y up 240 ms: not yet")
+        check(w.mounts==0 and w.y:notice()==STEPPING,"Y up 240 ms: not yet")
         w.tick(5)
         check(w.mounts==1 and same(w.events,{"mount mask "..Y_BIT}),"then the Mount, Y still hidden: "..table.concat(w.events,","))
+        check(w.y:notice()==nil,"and the line is the Entry's again")
+        -- On foot, the guard says what the Entry says once the bike gets ready.
+        local foot=on({start=504,state=504,phase="idle"})
+        foot.pad.buttons.y=true;foot.y:press()
+        check(foot.y:notice()==READY,"on foot the bike gets ready: "..tostring(foot.y:notice()))
         -- The Mount waits for released controls with nothing asked of the game's input: a second press stays hidden.
         w.tick(5)
         check(w.mask==Y_BIT and w.holding(),"still hidden while the step-off waits, and the Entry told so")
@@ -430,15 +476,18 @@ function T.run()
         local w=on({start=504,state=100,phase="idle"})
         w.on_mount=function() w.phase,w.hold="preparing",504 end
         check(w.mask==0 and w.calls==0,"on the board before the first ride, Y is the game's")
+        check(w.y:notice()==nil,"and nothing is said before a press")
         w.pad.buttons.y=true
         check(w.y:press()==true and w.y:status().pending=="arrive","the press waits for the rider")
+        check(w.y:notice()==STEPPING,"the HUD says what the game's Y is doing, and not to press it again")
         w.tick(5);w.state=504;w.tick(2);w.pad.buttons.y=false
         w.tick(30)
-        check(w.mounts==0,"480 ms at rest: not yet")
+        check(w.mounts==0 and w.y:notice()==STEPPING,"480 ms at rest: not yet")
         check(w.calls==0,"and Y is not hidden while they arrive")
         w.tick(10)
         check(w.mounts==1 and same(w.events,{"mount mask 0","mask "..Y_BIT}),
             "600 ms at rest: the Mount, with Y the game's, then hidden while the bike gets ready on foot: "..table.concat(w.events,","))
+        check(w.y:notice()==nil,"and the line is the Entry's again")
         -- A stick pushed while waiting starts the rest again.
         local x=on({start=504,state=100,phase="idle"})
         x.pad.buttons.y=true;x.y:press();x.tick(5);x.state=504;x.pad.buttons.y=false
@@ -448,10 +497,38 @@ function T.run()
         check(x.mounts==0,"480 ms after it is let go: not yet")
         x.tick(10)
         check(x.mounts==1,"600 ms: the Mount")
-        -- A rider who never arrives: dropped after 6 s.
+        -- A rider who never arrives: dropped after 6 s, and the HUD says the bike is not coming.
         local never=on({start=504,state=100,phase="idle"})
-        never.press(100);never.tick(400)
+        never.press(100);never.tick(365)
+        check(never.mounts==0 and never.y:status().pending=="arrive" and never.y:notice()==STEPPING,"5.95 s: still waiting")
+        never.tick(4)
         check(never.mounts==0 and never.y:status().pending==nil,"never arriving, dropped")
+        check(never.y:notice()==NO_BIKE and lines_with(never,"told: "..NO_BIKE)==1,"and told: "..tostring(never.y:notice()))
+        never.tick(240)
+        check(never.y:notice()==NO_BIKE,"for a few seconds")
+        never.tick(15)
+        check(never.y:notice()==nil,"then the line is the Entry's again")
+        -- One that arrives but never stands still runs out the same way.
+        local busy=on({start=504,state=100,phase="idle"})
+        busy.press(100);busy.state=504;busy.pad.left_x=.6;busy.tick(380)
+        check(busy.mounts==0 and busy.y:status().pending==nil and busy.y:notice()==NO_BIKE,"arrived, never still: told")
+        -- A press that ends any other way says nothing: a changed start or a busy Entry.
+        local gone=on({start=504,state=100,phase="idle"})
+        gone.press(100);gone.start=100;gone.tick()
+        check(gone.y:status().pending==nil and gone.y:notice()==nil,"a changed start ends it with no word")
+        local taken=on({start=504,state=100,phase="idle"})
+        taken.press(100);taken.phase="preparing";taken.tick()
+        check(taken.y:status().pending==nil and taken.y:notice()==nil,"so does a busy Entry")
+        -- A word from an earlier press is answered by a new one: the new press's line is shown, and the old one does not
+        -- come back once it ends.
+        local again=on({start=504,state=100,phase="idle"})
+        again.press(100);again.tick(380)
+        check(again.y:notice()==NO_BIKE,"told")
+        again.on_mount=function() again.phase,again.hold="preparing",504 end
+        again.pad.buttons.y=true;again.y:press()
+        check(again.y:notice()==STEPPING,"the new press's line, not the old word")
+        again.tick(5);again.state=504;again.pad.buttons.y=false;again.tick(40)
+        check(again.mounts==1 and again.y:notice()==nil,"and once it asks for the bike, nothing of the old word")
     end)
     case(function() -- A later ride from on foot: the game's Y brings out the board first.
         local w=on({start=100,state=504})
@@ -459,9 +536,12 @@ function T.run()
         check(w.mask==0,"on foot when the ride starts on the board, Y is the game's")
         w.pad.buttons.y=true
         check(w.y:press()==true and w.y:status().pending=="arrive","the press waits for the board")
+        check(w.y:notice()==BOARD_OUT,"and the HUD says so, and not to press Y again: "..tostring(w.y:notice()))
         w.tick(5);w.state=100;w.tick(2);w.pad.buttons.y=false
+        check(w.y:notice()==BOARD_OUT,"on the board, until the Mount")
         w.tick(45)
         check(w.mounts==1 and same(w.events,{"mount mask 0"}),"then the Mount, with Y the game's")
+        check(w.y:notice()==nil,"which says the rest")
         w.tick(20)
         check(w.calls==0,"and Y was never hidden, with nothing for the Entry to hold")
     end)
@@ -530,6 +610,7 @@ function T.run()
         check(w.entry:next_start_state()==504,"the first ride starts on foot")
         w.tick(3)
         check(w.mask==Y_BIT,"on foot before it, Y is hidden")
+        w.hud_log={}
         check(w.press_y(100),"Y")
         check(w.stock==504,"the game did not see it")
         local busy_nil,mounting_told=true,false
@@ -542,6 +623,7 @@ function T.run()
         if not rode then w.timeline(60) end
         check(rode and w.mounts==1 and w.mask==0,"the bike comes: "..w.phase())
         check(mounting_told,"and while the rider got on, the HUD said not to press Y")
+        check(hud_until_ride(w,READY,"first ride on foot")>=18,"the 300 ms guard said the bike was getting ready")
         check(busy_nil and w.entry:next_start_state()==nil,"while busy or riding no Mount can start")
         w.ride_ms(500)
         check(w.press_y(100) and w.stock==504,"Y while riding, which the riding capture keeps from the game")
@@ -551,6 +633,7 @@ function T.run()
         check(w.entry:next_start_state()==100,"and the next ride starts there")
         w.tick(3)
         check(w.mask==Y_BIT,"so Y is hidden there")
+        w.hud_log={}
         check(w.press_y(100) and w.stock==100,"Y, which the game did not see")
         local told=false
         rode=w.until_true(function()
@@ -560,6 +643,7 @@ function T.run()
         if not rode then w.timeline(60) end
         check(rode and w.mounts==2 and w.entry:status().attempts_used==2,"rides again, the Entry's own Y stepping off")
         check(told,"and the HUD said not to press Y while the rider stepped off")
+        check(hud_until_ride(w,STEPPING,"later ride on the board")>=18,"from the press on, the guard first")
     end)
     case(function() -- A second Y while the later ride's step-off waits is kept from the game, and the ride goes on.
         local w=chain(check)
@@ -733,10 +817,13 @@ function T.run()
         w.tick(10)
         check(w.stock==504 and w.y:notice()==LEAK and w.mounts==1,"stepped off, dropped and told: "..tostring(w.y:notice()))
         check(w.mask==0,"on foot, Y is the game's")
+        w.hud_log={}
         check(w.press_y(100),"Y again, as the HUD says")
         local rode=w.until_true(function() return w.phase()=="riding" end)
         if not rode then w.timeline(60) end
         check(rode and w.mounts==2 and w.entry:status().attempts_used==2,"the game brought the board, then the bike came")
+        -- The leak's word was still fresh, and it asked for Y while the game brought the board out.
+        check(hud_until_ride(w,BOARD_OUT,"after the leak")>=40,"the press's own line, not the leak's")
     end)
     case(function() -- The first ride from the board: the game's Y steps the rider off, then the bike comes.
         local w=chain(check,{stock=100})
@@ -747,6 +834,37 @@ function T.run()
         if not rode then w.timeline(60) end
         check(rode and w.mounts==1 and w.stock==504,"stepped off, then rode")
         check(w.mask_calls==2,"Y hidden only while the bike got ready on foot: "..w.mask_calls)
+    end)
+    case(function() -- The first ride from the board on the HUD: while the game's Y steps the rider off, it says not to press Y.
+        -- Until then Entry was still idle and its line blank, and a second Y the game saw put the rider back on the
+        -- board, and the press was dropped 6 s later with no word.
+        local w=chain(check,{stock=100})
+        w.tick(3)
+        check(w.hud()==nil,"before a press the HUD has no line")
+        w.hud_log={}
+        check(w.press_y(100),"Y")
+        check(w.until_true(function() return w.phase()=="riding" or w.phase()=="blocked" end),"the ride")
+        local waited=hud_until_ride(w,STEPPING,"first ride from the board")
+        check(waited>=40 and w.stock==504 and w.mounts==1,"the press waited for the rider for "..waited.." ticks, then rode")
+        -- The game did not act on this Y (it can ignore one, as when the rider is rolling): after 6 s the HUD says so.
+        local x=chain(check,{stock=100})
+        x.tick(3);x.hud_log={}
+        x.pad.buttons.y=true
+        check(x.y:press() and x.y:status().pending=="arrive","Y, which the game drops")
+        x.tick(7);x.pad.buttons.y=false
+        check(x.until_true(function() return x.y:status().pending==nil end,400),"the press runs out")
+        local waited_ms=x.hud_log[#x.hud_log].now-x.hud_log[1].now
+        for _,row in x.hud_log do
+            if row.pending then check(row.line==STEPPING,"the press's own line while it waits: "..tostring(row.line)) end
+        end
+        check(waited_ms>=5950 and x.stock==100 and x.mounts==0,"6 s on the board, no Mount: "..waited_ms)
+        local after=after_press(x)
+        check(#after==1 and after[1].line==NO_BIKE,"then told: "..tostring(after[1] and after[1].line))
+        x.tick(245)
+        check(x.hud()==NO_BIKE,"for a few seconds")
+        x.tick(10)
+        check(x.hud()==nil,"then the HUD is Entry's again")
+        check(x.press_y(100) and x.until_true(function() return x.phase()=="riding" end),"and a further Y rides")
     end)
     case(function() -- A later ride refused by the ground waits on foot, and Y there retries it.
         local w=chain(check)
@@ -771,6 +889,59 @@ function T.run()
         local rode=w.until_true(function() return w.phase()=="riding" or w.phase()=="blocked" end)
         if not rode then w.timeline(60) end
         check(w.phase()=="riding" and w.mounts==3 and w.entry:status().attempts_used==2,"the retry rides: "..w.phase())
+    end)
+    -- A later ride blocked with the rider on foot: the step-off's wait sees the rider off the board, as after a Y from a
+    -- pad the mask does not cover. The next ride starts on the board, so Y there waits for the game's Y to bring it out.
+    local function blocked_on_foot()
+        local w=chain(check)
+        w.first_ride_and_back()
+        w.press_y(100)
+        check(w.until_true(function() return w.phase()=="stepping_off" end,40),"the Mount starts")
+        w.leaky=true;w.press_y(100);w.leaky=false
+        check(w.until_true(function() return w.phase()=="blocked" end,100) and w.stock==504,"blocked, on foot: "..w.phase())
+        w.tick(5)
+        check(w.entry:next_start_state()==100 and w.mask==0,"the next ride starts on the board, so Y is the game's")
+        return w
+    end
+    case(function() -- A blocked later ride from on foot: while the game's Y brings out the board, the HUD says not to press Y.
+        -- Until then the blocked line stayed up, "That didn't finish. Press Y to ride again.", and a second Y the game
+        -- saw put the board away again.
+        local w=blocked_on_foot()
+        check(w.hud()=="That didn't finish. Press Y to ride again.","the blocked line: "..tostring(w.hud()))
+        w.hud_log={}
+        check(w.press_y(100) and w.stock==100,"Y, and the game brings out the board")
+        check(w.until_true(function() return w.phase()=="riding" end,1500),"the ride: "..table.concat(w.phases,","))
+        local waited=hud_until_ride(w,BOARD_OUT,"blocked later ride from on foot")
+        check(waited>=40 and w.saw("stepping_off") and w.entry:status().attempts_used==2,"waited "..waited.." ticks, then stepped off and rode")
+        -- LB + A first, which asks for Y on the HUD: "Press Y to ride again." Once the bike is on its way that word is
+        -- stale, and up for its 4 s it asked for Y while the step-off's own Y went out.
+        local l=blocked_on_foot()
+        l.y:drop_press()
+        check(l.entry:mount()==false and l.hud()=="Press Y to ride again." and l.phase()=="blocked","LB + A, told to press Y")
+        l.hud_log={}
+        check(l.press_y(100) and l.stock==100,"so Y, and the game brings out the board")
+        check(l.until_true(function() return l.phase()=="riding" end,1500),"the ride: "..table.concat(l.phases,","))
+        check(hud_until_ride(l,BOARD_OUT,"LB + A, then Y")>=40,"the press waited for the board")
+        local started=after_press(l)[1]
+        check(started and started.phase=="stepping_off" and started.now-l.hud_log[1].now<3000,
+            "and the Mount started well inside the old word's 4 s")
+        -- The game did not act on this Y: after 6 s the HUD says so, then the blocked line comes back.
+        local x=blocked_on_foot()
+        x.hud_log={}
+        x.pad.buttons.y=true
+        check(x.y:press() and x.y:status().pending=="arrive","Y, which the game drops")
+        x.tick(7);x.pad.buttons.y=false
+        check(x.until_true(function() return x.y:status().pending==nil end,400),"the press runs out")
+        for _,row in x.hud_log do
+            if row.pending then check(row.line==BOARD_OUT,"the press's own line while it waits: "..tostring(row.line)) end
+        end
+        check(x.hud_log[#x.hud_log].now-x.hud_log[1].now>=5950 and x.stock==504 and x.phase()=="blocked","6 s on foot")
+        check(#after_press(x)==1 and x.hud()==NO_BIKE,"then told: "..tostring(x.hud()))
+        x.tick(245)
+        check(x.hud()==NO_BIKE,"for a few seconds")
+        x.tick(10)
+        check(x.hud()=="That didn't finish. Press Y to ride again.","then the blocked line again: "..tostring(x.hud()))
+        check(x.press_y(100) and x.until_true(function() return x.phase()=="riding" end,1500),"and a further Y rides")
     end)
     return {cases=cases,assertions=n,native_authority=false,constructed=true}
 end

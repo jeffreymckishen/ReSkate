@@ -86,15 +86,22 @@ skateboard.
 
 - The first ride of a launch starts on foot, so from the skateboard Y steps the rider off first, and the bike comes
   once they stand still with the controls let go. Later rides start on the skateboard, so on foot Y brings the
-  skateboard out first.
+  skateboard out first. If the rider has not stood still there, with the controls let go, by 6 seconds after that Y,
+  the Y is dropped and the HUD says "The bike didn't come. Stand still, then press Y again." for 4 seconds.
 - Where the next ride starts, the game does not see Y, so it does not step off or bring out the skateboard as well.
   That lasts while the rider skates there: after the first ride Y does not step off the skateboard, and a Y in the
   air or on a grind does nothing. Y goes back to the game where the game's Y is needed, off the board after the first
   ride and on it before, and while the rider is down after a bail. When no ride can start, Y does what it does in the
   game. Opening a menu or Insert, or leaving the game, gives Y back to the game at once.
-- Don't press Y again until you ride. While the bike gets ready a second Y mostly does nothing, but while the rider
-  steps off the board for it, and while they get on the bike, the game sees Y, and it can end that try: a step-off
-  the game made, or a skateboard it brought out, is not the mod's. The HUD says not to press Y then.
+- Don't press Y again until you ride. From the press on, the HUD says what is under way. While the rider steps off
+  the board for the bike, whether the game's Y does it before the first ride or the mod's own Y before a later one,
+  it says "Stepping off the board for the bike: stand still and don't press Y." While the game's Y brings the
+  skateboard out for a later ride it says "Getting your board out for the bike: stand still and don't press Y.", and
+  while the rider gets on the bike, "Getting on the bike: let go of the controls and don't press Y." The game can see
+  Y in those, and a second one puts the rider back on the board, puts the board away or ends that try: a step-off the
+  game made, or a skateboard it brought out, is not the mod's. While the bike gets ready on foot the HUD says
+  "Getting the bike ready: stand still." and "Checking for room: stand still."; the game does not see Y then, and a
+  second Y does nothing.
 - LB + A, F8 and LB + RB + R3 still work, and the HUD's lines say to press Y.
 - A PlayStation controller without Steam Input can still pass Y to the game. The HUD then says "The game got the Y,
   as it can on some controllers. Press Y again." That Y waits for the game's own Y to finish, and then the bike comes.

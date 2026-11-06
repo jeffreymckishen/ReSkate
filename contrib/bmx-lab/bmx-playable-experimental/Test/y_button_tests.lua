@@ -578,6 +578,49 @@ function T.run()
             "the ride goes on: "..table.concat(w.phases,","))
         check(w.saw("preparing") and w.saw("surveying"),"through the step-off and the survey")
     end)
+    case(function() -- The step-off's quiet passes and Y goes back, then the quiet breaks before the hand-over: Y is kept again.
+        -- Until the second review of 1827ac54 the step-off then went on waiting for Y with it given back, all through the
+        -- new 600 ms quiet, and a Y there stepped the rider off and ended the attempt ('Attempt two lost its stock100
+        -- baseline before admission').
+        local away={stick=function(w,on) w.pad.left_x=on and .6 or 0 end,
+            menu=function(w,on) w.game_menu=on end,
+            focus=function(w,on) w.focused=not on end,
+            overlay=function(w,on) w.interface_open=on end}
+        for how,set in pairs(away) do
+            local w=chain(check)
+            w.first_ride_and_back()
+            w.press_y(100)
+            check(w.until_true(function() return w.entry:status().hold_waiting end,200),"the quiet passes: "..how)
+            check(w.phase()=="stepping_off" and w.mask==0 and w.pulse==nil and w.entry:status().hold_state==nil,
+                "and the step-off waits for Y, given back: "..how)
+            -- On the very next tick, before the hand-over.
+            set(w,true);w.tick()
+            local s=w.entry:status()
+            check(s.phase=="stepping_off" and w.pulse==nil and not s.hold_waiting and s.hold_state==100,
+                "the step-off waits for a new quiet, no longer for Y: "..how)
+            set(w,false);w.tick()
+            check(w.mask==Y_BIT,"so Y is kept from the game again: "..how)
+            check(w.press_y(100)==false and w.stock==100,"a further Y, which the game did not see: "..how)
+            local rode=w.until_true(function() return w.phase()=="riding" or w.phase()=="blocked" end)
+            if not rode then w.timeline(80) end
+            check(w.phase()=="riding" and not w.saw("blocked") and w.mounts==2 and w.entry:status().attempts_used==2,
+                "the ride starts: "..how..": "..table.concat(w.phases,","))
+        end
+    end)
+    case(function() -- The same at the mount's request: a menu that opens there, then closes, leaves it to ask at once.
+        local w=chain(check)
+        w.tick(3);w.press_y(100)
+        check(w.until_true(function() return w.entry:status().hold_waiting end,400),"the mount's request waits for Y")
+        check(w.phase()=="awaiting_mount" and w.mask==0,"given back")
+        w.game_menu=true;w.tick(10)
+        local s=w.entry:status()
+        check(s.phase=="awaiting_mount" and not s.hold_waiting and s.hold_state==504 and w.mask==0 and w.handle==nil,
+            "with a menu open it waits for the menu, not for Y, and Y stays the game's while the menu is up")
+        w.game_menu=false;w.tick()
+        check(w.phase()=="mounting" and w.mask==0,"closed, the request goes on the same tick, with Y the game's")
+        local rode=w.until_true(function() return w.phase()=="riding" or w.phase()=="blocked" end)
+        check(rode and w.phase()=="riding" and w.mounts==1,"and the bike comes: "..table.concat(w.phases,","))
+    end)
     case(function() -- A second Y while the first ride gets ready is kept from the game as well.
         local w=chain(check)
         w.tick(3);w.press_y(100)
@@ -648,6 +691,39 @@ function T.run()
         if not rode then w.timeline(80) end
         check(rode,"the fall gets back on: "..table.concat(w.phases,","))
         check(w.saw("returning") and w.saw("stepping_off"),"through a Return and a step-off")
+    end)
+    case(function() -- A fall's own remount that finds the rider on foot is never told not to press Y, then asks for it.
+        local STEPPING="Stepping off the board for the bike: stand still and don't press Y."
+        local Y_LINE="Press Y for your skateboard, then let go of the controls."
+        local w=chain(check)
+        w.tick(3);w.press_y(100)
+        check(w.until_true(function() return w.phase()=="riding" end),"rode")
+        w.ride_ms(500);w.tilt_stop(59.7)
+        check(w.until_true(function() return w.phase()=="stepping_off" end),"the remount's step-off")
+        -- The game has put the rider down on foot rather than on the board.
+        w.stock,w.ragdoll=504,true
+        check(w.until_true(function() return w.entry:help_line()=="Press A to get up." end,400),"down: "..tostring(w.entry:help_line()))
+        check(w.mask==0,"Y the game's, which the rider will need")
+        w.ragdoll=false
+        local stood,said,asked=w.now,{},nil
+        for _=1,100 do
+            w.tick()
+            local line=w.entry:help_line()
+            said[line]=true
+            if line==Y_LINE then asked=w.now;break end
+        end
+        check(not said[STEPPING],"standing on foot, the HUD never says not to press Y")
+        check(said["Getting back on the bike."],"it says what is under way")
+        check(asked and asked-stood>=1000 and w.mask==0,"then, a second on, asks for Y, which the game has")
+        check(w.press_y(100)==false and w.stock==100,"the game's Y brings out the board")
+        local told=false
+        local rode=w.until_true(function()
+            if w.phase()=="stepping_off" and w.entry:help_line()==STEPPING then told=true end
+            return w.phase()=="riding" or w.phase()=="blocked"
+        end)
+        if not rode then w.timeline(80) end
+        check(w.phase()=="riding" and w.entry:status().attempts_used==2,"the remount goes on: "..table.concat(w.phases,","))
+        check(told,"on the board the step-off's own line comes back")
     end)
     case(function() -- A pad the mask does not cover: the press is dropped and told, and the next Y waits for the board.
         local w=chain(check)

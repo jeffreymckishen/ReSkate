@@ -1164,6 +1164,167 @@ function Tests.run()
         for _,line in lines do if line=="[BMX] Stopped: Lifecycle step unavailable; cleanup remains required." then found=true end end
         check(found,"the log keeps why it stopped")
     end)
+    -- Every line of Entry's that names the controls (set_controls), each reached the way a rider reaches it, read with
+    -- the controls picked in order from kinds before the Mount. lines[name] is what the HUD showed there; up[name] is a
+    -- fixture left with that line on screen and no notice over it, so a case can change the controls under it.
+    local function idle_facade()
+        -- What the facade reports before any ride: a first ride's retry proof (preflight_clear) asks for it.
+        return require("./bike_runtime").new({},{qualification_only=true}):status()
+    end
+    local function controls_lines(kinds)
+        local lines,up={},{}
+        local function pick(f)
+            for _,kind in kinds do check(f.entry:set_controls(kind),"controls: "..kind) end
+            return f
+        end
+        local function after_notice(f) f.now+=4001;f.tick() end
+        local function awaiting(f)
+            check(f.entry:mount(),"first intent")
+            for _=1,200 do f.tick();if f.entry:status().phase=="awaiting_mount" then return end end
+            error("bounded survey did not pass")
+        end
+        -- The first ride's Mount on the board.
+        local a=pick(fixture({two=true}));a.overlay=false;a.stock=100
+        local mounted,why=a.entry:mount()
+        check(not mounted and why==a.entry:help_line(),"a first Mount on the board says why")
+        lines.step_off=why
+        -- Its survey passed, and the rider got on the board, or moved, before the bike was asked for.
+        for name,move in pairs({refused_step_off=function(f) f.stock=100 end,
+            moved=function(f) f.position=vector.create(.3,.5,0) end}) do
+            local f=pick(fixture({two=true}));f.latest=idle_facade();f.overlay=true
+            awaiting(f);move(f);f.overlay=false;f.tick()
+            check(f.entry:status().phase=="preflight_refused" and f.mounts==0,"the retry stays open: "..name)
+            lines[name.."_notice"]=f.entry:help_line()
+            after_notice(f);lines[name]=f.entry:help_line();up[name]=f
+        end
+        -- A first ride's ground refused.
+        local t=pick(fixture({two=true}));t.latest=idle_facade();t.rough=true;t.overlay=false
+        check(t.entry:mount(),"first intent")
+        check(await_terrain(t).phase=="preflight_refused","the ground is refused")
+        after_notice(t);lines.preflight_refused=t.entry:help_line();up.preflight_refused=t
+        -- A later ride's Mount on foot; on the board it steps off.
+        local b=pick(fixture({two=true}));first_return(b);b.stock=504
+        mounted,why=b.entry:mount()
+        check(not mounted and why==b.entry:help_line() and b.entry:status().phase=="skateboard","on foot a later Mount says why")
+        lines.board=why
+        local s=pick(fixture({two=true}));first_return(s)
+        check(s.entry:mount() and s.entry:status().phase=="stepping_off","on the board it steps off")
+        lines.stepping_off=s.entry:help_line()
+        local m=pick(fixture({two=true}));m.overlay=false
+        check(m.entry:mount(),"first intent");m.await_mount()
+        check(m.entry:status().phase=="mounting","the bike asked for")
+        lines.mounting=m.entry:help_line()
+        -- A fall with no automatic Return, then a Mount while the bike is still being put away.
+        local fl=pick(fixture({two=true}));fl.riding();fall(fl,"hit something at 4.5 m/s")
+        check(fl.entry:status().phase=="fallen","fallen")
+        lines.came_off=fl.entry:help_line()
+        after_notice(fl);lines.fallen=fl.entry:help_line()
+        fl.latest.equipment={retained=true,phase="settling"};fl.tick()
+        mounted,why=fl.entry:mount()
+        check(not mounted and why==fl.entry:help_line(),"equipment still held: Mount says why")
+        lines.let_go=why
+        fl.latest.equipment=nil;fl.latest.source={phase="releasing"};fl.tick()
+        mounted,why=fl.entry:mount()
+        check(not mounted and why==fl.entry:help_line(),"the input source still releasing: Mount says why")
+        lines.close_menus=why
+        after_notice(fl);up.fallen=fl
+        -- A ride that ended by itself, with no automatic Return.
+        local st=pick(fixture({two=true}));st.riding();fall(st,"input source began cleanup")
+        check(st.entry:status().phase=="stopped","stopped, not fallen")
+        lines.ride_stopped=st.entry:help_line()
+        -- Blocked, and spent.
+        local bl=pick(fixture({two=true}));bl.riding();bl.step_raise=true;bl.tick()
+        check(bl.entry:status().phase=="blocked","blocked")
+        lines.blocked=bl.entry:help_line();up.blocked=bl
+        local sp=pick(fixture({two=true}));sp.riding();sp.failed_cycle=true
+        check(sp.entry:return_to_skateboard(),"Return")
+        sp.latest=cleaned();sp.stock=100;sp.tick()
+        check(sp.entry:status().phase=="spent","spent")
+        after_notice(sp);lines.spent=sp.entry:help_line();up.spent=sp
+        -- A fall's own remount whose step-off finds the rider down on foot, then standing, and still there at 60 s.
+        local h=pick(fixture({two=true,auto_return=true}));h.riding();fall(h,"rider was knocked down")
+        h.latest=cleaned();h.tick();h.latest=cleaned();h.stock=100;h.tick()
+        check(h.entry:status().phase=="stepping_off","Recover's step-off")
+        h.stock=504;h.ragdoll=true
+        for _=1,25 do h.now+=184;h.tick() end
+        lines.remount_down=h.entry:help_line()
+        h.ragdoll=false;h.now+=184;h.tick()
+        lines.remount_on_foot=h.entry:help_line()
+        for _=1,6 do h.now+=184;h.tick() end
+        lines.remount_y=h.entry:help_line()
+        for _=1,400 do h.now+=184;h.tick();if h.entry:status().phase=="blocked" then break end end
+        check(h.entry:status().phase=="blocked" and h.stepoffs==nil,"60 s off the board ends the step-off")
+        lines.off_board_notice=h.entry:help_line()
+        after_notice(h);lines.off_board=h.entry:help_line();up.off_board=h
+        return lines,up
+    end
+    -- What every one of those paths says with LB + A, as before bike mode, and in bike mode.
+    local LB_A_LINES={step_off="Step off your skateboard with Y, then hold LB and press A.",
+        refused_step_off_notice="Step off your skateboard with Y, then hold LB and press A.",
+        refused_step_off="Step off your skateboard with Y, then hold LB and press A.",
+        moved_notice="Stand still while the bike gets ready. Hold LB and press A again.",
+        moved="Stand still while the bike gets ready. Hold LB and press A again.",
+        preflight_refused="No room here or too steep: move, then hold LB and press A.",
+        board="Get on your skateboard, then hold LB and press A.",
+        stepping_off="Stepping off the board: stand still and let go of the controls.",
+        mounting="Getting on the bike: let go of the controls.",
+        came_off="The rider came off. Hold LB and press A to ride again.",
+        fallen="The ride ended. Hold LB and press A to ride again.",
+        let_go="Let go of every control for a moment, then hold LB and press A.",
+        close_menus="Close menus and let go of the controls, then hold LB and press A.",
+        ride_stopped="The ride stopped. Hold LB and press A to ride again.",
+        blocked="That didn't finish. Get on your skateboard, then hold LB and press A.",
+        spent="That didn't finish. Get on your skateboard, then hold LB and press A.",
+        remount_down="Press A to get up.",
+        remount_on_foot="Stepping off the board: stand still and let go of the controls.",
+        remount_y="Press Y for your skateboard, then let go of the controls.",
+        off_board_notice="Press Y for your skateboard, then hold LB and press A.",
+        off_board="Press Y for your skateboard, then hold LB and press A."}
+    local Y_LINES={step_off="Press Y to get on the bike.",
+        refused_step_off_notice="Press Y to get on the bike.",
+        refused_step_off="Press Y to get on the bike.",
+        moved_notice="Stand still while the bike gets ready. Press Y again.",
+        moved="Stand still while the bike gets ready. Press Y again.",
+        preflight_refused="No room here or too steep: move, then press Y.",
+        board="Press Y to ride again.",
+        stepping_off="Stepping off the board for the bike: stand still and don't press Y.",
+        mounting="Getting on the bike: let go of the controls and don't press Y.",
+        came_off="The rider came off. Press Y to ride again.",
+        fallen="The ride ended. Press Y to ride again.",
+        let_go="Let go of every control for a moment, then press Y.",
+        close_menus="Close menus and let go of the controls, then press Y.",
+        ride_stopped="The ride stopped. Press Y to ride again.",
+        blocked="That didn't finish. Press Y to ride again.",
+        spent="That didn't finish. Press Y to ride again.",
+        remount_down="Press A to get up.",
+        -- Not the step-off's line, which says not to press Y: a moment later this rider is asked for it.
+        remount_on_foot="Getting back on the bike.",
+        remount_y="Press Y for your skateboard, then let go of the controls.",
+        off_board_notice="Press Y to ride again.",
+        off_board="Press Y to ride again."}
+    local function same_lines(lines,want,label)
+        for name,line in pairs(want) do
+            check(lines[name]==line,label..": "..name.." said '"..tostring(lines[name]).."'")
+        end
+        for name in pairs(lines) do check(want[name]~=nil,label..": no line expected for "..name) end
+    end
+    case("in bike mode every line that names the controls names Y, and a line on screen follows a change of them",function()
+        local lines,up=controls_lines({"y"})
+        same_lines(lines,Y_LINES,"bike mode")
+        -- The lines kept as keys of words (refused_help, blocked_help) and the phase lines are read as they are shown.
+        for name,f in pairs(up) do
+            check(f.entry:help_line()==Y_LINES[name],"still up: "..name)
+            check(f.entry:set_controls("lb_a") and f.entry:help_line()==LB_A_LINES[name],
+                "LB + A picked under it: "..name.." said '"..tostring(f.entry:help_line()).."'")
+            check(f.entry:set_controls("y") and f.entry:help_line()==Y_LINES[name],"and Y again: "..name)
+        end
+        check(up.moved and up.refused_step_off and up.off_board and up.preflight_refused and up.fallen and up.blocked and up.spent,
+            "each of them was on screen")
+    end)
+    case("switched back to LB + A every line is the one from before bike mode, byte for byte",function()
+        same_lines(controls_lines({"y","lb_a"}),LB_A_LINES,"switched back")
+        same_lines(controls_lines({}),LB_A_LINES,"never switched")
+    end)
     return {cases=cases,assertions=assertions,constructed=true,native_authority=false,gameplay=false}
 end
 return Tests

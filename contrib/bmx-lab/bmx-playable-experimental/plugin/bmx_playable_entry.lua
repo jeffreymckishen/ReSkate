@@ -148,7 +148,10 @@ function Entry.new(R,Runtime,Survey,options)
                 blocked="That didn't finish. Press Y to ride again.",
                 spent="That didn't finish. Press Y to ride again.",
                 stepping_off="Stepping off the board for the bike: stand still and don't press Y.",
-                mounting="Getting on the bike: let go of the controls and don't press Y."}}}
+                mounting="Getting on the bike: let go of the controls and don't press Y.",
+                -- A remount's step-off that reads the rider standing on foot, for the second before help_line asks
+                -- them for Y: stepping_off is said only to a rider on the board.
+                remount_on_foot="Getting back on the bike."}}}
     local words=WORDS.lb_a
     local RIDE_RETURNING="The ride stopped. Going back to the skateboard."
     local stock_retries,stock_retry_at=0,nil
@@ -182,7 +185,8 @@ function Entry.new(R,Runtime,Survey,options)
     -- A hold on the game's input from elsewhere in the mod (set_input_hold): y_button.lua's, true while it keeps Y from
     -- the game. While any button is hidden the SDK refuses every input lease, capture and pulse as interference
     -- (input_capture.cpp input_pulse_available), so the two calls that hand the game's input on, the step-off's
-    -- prepare_next_mount and the mount's request_mount, wait for it to end. hold_waiting: one of them is waiting.
+    -- prepare_next_mount and the mount's request_mount, wait for it to end. hold_waiting: one of them is waiting for
+    -- it, and for nothing else. It ends as soon as that call waits for something else as well, a menu or a new quiet.
     local input_hold,hold_waiting=nil,false
     local stopped,cancel_sent,cancelled,unloaded,ticking=false,false,false,false,false
     local generation,latest,known=0,nil,false
@@ -225,7 +229,8 @@ function Entry.new(R,Runtime,Survey,options)
     -- waits in while nothing of the game's input is live or asked for, and nothing will be without asking the hold
     -- first. 100 while a later ride waits for released controls before its step-off; 504 while a ride prepares,
     -- surveys and waits to ask for the bike. nil everywhere else (a step-off armed, a mount asked for, a ride, a
-    -- Return), and once a hand-over waits for the hold, so that it is let go.
+    -- Return), and while a hand-over waits for the hold, so that it is let go. A hand-over that then waits for a menu
+    -- or a new quiet names its state again (hold_waiting).
     local function hold_state()
         if hold_waiting or cancelled or unloaded or mount_issued or return_pending or stock_attempted then return nil end
         if phase=="stepping_off" then return second_prepare_pending and 100 or nil end
@@ -519,7 +524,10 @@ function Entry.new(R,Runtime,Survey,options)
     end
     local function mount_step(now)
         local version=generation
-        if not environment(false) then return end
+        -- With a menu open the request waits for the menu, not for the hold, so hold_waiting ends as the step-off's
+        -- does. Nothing waits here once the menu closes: the request is asked for on that tick, before y_button.lua
+        -- could keep Y again.
+        if not environment(false) then hold_waiting=false;return end
         if state()~=504 then
             if phase~="blocked" and not first_ride_retry("Mount needs the rider on foot; no mount requested."
                 .." Step off the skateboard, then choose Mount again.","step_off") then
@@ -958,12 +966,17 @@ function Entry.new(R,Runtime,Survey,options)
             if not second_admitted_at or now<second_admitted_at or now-second_admitted_at>=60000 then
                 second_expired("Second Mount admission deadline expired; no step-off request.");return
             end
-            if not environment(false) then reset_second_quiet();return end
+            -- A menu or a control touched after the quiet passed starts a new quiet, and the step-off no longer waits
+            -- for the hold but for that: hold_waiting ends, so hold_state() names 100 again and y_button.lua keeps Y
+            -- from the game for it. Left set, Y stayed the game's through the new 600 ms, and a Y there stepped the
+            -- rider off and ended the attempt (the second review of 1827ac54).
+            if not environment(false) then reset_second_quiet();hold_waiting=false;return end
             if generation~=version or cancelled or unloaded then return end
             if not known or not clean(latest) then fail("Previous Return is no longer fully clean.");return end
             local quiet=second_quiet(now)
             if generation~=version or cancelled or unloaded then return end
             if not quiet then
+                hold_waiting=false
                 if phase~="blocked" then detail="Release controls and settle on stock100 before the single guarded step-off." end
                 return
             end
@@ -1384,6 +1397,9 @@ function Entry.new(R,Runtime,Survey,options)
             if now and second_off_since and now-second_off_since>=1000 then
                 return "Press Y for your skateboard, then let go of the controls."
             end
+            -- Bike mode's step-off line says not to press Y, which holds only for a rider on the board: this one is
+            -- asked for Y in a moment. Until then the line says only what is under way.
+            if words.help.remount_on_foot then return words.help.remount_on_foot end
         end
         -- Whatever this phase asks for next, a rider still lying down has to get up first.
         if rider_down and DOWN_WAITS[phase] then return "Press A to get up." end

@@ -4,8 +4,8 @@
   "flat_file_count": 91,
   "quota_file_count": 92,
   "expected_processes": 48,
-  "expected_cases": 519,
-  "expected_assertions": 180049,
+  "expected_cases": 524,
+  "expected_assertions": 181805,
   "source_admission": "UNCHANGED_FALSE",
   "files": [
     {
@@ -23,8 +23,8 @@
     {
       "source": "Test/two_cycle_entry_tests.lua",
       "destination": "two_cycle_entry_tests.lua",
-      "bytes": 83040,
-      "sha256": "681E3880FDFF462AD9FD1BB79F0FB3E6E2BD731C35BBF6A7CB72B7D7FF5372F6"
+      "bytes": 93680,
+      "sha256": "B94E1CB0D3B717FDEC209D99EFE83FA818FFAEA5DE669AF33C00BA89E42D0F45"
     },
     {
       "source": "Test/two_cycle_handoff_tests.lua",
@@ -137,8 +137,8 @@
     {
       "source": "plugin/bmx_playable_entry.lua",
       "destination": "bmx_playable_entry.lua",
-      "bytes": 101002,
-      "sha256": "37230D0D5EDCEA213167EFB978262CFA5293D587C62ADA7938A3774C8FFBE150"
+      "bytes": 102546,
+      "sha256": "08914C2458ACA0113588FA2EFF8369D5A28DF2BC08C06DF599357BC095A04AC9"
     },
     {
       "source": "plugin/ride_r1_record.lua",
@@ -558,8 +558,8 @@
     {
       "source": "Test/y_button_tests.lua",
       "destination": "y_button_tests.lua",
-      "bytes": 40468,
-      "sha256": "92123A7A5181DA7748574F3564F040B36CF431DD8C2D2A4BEDA432035C26C426"
+      "bytes": 45474,
+      "sha256": "25BA562AFC9C4555F18D91E41D6B7A0AD15AAD9A1152DAA858917DA1225F3947"
     }
   ],
   "runtime_files": [
@@ -595,8 +595,8 @@
     },
     {
       "source": "plugin/bmx_playable_entry.lua",
-      "bytes": 101002,
-      "sha256": "37230D0D5EDCEA213167EFB978262CFA5293D587C62ADA7938A3774C8FFBE150"
+      "bytes": 102546,
+      "sha256": "08914C2458ACA0113588FA2EFF8369D5A28DF2BC08C06DF599357BC095A04AC9"
     },
     {
       "source": "plugin/board_drop.lua",
@@ -792,8 +792,8 @@
       "suite": "two_cycle_entry_tests",
       "invoked": "two_cycle_entry_tests",
       "context": "flat",
-      "expected_cases": 51,
-      "expected_assertions": 2303
+      "expected_cases": 53,
+      "expected_assertions": 2703
     },
     {
       "suite": "two_cycle_handoff_tests",
@@ -1114,8 +1114,8 @@
       "suite": "y_button_tests",
       "invoked": "y_button_tests",
       "context": "flat",
-      "expected_cases": 25,
-      "expected_assertions": 1816
+      "expected_cases": 28,
+      "expected_assertions": 3172
     }
   ]
 }

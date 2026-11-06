@@ -227,14 +227,14 @@
     {
       "source": "plugin/ride_runtime.lua",
       "destination": "ride_runtime.lua",
-      "bytes": 152693,
-      "sha256": "01C561E4A920E298E78E6ABCB9AC74288B9E2E89D5B50348EDAF2BB5651B54DF",
+      "bytes": 152775,
+      "sha256": "34BF0636B14E7DE59A8E4D18881E173637462856994C4F2568661467588F1943",
       "test_transform": {
         "kind": "inert_raw_ride_fixture",
         "before": "local ACTIVATION_QUALIFIED = true",
         "after": "local ACTIVATION_QUALIFIED = false",
-        "bytes": 152694,
-        "sha256": "9EBD0858252ED7D5DEEBC3825628B02652F17C54C2C6FDAF47975F397B584603"
+        "bytes": 152776,
+        "sha256": "F05FA0134431AA652F091546A75FE92FEBFDB3B399A1B7A4A4DE5A954DC7A88A"
       }
     },
     {
@@ -390,8 +390,8 @@
     {
       "source": "plugin/ride_runtime.lua",
       "destination": "ride_runtime_qualified_fixture.lua",
-      "bytes": 152693,
-      "sha256": "01C561E4A920E298E78E6ABCB9AC74288B9E2E89D5B50348EDAF2BB5651B54DF"
+      "bytes": 152775,
+      "sha256": "34BF0636B14E7DE59A8E4D18881E173637462856994C4F2568661467588F1943"
     },
     {
       "source": "Test/barspin_rider_pose_integration_tests.lua",
@@ -693,8 +693,8 @@
     },
     {
       "source": "plugin/ride_runtime.lua",
-      "bytes": 152693,
-      "sha256": "01C561E4A920E298E78E6ABCB9AC74288B9E2E89D5B50348EDAF2BB5651B54DF"
+      "bytes": 152775,
+      "sha256": "34BF0636B14E7DE59A8E4D18881E173637462856994C4F2568661467588F1943"
     },
     {
       "source": "plugin/tire.lua",
@@ -703,8 +703,8 @@
     },
     {
       "source": "README.md",
-      "bytes": 16752,
-      "sha256": "3E6323F14F987C445234EF9B2C130937D75F3A03B4B742680EE66FCD3C3FF012"
+      "bytes": 16994,
+      "sha256": "CCDBD3176EB964B711430BCD482A2DC2DE88E9A59729960A104AE88E32E0DBA2"
     },
     {
       "source": "reskate-plugin.json",

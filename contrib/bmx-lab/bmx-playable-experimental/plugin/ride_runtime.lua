@@ -124,11 +124,11 @@ local TAU = 2 * math.pi
 -- Back is a free backpedal, never more than a quarter turn. Forward they go no faster than the rear wheel turns them
 -- through the gearing, so the freewheel never drives the wheel and nothing the physics does is drawn otherwise: a
 -- stopped wheel lets them only back, and short of the level ahead they wait for it. A wheel turning backward takes
--- them back with it (cranks). From any phase they are within 5 degrees of level in at most a tenth of a second and a
--- quarter turn at the slower of CRANK_SETTLE_RATE and the wheel's pace: letting go at 24 phases, ride_fall_tests
--- measures .38 s at 8 m/s, .42 at 4 and 1.17 at 1, where the wheel turns them at 1.37 rad/s. A stroke of A let go
--- (cranks) is finished forward when the wheel turns the rest of it within CRANK_WAIT (s), a whole half turn from
--- about 1.15 m/s up.
+-- them back with it (cranks). Not finishing a stroke (below), from any phase they are within 5 degrees of level in at
+-- most a tenth of a second and a quarter turn at the slower of CRANK_SETTLE_RATE and the wheel's pace: letting go
+-- at 24 phases, ride_fall_tests measures .38 s at 8 m/s, .42 at 4 and 1.17 at 1, where the wheel turns them at
+-- 1.37 rad/s. A stroke of A let go (cranks) is finished forward when the wheel turns the rest of it within
+-- CRANK_WAIT (s), a whole half turn from about 1.15 m/s up, so a tap from level takes longer than that bound.
 local CRANK_WAIT = 2
 -- A rear wheel turning the cranks back slower than this (rad/s, 2 degrees a second, the bike rolling back under about
 -- 2.5 cm/s) has stopped to the eye: a bike settling after a stop creeps back at .007 to .05 rad/s of the rear wheel,

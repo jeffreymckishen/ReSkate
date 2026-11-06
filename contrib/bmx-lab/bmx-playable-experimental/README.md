@@ -67,9 +67,11 @@ while the bike gets ready, the HUD says to step off or stand still, and the next
   left or right, LB or RB and left or right for a one hander, LT and RT together and left or right for a tailwhip,
   LT or RT and left or right for a one footer. Let the stick come back to the middle before the next one, and finish
   it before landing. A full hop has room for one trick started within about a third of a second of the hop: a
-  barspin or a tailwhip takes about 0.4 s with the catch, and the stick has to be back in the middle within about a
-  third of a second of starting it, or the bike lands mid-turn. A one hander or one footer can be held over for
-  about 0.3 s and still come back before the wheels touch; held longer, the wheels touch with the hand or foot off.
+  barspin or a tailwhip turns all the way round in about a third of a second whatever the stick does, about 0.4 s
+  with the catch: the stick has to be back in the middle within about a tenth of a second of the turn ending, or the
+  catch is missed and the bike lands with the hands or feet off. Started later in the hop, it lands mid-turn. A one
+  hander or one footer can be held over for about 0.3 s and still come back before the wheels touch; held longer,
+  the wheels touch with the hand or foot off.
 - F8, or hold LB + RB and click R3, goes back to the skateboard.
 - From the skateboard, hold LB, then press A to ride again. Stand still and let go while the rider steps off.
 
@@ -98,8 +100,9 @@ offline the game does not keep it, so set it again each launch.
   than that, and a coast slows by itself.
 - Whenever the rider stops pedalling, coasting, at top speed or in a manual, the cranks come round to the nearer
   level, feet at 3 and 9 o'clock: back, as a rider backpedals, never more than a quarter turn, or forward with the
-  back wheel. From anywhere they are within 5 degrees of level in about 0.4 s at most from 4 m/s up, and in 1.2 s at
-  1 m/s, where the back wheel brings them forward slowly. From about 1.15 m/s up, a tap of A from level cranks, or
+  back wheel. Let go after pedalling, from any phase, they are within 5 degrees of level in about 0.4 s from 4 m/s up,
+  and in 1.2 s at 1 m/s, where the back wheel brings them forward slowly; a tap, which first finishes its half stroke,
+  takes longer. From about 1.15 m/s up, a tap of A from level cranks, or
   while they go to a level, finishes its half stroke forward with the back wheel, about 1.3 s tapped at 1.8 m/s and
   half a second from about 4.5 m/s up, and a tap that carries them past a level goes on to the next one, so quick
   taps turn the cranks on forward and never back: taps 1 to 6 steps long, every 8 to 45 steps, from 2 to 7 m/s

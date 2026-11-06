@@ -31,6 +31,13 @@ Feed& feed() {
     static auto* value = new Feed;
     return *value;
 }
+// The SDK's own models (own): read by tap on the game's threads, so atomics rather than a lock.
+std::array<std::atomic<std::uint64_t>, most_owned> owned_entries{};
+bool owned(std::uint64_t entry) noexcept {
+    for (const auto& slot : owned_entries)
+        if (entry && slot.load(std::memory_order_acquire) == entry) return true;
+    return false;
+}
 // Readable text at `address`: ASCII, or UTF-16 with every other byte zero; empty when not.
 std::string text_at(std::uintptr_t address) noexcept {
     std::array<unsigned char, 96> raw{};
@@ -102,6 +109,7 @@ void tap(std::uintptr_t, std::uint64_t handle, std::uintptr_t type, const void* 
         member != trick_board_spin_member && member != trick_stance_member && member != trick_late_member && member != trick_darkflip_member &&
         member != trick_darkcatch_member)
         return;
+    if (owned(handle >> 16)) return; // a model of the SDK's own, such as a plugin's score line row
     static const auto string_type = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)) + addr::engine::string_type; // the UI model's string type
     if (member == trick_name_member && type != string_type) return;
     try {
@@ -156,6 +164,11 @@ void tap(std::uintptr_t, std::uint64_t handle, std::uintptr_t type, const void* 
         }
         say_left_out(said);
     } catch (...) {}
+}
+
+void own(const std::vector<std::uint64_t>& entries) noexcept {
+    for (std::size_t slot = 0; slot < owned_entries.size(); ++slot)
+        owned_entries[slot].store(slot < entries.size() ? entries[slot] : 0, std::memory_order_release);
 }
 
 void know(const std::vector<std::uint64_t>& entries) noexcept {

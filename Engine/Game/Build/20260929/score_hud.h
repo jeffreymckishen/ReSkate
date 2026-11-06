@@ -64,4 +64,49 @@ inline constexpr std::string_view slam_icon = "UI/Textures/Icons/Scoring/img_Ico
 // ---- LabelViewModel (104 bytes): its Text (kind 7, a char*) @+0x0.
 inline constexpr std::uint32_t label_schema = 0xbfe23948;
 inline constexpr std::uint32_t label_text = 0x4d8e01b9;
+
+// ---- What a plugin's own line (Extension/UI/score_line_hud.cpp) writes: a ScoringHUDViewModel of
+// the SDK's own, never the game's, shown by an item of ours in HudViewModel's DpadScoringStack.
+// Mapped on foot in scoremap1 (P1: the score probe's change log, its UI model dumps and the moment
+// screenshots) and checked by drawing one in the scorep2 launch on 2026-11-06 (P2: probe DLL B815AA96,
+// screenshots p2-a_1-t007 and p2-a_8-t014 showed "1234" and the timer arc at 0.75 from our model).
+inline constexpr std::uint16_t score_view_size = 896; // ScoringHUDViewModel's size, checked before one is made
+// The widgets: the score HUD (the Content of the game's own DpadScoringStack item, P1 "stack 1 item 1")
+// and a trick list row (the Content of each trick list item, P1's dumps).
+inline constexpr std::string_view score_widget = "UI/Features/HUD/Scoring/ScoringHUD_Widget";
+inline constexpr std::string_view trick_row_widget = "UI/Features/HUD/Scoring/TrickHistoryStackItem";
+inline constexpr unsigned trick_rows_drawn = 3; // of most_trick_rows, the widget drew the newest 3 in every screenshot
+// Label @0x108: the big number beside the ring, the current action's points as text ("5", "425"). The
+// game sets it at an action's start and never clears it; the widget hides it in the LINE summary.
+inline constexpr std::uint32_t action_points = 0x7d1e237c;
+// Label @0x170: the ring's number ("1.5", "2"; "0" at rest draws an empty dark ring). It changed on
+// the same tick as Multiplier every time, so both are written; which of the two the ring draws is not
+// known. P2's ring stayed empty with both written and ring_on below left false.
+inline constexpr std::uint32_t multiplier_text = 0x9acb7cf0;
+// f32 @0x2a4: the number of "LINE: N", shown exactly while it is above 0. The game kept it 2.0 s after
+// each line. The widget drives it itself: in P2 it wrote ours from 4321 to 0 33 ms after we set it with
+// LineScore 0, so a line of ours writes LineScore and leaves this to the widget.
+inline constexpr std::uint32_t line_shown = 0x9a6daa54;
+// f32 @0x364: the ring's orange fill, the action's points over the tier's (exact for 13 actions in
+// P1: 5 gave 0.0125, 236 gave 0.59); 400 before a line's first tier, 800 after it.
+inline constexpr std::uint32_t action_fill = 0x739c95e8;
+inline constexpr float action_fill_points = 400;
+// bools @0x251 and @0x252: the game set the first with a line's first LineScore bank and the second
+// with its first multiplier (the tick of Multiplier 1.5 and LineTimer 1), and cleared both at the
+// line's end (P1, P2). P2's ring stayed empty with the second left false, so it is taken to be the
+// ring's; that setting it draws ours is not yet seen. The first rises with the LINE label in a line,
+// but the LINE summary after a line showed with it false ("LINE: 937", P1 m5_4), so a closed line of
+// ours sets it false as the game does.
+inline constexpr std::uint32_t line_on = 0xa0bfc5b4, ring_on = 0x2a7d50b4;
+// Ref @0x290 {ScoringDataResource/ActiveScoringData, the game's live scoring model}: never copied into
+// a model of ours (its create gives {0, 0}).
+inline constexpr std::uint32_t scoring_data = 0xcdffb552;
+// A second stack @0x50, always empty in play; emptied in ours with the trick list after a copy.
+inline constexpr std::uint32_t second_stack = 0x1a93e458;
+// ScoringWidgetExtraInfoStyle (hud_corner.h's extra_info_style): 0 shows the LINE label (0 all
+// through both mapped launches).
+inline constexpr std::int32_t extra_info_line_score = 0;
+// A row model's handle back into the score model that holds it (P1: the game root's handle with 1,
+// its trick list). A row of ours keeps what its create gives, never the game's.
+inline constexpr std::uint32_t row_back = 0xb99b6691;
 }

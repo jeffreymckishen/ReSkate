@@ -9,6 +9,8 @@
 #include "Engine/Game/Build/20260929/reference_lists.h"
 #include "Engine/Game/Build/20260929/score_hud.h"
 #include "Extension/UI/NativeMenu/native_menu_data.h"
+#include "Extension/UI/score_line.h"
+#include "Extension/UI/score_line_hud.h"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -35,8 +37,8 @@ struct Watched {
     std::uint32_t hash;
     bool label;
 };
-enum : std::size_t { line_score, multiplier, action_active, sequence_header, sequence_descriptor, sequence_state, line_timer };
-constexpr std::array<Watched, 7> watched{{
+enum : std::size_t { line_score, multiplier, action_active, sequence_header, sequence_descriptor, sequence_state, line_timer, line_shown };
+constexpr std::array<Watched, 8> watched{{
     {"LineScore", score::line_score, false},
     {"Multiplier", score::multiplier, false},
     {"ActionActive", score::action_active, false},
@@ -44,6 +46,7 @@ constexpr std::array<Watched, 7> watched{{
     {"SequenceDescriptor", score::sequence_descriptor, true},
     {"SequenceState", corner::sequence_state, false},
     {"LineTimer", score::line_timer, false},
+    {"LINE", score::line_shown, false},
 }};
 constexpr std::size_t value_bytes = 16; // read per field
 
@@ -190,9 +193,11 @@ bool bind_model(Hud& h, const menu_data::Context& context) {
     const auto now = Clock::now();
     if (now < h.next_look) return false;
     h.next_look = now + std::chrono::seconds(1);
+    // The game's own root, never a plugin's line (score_line_hud.h makes one of the same type).
     const auto roots = context.roots({corner::score_view_schema});
-    if (roots.empty()) return false;
-    const auto model = roots.front().model;
+    const auto* root = score_line::pick_game_root(roots, score_line::own_model());
+    if (!root) return false;
+    const auto model = root->model;
     std::string layout;
     bool any = false;
     for (std::size_t n = 0; n < watched.size(); ++n) {
@@ -367,6 +372,7 @@ std::optional<ScoreHud> read_score_hud(std::uintptr_t image_base) noexcept {
     result.descriptor = text_of(f[sequence_descriptor]);
     result.sequence_state = enum_of(f[sequence_state]);
     result.line_timer = score_of(f[line_timer]);
+    result.line_shown = score_of(f[line_shown]);
     return result;
 }
 

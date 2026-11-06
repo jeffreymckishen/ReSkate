@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -24,4 +25,9 @@ void tap(std::uintptr_t manager, std::uint64_t handle, std::uintptr_t type, cons
 // models it has just seen in the game's own trick list, whose names and spins may go out
 // (trick_feed_gate.h).
 void know(const std::vector<std::uint64_t>& entries) noexcept;
+// The SDK's own models of the trick list's types (a plugin's score line, Extension/UI/score_line_hud.h),
+// by entry: no write to them is ever a trick's, whoever writes it. At most most_owned; each call
+// replaces the last set. Client thread.
+inline constexpr std::size_t most_owned = 8;
+void own(const std::vector<std::uint64_t>& entries) noexcept;
 } // namespace dingosdk::tricks::feed

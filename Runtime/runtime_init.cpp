@@ -58,6 +58,7 @@
 #include "Extension/Multiplayer/Hud/custom_nametags.h"
 #include "Extension/Profile/local_profile.h"
 #include "Extension/Profile/local_profile_runtime.h"
+#include "Extension/Progression/challenge_attempts.h"
 #include "Extension/Progression/fixed_stop_entitlement_provider.h"
 #include "Extension/Progression/mission_progression_override.h"
 #include "Extension/Progression/neighborhood_unlock_override.h"
@@ -563,6 +564,7 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
                 dingosdk::effects::before_level_transition(next);
                 dingosdk::skater_events::before_level_transition(next);
                 dingosdk::local_profile_before_level_transition(next);
+                dingosdk::profile_runtime::challenge_attempts_before_level_transition(next);
                 dingosdk::world_entities::before_level_transition(base, next);
                 dingosdk::placement_physics::before_level_transition(next);
                 dingosdk::multiplayer::native_menu_before_level_transition(base, next);

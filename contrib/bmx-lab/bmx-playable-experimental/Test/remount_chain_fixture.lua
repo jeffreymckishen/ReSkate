@@ -503,7 +503,10 @@ function M.new(options)
     end
     w.R=R
     w.make_entry=function()
-        return Entry.new(R,Runtime,Survey,{admitted=true,slot=0,experimental_two_cycle=true,session_renewable=true,auto_return=true})
+        local o={admitted=true,slot=0,experimental_two_cycle=true,session_renewable=true,auto_return=true}
+        -- A case may add Entry options, as main.lua adds its settings_key.
+        for k,v in pairs(options.entry or {}) do o[k]=v end
+        return Entry.new(R,Runtime,Survey,o)
     end
     if options.storage then w.records=options.storage end
     w.entry=w.make_entry()

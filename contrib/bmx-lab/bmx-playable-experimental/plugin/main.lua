@@ -6,13 +6,19 @@ local Runtime=require("./bike_runtime")
 local Survey=require("./ride_r1_record")
 local Entry=require("./bmx_playable_entry")
 local ScoreHUD=require("./score_hud")
-local bike=Entry.new(reskate,Runtime,Survey,{admitted=EXPERIMENTAL_ADMITTED,slot=SLOT,experimental_two_cycle=true,session_renewable=SESSION_RENEWABLE,auto_return=true})
+local YButton=require("./y_button")
+-- The one storage key that outlives a launch: whether bike mode is on. Entry keeps it at load and clears the rest.
+local SETTINGS_KEY="bmx_settings_v1"
+local bike=Entry.new(reskate,Runtime,Survey,{admitted=EXPERIMENTAL_ADMITTED,slot=SLOT,experimental_two_cycle=true,session_renewable=SESSION_RENEWABLE,auto_return=true,settings_key=SETTINGS_KEY})
+-- Bike mode: Y gets on the bike and off it. Made after Entry, whose load has already cleared a malformed setting.
+local ybutton=YButton.new(reskate,bike,SETTINGS_KEY)
 local unloaded=false
 local score_lines
 local function score_snapshot()
     local view,issue,landing=bike:score_view()
     local lines=ScoreHUD.lines(view,issue,landing)
-    local help=bike.help_line and bike:help_line()
+    -- A Y press that did not bring the bike says why for a few seconds, in place of Entry's line.
+    local help=ybutton:notice() or bike.help_line and bike:help_line()
     if not help then return lines end
     -- Before the first ride there is no score to show, and the help is all the panel has: getting ready, checking
     -- for room, or why a Mount did not start.
@@ -53,7 +59,12 @@ reskate.input.bind("bmx_recover","F9")
 reskate.input.bind("bmx_recover_pad","Pad.LB+Pad.RB+Pad.L3")
 reskate.input.bind("bmx_return_pad","Pad.LB+Pad.RB+Pad.R3")
 reskate.input.bind("bmx_mount_pad","Pad.LB+Pad.A")
+-- Does nothing until bike mode is switched on.
+reskate.input.bind("bmx_y","Pad.Y")
 reskate.on("action",function(name)
+    if name=="bmx_y" then ybutton:press();return end
+    -- The others ask Entry for a Return, Recover or Mount, and Y is given back to the game first (y_button.lua).
+    ybutton:give_back()
     if name=="bmx_return" or name=="bmx_return_pad" then bike:return_to_skateboard()
     elseif (name=="bmx_recover" or name=="bmx_recover_pad") and not unloaded then
         local s=bike:status()
@@ -62,6 +73,7 @@ reskate.on("action",function(name)
 end)
 reskate.on("tick",function(dt_ms)
     bike:step(dt_ms)
+    ybutton:step()
     -- Optional score formatting cannot interrupt the riding owner.
     local ok,text=pcall(score_snapshot)
     score_lines=ok and text or nil
@@ -70,6 +82,15 @@ reskate.on("draw",function(d) pcall(draw_score_lines,d) end)
 reskate.menu.page("BMX",function(ui)
     local s=bike:status()
     if not s.admitted then ui:note("This build is inactive; Mount does nothing.") end
+    local mode=ui:toggle("bmx_bike_mode","Switch to bike: Y gets on and off",ybutton:enabled(),
+        "On foot or on the skateboard, standing still, Y gets on the bike, and riding, Y goes back to the skateboard."
+        .." LB + A, F8 and LB + RB + R3 still work. Kept for later launches until switched off.")
+    if mode~=ybutton:enabled() then ybutton:set_enabled(mode) end
+    if ybutton:enabled() then
+        ui:note("Bike mode: standing still on foot or on the skateboard, press Y and let go of the controls while the bike gets ready. Riding, Y goes back to the skateboard.")
+        ui:note("While it is on, Y is for the bike: from the skateboard the rider steps off for it, and on foot after the first ride the skateboard comes out first. When no ride can start, Y does what it does in the game. LB + A, F8 and LB + RB + R3 still work.")
+        ui:note("A PlayStation controller without Steam Input can still pass Y to the game. The HUD then says so, and LB + A mounts.")
+    end
     ui:note("First ride of a launch: on foot on flat ground with a little room around you, hold LB, then press A, and let go of the controls while the bike gets ready.")
     ui:note("A pedals, B brakes, the left stick steers, clicking the right stick hops.")
     ui:note("F8 or LB + RB + R3 goes back to the skateboard. A ride that ends any other way goes back on its own, and a fall gets you back on the bike.")
@@ -77,8 +98,8 @@ reskate.menu.page("BMX",function(ui)
     -- Only a ReSkate that cannot reuse the parked bike limits the mounts of a launch.
     if s.body_reuse==false then ui:note("This ReSkate allows "..tostring(s.attempt_limit).." mounts a game launch; restart the game for more.") end
     ui:note("Mounting and going back to the skateboard can be changed in Binds.")
-    if ui:button("bmx_play_mount","Mount bike") then bike:mount() end
-    if ui:button("bmx_play_return","Return to skateboard") then bike:return_to_skateboard() end
+    if ui:button("bmx_play_mount","Mount bike") then ybutton:give_back();bike:mount() end
+    if ui:button("bmx_play_return","Return to skateboard") then ybutton:give_back();bike:return_to_skateboard() end
     if s.fall_reason then ui:warn("Fallen: "..s.fall_reason) end
     if s.last_stop then ui:info("Last ride ended",s.last_stop) end
     if s.phase=="blocked" or s.phase=="stopped" then ui:note(s.lifecycle_detail) end
@@ -86,4 +107,4 @@ reskate.menu.page("BMX",function(ui)
     ui:note(s.detail)
     ui:info("Mounts used",tostring(s.attempts_used)..(s.body_reuse==false and " of "..tostring(s.attempt_limit) or ""))
 end)
-reskate.on("unload",function() unloaded=true;score_lines=nil;bike:unload() end)
+reskate.on("unload",function() unloaded=true;score_lines=nil;ybutton:unload();bike:unload() end)

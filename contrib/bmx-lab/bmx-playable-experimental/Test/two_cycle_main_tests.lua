@@ -1,14 +1,17 @@
 local Main=require("./playable_main_fixture")
 local ScoreHUD=require("./score_hud")
+local YButton=require("./y_button")
 local T={}
 function T.run()
     local n=0;local function check(v,why)n+=1;assert(v,why)end
-    local R={menu={},input={}};local count=0
+    local R={menu={},input={}};local count,count_binds=0,0
     function R.input.bind(name,key)
         check(name=="bmx_return" and key=="F8" or name=="bmx_recover" and key=="F9"
             or name=="bmx_recover_pad" and key=="Pad.LB+Pad.RB+Pad.L3"
             or name=="bmx_return_pad" and key=="Pad.LB+Pad.RB+Pad.R3"
-            or name=="bmx_mount_pad" and key=="Pad.LB+Pad.A","exact remappable Mount/Return/Recover defaults")
+            or name=="bmx_mount_pad" and key=="Pad.LB+Pad.A"
+            or name=="bmx_y" and key=="Pad.Y","exact remappable Mount/Return/Recover defaults and bike mode's Y")
+        count_binds+=1
         return true
     end
     local object={step=function()end,unload=function()end,status=function()return {phase="idle",detail="source closed",admitted=false,
@@ -23,9 +26,10 @@ function T.run()
             "only this closed experimental Main selects the private bounded manager")
         return object
     end}
-    local modules={["./bike_runtime"]=Runtime,["./ride_r1_record"]=Survey,["./bmx_playable_entry"]=E,["./score_hud"]=ScoreHUD}
+    local modules={["./bike_runtime"]=Runtime,["./ride_r1_record"]=Survey,["./bmx_playable_entry"]=E,["./score_hud"]=ScoreHUD,["./y_button"]=YButton}
     Main(R,function(name)check(modules[name]~=nil,"no new SDK or module dependency");return modules[name]end)
     check(count==1,"one inert manager is constructed once")
+    check(count_binds==6,"exactly six binds")
     return {cases=1,assertions=n,native_authority=false,constructed=true}
 end
 return T

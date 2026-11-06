@@ -13,9 +13,11 @@ function Tests.run()
         -- This fixture starts from the ACTUAL pinned facade, not invented fields.
         return Runtime.new({}, {qualification_only=true}):status()
     end
-    local function fixture()
+    -- options.settings_key is main.lua's bike mode key, and options.keys and options.values what storage holds at load.
+    local function fixture(options)
+        options=options or {}
         local f={now=0,position=vector.create(0,.5,0),heading=0,slope=0,rough=true,overlay=false,
-            focused=true,stock=504,keys={},latest=idle(),news=0,mounts=0,stops=0,stock_calls=0,
+            focused=true,stock=504,keys=options.keys or {},values=options.values or {},latest=idle(),news=0,mounts=0,stops=0,stock_calls=0,
             prepares=0,probes=0,floor_probes=0,unloads=0,logs={}}
         local R={time={},input={},menu={},skater={},storage={},world={physics={}}}
         function R.time.now() return f.now end
@@ -24,7 +26,13 @@ function Tests.run()
         function R.menu.game()return{open=false}end
         function R.skater.get()return{position=f.position,heading=f.heading}end
         function R.skater.telemetry()return{watch={state=f.stock}}end
-        function R.storage.keys()if f.on_keys then return f.on_keys() end;return f.keys end
+        function R.storage.keys()if f.on_keys then return f.on_keys() end;return table.clone(f.keys) end
+        function R.storage.get(key) return copy(f.values[key]) end
+        function R.storage.set(key,value)
+            f.values[key]=copy(value)
+            local at=table.find(f.keys,key)
+            if value==nil and at then table.remove(f.keys,at) elseif value~=nil and not at then f.keys[#f.keys+1]=key end
+        end
         function R.world.physics.prepare()
             f.prepares+=1;if f.on_prepare then return f.on_prepare() end;return true
         end
@@ -64,7 +72,7 @@ function Tests.run()
             return owner
         end
         Fake.new_experimental_two_cycle=Fake.new
-        f.entry=Entry.new(R,Fake,Survey,{admitted=true,slot=0,experimental_two_cycle=true})
+        f.entry=Entry.new(R,Fake,Survey,{admitted=true,slot=0,experimental_two_cycle=true,settings_key=options.settings_key})
         function f.tick(n)for _=1,n or 1 do f.now+=16;f.entry:step(16)end end
         function f.await()
             for _=1,200 do
@@ -315,6 +323,39 @@ function Tests.run()
         -- A refusal that can be retried keeps its own line.
         local t=fixture();t.refuse();t.now+=5000;t.tick()
         check(t.entry:help_line()=="No room here or too steep: move, then hold LB and press A.","a terrain refusal still says to move")
+    end)
+    case("24 the bike mode setting is the one key a first ride's storage proof accepts",function()
+        local KEY="bmx_settings_v1"
+        local function kept(value) return fixture({settings_key=KEY,keys={KEY},values={[KEY]=value}}) end
+        local f=kept({schema=1,bike_mode=true})
+        check(#f.keys==1 and f.entry:status().phase=="idle","kept at load")
+        check(f.entry:next_start_state()==504,"the first ride starts on foot")
+        f.refuse()
+        check(f.entry:next_start_state()==504,"and its terrain retry does too")
+        f.stock=100;check(f.entry:next_start_state()==504,"from the board as well");f.stock=504
+        f.position=vector.create(20,.5,0);f.rough=false
+        check(f.entry:mount(),"the retry goes with the setting there")
+        local s=f.await()
+        check(s.mount_requested and f.mounts==1 and f.entry:next_start_state()==nil,"one mount, and no other can start")
+        kept({schema=1,bike_mode=false}).refuse()
+        -- Anything else in storage still refuses: beside the setting or in place of it, or a setting not main.lua's.
+        local changes={function(x) x.keys[#x.keys+1]="retained_lifecycle" end,function(x) x.keys={"retained_lifecycle"} end,
+            function(x) x.values[KEY]={schema=1,bike_mode="on"} end,function(x) x.values[KEY]=nil end}
+        for i,change in ipairs(changes) do
+            local g=kept({schema=1,bike_mode=true});g.refuse();change(g)
+            check(not g.entry:mount() and g.entry:status().phase=="blocked" and g.mounts==0,"the retry refuses: "..i)
+            check(g.entry:next_start_state()==nil,"and says no Mount can start: "..i)
+            local h=kept({schema=1,bike_mode=true});change(h)
+            check(h.entry:mount(),"a first Mount: "..i)
+            check(h.await().phase=="blocked" and h.mounts==0,"whose terrain refusal blocks: "..i)
+        end
+        -- Without the option, or malformed, the key is cleared at load, and the refusal finds storage empty.
+        local none=fixture({keys={KEY},values={[KEY]={schema=1,bike_mode=true}}})
+        check(#none.keys==0 and none.values[KEY]==nil,"cleared without the option")
+        none.refuse()
+        local bad=kept({schema=1,bike_mode="on"})
+        check(#bad.keys==0,"a malformed setting is cleared")
+        bad.refuse()
     end)
     return{cases=cases,assertions=assertions}
 end

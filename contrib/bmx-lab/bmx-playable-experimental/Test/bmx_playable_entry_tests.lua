@@ -16,7 +16,8 @@ function Tests.run()
         options=options or {}
         local f={now=0,slot=0,focused=true,gameplay=true,overlay=true,game_menu=false,stock=504,
             position=vector.create(0,.5,0),heading=0,slope=0,new_calls=0,steps=0,mounts=0,stops=0,toggles=0,
-            unloads=0,prepares=0,probes=0,probe_tick=0,probe_peak=0,events={},keys=options.keys or {},set_raise=options.set_raise,latest=cleaned()}
+            unloads=0,prepares=0,probes=0,probe_tick=0,probe_peak=0,events={},keys=options.keys or {},values=options.values or {},
+            set_raise=options.set_raise,latest=cleaned()}
         f.latest.phase="idle";f.latest.stop_latched=false
         local R={time={},input={},menu={},skater={},storage={},world={physics={}}}
         function R.time.now() return f.now end
@@ -33,10 +34,14 @@ function Tests.run()
             if f.on_telemetry then f.on_telemetry() end
             return {watch={state=f.stock}}
         end
-        function R.storage.keys() if f.keys_raise then error("keys unavailable") end;return f.keys end
+        -- A new list each call, as the SDK's is, so clearing keys while going through them misses none.
+        function R.storage.keys() if f.keys_raise then error("keys unavailable") end;return table.clone(f.keys) end
+        function R.storage.get(key) return copy(f.values[key]) end
         function R.storage.set(key,value)
             if f.set_raise then error("set unavailable") end
-            if value==nil then table.remove(f.keys,table.find(f.keys,key)) end
+            f.values[key]=copy(value)
+            local at=table.find(f.keys,key)
+            if value==nil and at then table.remove(f.keys,at) end
         end
         function R.world.physics.prepare()
             f.prepares+=1;f.events[#f.events+1]="prepare"
@@ -88,7 +93,7 @@ function Tests.run()
             return owner
         end
         f.R=R;f.owner=owner
-        f.entry=Entry.new(R,Runtime,Survey,{admitted=options.admitted~=false,slot=0})
+        f.entry=Entry.new(R,Runtime,Survey,{admitted=options.admitted~=false,slot=0,settings_key=options.settings_key})
         function f.tick(count)
             for _=1,count or 1 do f.now+=16;f.probe_tick=0;f.entry:step(16) end
         end
@@ -566,7 +571,40 @@ function Tests.run()
         returning(nn,"800 ms past 5.1 s is not yet a second")
         at(nn,6100);finished(nn,"a second from 5.1 s after the send ends it")
     end)
-    check(cases==23,"exactly23 focused entry groups authored")
+    case("24 the bike mode setting is the one key a load keeps, and the lines name the controls main.lua picks",function()
+        local KEY="bmx_settings_v1"
+        local good={schema=1,bike_mode=true}
+        local f=fixture({settings_key=KEY,keys={"bmx_bike_lifecycle_v1",KEY,"bmx_equipment_terminal_v1"},values={[KEY]=copy(good)}})
+        check(#f.keys==1 and f.keys[1]==KEY and f.values[KEY].bike_mode==true,"the setting is kept and every other key cleared")
+        check(f.entry:status().phase=="idle","and Mount is open")
+        for i,bad in ipairs({{schema=2,bike_mode=true},{schema=1,bike_mode="on"},{schema=1,bike_mode=true,more=1},{schema=1},"on",true}) do
+            local g=fixture({settings_key=KEY,keys={KEY},values={[KEY]=bad}})
+            check(#g.keys==0 and g.values[KEY]==nil and g.entry:status().phase=="idle","a malformed setting is cleared: "..i)
+        end
+        local off=fixture({settings_key=KEY,keys={KEY},values={[KEY]={schema=1,bike_mode=false}}})
+        check(#off.keys==1,"off is a setting too, and kept")
+        check(#fixture({keys={KEY},values={[KEY]=copy(good)}}).keys==0,"without the option it is cleared like any other key")
+        check(#fixture({settings_key="bmx settings",keys={"bmx settings"},values={["bmx settings"]=copy(good)}}).keys==0,
+            "a key name that is not one plain word is no option")
+        -- The state the next Mount starts from, which y_button.lua asks every tick.
+        check(f.entry:next_start_state()==504,"the first ride starts on foot")
+        check(fixture({admitted=false}).entry:next_start_state()==nil,"nothing starts when closed")
+        check(f.entry:set_controls("y") and f.entry:set_controls("lb_a") and not f.entry:set_controls("x")
+            and not f.entry:set_controls(nil),"two kinds of controls")
+        f.overlay=false;f.stock=100
+        local mounted,why=f.entry:mount()
+        check(not mounted and why=="Step off your skateboard with Y, then hold LB and press A.","LB + A named by default: "..tostring(why))
+        check(f.entry:set_controls("y"),"bike mode")
+        mounted,why=f.entry:mount()
+        check(not mounted and why=="Press Y to get on the bike." and f.entry:help_line()==why,"names Y: "..tostring(why))
+        check(f.entry:next_start_state()==504,"a Mount refused for where the rider is still starts on foot")
+        f.stock=504
+        check(f.entry:mount(),"on foot it goes")
+        check(f.entry:next_start_state()==nil,"and while it is busy no other can start")
+        f.await_mount();f.tick()
+        check(f.entry:status().phase=="riding" and f.entry:next_start_state()==nil,"nor while riding")
+    end)
+    check(cases==24,"exactly24 focused entry groups authored")
     return {cases=cases,assertions=assertions,game_evidence=false,native_actions=0}
 end
 return table.freeze(Tests)

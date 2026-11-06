@@ -11,6 +11,12 @@ local function call(fn,...)
     if type(fn)~="function" then return table.pack(false,"required method unavailable") end
     return table.pack(pcall(fn,...))
 end
+-- What main.lua keeps under the settings key (y_button.lua): schema 1 and whether bike mode is on, and nothing else.
+local function settings_valid(v)
+    if not plain(v) or v.schema~=1 or type(v.bike_mode)~="boolean" then return false end
+    for k in pairs(v) do if k~="schema" and k~="bike_mode" then return false end end
+    return true
+end
 local function clean(s)
     return plain(s) and s.phase=="done" and s.bike_cleanup_complete==true
         and s.bike_authority==false and s.cleanup_pending==false and s.cleanup_unknown==false
@@ -59,6 +65,10 @@ function Entry.new(R,Runtime,Survey,options)
     local two_cycle=type(options)=="table" and options.experimental_two_cycle==true
     local auto_return=type(options)=="table" and options.auto_return==true
     local session_renewable=type(options)=="table" and options.session_renewable==true
+    -- The one storage key a load keeps, main.lua's bike mode switch: fresh_namespace clears every other key, and the
+    -- first ride's proof (preflight_clear) accepts it as the only one. Core and the equipment owner never write it.
+    local settings_key=type(options)=="table" and type(options.settings_key)=="string" and #options.settings_key<=64
+        and string.match(options.settings_key,"^[%w_]+$") and options.settings_key or nil
     local made=call(two_cycle and Runtime.new_experimental_two_cycle or Runtime.new,R,{qualification_only=true,session_renewable=session_renewable})
     assert(made[1] and made.n==2 and type(made[2])=="table","one inert lifecycle owner required")
     local owner=made[2] -- Constructed exactly once; never replaced or rearmed here.
@@ -101,15 +111,40 @@ function Entry.new(R,Runtime,Survey,options)
         if reason then trace(reason);trace("told: "..message) else trace(message) end
         notice,notice_until=text(message,""),(last_clock or 0)+NOTICE_MS
     end
-    -- What a ride that ended by itself tells the rider. Any end other than a fall is the same to them: the bike
-    -- stopped, and LB + A rides again once they are back on the board. With auto_return the ride's end starts a Return
-    -- on the same tick, and LB + A is refused until that reaches the board, so the notice says where the rider is going
-    -- instead, as a fall with no mount left does.
-    local RIDE_STOPPED=auto_return and "The ride stopped. Going back to the skateboard."
-        or "The ride stopped. Hold LB and press A to ride again."
-    local STEP_OFF="Step off your skateboard with Y, then hold LB and press A."
-    -- A first ride's survey that the rider moved away from before the bike was asked for.
-    local MOVED="Stand still while the bike gets ready. Hold LB and press A again."
+    -- What the rider is told to press, for the controls main.lua's bike mode picks (set_controls). In bike mode Y gets
+    -- on the bike from the board or on foot (y_button.lua), so these lines name only Y, though LB + A still works.
+    -- ride_stopped is what a ride that ended by itself tells the rider: any end other than a fall is the same to them,
+    -- the bike stopped and they can ride again once back on the board. With auto_return the ride's end starts a Return
+    -- on the same tick, and a Mount is refused until that reaches the board, so the notice says where the rider is
+    -- going instead (RIDE_RETURNING), as a fall with no mount left does. moved is a first ride's survey that the rider
+    -- moved away from before the bike was asked for.
+    local WORDS={
+        lb_a={ride_stopped="The ride stopped. Hold LB and press A to ride again.",
+            step_off="Step off your skateboard with Y, then hold LB and press A.",
+            moved="Stand still while the bike gets ready. Hold LB and press A again.",
+            off_board="Press Y for your skateboard, then hold LB and press A.",
+            board="Get on your skateboard, then hold LB and press A.",
+            ride_again="Hold LB and press A to ride again.",
+            let_go="Let go of every control for a moment, then hold LB and press A.",
+            close_menus="Close menus and let go of the controls, then hold LB and press A.",
+            help={fallen="The ride ended. Hold LB and press A to ride again.",
+                preflight_refused="No room here or too steep: move, then hold LB and press A.",
+                blocked="That didn't finish. Get on your skateboard, then hold LB and press A.",
+                spent="That didn't finish. Get on your skateboard, then hold LB and press A."}},
+        y={ride_stopped="The ride stopped. Press Y to ride again.",
+            step_off="Press Y to get on the bike.",
+            moved="Stand still while the bike gets ready. Press Y again.",
+            off_board="Press Y to ride again.",
+            board="Press Y to ride again.",
+            ride_again="Press Y to ride again.",
+            let_go="Let go of every control for a moment, then press Y.",
+            close_menus="Close menus and let go of the controls, then press Y.",
+            help={fallen="The ride ended. Press Y to ride again.",
+                preflight_refused="No room here or too steep: move, then press Y.",
+                blocked="That didn't finish. Press Y to ride again.",
+                spent="That didn't finish. Press Y to ride again."}}}
+    local words=WORDS.lb_a
+    local RIDE_RETURNING="The ride stopped. Going back to the skateboard."
     local stock_retries,stock_retry_at=0,nil
     local second_prepare_pending,second_terrain_pending=false,false
     local second_admitted_at,second_quiet_at,second_quiet_last,second_quiet_samples=nil,nil,nil,0
@@ -133,11 +168,11 @@ function Entry.new(R,Runtime,Survey,options)
     -- Whether that last sample read the rider standing on foot (504, not ragdolled), who gets back on the board only
     -- with a Y, rather than one the game still has down; and since when the samples have read them standing.
     local second_off_standing,second_off_since=false,nil
-    -- What the HUD says while blocked when the failure knows more than the general line does.
+    -- What the HUD says while blocked when the failure knows more than the general line does. Both are keys of words,
+    -- so a line still up says the controls picked since.
     local blocked_help=nil
     -- What the HUD says while a first ride's Mount waits on where the rider is, in place of the terrain line.
     local refused_help=nil
-    local OFF_BOARD="Press Y for your skateboard, then hold LB and press A."
     local stopped,cancel_sent,cancelled,unloaded,ticking=false,false,false,false,false
     local generation,latest,known=0,nil,false
     local prep_at,prep_last,prep_calls,survey=nil,nil,0,nil
@@ -169,6 +204,11 @@ function Entry.new(R,Runtime,Survey,options)
         return plain(b) and b.creation_refusal or nil
     end
     local function no_body() local class=refusal();return class and NO_BODY[class] or nil end
+    -- Whether the settings key holds the setting main.lua writes, read now.
+    local function settings_kept()
+        local stored=call(R.storage and R.storage.get,settings_key)
+        return stored[1] and stored.n==2 and settings_valid(stored[2])
+    end
     local function preflight_clear()
         if attempts_used>=2 and two_cycle then
             if not used or mount_issued or return_pending or stock_attempted or second_prepare_pending
@@ -187,7 +227,14 @@ function Entry.new(R,Runtime,Survey,options)
         local out=call(owner.status,owner)
         if not out[1] or out.n~=2 or not inert(out[2]) then return false end
         local keys=call(R.storage and R.storage.keys)
-        return keys[1] and keys.n==2 and plain(keys[2]) and next(keys[2])==nil
+        if not keys[1] or keys.n~=2 or not plain(keys[2]) then return false end
+        local first,name=next(keys[2])
+        if first==nil then return true end
+        -- The bike mode setting is the one key a first ride may find: no ride writes it, so it says nothing about one.
+        -- Any other key, or a second one beside it, still refuses.
+        if type(first)=="string" then name=first end
+        if settings_key==nil or name~=settings_key or next(keys[2],first)~=nil then return false end
+        return settings_kept()
     end
     local function stop_once(why,cancel)
         if cancel then if cancel_sent then return end;cancel_sent=true
@@ -290,10 +337,14 @@ function Entry.new(R,Runtime,Survey,options)
         if previous[1] and plain(previous[2]) then trace("previous launch: "..lifecycle_line(previous[2])) end
         for key,value in pairs(out[2]) do
             local name=type(key)=="string" and key or value
-            local cleared=call(R.storage.set,name,nil)
-            if not cleared[1] then
-                phase,detail="blocked","Earlier lifecycle storage could not be cleared; no Mount in this session."
-                return false
+            -- The bike mode setting outlives the launch on purpose. Anything else under its name is cleared, so a
+            -- malformed one leaves bike mode off.
+            if settings_key==nil or name~=settings_key or not settings_kept() then
+                local cleared=call(R.storage.set,name,nil)
+                if not cleared[1] then
+                    phase,detail="blocked","Earlier lifecycle storage could not be cleared; no Mount in this session."
+                    return false
+                end
             end
         end
         return true
@@ -348,6 +399,7 @@ function Entry.new(R,Runtime,Survey,options)
     -- holds nothing, so a Mount undone only by where the rider is (on the board, or off the spot the survey checked)
     -- waits for their next Mount and a new survey, as a terrain refusal does, rather than ending the launch's rides.
     -- A later cycle has its own step-off proof and keeps its rule.
+    -- message is a key of words, kept so the HUD line follows a change of controls.
     local function first_ride_retry(why,message)
         if attempts_used~=1 then return false end
         local version=generation
@@ -356,7 +408,7 @@ function Entry.new(R,Runtime,Survey,options)
         if not clear then return false end
         generation+=1;refused_help=message
         phase,detail="preflight_refused",why
-        tell(message)
+        tell(words[message])
         return true
     end
     local function survey_finish(verdict,now)
@@ -442,7 +494,7 @@ function Entry.new(R,Runtime,Survey,options)
         if not environment(false) then return end
         if state()~=504 then
             if phase~="blocked" and not first_ride_retry("Mount needs the rider on foot; no mount requested."
-                .." Step off the skateboard, then choose Mount again.",STEP_OFF) then
+                .." Step off the skateboard, then choose Mount again.","step_off") then
                 fail("Start on foot for this experimental ride.")
             end
             return
@@ -453,7 +505,7 @@ function Entry.new(R,Runtime,Survey,options)
             -- Moved or turned since the survey is only where the rider is. A survey too old to trust, or one that
             -- cannot be read, is not, and still ends the attempt.
             local moved=type(why)=="string" and (string.find(why,"^rider moved")~=nil or string.find(why,"^rider turned")~=nil)
-            if not (moved and first_ride_retry(text(why).."; no mount requested. Stand still, then choose Mount again.",MOVED)) then
+            if not (moved and first_ride_retry(text(why).."; no mount requested. Stand still, then choose Mount again.","moved")) then
                 fail(text(why,"Survey is no longer fresh."))
             end
             return
@@ -866,7 +918,7 @@ function Entry.new(R,Runtime,Survey,options)
     local function second_expired(why)
         local stranded=phase=="stepping_off" and second_recovering and second_off_board
         fail(why)
-        if stranded then blocked_help=OFF_BOARD;announce(OFF_BOARD) end
+        if stranded then blocked_help="off_board";announce(words.off_board) end
     end
     local function step_off(now)
         local version=generation
@@ -910,16 +962,37 @@ function Entry.new(R,Runtime,Survey,options)
     local function waiting_text()
         local e=known and plain(latest) and latest.equipment
         local s=known and plain(latest) and latest.source
-        if plain(e) and e.retained==true and e.phase~="done" then return "Let go of every control for a moment, then hold LB and press A." end
-        if plain(s) and s.phase~="complete" and s.phase~="idle" then return "Close menus and let go of the controls, then hold LB and press A." end
+        if plain(e) and e.retained==true and e.phase~="done" then return words.let_go end
+        if plain(s) and s.phase~="complete" and s.phase~="idle" then return words.close_menus end
         return "The bike is stuck: restart the game to ride again."
     end
+    -- What decides a Mount outside a terrain retry before anything is asked of the rider: whether a ride that ended
+    -- can be reopened, whether a mount is left, whether the mod is free, and which state the ride starts from. It
+    -- changes nothing, so next_start_state() can ask it every tick, and mount() acts on its answers: nil and the
+    -- start state, or a refusal, "waiting" (cleanup has not finished), "stuck" (no clean successor), "spent" (no
+    -- mount left) or "busy". The third answer says the phase is one a Mount reopens.
+    local function mount_gate()
+        local reopen=(phase=="blocked" or phase=="spent" or phase=="fallen") and attempts_used>=1 and two_cycle
+        if reopen then
+            if not known or not clean(latest) then return "waiting" end
+            local ready=call(owner.can_prepare_next_mount,owner)
+            if not ready[1] or ready[2]~=true then return "stuck" end
+        end
+        if not mount_left() then return "spent",nil,reopen end
+        if unloaded or ticking or cancelled or not namespace_clear
+            or used and (not two_cycle or not reopen and phase~="skateboard") then return "busy",nil,reopen end
+        -- The first ride of a launch starts on foot. Every later one starts on the skateboard: its step-off is the
+        -- mod's own Y, whose target and ACK prove the rider went from 100 to 504.
+        return nil,attempts_used>=1 and 100 or 504,reopen
+    end
+    -- Whether a terrain retry can be asked for at all; mount() and next_start_state() share it.
+    local function retry_open() return not (unloaded or ticking or cancelled or not namespace_clear) end
     function object:mount()
         if not admitted then return false,"Experimental source admission is closed." end
         -- Riding the board to a better spot ends that step-off: this Mount starts again from the board.
         if phase=="preflight_refused" and attempts_used>=2 and state()==100 then fail("Moved on the board after the step-off.") end
         if phase=="preflight_refused" then
-            if unloaded or ticking or cancelled or not namespace_clear then return false,"Preflight retry unavailable." end
+            if not retry_open() then return false,"Preflight retry unavailable." end
             local version=generation
             -- In a later cycle this press is a new Mount intent with its own 60 s: finding a flat spot can take a
             -- rider longer than the press that began the cycle allowed. The proof below then reads the new time.
@@ -942,7 +1015,7 @@ function Entry.new(R,Runtime,Survey,options)
             if current~=504 then
                 -- Riding the board to a better spot is what a refusal asks for. On the first ride nothing has been
                 -- asked of the game yet (the proof above), so this says to step off first and the retry stays open.
-                if attempts_used==1 then refused_help=STEP_OFF;return tell(STEP_OFF) end
+                if attempts_used==1 then refused_help="step_off";return tell(words.step_off) end
                 fail("Preflight retry requires on-foot504; no retry.");return false,detail
             end
             local now=clock()
@@ -959,23 +1032,20 @@ function Entry.new(R,Runtime,Survey,options)
             return true
         end
         -- A Return that could not finish leaves a cleaned-up ride: Mount from the board may go again.
-        local reopened=nil
-        if (phase=="blocked" or phase=="spent" or phase=="fallen") and attempts_used>=1 and two_cycle then
-            if not known or not clean(latest) then return tell(waiting_text()) end
-            local ready=call(owner.can_prepare_next_mount,owner)
-            if not ready[1] or ready[2]~=true then return tell(no_body() or "The bike is stuck: restart the game to ride again.") end
-            reopened=phase;phase="skateboard"
-        end
-        if not mount_left() then return tell("All "..attempt_limit.." mounts are used: restart the game to ride again.") end
-        if unloaded or ticking or cancelled or not namespace_clear or not mount_left()
-            or used and (not two_cycle or phase~="skateboard") then return false,"Consumed, busy or retained attempt; not available." end
-        if attempts_used>=1 and state()~=100 then
+        local refused,start,reopen=mount_gate()
+        if refused=="waiting" then return tell(waiting_text()) end
+        if refused=="stuck" then return tell(no_body() or "The bike is stuck: restart the game to ride again.") end
+        local reopened=reopen and phase or nil
+        if reopen then phase="skateboard" end
+        if refused=="spent" then return tell("All "..attempt_limit.." mounts are used: restart the game to ride again.") end
+        if refused then return false,"Consumed, busy or retained attempt; not available." end
+        if state()~=start then
+            if start==504 then return tell(words.step_off) end
             -- A Mount from a blocked or spent ride that cannot start yet leaves it as it was, so its help line stays
             -- up rather than an empty one for 'skateboard'. A fall keeps 'skateboard': Recover and auto-return read it.
             if reopened=="blocked" or reopened=="spent" then phase=reopened end
-            return tell("Get on your skateboard, then hold LB and press A.")
+            return tell(words.board)
         end
-        if attempts_used==0 and state()~=504 then return tell(STEP_OFF) end
         attempts_used+=1;used=true;generation+=1;stop_told=nil;mount_refunded=false
         -- A fall belongs to the ride that fell. Kept into this one, a stop before it rides, such as a refused capture or
         -- lease, read as a second fall and the mod got back on by itself after every refusal (the capture-retry review,
@@ -1006,6 +1076,24 @@ function Entry.new(R,Runtime,Survey,options)
         phase,detail="preparing","Preparing, then surveying the clear area. Stay on foot and still."
         prep_at=clock()
         if not prep_at or cancelled or unloaded or phase~="preparing" then return false,detail end
+        return true
+    end
+    -- The state a Mount pressed now starts from: 504 on foot for the first ride of a launch and for a terrain retry,
+    -- 100 on the skateboard for every later ride. nil when mount() would refuse for a reason other than where the
+    -- rider is. It is mount()'s own rule (mount_gate, retry_open) and changes nothing, so y_button.lua asks it every
+    -- tick; the proofs mount() runs once the rider is in that state stay mount()'s. A later cycle's terrain retry
+    -- answers 504 though mount() also takes the board there, ending that step-off for a new one: 504 keeps it.
+    function object:next_start_state()
+        if not admitted then return nil end
+        if phase=="preflight_refused" then return retry_open() and 504 or nil end
+        local refused,start=mount_gate()
+        if refused then return nil end
+        return start
+    end
+    -- Which controls the rider's lines name: "lb_a", the default, or "y" for main.lua's bike mode.
+    function object:set_controls(kind)
+        if type(kind)~="string" or not WORDS[kind] then return false end
+        words=WORDS[kind]
         return true
     end
     function object:return_to_skateboard()
@@ -1177,8 +1265,9 @@ function Entry.new(R,Runtime,Survey,options)
                         stop_told,last_stop=why,why
                         -- A fall or knock-down says the rider came off and what comes next; a refusal already says
                         -- what to do. Core's reason goes to the log, the menu page and the dedupe above.
-                        local told=refused or fallen and "The rider came off. "..(not auto_return and "Hold LB and press A to ride again."
-                            or mount_left() and "Getting back on the bike." or "Going back to the skateboard.") or RIDE_STOPPED
+                        local told=refused or fallen and "The rider came off. "..(not auto_return and words.ride_again
+                            or mount_left() and "Getting back on the bike." or "Going back to the skateboard.")
+                            or auto_return and RIDE_RETURNING or words.ride_stopped
                         announce(told,not refused and "Ride ended: "..why or nil)
                     end
                     if fallen then phase,detail="fallen","Bike stopped after a fall: "..fallen
@@ -1227,15 +1316,12 @@ function Entry.new(R,Runtime,Survey,options)
     end
     -- Core already detached this small score view in the last normal step.
     -- HUD reads never poll the lifecycle or turn presentation into evidence.
-    -- What the player should be doing while the mod is busy, in plain words for the HUD.
+    -- What the player should be doing while the mod is busy, in plain words for the HUD. The lines for a ride that
+    -- ended or a Mount that did not start name the controls, so they are in words.help.
     local HELP={preparing="Getting the bike ready: stand still.",surveying="Checking for room: stand still.",
         awaiting_mount="Close menus and let go of the controls.",mounting="Getting on the bike: let go of the controls.",
         stepping_off="Stepping off the board: stand still and let go of the controls.",
-        returning="Going back to the skateboard: let go of the controls.",
-        fallen="The ride ended. Hold LB and press A to ride again.",
-        preflight_refused="No room here or too steep: move, then hold LB and press A.",
-        blocked="That didn't finish. Get on your skateboard, then hold LB and press A.",
-        spent="That didn't finish. Get on your skateboard, then hold LB and press A."}
+        returning="Going back to the skateboard: let go of the controls."}
     function object:help_line()
         if notice then
             local now=clock()
@@ -1266,9 +1352,9 @@ function Entry.new(R,Runtime,Survey,options)
             and latest.startup.core_ready==false and latest.startup.pending==false then
             return "The bike is stuck: restart the game to ride again."
         end
-        if phase=="blocked" and blocked_help then return blocked_help end
-        if phase=="preflight_refused" and refused_help then return refused_help end
-        return HELP[phase]
+        if phase=="blocked" and blocked_help then return words[blocked_help] end
+        if phase=="preflight_refused" and refused_help then return words[refused_help] end
+        return words.help[phase] or HELP[phase]
     end
     function object:score_view()
         local ride=known and plain(latest) and latest.ride or nil

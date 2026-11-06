@@ -386,18 +386,19 @@ function Tests.run()
                 terrain_refusal_count=0,terrain_refusal_limit=8,cleanup_pending=false,cleanup_unknown=false}end}
         local Runtime,Survey={},{}
         local modules={["./bike_runtime"]=Runtime,["./ride_r1_record"]=Survey,
+            ["./y_button"]=require("./y_button"),
             ["./bmx_playable_entry"]={new=function(_,r,s,opts)
                 check(r==Runtime and s==Survey,"same Main dependencies")
                 options_seen=opts;return object
             end}}
         local binds={bmx_return="F8",bmx_recover="F9",bmx_recover_pad="Pad.LB+Pad.RB+Pad.L3",
-            bmx_return_pad="Pad.LB+Pad.RB+Pad.R3",bmx_mount_pad="Pad.LB+Pad.A"}
+            bmx_return_pad="Pad.LB+Pad.RB+Pad.R3",bmx_mount_pad="Pad.LB+Pad.A",bmx_y="Pad.Y"}
         Main({input={bind=function(name,key)
-            check(binds[name]==key,"closed Main registers only the five existing remappable actions")
+            check(binds[name]==key,"closed Main registers only the six remappable actions")
             binds[name]=nil;return true
         end},on=function()end,menu={page=function(_,fn)menu=fn end}},function(name)return modules[name]end)
-        check(next(binds)==nil,"all five existing bindings registered exactly once")
-        local ui={warn=function()end,info=function()end,button=function()return false end,
+        check(next(binds)==nil,"all six bindings registered exactly once")
+        local ui={warn=function()end,info=function()end,button=function()return false end,toggle=function(_,_,_,on)return on end,
             note=function(_,text)notes[#notes+1]=text end}
         menu(ui)
         check(options_seen.admitted==false and options_seen.session_renewable==false

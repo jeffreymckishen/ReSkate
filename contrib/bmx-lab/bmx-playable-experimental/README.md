@@ -77,6 +77,24 @@ while the bike gets ready, the HUD says to step off or stand still, and the next
 
 Mounting and going back to the skateboard can be changed in Binds. Pedal, brake, steering, hop and the manuals cannot.
 
+### Bike mode
+
+Bike mode puts getting on and off the bike on Y alone. Switch on **Switch to bike: Y gets on and off** on the BMX
+page in the Insert menu; it stays on for later launches until it is switched off. Then, standing still on foot or on
+the skateboard, press Y and let go of the controls while the bike gets ready. Riding, Y goes back to the skateboard.
+
+- The first ride of a launch starts on foot, so from the skateboard Y steps the rider off first, and the bike comes
+  once they stand still with the controls let go. Later rides start on the skateboard, so on foot Y brings the
+  skateboard out first.
+- Standing where the next ride starts, the game does not see Y, so it does not step off or bring out the skateboard
+  as well. When no ride can start, Y does what it does in the game. Opening a menu or Insert, or leaving the game,
+  gives Y back to the game at once.
+- LB + A, F8 and LB + RB + R3 still work, and the HUD's lines say to press Y.
+- A PlayStation controller without Steam Input can still pass Y to the game. The HUD then says "The game got the Y,
+  as it can on some controllers. Hold LB and press A instead."
+- Bike mode's Y is a bind of its own, `bmx_y`. Leave it on Y: it is Y that the mod keeps from the game, whichever
+  button the bind is on.
+
 ## Smooth riding
 
 Set Settings, Graphics, Target frame rate to **60 FPS** and VSync to **Off**. On a high refresh screen VSync On
@@ -92,7 +110,7 @@ offline the game does not keep it, so set it again each launch.
   restart the game to ride again.
 - Pausing, opening Insert or leaving the game ends the ride, and the HUD says "The ride stopped. Going back to the
   skateboard." The rider goes back to the skateboard on their own once the menu is closed and the controls are
-  released. Then hold LB and press A to ride again.
+  released. Then hold LB and press A, or in bike mode press Y, to ride again.
 - Top speed is about 7.7 m/s on the flat. The rider stops pedalling there and coasts down to about 7.2 m/s before
   pedalling again, and coasts for two seconds at least unless the bike slows under about 6.7 m/s first, so weaving at
   top speed does not start and stop the cranks every half turn. B, a manual or a climb steeper than about 2% ends that
@@ -159,9 +177,9 @@ offline the game does not keep it, so set it again each launch.
   foot as they are put back on the bike, the HUD says "Press Y for your skateboard, then let go of the controls."
   Banks and quarter pipes do not count as going over. If there is no room to get back on, move and mount again.
 - If something does not finish, the HUD says what to do next, usually "That didn't finish. Get on your skateboard,
-  then hold LB and press A." On the first ride of a launch a few failures cannot be tried again, and the HUD then
-  says "The bike is stuck: restart the game to ride again." The reason the mod stopped, in its own words, is in the
-  ReSkate log and on the BMX page.
+  then hold LB and press A." In bike mode it says "That didn't finish. Press Y to ride again." On the first ride
+  of a launch a few failures cannot be tried again, and the HUD then says "The bike is stuck: restart the game to
+  ride again." The reason the mod stopped, in its own words, is in the ReSkate log and on the BMX page.
 - A slower bump into something just stops the bike, and it has no reverse. If it is stuck, go back to the skateboard.
 - A nose manual rides over small bumps and kerb ramps. With the stick past about half way, a steep kerb face or a
   bump of about 12 cm often throws it over the bars below about 3 m/s and can still do it at 5 m/s, and so can a

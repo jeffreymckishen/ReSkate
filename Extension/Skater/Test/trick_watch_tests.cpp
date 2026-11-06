@@ -98,6 +98,51 @@ void points_are_the_line_score_step_when_the_multiplier_moves() {
     check(e.kind == K::landed && near(e.points, 236) && near(e.multiplier, 2), "22 at x1.5 then 258 at x2 is a trick of 236");
 }
 
+// LineScore never moved while ActionActive was on in play. If it does, the trick still counts from its
+// start (not from the tick before the bank), and the landing says LineScore moved.
+void points_count_from_the_tricks_start_when_line_score_moves_during_it() {
+    TrickWatch w;
+    feed(w, idle(10, 1.5f, 0.8f), 3);
+    check(w.update(trick(10, 1.5f, 0.7f)).kind == K::started, "A trick starts with the line at 10");
+    feed(w, trick(10, 1.5f, 0.7f), 5);
+    feed(w, trick(14, 1.5f, 0.7f), 5); // LineScore moves while it goes on
+    check(w.update(idle(14, 1.5f, 0.7f)).kind == K::none, "Nothing on the tick it ends");
+    const auto e = w.update(idle(30, 1.5f, 0.9f));
+    check(e.kind == K::landed && near(e.points, 20) && e.score_moved, "It lands with 30 less the 10 at its start, and says LineScore moved");
+    feed(w, trick(30, 1.5f, 0.8f), 10);
+    w.update(idle(30, 1.5f, 0.8f));
+    const auto f = w.update(idle(42, 1.5f, 0.9f));
+    check(f.kind == K::landed && near(f.points, 12) && !f.score_moved, "and the next trick, whose LineScore held, does not say it");
+    TrickWatch slow;
+    feed(slow, idle(10, 1.5f, 0.8f), 3);
+    feed(slow, trick(10, 1.5f, 0.7f), 5);
+    feed(slow, trick(14, 1.5f, 0.7f), 2);
+    const auto g = slow.update(idle(30, 1.5f, 0.9f)); // the bank on the tick the trick ends (a slow tick)
+    check(g.kind == K::landed && near(g.points, 20) && g.score_moved, "A bank on the tick the trick ends counts from its start too");
+}
+
+// A line ending while a trick goes on takes LineScore to 0 on that tick: that is the line's end, not
+// the trick's score moving. The trick can still land after it, counted from the next line's 0.
+void a_line_ending_during_a_trick_is_not_its_score_moving() {
+    TrickWatch w;
+    feed(w, idle(8, 1.5f, 0.3f), 3);
+    feed(w, trick(8, 1.5f, 0.3f), 5);
+    const auto e = w.update(trick()); // the line ends with 0.3 of its time left
+    check(e.kind == K::broken && e.why == Why::ended && w.in_trick(), "The line cut short is said, and the trick goes on");
+    feed(w, trick(), 5);
+    check(w.update(idle()).kind == K::none, "Nothing on the tick it ends");
+    const auto f = w.update(idle(25, 1.5f, 1));
+    check(f.kind == K::landed && near(f.points, 25) && !f.score_moved, "It lands with the new line's 25, and LineScore did not move for it");
+}
+
+// The count before the trick list's array: its top bit is a flag, and more rows than the list keeps is
+// not this build's list, so it is refused rather than clamped.
+void the_row_count_is_masked_and_refused_above_the_cap() {
+    check(TrickRows::count_of(0x80000003u) == 3u, "The count's top bit is masked");
+    check(TrickRows::count_of(5) == 5u && TrickRows::count_of(0) == 0u, "5 rows is the list's cap");
+    check(!TrickRows::count_of(6) && !TrickRows::count_of(0x80000006u) && !TrickRows::count_of(0x7fffffffu), "and more is refused");
+}
+
 // The session's first on-foot Jump: its bank started the line (Multiplier 0 to 1.5, LineTimer 0 to 1)
 // but LineScore stayed 0 until the next trick's 8.
 void a_first_move_the_game_kept_back_lands_with_no_points() {
@@ -353,6 +398,9 @@ int main() {
         a_second_trick_in_a_line_scores_its_own_points();
         a_board_line_lands_each_trick_with_its_own_points();
         points_are_the_line_score_step_when_the_multiplier_moves();
+        points_count_from_the_tricks_start_when_line_score_moves_during_it();
+        a_line_ending_during_a_trick_is_not_its_score_moving();
+        the_row_count_is_masked_and_refused_above_the_cap();
         a_first_move_the_game_kept_back_lands_with_no_points();
         a_wipeout_ends_the_trick_for_nothing();
         nothing_starts_or_lands_during_a_wipeout();

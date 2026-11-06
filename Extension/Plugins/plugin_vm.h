@@ -98,7 +98,9 @@ struct SkaterState {
 };
 enum class Teleport { sent, unavailable, forbidden };
 // A scored action of the local skater, read from the score HUD (Extension/Skater/trick_watch.h):
-// trick_started, then trick_landed, or line_broken.
+// trick_started, then trick_landed or line_broken("wipeout") for it. line_broken("ended") is about the
+// game's line, not a trick: it may come with no trick going on, and a trick going on then can still
+// land after it, counted from the next line's 0.
 struct TrickNews {
     enum class Kind { started, landed, broken } kind{Kind::started};
     // landed: the points it banked into the game's line (the line's score at the bank less at the
@@ -120,7 +122,9 @@ struct TrickNews {
     std::vector<std::string> names;
     std::string landing, stance, damage;
     // landed: a Slam the game scores, not a landed trick (on foot a fall banks a "Slam" row into the
-    // line): a row's damage is set, or it carries the game's slam icon.
+    // line): a row's damage is set, or it carries the game's slam icon. This is the field that tells a
+    // slam: damage may still be "" at the landing, as the game writes a Slam row's damage label after
+    // its name and icon.
     bool slam{};
 };
 struct ScoreState {

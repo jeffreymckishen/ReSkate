@@ -91,6 +91,14 @@ struct ActionRows {
 class TrickRows {
 public:
     static constexpr std::size_t most_rows = 5; // the list keeps no more
+    // The list's row count from the dword before its array, `raw`: its top bit is a flag (as
+    // Context::array reads it), so it is masked. Empty when it says more rows than the list keeps,
+    // which is not this build's list, so its rows are not walked that tick.
+    static std::optional<std::uint32_t> count_of(std::uint32_t raw) noexcept {
+        const auto count = raw & 0x7fffffffu;
+        if (count > most_rows) return std::nullopt;
+        return count;
+    }
     // Each tick, before TrickWatch's update: the list, newest first. `readable` false when it could not
     // be read this tick (what was seen stays).
     void observe(const std::vector<TrickRow>& newest_first, bool readable = true);

@@ -54,8 +54,10 @@ inline constexpr std::uint32_t row_landing = 0x0205e59c; // label @0x150: ID_TRI
 inline constexpr std::uint32_t row_stance = 0x062499e8;  // label @0x1f0: ID_STANCE_SWITCH with the name, "" in regular stance
 inline constexpr std::uint32_t row_damage = 0xfce95488;  // label @0x520: ID_DAMAGE_BRUISED or _SPRAINED on Slam rows, else ""
 // Asset @0x68, the row's icon: img_Icon_Scoring_SkateTrick_64 on every board row,
-// img_Icon_Scoring_Wipeout_64 on Jump and Roll rows, and slam_icon on all 21 Slam rows dumped (some
-// of which had no damage label yet), so a row is a slam when its damage is set or it has slam_icon.
+// img_Icon_Scoring_Wipeout_64 on Jump and Roll rows, and slam_icon on all 4 Slam rows dumped (21
+// dumps; in one, 36 ms before its bank, the newest had no damage label yet). So a row is a slam when
+// its damage is set or it has slam_icon. (Each row model's own IsSlam, 0xaf6e13b9, read 1 on Jump and
+// Roll rows too, so it is not read.)
 inline constexpr std::uint32_t row_icon = 0xc9d594c3;
 inline constexpr std::string_view slam_icon = "UI/Textures/Icons/Scoring/img_Icon_Scoring_Wipeout_Broken_64";
 

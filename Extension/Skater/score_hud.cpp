@@ -26,6 +26,7 @@ namespace corner = addr::hud_corner;
 namespace score = addr::score_hud;
 using Address = std::uintptr_t;
 using Clock = std::chrono::steady_clock;
+static_assert(TrickRows::most_rows == score::most_trick_rows, "the row reader and the trick watch keep the same number of rows");
 
 // ScoringHUDViewModel's fields read each tick (the build header's score_hud.h). A label is read by
 // its Text member (LabelViewModel), found by hash at bind rather than taken to be its first 8 bytes.
@@ -277,18 +278,18 @@ bool read_rows(Hud& h, const menu_data::Context& context, Address root, std::vec
     if (!h.list.ok) return false;
     Address items{};
     if (!memory::peek(root + h.list.items, items)) return false;
-    std::uint32_t count{};
-    // The dword before an array is its count; its top bit is a flag (as Context::array reads it).
-    if (items && !memory::peek(items - 4, count)) return false;
-    count = items ? count & 0x7fffffffu : 0;
-    if (count > score::most_trick_rows) {
+    // The dword before an array is its count (TrickRows::count_of says how it is read).
+    std::uint32_t raw{};
+    if (items && !memory::peek(items - 4, raw)) return false;
+    const auto count = items ? TrickRows::count_of(raw) : std::optional<std::uint32_t>{0};
+    if (!count) {
         if (!std::exchange(h.rows_warned, true))
             logging::log(logging::Level::warning, logging::Channel::skater,
-                "Score HUD: its trick list holds {} rows, more than the {} it keeps on this build, so its rows are not read while it does.", count,
-                score::most_trick_rows);
+                "Score HUD: its trick list holds {} rows, more than the {} it keeps on this build, so its rows are not read while it does.",
+                raw & 0x7fffffffu, score::most_trick_rows);
         return false;
     }
-    for (std::uint32_t i = 0; i < count; ++i) {
+    for (std::uint32_t i = 0; i < *count; ++i) {
         std::uint64_t handle{};
         if (!memory::peek(items + std::size_t{i} * h.list.stride + h.list.data_handle, handle) || !handle) return false;
         const auto was = std::find_if(h.rows.begin(), h.rows.end(), [&](const TrickRow& row) { return row.handle == handle; });
@@ -303,7 +304,10 @@ bool read_rows(Hud& h, const menu_data::Context& context, Address root, std::vec
                 return false;
             }
         }
-        if (fresh_row || i == 0 || row.name.empty()) read_row(h, context, row, fresh_row || i == 0);
+        // A Slam row is read whole until its damage shows: one was dumped with its slam icon and no
+        // damage 36 ms before its bank, so a slam that is no longer the newest row may still get it.
+        const bool all = fresh_row || i == 0 || (row.slam && row.damage.empty());
+        if (all || row.name.empty()) read_row(h, context, row, all);
         if (fresh_row) fresh.push_back(handle >> 16);
         rows.push_back(std::move(row));
     }

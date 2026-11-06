@@ -46,7 +46,10 @@ TrickEvent TrickWatch::update(const TrickSignals& in) {
             broken_said_ = moved_ = false;
             start_score_ = in.line_score;
             tell({.kind = Kind::started});
-        } else if (in.line_score != last_.line_score) moved_ = true;
+        } else if (in.line_score != last_.line_score && !(line_was && !line_is)) {
+            // (LineScore going to 0 as the line ends is the line's end, not the trick's score moving.)
+            moved_ = true;
+        }
     } else {
         if (action_) { // the trick ended this tick: its points bank on the next, or on this one with a slow tick
             action_ = false;

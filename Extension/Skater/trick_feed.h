@@ -20,4 +20,8 @@ std::vector<Note> take();
 // From the model write hook, on whichever thread the game writes from, under the model lock:
 // the write's model manager, handle, value type, value and flag (which of the two registries).
 void tap(std::uintptr_t manager, std::uint64_t handle, std::uintptr_t type, const void* value, std::uint8_t flag) noexcept;
+// From the score HUD reader (score_hud.cpp), on the client thread: the entries (handle >> 16) of row
+// models it has just seen in the game's own trick list, whose names and spins may go out
+// (trick_feed_gate.h).
+void know(const std::vector<std::uint64_t>& entries) noexcept;
 } // namespace dingosdk::tricks::feed

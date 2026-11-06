@@ -5,7 +5,6 @@
 #include "Engine/Core/Platform/memory.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/engine.h"
-#include "Engine/Game/Build/20260929/native_party.h"
 #include <Windows.h>
 #include <array>
 #include <atomic>
@@ -25,8 +24,8 @@ struct Feed {
     std::mutex mutex;
     std::vector<Note> notes;
     std::set<std::string> owners;
-    RecordGate<Note> gate; // which UI model's writes are the trick list's (trick_feed_gate.h)
-    unsigned left_out_logged{};
+    EntryGate<Note> gate; // which models' writes are the trick list's rows' (trick_feed_gate.h)
+    LeftOutLog left_out_log;
 };
 Feed& feed() {
     static auto* value = new Feed;
@@ -61,23 +60,18 @@ bool readable_name(std::string_view text) noexcept {
     }
     return letter;
 }
-// The UI model record a write's handle belongs to (native_party.h's model_record, which the menu
-// readers call under the same lock), or 0 when its bytes are not the ones this build has: then
-// every write is taken, as before.
-using ModelRecord = std::uintptr_t (*)(std::uintptr_t manager, std::uint64_t handle, std::uint8_t flag);
-ModelRecord model_record() noexcept {
-    static const ModelRecord found = []() -> ModelRecord {
-        const auto base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
-        for (const auto& contract : addr::native_party::native_party_contracts) {
-            if (contract.rva != addr::native_party::model_record) continue;
-            std::array<unsigned char, 32> code{};
-            if (memory::peek(base + contract.rva, code) && code == contract.bytes) return reinterpret_cast<ModelRecord>(base + contract.rva);
-        }
-        logging::log(logging::Level::warning, logging::Channel::plugins,
-            "Trick feed: the UI model lookup is not this build's, so text other models write (a song's title) can read as a trick.");
-        return nullptr;
-    }();
-    return found;
+// Queues what the gate let out, and says what it left out: each model and text once.
+void pass_on(Feed& f, std::vector<Note>& out, std::vector<Note>& said) {
+    for (auto& note : out)
+        if (f.notes.size() < 256) f.notes.push_back(std::move(note));
+    for (auto& note : f.gate.take_left_out())
+        if (f.left_out_log.say(note.entry, note.text)) said.push_back(std::move(note));
+}
+void say_left_out(const std::vector<Note>& said) {
+    for (const auto& note : said)
+        logging::log(logging::Level::info, logging::Channel::plugins,
+            "Trick feed: left out \"{}\" from model entry 0x{:x}: the score HUD's trick list was not seen to hold that model.", note.text,
+            note.entry);
 }
 } // namespace
 
@@ -90,6 +84,7 @@ void ask(const std::string& owner, bool on) {
     if (f.owners.empty()) {
         f.notes.clear();
         f.gate.clear();
+        f.left_out_log.clear();
     }
 }
 bool wanted() noexcept { return feed().on.load(std::memory_order_acquire); }
@@ -99,7 +94,7 @@ std::vector<Note> take() {
     return std::exchange(f.notes, {});
 }
 
-void tap(std::uintptr_t manager, std::uint64_t handle, std::uintptr_t type, const void* value, std::uint8_t flag) noexcept {
+void tap(std::uintptr_t, std::uint64_t handle, std::uintptr_t type, const void* value, std::uint8_t flag) noexcept {
     auto& f = feed();
     if (!f.on.load(std::memory_order_acquire) || ui::writing_own_ui) return;
     const auto member = static_cast<std::uint32_t>(handle & 0xffff);
@@ -146,25 +141,36 @@ void tap(std::uintptr_t manager, std::uint64_t handle, std::uintptr_t type, cons
             text = member == trick_late_member ? "Late" : member == trick_darkflip_member ? "Darkflip" : "Dark Catch";
             kind = 'm';
         }
-        // Whose write it is: only a side, landing, stance or modifier (each checked against the game's
-        // own ids above) shows a model is the trick list's; a name or a spin waits for one.
-        const auto lookup = model_record();
-        const auto record = lookup ? lookup(manager, handle, flag) : 0;
+        // Whose write it is: a side, landing, stance or modifier (each checked against the game's own
+        // ids above) goes out as it is; a name or a spin only from a row model the score HUD reader
+        // saw in the game's trick list. The entry is the model's own handle (the write's handle less
+        // its field's 16 bits). Every row write seen came with registry flag 0, the registry the
+        // reader reads; a write to the other is never a known row's (key 0).
+        const auto entry = handle >> 16;
         const bool sure = kind == 's' || kind == 'l' || kind == 'k' || kind == 'm';
-        std::vector<Note> out, left_out;
+        std::vector<Note> out, said;
         {
             std::lock_guard lock(f.mutex);
-            f.gate.add({handle >> 16, kind, std::move(text)}, record, sure, GetTickCount64(), out);
-            for (auto& note : out)
-                if (f.notes.size() < 256) f.notes.push_back(std::move(note));
-            left_out = f.gate.take_left_out();
-            if (f.left_out_logged >= 8) left_out.clear();
-            else if (left_out.size() > 8 - f.left_out_logged) left_out.resize(8 - f.left_out_logged);
-            f.left_out_logged += static_cast<unsigned>(left_out.size());
+            f.gate.add({entry, kind, std::move(text)}, flag == 0 ? entry : 0, sure, GetTickCount64(), out);
+            pass_on(f, out, said);
         }
-        for (const auto& note : left_out)
-            logging::log(logging::Level::info, logging::Channel::plugins,
-                "Trick feed: left out \"{}\": the model that wrote it never wrote a trick's side, landing or stance.", note.text);
+        say_left_out(said);
+    } catch (...) {}
+}
+
+void know(const std::vector<std::uint64_t>& entries) noexcept {
+    auto& f = feed();
+    if (entries.empty() || !f.on.load(std::memory_order_acquire)) return;
+    try {
+        std::vector<Note> out, said;
+        {
+            std::lock_guard lock(f.mutex);
+            const auto now = GetTickCount64();
+            for (const auto entry : entries)
+                if (entry) f.gate.know(entry, now, out);
+            pass_on(f, out, said);
+        }
+        say_left_out(said);
     } catch (...) {}
 }
 } // namespace dingosdk::tricks::feed

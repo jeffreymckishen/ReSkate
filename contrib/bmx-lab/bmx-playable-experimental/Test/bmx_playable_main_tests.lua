@@ -32,6 +32,8 @@ function Tests.run()
         function controller:unload() f.unloads+=1;f.events[#f.events+1]="unload" end
         function controller:next_start_state() return f.start end
         function controller:set_controls(kind) f.controls[#f.controls+1]=kind;return true end
+        -- y_button.lua's hold: the Entry hands nothing of the game's input on while it answers true.
+        function controller:set_input_hold(fn) f.hold=fn;return true end
         -- What Entry's HUD help says; nil (the default) is none.
         function controller:help_line() return f.help end
         function controller:score_view()
@@ -311,7 +313,7 @@ function Tests.run()
         g.flip={bmx_bike_mode=false};g.menu(g.ui)
         check(g.controls[2]=="lb_a" and world.records.bmx_settings_v1==nil,"switching off clears the key")
     end)
-    case("in bike mode Y reaches the same Entry, other buttons give Y back first, and unload gives it back before Entry",function()
+    case("in bike mode Y reaches the same Entry, other buttons leave Y to the Entry's hold, and unload gives it back before Entry",function()
         local world={records={bmx_settings_v1={schema=1,bike_mode=true}},writes=0,now=0,pad=pad(),masks={},state=504}
         local f=setup(nil,world)
         f.report={phase="riding",admitted=true,detail="",core_phase="following",cleanup_pending=false,cleanup_unknown=false}
@@ -321,14 +323,15 @@ function Tests.run()
         for _=1,3 do world.now+=16;f.callbacks.tick(16) end
         check(#world.masks==1 and world.masks[1][1]==0x8000 and world.masks[1][2]==0 and world.masks[1][3]==false,
             "idle on foot before the first ride: Y is kept from the game")
+        check(type(f.hold)=="function" and f.hold()==true,"and the Entry's hold says so")
         f.callbacks.action("bmx_mount_pad")
-        check(#world.masks==2 and world.masks[2][1]==0 and f.events[#f.events]=="mount" and f.events[#f.events-1]=="mask 0",
-            "LB + A gives Y back before it asks Entry for the Mount")
+        check(#world.masks==1 and f.events[#f.events]=="mount" and f.hold()==true,
+            "LB + A asks Entry for the Mount with Y still kept: the Entry waits on the hold before it hands input on")
         for _=1,3 do world.now+=16;f.callbacks.tick(16) end
-        check(#world.masks==3 and world.masks[3][1]==0x8000,"the refused Mount left the mod idle, so Y is kept again")
+        check(#world.masks==1,"the refused Mount left the mod idle, so Y stays kept")
         f.callbacks.unload()
-        check(#world.masks==4 and world.masks[4][1]==0 and f.events[#f.events]=="unload" and f.events[#f.events-1]=="mask 0",
-            "unload gives Y back, then unloads Entry")
+        check(#world.masks==2 and world.masks[2][1]==0 and f.events[#f.events]=="unload" and f.events[#f.events-1]=="mask 0"
+            and f.hold()==false,"unload gives Y back, then unloads Entry")
     end)
     return {cases=cases,assertions=assertions,game_evidence=false,native_actions=0}
 end

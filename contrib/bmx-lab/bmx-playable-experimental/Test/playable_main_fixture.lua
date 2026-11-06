@@ -64,8 +64,9 @@ reskate.input.bind("bmx_mount_pad","Pad.LB+Pad.A")
 reskate.input.bind("bmx_y","Pad.Y")
 reskate.on("action",function(name)
     if name=="bmx_y" then ybutton:press();return end
-    -- The others ask Entry for a Return, Recover or Mount, and Y is given back to the game first (y_button.lua).
-    ybutton:give_back()
+    -- The others ask Entry for a Return, Recover or Mount: a Y press being carried out is dropped first, so the two
+    -- do not both ask (y_button.lua).
+    ybutton:drop_press()
     if name=="bmx_return" or name=="bmx_return_pad" then bike:return_to_skateboard()
     elseif (name=="bmx_recover" or name=="bmx_recover_pad") and not unloaded then
         local s=bike:status()
@@ -88,9 +89,9 @@ reskate.menu.page("BMX",function(ui)
         .." LB + A, F8 and LB + RB + R3 still work. Kept for later launches until switched off.")
     if mode~=ybutton:enabled() then ybutton:set_enabled(mode) end
     if ybutton:enabled() then
-        ui:note("Bike mode: standing still on foot or on the skateboard, press Y and let go of the controls while the bike gets ready. Riding, Y goes back to the skateboard.")
-        ui:note("While it is on, Y is for the bike: from the skateboard the rider steps off for it, and on foot after the first ride the skateboard comes out first. When no ride can start, Y does what it does in the game. LB + A, F8 and LB + RB + R3 still work.")
-        ui:note("A PlayStation controller without Steam Input can still pass Y to the game. The HUD then says so, and LB + A mounts.")
+        ui:note("Bike mode: standing still on foot or on the skateboard, press Y once and let go of the controls while the bike gets ready. Don't press Y again until you ride. Riding, Y goes back to the skateboard.")
+        ui:note("Y is then for the bike. Before the first ride of a launch, on the skateboard, Y steps off first. After it, on foot, Y brings the skateboard out first, and on the skateboard Y no longer steps off. When no ride can start, Y does what it does in the game. LB + A, F8 and LB + RB + R3 still work.")
+        ui:note("A PlayStation controller without Steam Input can still pass Y to the game. The HUD then says so: press Y again.")
     end
     ui:note("First ride of a launch: on foot on flat ground with a little room around you, hold LB, then press A, and let go of the controls while the bike gets ready.")
     ui:note("A pedals, B brakes, the left stick steers, clicking the right stick hops.")
@@ -99,8 +100,8 @@ reskate.menu.page("BMX",function(ui)
     -- Only a ReSkate that cannot reuse the parked bike limits the mounts of a launch.
     if s.body_reuse==false then ui:note("This ReSkate allows "..tostring(s.attempt_limit).." mounts a game launch; restart the game for more.") end
     ui:note("Mounting and going back to the skateboard can be changed in Binds.")
-    if ui:button("bmx_play_mount","Mount bike") then ybutton:give_back();bike:mount() end
-    if ui:button("bmx_play_return","Return to skateboard") then ybutton:give_back();bike:return_to_skateboard() end
+    if ui:button("bmx_play_mount","Mount bike") then ybutton:drop_press();bike:mount() end
+    if ui:button("bmx_play_return","Return to skateboard") then ybutton:drop_press();bike:return_to_skateboard() end
     if s.fall_reason then ui:warn("Fallen: "..s.fall_reason) end
     if s.last_stop then ui:info("Last ride ended",s.last_stop) end
     if s.phase=="blocked" or s.phase=="stopped" then ui:note(s.lifecycle_detail) end

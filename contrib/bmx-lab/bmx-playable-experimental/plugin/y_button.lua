@@ -5,18 +5,23 @@
 --
 -- In the game Y on foot brings out the skateboard and Y on the board steps off it. A ride after the first starts on
 -- the board, and its step-off is the mod's own Y: a Y the game took as well would step the rider off first, and that
--- ride's step-off refuses a rider already on foot. So while the mod is idle with the rider standing in the state the
--- next ride starts from, Y is kept from the game (reskate.input.game_buttons) and a press asks for the bike. A change
--- of that mask revokes every input lease, capture and pulse, and while any button is hidden the mod's own pulses are
--- refused (input_capture.cpp input_pulse_available), so the mask is off before every Mount this module asks for and in
--- every phase but idle. It changes only while the real Y is up: hiding a held Y hands the game a release, and giving
--- it back hands it a press. A menu or overlay opening, the game losing focus, bike mode switched off and unload give
--- it back at once.
+-- ride's step-off refuses a rider already on foot. So while the mod is idle with the rider in the state the next ride
+-- starts from, Y is kept from the game (reskate.input.game_buttons) and a press asks for the bike. It stays kept while
+-- that Mount waits with nothing asked of the game's input (Entry's hold_state), so a second press, which players make
+-- when nothing seems to happen, does not undo it.
+-- While any button is hidden the SDK refuses every input lease, capture and pulse (input_capture.cpp
+-- input_pulse_available), and a change of the mask revokes them. So Entry asks this module before it hands the game's
+-- input on (set_input_hold) and waits until Y is given back, and the mask changes only where Entry holds none of them.
+-- It changes only while the real Y is up: hiding a held Y hands the game a release, and giving it back hands it a
+-- press. A menu or overlay opening, the game losing focus, bike mode switched off and unload give it back at once.
 --
 -- The mask covers XInput reads only. A PlayStation pad the SDK reads natively, without Steam Input, still passes Y to
--- the game: the press then sees the rider leave the start state, and is dropped with a word that LB + A still works.
+-- the game: the press then sees the rider reach the other stock state, and is dropped with a word to press Y again,
+-- which then waits for the game's Y as it does from that state.
 local Y={}
 local Y_BIT=0x8000
+-- Where the game's own Y takes the rider from each stock state: off the board (504) from it (100), and back.
+local OTHER={[100]=504,[504]=100}
 -- After the press is let go the start state must hold this long before the bike is asked for: a Y the game took
 -- moves the rider within it.
 local GUARD_MS,GUARD_SAMPLES=300,5
@@ -28,7 +33,8 @@ local QUIET_MS,QUIET_SAMPLES,GAP_MS=600,10,250
 local NOTICE_MS=4000
 -- Where the mod is idle: nothing is being prepared, surveyed, mounted, ridden, stepped off or returned.
 local IDLE={idle=true,skateboard=true,preflight_refused=true,blocked=true,spent=true}
-local LEAK="The game got the Y, as it can on some controllers. Hold LB and press A instead."
+-- The rider is then back in the state the game's Y took them to, where a press waits for the game's Y again.
+local LEAK="The game got the Y, as it can on some controllers. Press Y again."
 local BUTTONS={"up","down","left","right","start","back","left_stick","right_stick","lb","rb","a","b","x","y"}
 local function plain(v) return type(v)=="table" and getmetatable(v)==nil end
 local function finite(v) return type(v)=="number" and v==v and math.abs(v)<math.huge end
@@ -50,6 +56,13 @@ end
 function Y.new(R,bike,key)
     assert(type(R)=="table" and type(bike)=="table","services and the Entry required")
     local function trace(line) call(R.log,"[BMX] "..line) end
+    -- The mask this module last set: 0 or Y_BIT. game_buttons has one owner, the last plugin to call it, so it is
+    -- called only when this changes. broken: a call raised, or the Entry cannot wait for Y, and no mask is asked for
+    -- again.
+    local applied,broken,unloaded=0,false,false
+    -- Entry asks this before it hands the game's input on, and waits while Y is kept.
+    local hooked=call(bike.set_input_hold,bike,function() return applied~=0 end)
+    if not hooked[1] or hooked[2]~=true then broken=true;trace("Y will not be kept from the game: the Entry cannot wait for it.") end
     -- Bike mode is kept in storage under key, the one key Entry keeps at load. Entry clears anything else under it
     -- first (fresh_namespace), so what is read here is main.lua's own record or nothing, and nothing is off.
     local enabled=false
@@ -58,13 +71,20 @@ function Y.new(R,bike,key)
         enabled=stored[1] and stored.n==2 and plain(stored[2]) and stored[2].schema==1 and stored[2].bike_mode==true
     end
     if enabled then call(bike.set_controls,bike,"y") end
-    -- The mask this module last set: 0 or Y_BIT. game_buttons has one owner, the last plugin to call it, so it is
-    -- called only when this changes. broken: a call raised, and no mask is asked for again.
-    local applied,broken,unloaded=0,false,false
     -- One press being carried out: "guard" waits for Y up and the start state to hold, "arrive" for the game's own Y
     -- to bring the rider to the start state.
     local pending=nil
     local notice,notice_until=nil,0
+    -- The log gets the first hide and the first give-back while Entry stays in one phase, and how many more there were
+    -- at the first change after it leaves it (or at unload), so a rider bailing again and again between rides does not
+    -- fill it.
+    local last_phase,log_phase,logged,unlogged=nil,nil,{},0
+    local function log_unlogged()
+        if unlogged>0 then
+            trace("Y kept and given back "..unlogged..(unlogged==1 and " more time" or " more times").." in "..tostring(log_phase)..".")
+        end
+        unlogged=0
+    end
     local object={}
     local function clock()
         local out=call(R.time and R.time.now)
@@ -79,7 +99,9 @@ function Y.new(R,bike,key)
             return false
         end
         applied=mask
-        trace(mask~=0 and "Y kept from the game for the bike." or "Y given back to the game.")
+        if last_phase~=log_phase then log_unlogged();log_phase,logged=last_phase,{} end
+        if logged[mask] then unlogged+=1
+        else logged[mask]=true;trace(mask~=0 and "Y kept from the game for the bike." or "Y given back to the game.") end
         return true
     end
     -- The game in front and in play, with no game menu and no ReSkate surface open. An unreadable answer is no.
@@ -93,7 +115,8 @@ function Y.new(R,bike,key)
         local out=call(R.input and R.input.gamepad)
         return out[1] and out.n==2 and plain(out[2]) and plain(out[2].buttons) and out[2] or nil
     end
-    -- Where the rider is, and whether they stand: upright, not ragdolled, on the ground and not being placed.
+    -- Where the rider is; whether they are down (ragdolled, or that cannot be told); and whether they stand: upright,
+    -- not ragdolled, on the ground and not being placed.
     local function rider()
         local w=call(R.skater and R.skater.telemetry)
         local a=call(R.skater and R.skater.get)
@@ -101,12 +124,15 @@ function Y.new(R,bike,key)
         local watch=t and plain(t.watch) and t.watch or nil
         if not watch or not finite(watch.state) then return nil end
         local p=a[1] and a.n==2 and plain(a[2]) and a[2] or nil
-        return {state=watch.state,standing=t.skater==true and watch.valid==true and watch.ragdoll_known==true
-            and watch.ragdoll==false and t.airborne==false and t.teleport_pending==false and p~=nil and p.airborne==false}
+        local down=watch.ragdoll_known~=true or watch.ragdoll~=false
+        return {state=watch.state,down=down,standing=t.skater==true and watch.valid==true and not down
+            and t.airborne==false and t.teleport_pending==false and p~=nil and p.airborne==false}
     end
     local function status()
         local out=call(bike.status,bike)
-        return out[1] and plain(out[2]) and out[2] or nil
+        local s=out[1] and plain(out[2]) and out[2] or nil
+        if s then last_phase=s.phase end
+        return s
     end
     local function idle(s)
         return s~=nil and IDLE[s.phase]==true and s.recovery_pending~=true and s.return_requested~=true
@@ -132,31 +158,41 @@ function Y.new(R,bike,key)
         if not idle(s) or next_start()~=p.start or now<p.at or now-p.at>=limit then pending=nil;return end
         local r=rider()
         if p.kind=="guard" then
-            -- Y was kept from the game, so the rider stays where they were. If they left the start state, the game had
-            -- the Y after all, from a pad the mask does not cover.
-            if r and r.state~=p.start then pending=nil;tell(LEAK,now);return end
-            if not r or not r.standing or applied~=Y_BIT then pending=nil;return end
+            -- Y was kept from the game, so the rider stays where they were. In the state the game's own Y leads to,
+            -- the game had the Y after all, from a pad the mask does not cover. Any other way out of the start state,
+            -- a crouch, a jump, a grind or a bail, only ends the press, with no word.
+            if r and not r.down and r.state==OTHER[p.start] then pending=nil;tell(LEAK,now);return end
+            if not r or not r.standing or r.state~=p.start or applied~=Y_BIT then pending=nil;return end
             if not held(p,now,read~=nil and read.buttons.y==false,GUARD_MS,GUARD_SAMPLES) then return end
             pending=nil
-            -- Y is up, so giving it back hands the game nothing; and the bike is asked for only once it is off.
-            if set_mask(0) then call(bike.mount,bike) end
+            -- Y stays kept: the Mount's first steps ask nothing of the game's input, and Entry asks before it hands
+            -- the game's input on, then waits for Y to come back.
+            call(bike.mount,bike)
             return
         end
         if not held(p,now,r~=nil and r.standing and r.state==p.start and at_rest(read),QUIET_MS,QUIET_SAMPLES) then return end
         pending=nil
-        if applied==0 then call(bike.mount,bike) end
+        call(bike.mount,bike)
     end
-    -- Whether Y should be kept from the game now: bike mode on, the mod idle with a Mount able to start, and the rider
-    -- standing in the state it starts from. A guarded press keeps the mask it was pressed under until it ends; one
-    -- waiting for the rider to arrive needs the game to have Y.
+    -- Whether Y should be kept from the game now, and for which state of the rider: the one the next ride starts from
+    -- while the mod is idle, or the one Entry names while a Mount waits with nothing asked of the game's input
+    -- (hold_state). It is hidden once the rider stands there. It stays hidden through the board's own states, a
+    -- crouch, the air or a grind, so skating the board between rides costs no change: the state read is the game's
+    -- physics state, which an ollie alone takes from 100 to 103 (crouched, Engine/Game/Build/20260929/no_bail.h) and
+    -- to 200 or 201 (in the air, skater_state.h). Each change is a publication change that revokes every plugin's
+    -- input leases, captures and pulses, and goes to the log. It goes back when the rider reaches the other stock
+    -- state, where a press needs the game's Y, or goes down. A guarded press keeps the mask it was pressed under until
+    -- it ends; one waiting for the rider to arrive needs the game to have Y.
     local function wanted(s)
-        if broken then return 0 end
+        if broken or s==nil then return 0 end
         if pending then return pending.kind=="guard" and applied or 0 end
-        if not idle(s) then return 0 end
-        local start=next_start()
-        if start==nil then return 0 end
+        local where
+        if idle(s) then where=next_start() elseif s.hold_state==100 or s.hold_state==504 then where=s.hold_state end
+        if where==nil then return 0 end
         local r=rider()
-        return r~=nil and r.standing and r.state==start and Y_BIT or 0
+        if not r then return 0 end
+        if applied==0 then return r.standing and r.state==where and Y_BIT or 0 end
+        return not r.down and r.state~=OTHER[where] and Y_BIT or 0
     end
     function object:enabled() return enabled end
     -- The switch on the BMX page. The key is written only when it changes, and switching off clears it.
@@ -201,7 +237,7 @@ function Y.new(R,bike,key)
             pending={kind="guard",start=start,at=now,samples=0}
             return true
         end
-        if applied==0 and (r.state==100 or r.state==504) then
+        if applied==0 and r.state==OTHER[start] then
             -- The game takes this Y and brings the rider to the start state: off the board for the first ride of a
             -- launch, onto it for a later one. Then the bike is asked for.
             pending={kind="arrive",start=start,at=now,samples=0}
@@ -209,14 +245,9 @@ function Y.new(R,bike,key)
         end
         return false
     end
-    -- Before another BMX button asks Entry for a Mount, Return or Recover: Y goes back to the game if it is up. A Y held
-    -- through that keeps the mask until it is let go, as any change does.
-    function object:give_back()
-        pending=nil
-        if unloaded or applied==0 then return end
-        local read=pad()
-        if read==nil or read.buttons.y==false then set_mask(0) end
-    end
+    -- Another BMX control was pressed: a Y press being carried out is dropped, so the two do not both ask Entry. The
+    -- mask stays as it is, since Entry waits for Y to come back before it hands the game's input on.
+    function object:drop_press() pending=nil end
     -- Each tick, after Entry's step.
     function object:step()
         if unloaded then return end
@@ -257,6 +288,7 @@ function Y.new(R,bike,key)
         if unloaded then return end
         unloaded=true;pending=nil
         if applied~=0 then call(R.input and R.input.game_buttons,0,0,false);applied=0 end
+        log_unlogged()
     end
     return table.freeze(object)
 end

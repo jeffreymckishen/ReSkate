@@ -8,7 +8,7 @@ local Chain=require("./remount_chain_fixture")
 local T={}
 local KEY="bmx_settings_v1"
 local Y_BIT=0x8000
-local LEAK="The game got the Y, as it can on some controllers. Hold LB and press A instead."
+local LEAK="The game got the Y, as it can on some controllers. Press Y again."
 local IDLE={"idle","skateboard","preflight_refused","blocked","spent"}
 local BUSY={"preparing","surveying","awaiting_mount","mounting","riding","stepping_off","returning","fallen","stopped",
     "cancelled","unloaded"}
@@ -18,12 +18,13 @@ local function copy(v)
 end
 local function on_record() return {[KEY]={schema=1,bike_mode=true}} end
 
--- A constructed game and Entry around one y_button. start=false means no Mount can start; key=false gives no key.
+-- A constructed game and Entry around one y_button. start=false means no Mount can start; key=false gives no key;
+-- no_hold leaves the Entry without set_input_hold. w.hold is the Entry's hold_state.
 local function world(options)
     options=options or {}
     local w={now=1000,focused=true,gameplay=true,interface_open=false,game_menu=false,pad=Chain.neutral_pad(),
         state=options.state or 100,airborne=false,ragdoll=false,records=options.records or {},
-        phase=options.phase or "skateboard",recovery_pending=false,return_requested=false,
+        phase=options.phase or "skateboard",recovery_pending=false,return_requested=false,hold=nil,
         mask=0,calls=0,held_changes=0,events={},lines={},mounts=0,returns=0,sets=0,controls={}}
     if options.start==nil then w.start=100 elseif options.start then w.start=options.start end
     local R={time={},input={},menu={},skater={},storage={}}
@@ -53,7 +54,9 @@ local function world(options)
         w.records[k]=copy(v)
     end
     local bike={}
-    function bike:status() return {phase=w.phase,recovery_pending=w.recovery_pending,return_requested=w.return_requested} end
+    function bike:status()
+        return {phase=w.phase,recovery_pending=w.recovery_pending,return_requested=w.return_requested,hold_state=w.hold}
+    end
     function bike:next_start_state() return w.start end
     function bike:mount()
         w.mounts+=1;w.events[#w.events+1]="mount mask "..w.mask
@@ -62,6 +65,9 @@ local function world(options)
     end
     function bike:return_to_skateboard() w.returns+=1;w.events[#w.events+1]="return";return true end
     function bike:set_controls(kind) w.controls[#w.controls+1]=kind;return true end
+    if not options.no_hold then
+        function bike:set_input_hold(fn) w.hold_fn=fn;return true end
+    end
     w.R,w.bike=R,bike
     local key=KEY
     if options.key==false then key=nil end
@@ -75,6 +81,8 @@ local function world(options)
         w.pad.buttons.y=false
         return out
     end
+    -- What the Entry's hold answers now.
+    function w.holding() return w.hold_fn~=nil and w.hold_fn()==true end
     return w
 end
 -- Bike mode on, as a kept setting turns it on at load, with one tick so the mask follows.
@@ -86,14 +94,14 @@ local function on(options)
     return w
 end
 
--- The real chain behind the button. Y_BIT hidden while a lease, capture or pulse is live, or a Mount, lease or pulse
--- asked for under the mask, fails the case: in the SDK a change of the mask revokes all three, and a hidden button
--- refuses the mod's own pulses.
+-- The real chain behind the button, stepped as main.lua's tick does: the Entry, then the button. Y_BIT hidden while a
+-- lease, capture or pulse is live, a lease, capture or pulse asked for under the mask, or the mask on while Core has
+-- the game's input, fails the case: in the SDK a change of the mask revokes all three, and a hidden button refuses them.
 local function chain(check,options)
     options=options or {}
     local w=Chain.new({entry={settings_key=KEY},storage=on_record()})
     w.stock=options.stock or 504
-    w.mask,w.mask_calls,w.mounts=0,0,0
+    w.mask,w.mask_calls,w.mounts,w.phases=0,0,0,{}
     local R=w.R
     function R.input.game_buttons(hidden,held,pause)
         w.mask_calls+=1
@@ -110,21 +118,25 @@ local function chain(check,options)
     -- The Entry as main.lua hands it over, counting each Mount.
     local entry=w.entry
     local bike={}
-    for _,name in {"status","next_start_state","set_controls","return_to_skateboard"} do
+    for _,name in {"status","next_start_state","set_controls","return_to_skateboard","set_input_hold"} do
         bike[name]=function(_,...) return entry[name](entry,...) end
     end
-    function bike:mount()
-        check(w.mask==0,"a Mount is asked for with Y back with the game")
-        w.mounts+=1
-        return entry:mount()
-    end
+    function bike:mount() w.mounts+=1;return entry:mount() end
     w.y=Y.new(R,bike,KEY)
     -- The game's own Y, about 80 ms after a press it saw: on foot it brings out the board, on the board it steps off.
-    -- main.lua steps the button after the Entry each tick; here it runs at the start of the next, the same order.
     w.on_tick=function()
         if w.game_y_at and w.now>=w.game_y_at then
             w.game_y_at=nil;w.stock=w.stock==100 and 504 or 100;w.log("the game's Y: stock now "..w.stock)
         end
+    end
+    w.after_entry=function()
+        -- Before the button moves the mask: with Y hidden, Core has been handed nothing of the game's input.
+        local core=w.manager and w.manager:status()
+        if w.mask~=0 then
+            check(core==nil or core.phase=="idle" or core.phase=="done","Core has the game's input only with Y back with the game")
+        end
+        local p=w.entry:status().phase
+        if p~=w.phases[#w.phases] then w.phases[#w.phases+1]=p end
         w.y:step()
     end
     -- A press of Y. The game sees it unless it is hidden, or a riding capture hands the game a neutral pad. leaky: a
@@ -146,6 +158,17 @@ local function chain(check,options)
         return false
     end
     function w.phase() return w.entry:status().phase end
+    function w.saw(phase) for _,p in w.phases do if p==phase then return true end end;return false end
+    -- The first ride, then a Return by Y, back on the board where the next ride starts with Y hidden.
+    function w.first_ride_and_back()
+        w.tick(3);w.press_y(100)
+        check(w.until_true(function() return w.phase()=="riding" end),"rode")
+        w.ride_ms(500);w.press_y(100)
+        check(w.until_true(function() return w.phase()=="skateboard" end),"back on the board")
+        w.tick(3)
+        check(w.mask==Y_BIT and w.stock==100,"Y hidden on the board")
+        w.phases={}
+    end
     return w
 end
 
@@ -157,6 +180,11 @@ function T.run()
         if #list~=#want then return false end
         for i=1,#want do if list[i]~=want[i] then return false end end
         return true
+    end
+    local function lines_with(w,text)
+        local count=0
+        for _,line in w.lines do if string.find(line,text,1,true) then count+=1 end end
+        return count
     end
     case(function() -- Off by default, and a missing or malformed setting is off: Y does nothing, and is never hidden.
         local stored={{},{[KEY]={schema=1,bike_mode=false}},{[KEY]={schema=2,bike_mode=true}},
@@ -177,6 +205,11 @@ function T.run()
         local w=on()
         check(w.y:enabled()==true and same(w.controls,{"y"}) and w.sets==0,"on, Y named, no write")
         check(w.mask==Y_BIT and w.calls==1,"and Y is hidden on the board before a later ride")
+        check(w.holding(),"and the Entry is told it is, so it hands nothing of the game's input on")
+        -- An Entry that cannot wait for Y must never have it hidden.
+        local x=world({records=on_record(),no_hold=true});x.tick(5)
+        check(x.y:enabled() and x.calls==0 and x.y:status().broken,"no hold, no mask")
+        check(lines_with(x,"the Entry cannot wait for it")==1,"and the log says why")
     end)
     case(function() -- The switch writes its key only when it changes, and switching off clears it.
         local w=world()
@@ -197,13 +230,13 @@ function T.run()
         w.y:unload()
         check(w.y:set_enabled(false)==false and w.y:enabled(),"nothing switches after unload")
     end)
-    case(function() -- Y is hidden only while the mod is idle with the rider standing in the state the next ride starts from.
+    case(function() -- Idle, Y is hidden once the rider stands where the next ride starts, and kept on the same side.
         for _,phase in IDLE do
             local w=on({phase=phase})
             check(w.mask==Y_BIT,"idle in "..phase)
             for _,busy in BUSY do
                 w.phase=busy;w.tick()
-                check(w.mask==0,"given back in "..busy)
+                check(w.mask==0,"given back in "..busy.." with nothing for the Entry to hold")
                 w.phase=phase;w.tick()
                 check(w.mask==Y_BIT,"and hidden again in "..phase)
             end
@@ -220,10 +253,42 @@ function T.run()
         given_back("a Return asked for",function(x) x.return_requested=true end,function(x) x.return_requested=false end)
         given_back("no Mount can start",function(x) x.start=nil end,function(x) x.start=504 end)
         given_back("on the board when the ride starts on foot",function(x) x.state=100 end,function(x) x.state=504 end)
-        given_back("in the air",function(x) x.airborne=true end,function(x) x.airborne=false end)
-        given_back("ragdolled",function(x) x.ragdoll=true end,function(x) x.ragdoll=false end)
-        given_back("in a trick or any other state",function(x) x.state=300 end,function(x) x.state=504 end)
+        given_back("down",function(x) x.ragdoll=true end,function(x) x.ragdoll=false end)
+        -- Kept through a jump on foot, and only hidden again by a rider who stands there.
+        local calls=w.calls
+        w.airborne=true;w.tick(10)
+        check(w.mask==Y_BIT and w.calls==calls,"kept through a jump")
+        w.state=100;w.tick();w.airborne=false;w.state=504
+        check(w.mask==0,"given back once the board comes out")
+        w.airborne=true;w.tick(5)
+        check(w.mask==0,"and not hidden again in the air")
+        w.airborne=false;w.tick()
+        check(w.mask==Y_BIT,"but once they stand there")
         check(w.held_changes==0,"never with Y down")
+    end)
+    case(function() -- Skating the board between rides costs no change of the mask; a bail costs two, logged once.
+        local w=on()
+        local calls=w.calls
+        -- An ollie: crouched (103), in the air (200 or 201), landed (100); a grind (403); a manual's own states.
+        for i=1,50 do
+            w.state=103;w.tick(3)
+            w.state=i%2==0 and 200 or 201;w.airborne=true;w.tick(20)
+            w.state=i%5==0 and 403 or 100;w.airborne=i%5==0;w.tick(10)
+            w.state=100;w.airborne=false;w.tick(5)
+        end
+        check(w.mask==Y_BIT and w.calls==calls,"fifty jumps and ten grinds, no change: "..(w.calls-calls))
+        check(w.press(100)==true and w.y:status().pending=="guard","and Y on the board still asks for the bike")
+        w.y:drop_press()
+        local before=#w.lines
+        for _=1,20 do
+            w.state=504;w.ragdoll=true;w.tick(30)
+            w.state=100;w.ragdoll=false;w.tick(30)
+        end
+        check(w.calls==calls+40,"twenty bails give Y back and hide it again: "..(w.calls-calls))
+        -- The hide at load was this phase's first, so only the first give-back is new.
+        check(#w.lines-before==1,"the first of each is logged, the rest counted: "..(#w.lines-before))
+        w.phase="stepping_off";w.tick()
+        check(lines_with(w,"Y kept and given back 39 more times in skateboard.")==1,"the count goes to the log as the phase changes")
     end)
     case(function() -- The mask moves only with Y up: Y held through a change of phase never moves it.
         local w=on()
@@ -250,7 +315,7 @@ function T.run()
             local w=on()
             local before=w[field]
             w.pad.buttons.y=true;w[field]=value;w.tick()
-            check(w.mask==0,"given back at once, Y held: "..field)
+            check(w.mask==0 and not w.holding(),"given back at once, Y held: "..field)
             check(w.y:press()==false and w.mounts==0,"and Y asks nothing: "..field)
             w.tick(30)
             check(w.mask==0 and w.mounts==0,"while it lasts: "..field)
@@ -262,6 +327,11 @@ function T.run()
             check(w.y:status().pending==nil,"dropped: "..field)
             w[field]=before;w.tick(60)
             check(w.mounts==0,"and never asks for the bike: "..field)
+            -- And in a Mount that holds Y, the same.
+            w.phase,w.hold,w.state="preparing",504,504;w.tick()
+            check(w.mask==Y_BIT,"held for the Mount: "..field)
+            w[field]=value;w.tick()
+            check(w.mask==0,"given back at once from the Mount too: "..field)
         end
         local w=on()
         w.pad.buttons.y=true
@@ -269,19 +339,31 @@ function T.run()
         w.tick(10)
         check(w.calls==2,"and left alone")
     end)
-    case(function() -- A press with Y hidden asks for the bike once Y has been up 300 ms, giving Y back first.
+    case(function() -- A press with Y hidden asks for the bike once Y has been up 300 ms, with Y still hidden.
         local w=on()
-        w.on_mount=function() w.phase="stepping_off" end
+        w.on_mount=function() w.phase,w.hold="stepping_off",100 end
         w.events={}
         check(w.press(100)==true and w.y:status().pending=="guard","the press is carried out")
         check(w.y:press()==false,"a second while it is says no")
         w.tick(15)
         check(w.mounts==0,"Y up 240 ms: not yet")
         w.tick(5)
-        check(w.mounts==1 and same(w.events,{"mask 0","mount mask 0"}),"then Y back, then the Mount: "..table.concat(w.events,","))
+        check(w.mounts==1 and same(w.events,{"mount mask "..Y_BIT}),"then the Mount, Y still hidden: "..table.concat(w.events,","))
+        -- The Mount waits for released controls with nothing asked of the game's input: a second press stays hidden.
+        w.tick(5)
+        check(w.mask==Y_BIT and w.holding(),"still hidden while the step-off waits, and the Entry told so")
+        check(w.press(100)==false and w.mask==Y_BIT and w.mounts==1,"a second Y then is hidden and asks nothing")
+        -- In a crouch or rolling on, as before; a rider off the board or down has it back.
+        w.state=103;w.tick(3);w.state=100;w.tick(3)
+        check(w.mask==Y_BIT,"kept through a crouch")
+        -- The Entry about to hand the game's input on stops holding: Y goes back, with Y up only.
+        w.pad.buttons.y=true;w.hold=nil;w.tick(5)
+        check(w.mask==Y_BIT and w.holding(),"not with Y down: the Entry waits")
+        w.pad.buttons.y=false;w.tick()
+        check(w.mask==0 and not w.holding() and w.held_changes==0,"Y up, it goes back, and the Entry may go on")
         w.tick(30)
-        check(w.mask==0 and w.mounts==1 and w.y:status().pending==nil,"busy, Y stays with the game")
-        -- Held past 6 s it is dropped, with no word.
+        check(w.mask==0 and w.mounts==1 and w.y:status().pending==nil,"and stays back")
+        -- A held press past 6 s is dropped, with no word.
         local held=on()
         check(held.press(6100)==true,"a long press")
         held.tick(40)
@@ -292,7 +374,29 @@ function T.run()
         moved.press(100);moved.start=504;moved.tick(40)
         check(moved.mounts==0 and moved.y:status().pending==nil,"a changed start drops it")
     end)
-    case(function() -- A Y the game took anyway moves the rider: the press is dropped, with a word that LB + A works.
+    case(function() -- A Mount that waits with nothing asked of the game's input keeps Y from it, wherever it began.
+        local w=on({start=504,state=504,phase="preparing"})
+        check(w.mask==0,"no hold state, no mask")
+        w.hold=504;w.tick()
+        check(w.mask==Y_BIT and w.holding(),"hidden where the Entry holds, with the rider standing there")
+        for _,phase in {"surveying","awaiting_mount"} do
+            w.phase=phase;w.tick()
+            check(w.mask==Y_BIT,"and through "..phase)
+        end
+        w.state=100;w.tick()
+        check(w.mask==0,"given back once the rider is on the board, where the game's Y is needed")
+        w.state=504;w.airborne=true;w.tick()
+        check(w.mask==0,"not hidden again in the air")
+        w.airborne=false;w.tick()
+        check(w.mask==Y_BIT,"but once they stand there")
+        w.hold=nil;w.tick()
+        check(w.mask==0,"and given back once the Entry stops holding")
+        w.hold=504;w.phase="mounting";w.tick()
+        check(w.mask==Y_BIT,"the hold state is the Entry's, not this module's reading of its phase")
+        check(w.press(100)==false and w.mounts==0,"a press there asks nothing")
+        check(w.held_changes==0,"never with Y down")
+    end)
+    case(function() -- A Y the game took anyway moves the rider: the press is dropped, with a word to press Y again.
         local w=on()
         w.pad.buttons.y=true
         check(w.y:press()==true,"pressed")
@@ -305,18 +409,26 @@ function T.run()
         check(w.mounts==0,"and the bike is not asked for")
         w.tick(200)
         check(w.y:notice()==nil,"the word goes after 4 s")
-        -- A rider who leaves the ground or ragdolls during the press: dropped, without the word.
-        for _,field in {"airborne","ragdoll"} do
+        -- A rider who crouches, jumps, grinds or bails during the press: dropped, without the word.
+        for _,how in {{state=103},{state=200,airborne=true},{state=201,airborne=true},{state=403,airborne=true},
+            {state=300,ragdoll=true},{state=504,ragdoll=true},{airborne=true},{ragdoll=true}} do
             local x=on()
-            x.pad.buttons.y=true;x.y:press();x.tick(3);x[field]=true;x.tick()
-            check(x.y:status().pending==nil and x.y:notice()==nil,"dropped quietly: "..field)
-            x.pad.buttons.y=false;x[field]=false;x.tick(60)
-            check(x.mounts==0,"no Mount: "..field)
+            x.pad.buttons.y=true;x.y:press();x.tick(3)
+            for k,v in how do x[k]=v end
+            x.tick()
+            local name=tostring(how.state).."/"..tostring(how.airborne).."/"..tostring(how.ragdoll)
+            check(x.y:status().pending==nil and x.y:notice()==nil,"dropped quietly: "..name)
+            x.pad.buttons.y=false;x.state,x.airborne,x.ragdoll=100,false,false;x.tick(60)
+            check(x.mounts==0 and x.y:notice()==nil,"no Mount and no word: "..name)
         end
+        -- Before the first ride the other state is the board.
+        local first=on({start=504,state=504,phase="idle"})
+        first.pad.buttons.y=true;first.y:press();first.tick(3);first.state=100;first.tick()
+        check(first.y:notice()==LEAK,"the board out before the first ride is the game's Y too")
     end)
     case(function() -- First ride from the board: the game's Y steps the rider off, and the bike comes once they stand still.
         local w=on({start=504,state=100,phase="idle"})
-        w.on_mount=function() w.phase="preparing" end
+        w.on_mount=function() w.phase,w.hold="preparing",504 end
         check(w.mask==0 and w.calls==0,"on the board before the first ride, Y is the game's")
         w.pad.buttons.y=true
         check(w.y:press()==true and w.y:status().pending=="arrive","the press waits for the rider")
@@ -325,7 +437,8 @@ function T.run()
         check(w.mounts==0,"480 ms at rest: not yet")
         check(w.calls==0,"and Y is not hidden while they arrive")
         w.tick(10)
-        check(w.mounts==1 and same(w.events,{"mount mask 0"}),"600 ms at rest: the Mount, with Y the game's: "..table.concat(w.events,","))
+        check(w.mounts==1 and same(w.events,{"mount mask 0","mask "..Y_BIT}),
+            "600 ms at rest: the Mount, with Y the game's, then hidden while the bike gets ready on foot: "..table.concat(w.events,","))
         -- A stick pushed while waiting starts the rest again.
         local x=on({start=504,state=100,phase="idle"})
         x.pad.buttons.y=true;x.y:press();x.tick(5);x.state=504;x.pad.buttons.y=false
@@ -350,7 +463,7 @@ function T.run()
         w.tick(45)
         check(w.mounts==1 and same(w.events,{"mount mask 0"}),"then the Mount, with Y the game's")
         w.tick(20)
-        check(w.calls==0,"and Y was never hidden")
+        check(w.calls==0,"and Y was never hidden, with nothing for the Entry to hold")
     end)
     case(function() -- Riding, Y goes back to the skateboard once; a busy, airborne or fallen rider's press asks nothing.
         local w=on({phase="riding"})
@@ -379,7 +492,7 @@ function T.run()
     case(function() -- Unload gives Y back once, and nothing happens after it.
         local w=on()
         w.y:unload()
-        check(w.mask==0 and w.calls==2 and w.y:status().unloaded,"given back")
+        check(w.mask==0 and w.calls==2 and w.y:status().unloaded and not w.holding(),"given back")
         w.tick(10)
         check(w.press(100)==false and w.calls==2 and w.mounts==0,"nothing after")
         w.y:unload()
@@ -392,7 +505,7 @@ function T.run()
         local w=world({records=on_record()})
         w.refuse=true;w.on_mount=function() w.phase="stepping_off" end
         w.tick(10)
-        check(w.calls==1 and w.y:status().broken and w.mask==0,"tried once")
+        check(w.calls==1 and w.y:status().broken and w.mask==0 and not w.holding(),"tried once")
         check(string.find(w.lines[#w.lines],"could not be kept",1,true)~=nil,"and logged")
         check(w.press(100)==false and w.mounts==0,"on the board with Y not hidden, the game had it")
         w.state=504;w.tick(5)
@@ -401,18 +514,13 @@ function T.run()
         w.tick(5);w.state=100;w.pad.buttons.y=false;w.tick(50)
         check(w.mounts==1 and w.calls==1,"and the bike comes, game_buttons never asked again")
     end)
-    case(function() -- Another BMX button gives Y back first when it is up, and drops a press being carried out.
+    case(function() -- Another BMX button drops a press being carried out, and leaves the mask to the Entry's hold.
         local w=on()
         w.press(100)
-        w.y:give_back()
-        check(w.mask==0 and w.y:status().pending==nil,"given back, the press dropped")
-        w.phase="preparing";w.tick(40)
-        check(w.mounts==0 and w.mask==0,"the press never asks")
-        local held=on()
-        held.pad.buttons.y=true;held.y:give_back()
-        check(held.mask==Y_BIT and held.held_changes==0,"held, the mask stays")
-        held.phase="preparing";held.tick(5);held.pad.buttons.y=false;held.tick()
-        check(held.mask==0,"and goes once Y is let go")
+        w.y:drop_press()
+        check(w.mask==Y_BIT and w.y:status().pending==nil,"the press dropped, Y still hidden")
+        w.phase,w.hold="preparing",nil;w.tick(40)
+        check(w.mounts==0 and w.mask==0,"the press never asks, and Y goes back where nothing holds it")
     end)
 
     ---------------- The real Entry behind the button ----------------
@@ -424,14 +532,16 @@ function T.run()
         check(w.mask==Y_BIT,"on foot before it, Y is hidden")
         check(w.press_y(100),"Y")
         check(w.stock==504,"the game did not see it")
-        local busy_nil=true
+        local busy_nil,mounting_told=true,false
         local rode=w.until_true(function()
             local p=w.phase()
             if p~="riding" and p~="idle" and w.entry:next_start_state()~=nil then busy_nil=false end
+            if p=="mounting" and w.entry:help_line()=="Getting on the bike: let go of the controls and don't press Y." then mounting_told=true end
             return p=="riding"
         end)
         if not rode then w.timeline(60) end
         check(rode and w.mounts==1 and w.mask==0,"the bike comes: "..w.phase())
+        check(mounting_told,"and while the rider got on, the HUD said not to press Y")
         check(busy_nil and w.entry:next_start_state()==nil,"while busy or riding no Mount can start")
         w.ride_ms(500)
         check(w.press_y(100) and w.stock==504,"Y while riding, which the riding capture keeps from the game")
@@ -442,22 +552,112 @@ function T.run()
         w.tick(3)
         check(w.mask==Y_BIT,"so Y is hidden there")
         check(w.press_y(100) and w.stock==100,"Y, which the game did not see")
-        rode=w.until_true(function() return w.phase()=="riding" end)
+        local told=false
+        rode=w.until_true(function()
+            if w.phase()=="stepping_off" and w.entry:help_line()=="Stepping off the board for the bike: stand still and don't press Y." then told=true end
+            return w.phase()=="riding"
+        end)
         if not rode then w.timeline(60) end
         check(rode and w.mounts==2 and w.entry:status().attempts_used==2,"rides again, the Entry's own Y stepping off")
+        check(told,"and the HUD said not to press Y while the rider stepped off")
     end)
-    case(function() -- A pad the mask does not cover: the press is dropped and told, and the next Y waits for the board.
+    case(function() -- A second Y while the later ride's step-off waits is kept from the game, and the ride goes on.
+        local w=chain(check)
+        w.first_ride_and_back()
+        w.press_y(100)
+        check(w.until_true(function() return w.phase()=="stepping_off" end,40),"the Mount starts")
+        w.tick(5)
+        check(w.mask==Y_BIT and w.entry:status().hold_state==100,"Y still hidden while the step-off waits for released controls")
+        -- The player saw nothing happen and pressed Y again, twice.
+        check(w.press_y(100)==false and w.stock==100,"a second Y, which the game did not see")
+        w.tick(25)
+        check(w.press_y(60)==false and w.stock==100,"and a third")
+        local rode=w.until_true(function() return w.phase()=="riding" or w.phase()=="blocked" end)
+        if not rode then w.timeline(80) end
+        check(w.phase()=="riding" and not w.saw("blocked") and w.mounts==2 and w.entry:status().attempts_used==2,
+            "the ride goes on: "..table.concat(w.phases,","))
+        check(w.saw("preparing") and w.saw("surveying"),"through the step-off and the survey")
+    end)
+    case(function() -- A second Y while the first ride gets ready is kept from the game as well.
+        local w=chain(check)
+        w.tick(3);w.press_y(100)
+        check(w.until_true(function() local p=w.phase();return p=="preparing" or p=="surveying" end,40),"the Mount starts")
+        check(w.mask==Y_BIT and w.entry:status().hold_state==504,"Y still hidden")
+        check(w.press_y(100)==false and w.stock==504,"a second Y, which the game did not see")
+        local rode=w.until_true(function() return w.phase()=="riding" or w.phase()=="preflight_refused" or w.phase()=="blocked" end)
+        if not rode then w.timeline(60) end
+        check(w.phase()=="riding" and w.mounts==1,"the ride goes on: "..table.concat(w.phases,","))
+    end)
+    case(function() -- LB + A with Y held under the mask: the Entry waits for Y to come back before it asks for the bike.
+        local w=chain(check)
+        w.tick(3)
+        check(w.mask==Y_BIT,"Y hidden on foot before the first ride")
+        -- The player holds Y, nothing happens, so they hold LB and press A too.
+        w.pad.buttons.y=true;w.y:press();w.tick(2)
+        w.y:drop_press();check(w.entry:mount(),"LB + A")
+        check(w.until_true(function() return w.entry:status().hold_waiting end,200),"the Mount gets ready and waits")
+        local s=w.entry:status()
+        check(s.phase=="awaiting_mount" and s.hold_state==nil and w.mask==Y_BIT,"at the request, with Y still down and hidden")
+        w.tick(120)
+        check(w.phase()=="awaiting_mount" and w.handle==nil and w.manager:status().phase=="idle","nothing asked of the game for 2 s")
+        w.pad.buttons.y=false
+        local rode=w.until_true(function() return w.phase()=="riding" or w.phase()=="blocked" end)
+        if not rode then w.timeline(60) end
+        check(w.phase()=="riding" and w.stock==504,"Y let go: given back, then the bike")
+    end)
+    case(function() -- The Entry's hold on its own: the mount's request and the step-off's Y wait for it, nothing else.
+        local w=Chain.new()
+        w.holding=false
+        check(w.entry:set_input_hold(function() return w.holding end) and not w.entry:set_input_hold(5),"a function or nil")
+        local states={}
+        local function note() local h=w.entry:status().hold_state;states[w.entry:status().phase]=h or false end
+        w.holding=true
+        check(w.entry:mount(),"Mount")
+        for _=1,200 do w.tick();note();if w.entry:status().hold_waiting then break end end
+        check(states.preparing==504 or states.surveying==504,"on foot while it gets ready")
+        w.tick(120)
+        local s=w.entry:status()
+        check(s.phase=="awaiting_mount" and s.hold_waiting and s.hold_state==nil and w.manager:status().phase=="idle"
+            and w.handle==nil,"held, the mount is not asked for, and the hold state is let go")
+        w.holding=false
+        check(w.until_phase("riding"),"let go, it rides")
+        check(w.entry:status().hold_state==nil and not w.entry:status().hold_waiting,"no hold state riding")
+        w.ride_ms(500);w.entry:return_to_skateboard()
+        check(w.until_phase("skateboard"),"back on the board")
+        check(w.entry:status().hold_state==nil,"none idle")
+        w.holding=true
+        check(w.entry:mount(),"Mount from the board")
+        w.tick()
+        check(w.entry:status().phase=="stepping_off" and w.entry:status().hold_state==100,"on the board before the step-off")
+        for _=1,200 do w.tick();if w.entry:status().hold_waiting then break end end
+        w.tick(120)
+        s=w.entry:status()
+        check(s.phase=="stepping_off" and s.hold_waiting and w.pulse==nil and w.stock==100
+            and w.manager:status().phase=="done","held, the step-off's Y is not asked for")
+        w.holding=false
+        check(w.until_phase("riding") and w.entry:status().attempts_used==2,"let go, it steps off and rides")
+        check(w.entry:set_input_hold(nil),"the hold can be taken away")
+    end)
+    case(function() -- A fall's own remount keeps Y from the game only where it costs the step-off nothing.
         local w=chain(check)
         w.tick(3);w.press_y(100)
         check(w.until_true(function() return w.phase()=="riding" end),"rode")
-        w.ride_ms(500);w.press_y(100)
-        check(w.until_true(function() return w.phase()=="skateboard" end),"back on the board")
-        w.tick(3);w.leaky=true
-        check(w.mask==Y_BIT and w.press_y(100),"Y, which the game takes anyway")
+        w.ride_ms(500);w.phases={}
+        w.tilt_stop(59.7)
+        local rode=w.until_true(function() local s=w.entry:status();return s.phase=="riding" and s.attempts_used==2 end)
+        if not rode then w.timeline(80) end
+        check(rode,"the fall gets back on: "..table.concat(w.phases,","))
+        check(w.saw("returning") and w.saw("stepping_off"),"through a Return and a step-off")
+    end)
+    case(function() -- A pad the mask does not cover: the press is dropped and told, and the next Y waits for the board.
+        local w=chain(check)
+        w.first_ride_and_back()
+        w.leaky=true
+        check(w.press_y(100),"Y, which the game takes anyway")
         w.tick(10)
         check(w.stock==504 and w.y:notice()==LEAK and w.mounts==1,"stepped off, dropped and told: "..tostring(w.y:notice()))
         check(w.mask==0,"on foot, Y is the game's")
-        check(w.press_y(100),"Y again")
+        check(w.press_y(100),"Y again, as the HUD says")
         local rode=w.until_true(function() return w.phase()=="riding" end)
         if not rode then w.timeline(60) end
         check(rode and w.mounts==2 and w.entry:status().attempts_used==2,"the game brought the board, then the bike came")
@@ -469,20 +669,18 @@ function T.run()
         check(w.press_y(100),"Y")
         local rode=w.until_true(function() return w.phase()=="riding" end)
         if not rode then w.timeline(60) end
-        check(rode and w.mounts==1 and w.mask_calls==0,"stepped off, then rode, Y never hidden")
+        check(rode and w.mounts==1 and w.stock==504,"stepped off, then rode")
+        check(w.mask_calls==2,"Y hidden only while the bike got ready on foot: "..w.mask_calls)
     end)
     case(function() -- A later ride refused by the ground waits on foot, and Y there retries it.
         local w=chain(check)
-        w.tick(3);w.press_y(100)
-        check(w.until_true(function() return w.phase()=="riding" end),"rode")
-        w.ride_ms(500);w.press_y(100)
-        check(w.until_true(function() return w.phase()=="skateboard" end),"back on the board")
+        w.first_ride_and_back()
         local flat=w.R.world.probe
         w.R.world.probe=function(from,to)
             if from.y-to.y>1 then return {status="hit",position=vector.create(from.x,from.x*.5,from.z)} end
             return {status="clear"}
         end
-        w.tick(3);w.press_y(100)
+        w.press_y(100)
         local refused=w.until_true(function() local p=w.phase();return p=="preflight_refused" or p=="blocked" end)
         if not refused then w.timeline(60) end
         check(refused and w.phase()=="preflight_refused" and w.stock==504,"refused on a hill, on foot: "..w.phase())
@@ -491,9 +689,12 @@ function T.run()
         check(w.mask==Y_BIT,"so Y is hidden there")
         w.R.world.probe=flat
         check(w.press_y(100) and w.stock==504,"Y on flat ground")
-        local rode=w.until_true(function() return w.phase()=="riding" end)
+        check(w.until_true(function() return w.phase()=="preparing" end,40),"the retry starts")
+        w.tick(5)
+        check(w.press_y(100)==false and w.stock==504,"a second Y during the retry's wait, which the game did not see")
+        local rode=w.until_true(function() return w.phase()=="riding" or w.phase()=="blocked" end)
         if not rode then w.timeline(60) end
-        check(rode and w.mounts==3 and w.entry:status().attempts_used==2,"the retry rides: "..w.phase())
+        check(w.phase()=="riding" and w.mounts==3 and w.entry:status().attempts_used==2,"the retry rides: "..w.phase())
     end)
     return {cases=cases,assertions=n,native_authority=false,constructed=true}
 end

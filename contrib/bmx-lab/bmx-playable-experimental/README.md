@@ -81,17 +81,24 @@ Mounting and going back to the skateboard can be changed in Binds. Pedal, brake,
 
 Bike mode puts getting on and off the bike on Y alone. Switch on **Switch to bike: Y gets on and off** on the BMX
 page in the Insert menu; it stays on for later launches until it is switched off. Then, standing still on foot or on
-the skateboard, press Y and let go of the controls while the bike gets ready. Riding, Y goes back to the skateboard.
+the skateboard, press Y once and let go of the controls while the bike gets ready. Riding, Y goes back to the
+skateboard.
 
 - The first ride of a launch starts on foot, so from the skateboard Y steps the rider off first, and the bike comes
   once they stand still with the controls let go. Later rides start on the skateboard, so on foot Y brings the
   skateboard out first.
-- Standing where the next ride starts, the game does not see Y, so it does not step off or bring out the skateboard
-  as well. When no ride can start, Y does what it does in the game. Opening a menu or Insert, or leaving the game,
-  gives Y back to the game at once.
+- Where the next ride starts, the game does not see Y, so it does not step off or bring out the skateboard as well.
+  That lasts while the rider skates there: after the first ride Y does not step off the skateboard, and a Y in the
+  air or on a grind does nothing. Y goes back to the game where the game's Y is needed, off the board after the first
+  ride and on it before, and while the rider is down after a bail. When no ride can start, Y does what it does in the
+  game. Opening a menu or Insert, or leaving the game, gives Y back to the game at once.
+- Don't press Y again until you ride. While the bike gets ready a second Y mostly does nothing, but while the rider
+  steps off the board for it, and while they get on the bike, the game sees Y, and it can end that try: a step-off
+  the game made, or a skateboard it brought out, is not the mod's. The HUD says not to press Y then.
 - LB + A, F8 and LB + RB + R3 still work, and the HUD's lines say to press Y.
 - A PlayStation controller without Steam Input can still pass Y to the game. The HUD then says "The game got the Y,
-  as it can on some controllers. Hold LB and press A instead."
+  as it can on some controllers. Press Y again." That Y waits for the game's own Y to finish, and then the bike comes.
+- While Y is kept from the game, other mods cannot press controller buttons for you or take the controller over.
 - Bike mode's Y is a bind of its own, `bmx_y`. Leave it on Y: it is Y that the mod keeps from the game, whichever
   button the bind is on.
 

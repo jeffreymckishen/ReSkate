@@ -540,6 +540,8 @@ function M.new(options)
             w.now+=16;w.tick_n+=1
             w.world_tick()
             w.entry:step(16)
+            -- What main.lua's tick runs after the Entry's step (y_button.lua), in the same order.
+            if w.after_entry then w.after_entry() end
             local s=w.entry:status()
             local core=w.manager and w.manager:status()
             local e=core and core.equipment

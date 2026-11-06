@@ -139,10 +139,16 @@ function Entry.new(R,Runtime,Survey,options)
             ride_again="Press Y to ride again.",
             let_go="Let go of every control for a moment, then press Y.",
             close_menus="Close menus and let go of the controls, then press Y.",
+            -- In bike mode a second Y is the likely mistake. y_button.lua keeps Y from the game while a Mount waits with
+            -- nothing asked of the game's input, but it cannot while the step-off's own Y or the mount is under way,
+            -- and a Y the game sees then steps the rider off or brings out the board and ends the attempt. So these
+            -- two lines say not to press it.
             help={fallen="The ride ended. Press Y to ride again.",
                 preflight_refused="No room here or too steep: move, then press Y.",
                 blocked="That didn't finish. Press Y to ride again.",
-                spent="That didn't finish. Press Y to ride again."}}}
+                spent="That didn't finish. Press Y to ride again.",
+                stepping_off="Stepping off the board for the bike: stand still and don't press Y.",
+                mounting="Getting on the bike: let go of the controls and don't press Y."}}}
     local words=WORDS.lb_a
     local RIDE_RETURNING="The ride stopped. Going back to the skateboard."
     local stock_retries,stock_retry_at=0,nil
@@ -173,6 +179,11 @@ function Entry.new(R,Runtime,Survey,options)
     local blocked_help=nil
     -- What the HUD says while a first ride's Mount waits on where the rider is, in place of the terrain line.
     local refused_help=nil
+    -- A hold on the game's input from elsewhere in the mod (set_input_hold): y_button.lua's, true while it keeps Y from
+    -- the game. While any button is hidden the SDK refuses every input lease, capture and pulse as interference
+    -- (input_capture.cpp input_pulse_available), so the two calls that hand the game's input on, the step-off's
+    -- prepare_next_mount and the mount's request_mount, wait for it to end. hold_waiting: one of them is waiting.
+    local input_hold,hold_waiting=nil,false
     local stopped,cancel_sent,cancelled,unloaded,ticking=false,false,false,false,false
     local generation,latest,known=0,nil,false
     local prep_at,prep_last,prep_calls,survey=nil,nil,0,nil
@@ -204,6 +215,23 @@ function Entry.new(R,Runtime,Survey,options)
         return plain(b) and b.creation_refusal or nil
     end
     local function no_body() local class=refusal();return class and NO_BODY[class] or nil end
+    -- Whether the hold is on now. Only a plain true holds, so an Entry no one set a hold on is as before.
+    local function held_input()
+        if input_hold==nil then return false end
+        local out=call(input_hold)
+        return out[1] and out[2]==true
+    end
+    -- Where a button kept from the game costs the Mount under way nothing (y_button.lua): the stock state the rider
+    -- waits in while nothing of the game's input is live or asked for, and nothing will be without asking the hold
+    -- first. 100 while a later ride waits for released controls before its step-off; 504 while a ride prepares,
+    -- surveys and waits to ask for the bike. nil everywhere else (a step-off armed, a mount asked for, a ride, a
+    -- Return), and once a hand-over waits for the hold, so that it is let go.
+    local function hold_state()
+        if hold_waiting or cancelled or unloaded or mount_issued or return_pending or stock_attempted then return nil end
+        if phase=="stepping_off" then return second_prepare_pending and 100 or nil end
+        if phase=="preparing" or phase=="surveying" or phase=="awaiting_mount" then return 504 end
+        return nil
+    end
     -- Whether the settings key holds the setting main.lua writes, read now.
     local function settings_kept()
         local stored=call(R.storage and R.storage.get,settings_key)
@@ -511,6 +539,10 @@ function Entry.new(R,Runtime,Survey,options)
             return
         end
         if generation~=version or cancelled or unloaded then return end
+        -- The mount's lease and capture would be refused under a hidden button: wait until it is given back, which
+        -- y_button.lua does once Y is up. The survey's own age limit still applies.
+        if held_input() then hold_waiting=true;return end
+        hold_waiting=false
         mount_issued=true -- Burn before callback, even if the owner refuses or raises.
         mount_charged=false
         local grade
@@ -935,6 +967,10 @@ function Entry.new(R,Runtime,Survey,options)
                 if phase~="blocked" then detail="Release controls and settle on stock100 before the single guarded step-off." end
                 return
             end
+            -- The step-off's own Y would be refused under a hidden button. The controls have just read released, so
+            -- the hold can end at once; the quiet above still holds on the next tick, and the 60 s still runs.
+            if held_input() then hold_waiting=true;return end
+            hold_waiting=false
             -- Intent was spent at the Mount action. Release of that same chord
             -- must precede admission; preserve its original60s equipment arm.
             second_prepare_pending=false
@@ -1025,7 +1061,7 @@ function Entry.new(R,Runtime,Survey,options)
             end
             -- Keep the reserved attempt; the deadline is this press's (above).
             -- Only a NEW survey/preparation is allowed; no old-owner Y repeats.
-            generation+=1;prep_at=now;prep_last=nil;prep_calls=0;survey=nil
+            generation+=1;prep_at=now;prep_last=nil;prep_calls=0;survey=nil;hold_waiting=false
             second_terrain_pending=attempts_used>=2
             if second_terrain_pending then reset_second_quiet() end
             phase,detail="preparing","Retrying terrain preflight; stay on foot and still. Prior refusals remain recorded."
@@ -1046,7 +1082,7 @@ function Entry.new(R,Runtime,Survey,options)
             if reopened=="blocked" or reopened=="spent" then phase=reopened end
             return tell(words.board)
         end
-        attempts_used+=1;used=true;generation+=1;stop_told=nil;mount_refunded=false
+        attempts_used+=1;used=true;generation+=1;stop_told=nil;mount_refunded=false;hold_waiting=false
         -- A fall belongs to the ride that fell. Kept into this one, a stop before it rides, such as a refused capture or
         -- lease, read as a second fall and the mod got back on by itself after every refusal (the capture-retry review,
         -- 2026-11-05).
@@ -1094,6 +1130,13 @@ function Entry.new(R,Runtime,Survey,options)
     function object:set_controls(kind)
         if type(kind)~="string" or not WORDS[kind] then return false end
         words=WORDS[kind]
+        return true
+    end
+    -- fn() answers true while the mod keeps a game button from the game (y_button.lua); nil takes the hold away.
+    -- Nothing is handed the game's input while it answers true, and status().hold_state says where a hold costs nothing.
+    function object:set_input_hold(fn)
+        if fn~=nil and type(fn)~="function" then return false end
+        input_hold=fn
         return true
     end
     function object:return_to_skateboard()
@@ -1376,7 +1419,8 @@ function Entry.new(R,Runtime,Survey,options)
             attempts_used=attempts_used,attempt_limit=attempt_limit,body_reuse=body_reuse,
             new_allocation_each_cycle=two_cycle and body_reuse~=true,
             cleanup_pending=not known or latest.cleanup_pending~=false,cleanup_unknown=not known or latest.cleanup_unknown~=false,
-            stock_toggle_blocked=not known or latest.stock_toggle_blocked~=false,session_reusable=false})
+            stock_toggle_blocked=not known or latest.stock_toggle_blocked~=false,session_reusable=false,
+            hold_state=hold_state(),hold_waiting=hold_waiting})
     end
     function object:unload()
         if unloaded then return end

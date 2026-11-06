@@ -3831,6 +3831,8 @@ void tricks_reach_plugins_that_ask_for_them() {
     host.apply({script("bare", R"(
         local ok, err = pcall(reskate.on, "trick_landed", function() end)
         assert(not ok and err:find("events.tricks"), err)
+        ok, err = pcall(reskate.on, "line_broken", function() end)
+        assert(not ok and err:find("events.tricks"), err)
         ok, err = pcall(reskate.score.current)
         assert(not ok and err:find("events.tricks"), err)
         reskate.log("bare refused")
@@ -3840,8 +3842,10 @@ void tricks_reach_plugins_that_ask_for_them() {
         reskate.on("trick_started", function(e) reskate.log(string.format("started at %.0f %.0f %.0f", e.at.x, e.at.y, e.at.z)) end)
         reskate.on("trick_landed", function(e)
             reskate.log(string.format("landed %.0f x%.1f from %.0f to %.0f in %.0f ms", e.points, e.multiplier, e.started_at.x, e.landed_at.x, e.ms))
+            reskate.log(string.format("named %s [%s] landing %s stance %s damage '%s' slam %s", e.name, table.concat(e.names, ","),
+                e.landing, e.stance, e.damage, tostring(e.slam)))
         end)
-        reskate.on("line_broken", function(e) reskate.log("broken by a " .. e.reason) end)
+        reskate.on("line_broken", function(e) reskate.log("broken: " .. e.reason) end)
         reskate.console.command("score", "x", function()
             local s = reskate.score.current()
             reskate.log(s and string.format("score %.0f x%.1f %s %.2f", s.line, s.multiplier, tostring(s.in_trick), s.timer) or "no score")
@@ -3853,18 +3857,38 @@ void tricks_reach_plugins_that_ask_for_them() {
     host.trick(started);
     TrickNews landed;
     landed.kind = TrickNews::Kind::landed;
-    landed.points = 250;
-    landed.multiplier = 2;
+    landed.points = 13;
+    landed.multiplier = 1.5f;
     landed.started_at = {1, 2, 3};
     landed.landed_at = {9, 2, 3};
     landed.ms = 1200;
+    landed.name = "Kickflip";
+    landed.names = {"Kickflip"};
+    landed.landing = "ID_TRICK_LANDING_SKETCHY";
+    landed.stance = "ID_STANCE_SWITCH";
     host.trick(landed);
+    // On foot a fall banks a Slam into the line: it comes as a landing, told apart by slam and damage.
+    TrickNews slam;
+    slam.kind = TrickNews::Kind::landed;
+    slam.points = 367;
+    slam.multiplier = 2;
+    slam.name = "Slam";
+    slam.names = {"Slam", "Slam"};
+    slam.damage = "ID_DAMAGE_SPRAINED";
+    slam.slam = true;
+    host.trick(slam);
     TrickNews broken;
     broken.kind = TrickNews::Kind::broken;
-    broken.reason = "slam";
+    broken.reason = "ended";
     host.trick(broken);
-    check(environment.logged("[tricks] started at 1 2 3") && environment.logged("[tricks] landed 250 x2.0 from 1 to 9 in 1200 ms") &&
-          environment.logged("[tricks] broken by a slam"), "Each trick event reaches it, with its values\n" + environment.all());
+    broken.reason = "wipeout";
+    host.trick(broken);
+    check(environment.logged("[tricks] started at 1 2 3") && environment.logged("[tricks] landed 13 x1.5 from 1 to 9 in 1200 ms") &&
+              environment.logged("[tricks] named Kickflip [Kickflip] landing ID_TRICK_LANDING_SKETCHY stance ID_STANCE_SWITCH damage '' slam false") &&
+              environment.logged("[tricks] landed 367 x2.0") &&
+              environment.logged("[tricks] named Slam [Slam,Slam] landing  stance  damage 'ID_DAMAGE_SPRAINED' slam true") &&
+              environment.logged("[tricks] broken: ended") && environment.logged("[tricks] broken: wipeout"),
+          "Each trick event reaches it with its values: the rows' names, landing, stance and damage, and a slam told apart\n" + environment.all());
     host.run_console("score");
     environment.score_now = ScoreState{708, 2, true, {}, {}, false, 0.5f};
     host.run_console("score");

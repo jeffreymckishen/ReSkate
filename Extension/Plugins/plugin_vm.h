@@ -97,19 +97,38 @@ struct SkaterState {
     bool switch_stance{};
 };
 enum class Teleport { sent, unavailable, forbidden };
-// A trick of the local skater, read from the score HUD (Extension/Skater/trick_watch.h).
+// A scored action of the local skater, read from the score HUD (Extension/Skater/trick_watch.h):
+// trick_started, then trick_landed, or line_broken.
 struct TrickNews {
     enum class Kind { started, landed, broken } kind{Kind::started};
-    float points{}, multiplier{}; // landed
+    // landed: the points it banked into the game's line (the line's score at the bank less at the
+    // start, without the multiplier; 0 when the game moved the line for it but kept its points back),
+    // and the line's multiplier after it.
+    float points{}, multiplier{};
     Vec3 started_at{}, landed_at{};
-    double ms{};                  // landed: from its start
-    std::string reason;           // broken: "slam" or "wipeout"
-    std::string name;             // landed: the trick the HUD named last (may be empty)
+    double ms{}; // landed: from its start
+    // broken: "wipeout" (a wipeout ended the trick going on, which scores nothing) or "ended" (the
+    // game's line ended with time left on it, so it was cut short, with or without a trick going on).
+    std::string reason;
+    // landed, from the rows the action added to the HUD's trick list (all empty when the list could
+    // not be read): name is the newest row's bare name ("Kickflip", "Back Pose"; display text, so it
+    // may be localized, and without the "Switch" or landing words the HUD adds, or any spin or flip
+    // count: trick_notes reads those writes), names every row's, oldest first. landing and stance are the
+    // newest row's ids (ID_TRICK_LANDING_CLEAN or _SKETCHY, ID_STANCE_SWITCH; "" when unset), damage
+    // the newest damage id on its rows (ID_DAMAGE_BRUISED...).
+    std::string name;
+    std::vector<std::string> names;
+    std::string landing, stance, damage;
+    // landed: a Slam the game scores, not a landed trick (on foot a fall banks a "Slam" row into the
+    // line): a row's damage is set, or it carries the game's slam icon.
+    bool slam{};
 };
 struct ScoreState {
     float line{}, multiplier{};
     bool in_trick{};
-    std::string trick, detail; // the HUD's sequence header and descriptor ("Manual", "Kickflip"...)
+    // The HUD's sequence header and descriptor labels. On this game build the header read "" in all
+    // the play mapped, and the descriptor held ids (ID_SCORING_SLAM_TIER_1); trick_landed names tricks.
+    std::string trick, detail;
     bool manual{};             // a manual is going on, as the HUD names it
     float timer{};             // the HUD's line timer: what is left before the multiplier ends
 };

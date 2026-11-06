@@ -418,7 +418,11 @@ void Plugin::trick(const TrickNews& news) {
         break;
     case TrickNews::Kind::landed:
         fire_with("trick_landed", [&](lua_State* L) {
-            lua_createtable(L, 0, 5);
+            const auto text = [L](const std::string& value, const char* key) {
+                lua_pushlstring(L, value.data(), value.size());
+                lua_setfield(L, -2, key);
+            };
+            lua_createtable(L, 0, 11);
             lua_pushnumber(L, news.points);
             lua_setfield(L, -2, "points");
             lua_pushnumber(L, news.multiplier);
@@ -429,8 +433,18 @@ void Plugin::trick(const TrickNews& news) {
             lua_setfield(L, -2, "landed_at");
             lua_pushnumber(L, news.ms);
             lua_setfield(L, -2, "ms");
-            lua_pushlstring(L, news.name.data(), news.name.size());
-            lua_setfield(L, -2, "name");
+            text(news.name, "name");
+            lua_createtable(L, static_cast<int>(news.names.size()), 0);
+            for (std::size_t i = 0; i < news.names.size(); ++i) {
+                lua_pushlstring(L, news.names[i].data(), news.names[i].size());
+                lua_rawseti(L, -2, static_cast<int>(i + 1));
+            }
+            lua_setfield(L, -2, "names");
+            text(news.landing, "landing");
+            text(news.stance, "stance");
+            text(news.damage, "damage");
+            lua_pushboolean(L, news.slam);
+            lua_setfield(L, -2, "slam");
             return 1;
         });
         break;

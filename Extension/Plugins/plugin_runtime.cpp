@@ -239,12 +239,14 @@ bool game_focused() {
     return window && GetWindowThreadProcessId(window, &process) && process == GetCurrentProcessId();
 }
 std::chrono::steady_clock::time_point last_tick{};
-// The local skater's tricks (Extension/Skater/trick_watch.h), and where and when the one going on began.
+// The local skater's tricks (Extension/Skater/trick_watch.h), the trick list's rows each added, and
+// where and when the one going on began.
 tricks::TrickWatch trick_watch;
+tricks::TrickRows trick_rows;
 Vec3 started_at{};
 std::chrono::steady_clock::time_point started_time{};
 std::string watched_level;
-std::string last_trick_name; // the score HUD's last sequence header
+unsigned score_moves_said{};
 
 // The score HUD into the trick watch, and what it saw to the plugins. Client thread.
 void read_tricks() {
@@ -254,17 +256,14 @@ void read_tricks() {
         return;
     }
     const auto skater = trainer::telemetry();
-    tricks::TrickSignals signals;
-    signals.action = hud->action;
-    signals.line_score = hud->line_score;
-    signals.multiplier = hud->multiplier;
-    signals.slam = hud->slam;
     // A wipeout is physics states 300-399.
-    signals.wipeout = skater.skater && skater.physics_state >= 300 && skater.physics_state < 400;
+    const tricks::TrickSignals signals{.action = hud->action, .line_score = hud->line_score, .multiplier = hud->multiplier,
+                                       .line_timer = hud->line_timer,
+                                       .wipeout = skater.skater && skater.physics_state >= 300 && skater.physics_state < 400};
+    trick_rows.observe(hud->rows, hud->rows_read);
     const auto event = trick_watch.update(signals);
     environment->score_now = ScoreState{hud->line_score, hud->multiplier, trick_watch.in_trick(), hud->header, hud->descriptor,
                                         tricks::names_manual(*hud), hud->line_timer};
-    if (!hud->header.empty()) last_trick_name = hud->header;
     const auto now = std::chrono::steady_clock::now();
     TrickNews news;
     switch (event.kind) {
@@ -272,21 +271,33 @@ void read_tricks() {
     case tricks::TrickEvent::Kind::started:
         started_at = skater.position;
         started_time = now;
+        trick_rows.mark_start(event.late);
         news.kind = TrickNews::Kind::started;
         news.started_at = started_at;
         break;
-    case tricks::TrickEvent::Kind::landed:
+    case tricks::TrickEvent::Kind::landed: {
         news.kind = TrickNews::Kind::landed;
         news.points = event.points;
         news.multiplier = event.multiplier;
         news.started_at = started_at;
         news.landed_at = skater.position;
         news.ms = std::chrono::duration<double, std::milli>(now - started_time).count();
-        news.name = last_trick_name;
+        auto rows = trick_rows.since_start();
+        news.name = std::move(rows.name);
+        news.names = std::move(rows.names);
+        news.landing = std::move(rows.landing);
+        news.stance = std::move(rows.stance);
+        news.damage = std::move(rows.damage);
+        news.slam = rows.slam;
+        // Never seen in play: the points are still counted from the trick's start.
+        if (event.score_moved && score_moves_said++ < 8)
+            logging::log(logging::Level::info, logging::Channel::plugins,
+                "Tricks: the score HUD's line score moved while a trick went on; it landed with {} points from its start.", event.points);
         break;
+    }
     case tricks::TrickEvent::Kind::broken:
         news.kind = TrickNews::Kind::broken;
-        news.reason = signals.slam ? "slam" : "wipeout";
+        news.reason = event.why == tricks::TrickEvent::Why::ended ? "ended" : "wipeout";
         break;
     }
     host->trick(news);
@@ -609,6 +620,7 @@ void set_level(std::string_view level) noexcept {
             placement_physics::reset();
             watched_level = std::string(level);
             trick_watch = tricks::TrickWatch{};
+            trick_rows = tricks::TrickRows{};
         }
         host->set_level(std::string(level));
     }

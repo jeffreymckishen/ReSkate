@@ -1,7 +1,7 @@
 # BMX beta
 
-Ride a BMX in skate. It is a plugin mod: the bike's physics, the rider's pose, hops, tricks and the score panel
-are all Luau on ReSkate's general plugin APIs.
+Ride a BMX in skate. It is a plugin mod: the bike's physics, the rider's pose, hops and tricks are all Luau on
+ReSkate's general plugin APIs.
 
 The bike comes with it. The mod folder holds the plugin and the bike's own native pack (`layout.toc`,
 `.reskate-studio-patch`, `BMX-NATIVE.txt` and `Win32`), so there is nothing else to install. It needs a ReSkate build
@@ -25,6 +25,11 @@ Stand on foot on fairly level ground with a little room around you, hold LB, the
 controls while the bike gets ready. The BMX page in the Insert menu says the same and shows what the mod is doing.
 If there is no room or the ground is too steep, move and mount again. If the rider is on the skateboard, or moves
 while the bike gets ready, the HUD says to step off or stand still, and the next Mount tries again.
+
+What the HUD says is one line at the top left of the screen, shown only while the mod needs something from you:
+standing still while the bike gets ready, letting go of the controls, pressing A to get up, or why a Mount did not
+start. A message like that last one stays for about four seconds. Nothing is drawn there during a normal ride, or on
+the skateboard when there is nothing to say.
 
 - A pedals, B brakes, the left stick steers.
 - Click the right stick to hop. A full hop rises about 0.6 m, a street bunny hop, with about three quarters of a
@@ -175,7 +180,7 @@ offline the game does not keep it, so set it again each launch.
 - Riding into a parked car stops the bike at the bumper, in a nose manual too: the back wheel comes down with the
   front tyre at the bumper. Faster than about 4 m/s it is a crash, over the bars.
 - Mounting refuses ground steeper than 12 degrees and anywhere without room for the bike.
-- The score panel is the mod's own, and its numbers are not yet tuned against the game's scoring.
+- The mod shows no score of its own, and BMX tricks do not count toward the game's points yet.
 
 ## Tests
 

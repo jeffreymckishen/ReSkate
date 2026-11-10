@@ -67,6 +67,7 @@ constexpr Capability capabilities[] = {
     {"world.ai", "WORLD", Risk::amber, "Spawn and clear AI skaters"},
     {"effects", "WORLD", Risk::amber, "Draw particle effects and decals in the world"},
     {"world.raycast", "WORLD", Risk::grey, "Cast rays and pick objects in the world"},
+    {"world.vehicles", "WORLD", Risk::red, "Take over nearby traffic vehicles and move them"},
     {"camera", "CAMERA", Risk::amber, "Control the camera"},
     {"input", "INPUT", Risk::amber, "Bind your keys, pads and mouse, and read text input"},
     {"input.control", "INPUT", Risk::red, "Control your game's controller input"},
@@ -78,6 +79,7 @@ constexpr Capability capabilities[] = {
     {"capture", "SCREEN", Risk::amber, "Record your screen"},
     {"viewmodel", "SCREEN", Risk::grey, "Draw a model of its own in front of your camera, such as something held"},
     {"hud", "SCREEN", Risk::amber, "Hide your HUD and change the trick ticker"},
+    {"hud.score", "SCREEN", Risk::amber, "Show its own tricks and points in skate.'s score HUD"},
     {"overlay", "SCREEN", Risk::amber, "Draw on your screen, with screen effects, toasts and x-ray view"},
     {"ui.screen", "SCREEN", Risk::grey, "Open its own screens and dialogs"},
     {"ui.models", "SCREEN", Risk::grey, "Send numbers to its own mod's menus and HUD"},
@@ -291,9 +293,9 @@ std::string approval_prompt(const std::vector<PermissionGroup>& groups) {
             if (has("world.objects")) actions.push_back("list and edit park objects");
             if (has("world.physics")) actions.push_back("create physical bodies in your world and push them around");
             if (has("world.physics.observe")) actions.push_back("see what its rays hit, other skaters' shapes included");
-            if (has("world.physics.follow")) actions.push_back("move your skater with a physical body the plugin owns");
-            if (has("world.physics.follow.renew")) actions.push_back("extend skater-follow movement using renewable leases");
-            if (has("world.physics.follow.session")) actions.push_back("renew skater-follow movement without a fixed lifetime");
+            if (has("world.physics.follow")) actions.push_back("move your skater with a physical body it owns");
+            if (has("world.physics.follow.renew")) actions.push_back("renew skater-follow leases");
+            if (has("world.physics.follow.session")) actions.push_back("renew skater-follow with no fixed lifetime");
             if (has("world.physics.reuse")) actions.push_back("reuse its own parked bodies");
             if (has("objects.physics")) actions.push_back("make your own park's objects fall, roll, and get knocked over (offline)");
             if (has("travel")) actions.push_back("travel to locations and levels");
@@ -302,19 +304,21 @@ std::string approval_prompt(const std::vector<PermissionGroup>& groups) {
             if (has("world.ai")) actions.push_back("spawn or clear AI skaters");
             if (has("effects")) actions.push_back("draw particle effects and decals");
             if (has("world.raycast")) actions.push_back("probe the world and pick objects");
+            if (has("world.vehicles")) actions.push_back("take over nearby traffic vehicles and move them");
         } else if (group.category == "CAMERA") {
             actions.push_back("control the camera");
         } else if (group.category == "INPUT") {
             if (has("input")) actions.push_back("bind keys, pads, and mouse, and read text input");
             if (has("input.control")) actions.push_back("control your game's controller input");
-            if (has("input.lease")) actions.push_back("observe and reserve a controller input stream with a bounded lease");
-            if (has("input.capture")) actions.push_back("consume selected controller inputs while holding an input lease");
+            if (has("input.lease")) actions.push_back("observe and reserve controller input with bounded leases");
+            if (has("input.capture")) actions.push_back("consume selected controller inputs under a lease");
             if (has("input.write")) actions.push_back("replace your controller input while you play");
         } else if (group.category == "SCREEN") {
             if (has("strings")) actions.push_back("change the text the game shows, in its menus and its store");
             if (has("capture")) actions.push_back("record your screen");
             if (has("viewmodel")) actions.push_back("draw a model in front of your camera");
             if (has("hud")) actions.push_back("hide your HUD or change the trick ticker");
+            if (has("hud.score")) actions.push_back("show its own tricks and points in skate.'s score HUD (they never count)");
             if (has("overlay")) actions.push_back("draw on screen, including screen effects");
             if (has("ui.screen")) actions.push_back("open plugin screens and dialogs");
             if (has("ui.models")) actions.push_back("send numbers to its own mod's menus and HUD");

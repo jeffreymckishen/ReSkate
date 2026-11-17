@@ -740,6 +740,19 @@ struct PhysicsApi {
         if (!motion_refresh_result(out)) return failed(L, "motion refresh probe returned invalid observations");
         push_motion_refresh_result(L, out); return 1;
     }
+    // What a client of the command inbox may rely on, read before it relies on it. A runtime
+    // whose inbox holds one pending command has no limits function at all, so its absence is the
+    // answer there. pending_commands: submit takes the command for a sample's epoch and, while
+    // that one is still queued, the next sample's behind it. The tables read and receipt return
+    // are unchanged, for callers that allow-list their fields.
+    static int limits(lua_State* L) {
+        (void)plugin(L);
+        if (lua_gettop(L) != 0) luaL_error(L, "limits takes no arguments");
+        lua_createtable(L, 0, 1);
+        lua_pushinteger(L, static_cast<int>(pending_capacity));
+        lua_setfield(L, -2, "pending_commands");
+        return 1;
+    }
     static int submit(lua_State* L) {
         auto& p = plugin(L); const auto b = body(L, p, 1);
         const auto& epoch = *static_cast<const EpochValue*>(luaL_checkudata(L, 2, epoch_type));
@@ -970,7 +983,8 @@ void install_physics_api(Plugin&, lua_State* L) {
         {"begin_motion_refresh_probe", PhysicsApi::begin_motion_refresh_probe}, {"poll_motion_refresh_probe", PhysicsApi::poll_motion_refresh_probe},
         {"reserve_follow", PhysicsApi::reserve_follow}, {"publish_follow", PhysicsApi::publish_follow},
         {"read_follow", PhysicsApi::read_follow}, {"stop_follow", PhysicsApi::stop_follow}, {"acknowledge_follow", PhysicsApi::acknowledge_follow},
-        {"renew_follow", PhysicsApi::renew_follow}, {"read_follow_lease", PhysicsApi::read_follow_lease}});
+        {"renew_follow", PhysicsApi::renew_follow}, {"read_follow_lease", PhysicsApi::read_follow_lease},
+        {"limits", PhysicsApi::limits}});
     lua_setreadonly(L, -1, true); lua_pop(L, 1);
 }
 } // namespace dingosdk::plugins

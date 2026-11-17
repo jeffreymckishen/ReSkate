@@ -14,6 +14,7 @@ struct Control {
     std::mutex mutex;
     std::map<std::string, Hidden, std::less<>> hidden;
     std::atomic<bool> lt{}, rt{}, left_x{}, right_stick{}, l3{}, r3{};
+    std::atomic<std::uint16_t> buttons{};
 };
 Control& control() {
     static auto* value = new Control; // process lifetime: the game polls its pad until exit
@@ -28,6 +29,7 @@ void filter_pad(unsigned, overlay::GamepadValues& pad) noexcept {
     if (c.right_stick.load(std::memory_order_acquire)) pad.right_x = pad.right_y = 0;
     if (c.l3.load(std::memory_order_acquire)) pad.buttons &= static_cast<std::uint16_t>(~0x0040u); // XINPUT_GAMEPAD_LEFT_THUMB
     if (c.r3.load(std::memory_order_acquire)) pad.buttons &= static_cast<std::uint16_t>(~0x0080u); // XINPUT_GAMEPAD_RIGHT_THUMB
+    pad.buttons &= static_cast<std::uint16_t>(~c.buttons.load(std::memory_order_acquire));
 }
 void publish(Control& c, const native_input_pulse::PublicationScope& publication) {
     Hidden all;
@@ -38,13 +40,16 @@ void publish(Control& c, const native_input_pulse::PublicationScope& publication
         all.right_stick = all.right_stick || h.right_stick;
         all.left_stick_click = all.left_stick_click || h.left_stick_click;
         all.right_stick_click = all.right_stick_click || h.right_stick_click;
+        all.buttons = static_cast<std::uint16_t>(all.buttons | h.buttons);
     }
     const bool aggregate_changed = c.lt.load(std::memory_order_relaxed) != all.left_trigger ||
         c.rt.load(std::memory_order_relaxed) != all.right_trigger ||
         c.left_x.load(std::memory_order_relaxed) != all.left_x_grinding ||
         c.right_stick.load(std::memory_order_relaxed) != all.right_stick ||
         c.l3.load(std::memory_order_relaxed) != all.left_stick_click ||
-        c.r3.load(std::memory_order_relaxed) != all.right_stick_click;
+        c.r3.load(std::memory_order_relaxed) != all.right_stick_click ||
+        c.buttons.load(std::memory_order_relaxed) != all.buttons;
+    c.buttons.store(all.buttons, std::memory_order_release);
     c.lt.store(all.left_trigger, std::memory_order_release);
     c.rt.store(all.right_trigger, std::memory_order_release);
     c.left_x.store(all.left_x_grinding, std::memory_order_release);

@@ -443,7 +443,9 @@ void produce(NativeHandle* incoming_pointer, std::uintptr_t wrapper) noexcept {
     if (!service.hooked.load(std::memory_order_acquire) || !TryAcquireSRWLockExclusive(&service.lock)) return;
     for (auto& s : service.slots) {
         if (!s.active || s.release_requested || !s.mailbox.pending) continue;
-        if (GetTickCount64() >= s.mailbox.deadline) { Command ignored; (void)s.mailbox.consume(s.mailbox.command.epoch, GetTickCount64(), ignored); continue; }
+        // Each pending command expires by its own deadline; one still in time goes on to its wrapper.
+        s.mailbox.expire(GetTickCount64());
+        if (!s.mailbox.pending) continue;
         if (std::find(s.anchor.wrappers.begin(), s.anchor.wrappers.end(), wrapper) == s.anchor.wrappers.end()) continue;
         NativeHandle incoming{}; Epoch current{};
         if (!peek(reinterpret_cast<std::uintptr_t>(incoming_pointer), incoming) || !producer_owner(s, incoming) || !command_clock(s, current)) {
@@ -1562,9 +1564,7 @@ std::string receipt(std::uint64_t owner, const Handle& handle, std::uint64_t sel
     try {
         if (GetCurrentThreadId() != service.thread) return "body receipts are client phase only";
         Locked lock(service.lock); auto* s = lookup(owner, handle); if (!s) return "body owner or generation unavailable";
-        if (s->mailbox.pending && GetTickCount64() >= s->mailbox.deadline) {
-            Command ignored; (void)s->mailbox.consume(s->mailbox.command.epoch, GetTickCount64(), ignored);
-        }
+        s->mailbox.expire(GetTickCount64());
         if (s->active && !s->quarantined && !s->release_requested && s->mailbox.needs_successor()) { Sample observed; (void)sample(*s, observed); }
         if (!s->mailbox.find(selected, out)) return "body receipt sequence unavailable for this owner and generation";
         out.retained = s->retained; out.quarantined = s->quarantined; return {};

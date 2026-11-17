@@ -318,6 +318,11 @@ void playstation_interaction_preserves_every_other_byte() {
     for(const auto format:formats)for(unsigned hat=0;hat<8;++hat) {
         std::array<std::uint8_t,551> memory{};memory.fill(0x5a);auto* bytes=memory.data()+2;
         bytes[0]=static_cast<std::uint8_t>(format.id);
+        // A DualSense's simple report read at a padded length has zeros after its ten bytes, as Windows
+        // pads a read. With anything there the parser takes report 0x01 for the USB layout
+        // (playstation_report.h dualsense_usb_layout), which this North-only pass does not rewrite.
+        if(format.kind==Kind::dualsense&&format.bluetooth&&format.id==1&&format.size>10)
+            std::fill_n(bytes+10,format.size-10,std::uint8_t{});
         const unsigned offset=format.id==0x31?2:format.id==0x11?3:1;
         const bool sense=format.kind==Kind::dualsense&&(format.id==0x31||!format.bluetooth);
         const unsigned face=offset+(sense?7:4);bytes[face]=static_cast<std::uint8_t>(0xf0|hat);

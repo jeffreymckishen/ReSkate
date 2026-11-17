@@ -2,6 +2,8 @@
 #include "plugin_approval.h"
 #include "plugin_discovery.h"
 #include "plugin_listing.h"
+#include "plugin_server_scope.h"
+#include "Engine/Vfs/mod_list.h"
 #include "Engine/Vfs/https_download.h"
 #include "plugin_host.h"
 #include "plugin_camera.h"
@@ -47,6 +49,33 @@ std::uintptr_t base{};
 // What the player let run (plugin_approval.h), and that it changed: the host reads it again.
 Approvals* approvals{};
 std::atomic<bool> reapply{};
+// The player's limits (plugin_runtime.h LimitChoices): set from the menu on any thread, given to the
+// player's host on the client thread.
+std::mutex limits_mutex;
+LimitChoices limit_choices_now;
+std::atomic<bool> limits_changed{};
+// What the launcher started this game with (game_limits of its plugin time budget, 2 to 6 ms): set
+// once as the plugins start, before either host exists, and only read after.
+Limits launch_limits;
+// The menu's limits are the loose end and the launcher's budget the strict one. The menu's time
+// limit starts at 6 ms, the launcher's default, so left there it means the launcher's budget (which
+// a player may have lowered); raised, or switched off, it is the player's own choice and replaces it.
+bool menu_sets_time(const LimitChoices& c) { return !c.stop_slow || c.tick_ms > plugin_time_budget::default_ms; }
+const char* budget_setting(const LimitChoices& c) {
+    return menu_sets_time(c) ? "the ReSkate menu: PLUGINS, LIMITS" : plugin_time_budget::setting;
+}
+std::string budget_text(double tick_ms) {
+    return std::isfinite(tick_ms) ? std::format("{} ms a tick", tick_ms) : std::string("no time limit");
+}
+Limits limits_of(const LimitChoices& c) {
+    Limits limits = launch_limits;
+    if (!c.stop_slow) limits.tick_ms = std::numeric_limits<double>::infinity();
+    else if (menu_sets_time(c)) limits.tick_ms = std::clamp(c.tick_ms, 6.0, 50.0);
+    limits.tick_setting = budget_setting(c);
+    limits.errors = c.stop_errors ? limits.errors : std::numeric_limits<int>::max();
+    limits.memory = static_cast<std::size_t>(std::clamp(c.memory_mb, 128, 1024)) << 20;
+    return limits;
+}
 // id and plugin fingerprint of the files the discovery thread has hashed again since they were answered for.
 std::mutex verified_mutex;
 std::set<std::string> verified; // under verified_mutex
@@ -219,6 +248,36 @@ private:
 };
 
 std::filesystem::path data_root;
+// The plugins a dedicated server brought here (plugin_server_scope.h), as the discovery thread last
+// read them, and what the server this PC is on requires: such a plugin runs only while it is required.
+std::mutex scope_mutex;
+server_scope::Folders server_only; // under scope_mutex
+std::vector<std::string> required; // client thread: multiplayer::required_plugins, read when its serial changes
+unsigned required_serial{};
+std::filesystem::path mods_root() { return data_root / mods::mods_folder; }
+// Of the plugins discovery found, those that run now: all but a server's own that no server here asks
+// for. The host unloads what is left out, and loads it again when a server requires it. Client thread.
+std::vector<Candidate> to_run(const std::vector<Candidate>& all) {
+    server_scope::Folders scoped;
+    {
+        std::lock_guard lock(scope_mutex);
+        scoped = server_only;
+    }
+    if (scoped.empty()) return all;
+    std::vector<ModInfo> mods;
+    {
+        std::lock_guard lock(mods_mutex);
+        mods = found_mods;
+    }
+    std::vector<Candidate> running;
+    for (const auto& candidate : all) {
+        const auto mod = std::find_if(mods.begin(), mods.end(), [&](const ModInfo& m) { return m.folder == candidate.id; });
+        if (server_scope::runs(scoped, required, candidate.id, mod != mods.end() ? std::string_view(mod->title) : std::string_view{},
+                               mod != mods.end() ? std::string_view(mod->author) : std::string_view{}))
+            running.push_back(candidate);
+    }
+    return running;
+}
 // Left to the process's end on purpose: unloading plugins from a static destructor would run
 // their scripts while the game shuts down.
 GameEnvironment* environment{};
@@ -319,38 +378,42 @@ struct Row {
 };
 std::mutex rows_mutex;
 std::vector<Row> rows; // under rows_mutex: the plugins discovery found that may load
-std::atomic<bool> prompt_open{};
 
-// Asks about the first plugin that has no answer, when nothing else is being asked: one prompt at
-// a time. Called by the discovery thread, which is not the game's.
+// Asks about every plugin that has no answer, when nothing else is being asked: one card, each
+// plugin in turn with everything it may do, the answer to one bringing up the next (a card each,
+// one after another, was a wait between every two). An answer is kept as it is given, so a card
+// that is replaced or never finished leaves only the rest to ask about, the next time this is
+// called. Called by the discovery thread, which is not the game's.
 void ask_next() {
-    static std::chrono::steady_clock::time_point asked_at; // (this thread's)
-    // Ours was replaced, or never shown: the answer will not come. Five seconds from when it was last
-    // seen up, so an answer given late is not asked again before it is saved.
-    if (overlay::question_asking()) asked_at = std::chrono::steady_clock::now();
-    if (prompt_open && !overlay::question_asking() && std::chrono::steady_clock::now() - asked_at > std::chrono::seconds(5)) prompt_open = false;
-    if (prompt_open || overlay::question_asking() || overlay::message_asking()) return;
-    Row row;
+    if (overlay::question_asking() || overlay::message_asking()) return;
+    std::vector<Row> waiting;
     {
         std::lock_guard lock(rows_mutex);
-        const auto next = std::find_if(rows.begin(), rows.end(), [](const Row& r) { return approvals->state(r.id, r.fingerprint) == Approval::asking; });
-        if (next == rows.end()) return;
-        row = *next;
+        for (const auto& row : rows)
+            if (approvals->state(row.id, row.fingerprint) == Approval::asking) waiting.push_back(row);
     }
-    std::string text = approval_prompt(row.can);
-    prompt_open = true;
-    asked_at = std::chrono::steady_clock::now();
-    // A long title is cut to fit the card, not in the middle of a character.
-    auto cut = std::min<std::size_t>(row.title.size(), 37);
-    while (cut > 0 && cut < row.title.size() && (static_cast<unsigned char>(row.title[cut]) & 0xC0) == 0x80) --cut;
-    const auto title = row.title.size() > 40 ? row.title.substr(0, cut) + "..." : row.title;
-    // The first answer is Keep off, and Esc or B means it too: only a click or press on Turn on turns it on.
-    overlay::ask_question("PLUGINS", title, std::move(text), "Keep off", "Turn on", [row](bool first) {
-        approvals->set(row.id, row.fingerprint, !first);
-        if (first) forget_verified(row.id, row.fingerprint);
+    if (waiting.empty()) return;
+    std::vector<overlay::PluginQuestion> asked;
+    for (const auto& row : waiting) {
+        overlay::PluginQuestion plugin;
+        // A long title is cut to fit the card, not in the middle of a character.
+        auto cut = std::min<std::size_t>(row.title.size(), 37);
+        while (cut > 0 && cut < row.title.size() && (static_cast<unsigned char>(row.title[cut]) & 0xC0) == 0x80) --cut;
+        plugin.title = row.title.size() > 40 ? row.title.substr(0, cut) + "..." : row.title;
+        plugin.author = row.author;
+        // Everything it may do, under its categories: all of each one's phrases, not a summary.
+        for (const auto& group : row.can)
+            if (!group.phrases.empty()) plugin.can.push_back({group.category, static_cast<int>(group.risk), group.phrases});
+        asked.push_back(std::move(plugin));
+    }
+    // Keep off is the first answer, and what Esc or B means: only a click or press on Turn on turns one on.
+    overlay::ask_plugins(std::move(asked), [waiting = std::move(waiting)](std::size_t place, bool on) {
+        if (place >= waiting.size()) return;
+        const auto& row = waiting[place];
+        approvals->set(row.id, row.fingerprint, on);
+        if (!on) forget_verified(row.id, row.fingerprint);
         reapply = true;
-        prompt_open = false;
-    }, true);
+    });
 }
 
 // Thunderstore's answers about the plugins' packages (plugin_listing.h), and the ones the player
@@ -455,6 +518,21 @@ void watch() {
                 std::lock_guard lock(mods_mutex);
                 found_mods = mods;
             }
+            // Which of them are a server's own. A mod that was taken out is forgotten, so the same
+            // plugin installed by the player later is theirs.
+            if (!mods.empty()) {
+                std::vector<std::string> folders;
+                for (const auto& mod : mods) folders.push_back(mod.folder);
+                server_scope::keep_only(mods_root(), folders);
+            }
+            {
+                auto scoped = server_scope::read(mods_root());
+                std::lock_guard lock(scope_mutex);
+                if (scoped != server_only) {
+                    server_only = std::move(scoped);
+                    reapply = true;
+                }
+            }
             std::lock_guard lock(found_mutex);
             if (plugins != found || !found_generation) {
                 std::vector<Row> built;
@@ -527,15 +605,23 @@ bool start(std::uintptr_t image_base) noexcept {
         try { approvals->set_developer(initfs::plugin_developer_mode(data_root)); } catch (const std::exception&) {}
         server_environment = new GameEnvironment(storage / L"server", true);
         environment = new GameEnvironment(std::move(storage), false);
-        // The player's copies and a lobby's server copies run on this game's tick, so both get its budget.
-        const auto limits = game_limits(tick_budget_ms());
+        // The launcher's budget first: the player's copies and a lobby's server copies run on this game's
+        // tick, so both start from it. The player's own limits (the menu's PLUGINS, LIMITS) then loosen
+        // the player's host from there (limits_of); server copies keep the launcher's.
+        launch_limits = game_limits(tick_budget_ms());
+        try {
+            const auto kept = initfs::plugin_limits(data_root);
+            std::lock_guard lock(limits_mutex);
+            limit_choices_now = {kept.stop_slow, kept.tick_ms, kept.stop_errors, kept.memory_mb};
+        } catch (const std::exception&) {}
+        const auto limits = limits_of(limit_choices());
         host = new Host(*environment, Side::client, limits);
-        server_host = new Host(*server_environment, Side::server, limits, "@server");
+        server_host = new Host(*server_environment, Side::server, launch_limits, "@server");
         std::thread(watch).detach();
         std::thread(look_up_listings).detach();
         logging::log(logging::Level::info, logging::Channel::plugins,
-            "Plugins: looking in Mods for reskate-plugin.json every 2 s; each may take {} ms a tick ({}).", limits.tick_ms,
-            plugin_time_budget::setting);
+            "Plugins: looking in Mods for reskate-plugin.json every 2 s; each may take {} ({}).", budget_text(limits.tick_ms),
+            limits.tick_setting);
         return true;
     } catch (const std::exception& error) {
         logging::log(logging::Level::error, logging::Channel::plugins, "Plugins could not start: {}", error.what());
@@ -579,13 +665,25 @@ void on_client_tick() noexcept {
                     }
                 }
             }
-            if (changed) host->apply(latest);
+            // What the server this PC is on requires: a server's own plugins come on with it and go
+            // off when it is left.
+            if (const auto serial = multiplayer::required_plugins_serial(); serial != required_serial) {
+                required_serial = serial;
+                required = multiplayer::required_plugins();
+                reapply = true;
+            }
+            if (changed) {
+                latest = to_run(latest);
+                host->apply(latest);
+            }
+            if (limits_changed.exchange(false)) host->set_limits(limits_of(limit_choices()));
             if (reapply.exchange(false)) {
                 std::vector<Candidate> now;
                 {
                     std::lock_guard lock(found_mutex);
                     now = found;
                 }
+                now = to_run(now);
                 host->apply(now);
                 if (serving) server_host->apply(now);
             }
@@ -601,8 +699,12 @@ void on_client_tick() noexcept {
             if (hosting != serving) {
                 serving = hosting;
                 if (serving) {
-                    std::lock_guard lock(found_mutex);
-                    server_host->apply(found);
+                    std::vector<Candidate> now;
+                    {
+                        std::lock_guard lock(found_mutex);
+                        now = found;
+                    }
+                    server_host->apply(to_run(now));
                     logging::write(logging::Level::info, logging::Channel::plugins, "Plugins: hosting a lobby, so server copies run here.");
                 } else {
                     server_host->apply({});
@@ -715,12 +817,12 @@ std::string describe() {
             status.id += "@server";
             plugins.push_back(std::move(status));
         }
-    if (plugins.empty()) return "No plugins. A plugin is a mod in Mods with a reskate-plugin.json.";
-    // The budget first, and each plugin's time against it, alongside its approval state.
-    std::string text = std::format("Plugin time budget: {} ms a tick each (change it in {}).", host->tick_budget_ms(),
-        plugin_time_budget::setting);
-    if (developer_mode()) text += "\nPlugin developer mode is on: plugins you approved keep their approval when their files change.";
     const auto answers = installed();
+    if (plugins.empty() && answers.empty()) return "No plugins. A plugin is a mod in Mods with a reskate-plugin.json.";
+    // The budget first, and each plugin's time against it, alongside its approval state.
+    std::string text = std::format("Plugin time budget: {} each (change it in {}).", budget_text(host->tick_budget_ms()),
+        budget_setting(limit_choices()));
+    if (developer_mode()) text += "\nPlugin developer mode is on: plugins you approved keep their approval when their files change.";
     for (const auto& plugin : plugins) {
         text += '\n';
         // A plugin nobody has answered for is held too, but it is waiting, not switched off.
@@ -733,6 +835,12 @@ std::string describe() {
                 plugin.tick_budget_ms, plugin.commands.size(), plugin.commands.size() == 1 ? "" : "s");
         else if (!plugin.reason.empty()) text += " (" + plugin.reason + ")";
     }
+    // A server's own that no server here asks for is not loaded at all: said, so it is not taken for missing.
+    for (const auto& row : answers)
+        if (row.server_only && !row.required) {
+            if (!text.empty()) text += '\n';
+            text += row.id + ": only on servers that require it";
+        }
     return text;
 }
 
@@ -841,6 +949,25 @@ std::string switch_on(std::string_view id) {
 }
 bool developer_mode() { return approvals && approvals->developer(); }
 
+LimitChoices limit_choices() {
+    std::lock_guard lock(limits_mutex);
+    return limit_choices_now;
+}
+bool set_limit_choices(const LimitChoices& wanted) noexcept {
+    LimitChoices choices = wanted;
+    choices.tick_ms = std::clamp(choices.tick_ms, 6.0, 50.0);
+    choices.memory_mb = std::clamp(choices.memory_mb, 128, 1024);
+    try {
+        initfs::set_plugin_limits(data_root, {choices.stop_slow, choices.tick_ms, choices.stop_errors, choices.memory_mb});
+    } catch (const std::exception&) { return false; }
+    {
+        std::lock_guard lock(limits_mutex);
+        limit_choices_now = choices;
+    }
+    limits_changed = true;
+    return true;
+}
+
 bool set_developer_mode(bool on) noexcept {
     if (!approvals) return false;
     try { initfs::set_plugin_developer_mode(data_root, on); } catch (const std::exception&) { return false; }
@@ -851,8 +978,27 @@ bool set_developer_mode(bool on) noexcept {
 std::vector<Installed> installed() {
     std::vector<Installed> result;
     if (!approvals) return result;
+    server_scope::Folders scoped;
+    {
+        std::lock_guard lock(scope_mutex);
+        scoped = server_only;
+    }
+    const auto wanted = scoped.empty() ? std::vector<std::string>{} : multiplayer::required_plugins();
+    std::vector<ModInfo> mods;
+    {
+        std::lock_guard lock(mods_mutex);
+        mods = found_mods;
+    }
     std::lock_guard lock(rows_mutex);
-    for (const auto& row : rows) result.push_back({row.id, row.title, row.author, row.can, approvals->state(row.id, row.fingerprint)});
+    for (const auto& row : rows) {
+        Installed plugin{row.id, row.title, row.author, row.can, approvals->state(row.id, row.fingerprint)};
+        const auto mod = std::find_if(mods.begin(), mods.end(), [&](const ModInfo& m) { return m.folder == row.id; });
+        const auto title = mod != mods.end() ? std::string_view(mod->title) : std::string_view{};
+        const auto author = mod != mods.end() ? std::string_view(mod->author) : std::string_view{};
+        plugin.server_only = !server_scope::runs(scoped, {}, row.id, title, author);
+        plugin.required = plugin.server_only && server_scope::runs(scoped, wanted, row.id, title, author);
+        result.push_back(std::move(plugin));
+    }
     // Waiting for an answer first, then the rest by title, on or off, so a row stays put when it is switched.
     std::sort(result.begin(), result.end(), [](const Installed& a, const Installed& b) {
         const bool a_asking = a.approval == Approval::asking, b_asking = b.approval == Approval::asking;
@@ -872,5 +1018,18 @@ void set_enabled(std::string_view id, bool on) {
             if (!on) forget_verified(row.id, row.fingerprint);
             reapply = true;
         }
+}
+
+void set_server_only(std::string_view id, bool on) {
+    if (!host) return;
+    if (!server_scope::set(mods_root(), id, on)) {
+        logging::log(logging::Level::warning, logging::Channel::plugins, "Plugins: {} could not be saved as {}.", id,
+                     on ? "a server's plugin" : "your own plugin");
+        return;
+    }
+    auto scoped = server_scope::read(mods_root());
+    std::lock_guard lock(scope_mutex);
+    server_only = std::move(scoped);
+    reapply = true;
 }
 }

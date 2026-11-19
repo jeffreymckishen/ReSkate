@@ -16,6 +16,7 @@ struct State {
     std::chrono::steady_clock::time_point last_tick, done_at;
     bool active{};
     DWORD packet{};
+    std::uint64_t reads{}; // the game's reads of a playing script
     // A stick held (hold_stick).
     int stick{};
     SHORT value{};
@@ -66,6 +67,7 @@ bool scripted_pad_locked(State &s, const native_input_pulse::PublicationScope& p
     output.Gamepad = done ? XINPUT_GAMEPAD{} : s.steps[s.current].pad;
     // The script packet is output metadata, not a change of capture authority.
     output.dwPacketNumber = ++s.packet;
+    ++s.reads;
     return true;
 }
 } // namespace
@@ -131,6 +133,59 @@ bool held_stick(int& stick, SHORT& value) noexcept {
     stick = s.stick;
     value = s.value;
     return true;
+}
+bool scripted_buttons(WORD& buttons) noexcept {
+    // As scripted_pad: a script that moves on or ends is a publication, made under the gate.
+    native_input_pulse::PublicationScope publication;
+    if (!publication.owns()) return false;
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    if (!s.active) return false;
+    const auto now = std::chrono::steady_clock::now();
+    bool changed{};
+    while (s.current + 1 < s.steps.size() && now - s.last_tick > no_ticks)
+        changed = advance(s, s.last_tick + tick_length) || changed;
+    const bool done = s.current + 1 == s.steps.size();
+    if (done && now - s.done_at > linger) {
+        s.active = false;
+        native_input_pulse::publication_changed(publication);
+        return false;
+    }
+    if (changed) native_input_pulse::publication_changed(publication);
+    buttons = done ? WORD{} : s.steps[s.current].pad.wButtons;
+    ++s.reads;
+    return true;
+}
+bool stand_in_connected() noexcept {
+    // A caller that already holds the gate gets the script as it stands: it is moved on only by a
+    // reader that can publish the change.
+    native_input_pulse::PublicationScope publication;
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    if (!s.active) return false;
+    const auto now = std::chrono::steady_clock::now();
+    if (publication.owns()) {
+        bool changed{};
+        while (s.current + 1 < s.steps.size() && now - s.last_tick > no_ticks)
+            changed = advance(s, s.last_tick + tick_length) || changed;
+        if (changed) native_input_pulse::publication_changed(publication);
+    }
+    const bool done = s.current + 1 == s.steps.size();
+    return !(done && now - s.done_at > linger);
+}
+std::uint64_t script_reads() noexcept {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    return s.reads;
+}
+void wake_controller_reads() noexcept {
+    // The game's own windows only: never another program's.
+    (void)EnumWindows([](HWND window, LPARAM) -> BOOL {
+        DWORD process{};
+        GetWindowThreadProcessId(window, &process);
+        if (process == GetCurrentProcessId()) PostMessageW(window, WM_DEVICECHANGE, 0x0007 /* DBT_DEVNODES_CHANGED */, 0);
+        return TRUE;
+    }, 0);
 }
 bool scripted_pad(DWORD user, XINPUT_STATE &output) noexcept {
     if (user != 0) return false;

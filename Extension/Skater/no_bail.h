@@ -307,4 +307,9 @@ using NoBailNativeObserver=std::uint64_t (*)(const NoBailNativeEvent&,std::uint6
 // One independent slot. Registration never replaces another observer.
 bool add_no_bail_native_observer(NoBailNativeObserver observer) noexcept;
 void remove_no_bail_native_observer(NoBailNativeObserver observer) noexcept;
+// Asks for the game's skydive: the local skater, falling on foot, is put into the dive the player's
+// own bail begins there. It stands for a quarter of a second from each ask, so it is asked every
+// tick for as long as it is wanted; on its feet, on the board, once the dive has begun or with no
+// watched skater it does nothing. The game ends the dive itself where the body lands.
+void no_bail_request_skydive() noexcept;
 }

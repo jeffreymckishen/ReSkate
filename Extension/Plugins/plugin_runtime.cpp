@@ -60,7 +60,11 @@ Limits launch_limits;
 // The menu's limits are the loose end and the launcher's budget the strict one. The menu's time
 // limit starts at 6 ms, the launcher's default, so left there it means the launcher's budget (which
 // a player may have lowered); raised, or switched off, it is the player's own choice and replaces it.
-bool menu_sets_time(const LimitChoices& c) { return !c.stop_slow || c.tick_ms > plugin_time_budget::default_ms; }
+// (Upstream's menu starts at 16 ms since 2.1.5, where it started at 6: the value it starts at is not a
+// choice either, so the launcher's budget stays in force until the player moves the menu's limit.)
+bool menu_sets_time(const LimitChoices& c) {
+    return !c.stop_slow || (c.tick_ms > plugin_time_budget::default_ms && c.tick_ms != LimitChoices{}.tick_ms);
+}
 const char* budget_setting(const LimitChoices& c) {
     return menu_sets_time(c) ? "the ReSkate menu: PLUGINS, LIMITS" : plugin_time_budget::setting;
 }
@@ -234,6 +238,8 @@ public:
     }
     std::vector<plugin_ui::Action> take_actions() override { return server_ ? std::vector<plugin_ui::Action>{} : plugin_ui::take_actions(); }
     bool http_request(HttpRequest request) override { return http::start(std::move(request)); }
+    std::optional<HttpProgress> http_progress(std::string_view plugin, std::uint64_t id) override { return http::progress(plugin, id); }
+    void http_cancel(std::string_view plugin, std::uint64_t id) override { http::cancel(plugin, id); }
     Game& game() override { return real_game(base, storage_); }
     std::vector<HttpResponse> take_http_responses() override { return http::take(); }
 
